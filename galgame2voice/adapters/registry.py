@@ -208,6 +208,25 @@ def list_provider_presets() -> list[dict[str, Any]]:
     return [_format_preset_dict(p) for p in PROVIDER_PRESETS.values()]
 
 
+def list_builtin_provider_presets() -> list[dict[str, Any]]:
+    """Returns enriched capability metadata for all built-in provider presets."""
+    return [
+        {
+            "id": p["id"],
+            "name": p["name"],
+            "default_base_url": p["default_base_url"],
+            "default_chat_model": p["default_chat_model"],
+            "default_stt_model": p["default_stt_model"],
+            "default_reasoning_effort": p.get("default_reasoning_effort"),
+            "requires_api_key": p["id"] != "custom",
+            "supports_stt": p["stt_adapter_class"] is not None,
+            "preset_models": list(p["preset_models"]),
+            "description": p["description"],
+        }
+        for p in PROVIDER_PRESETS.values()
+    ]
+
+
 def get_provider_preset(provider_id: str) -> dict[str, Any] | None:
     """Retrieves preset information for a specific provider ID."""
     p = PROVIDER_PRESETS.get(provider_id.lower())

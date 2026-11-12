@@ -11,11 +11,13 @@ from typing import Any, Literal
 
 import aiosqlite
 from fastapi import APIRouter, HTTPException, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from galgame2voice.adapters.registry import (
     get_llm_adapter,
     get_provider_preset,
+    list_builtin_provider_presets,
     list_provider_presets,
 )
 from galgame2voice.database import crud
@@ -26,7 +28,11 @@ from galgame2voice.database.models import (
 )
 from galgame2voice.database.session import get_db
 from galgame2voice.security import url_guard
-from galgame2voice.utils.error_diagnostics import format_provider_error
+from galgame2voice.utils.error_diagnostics import (
+    format_provider_error,
+    is_retryable_diagnostic_code,
+    normalize_diagnostic_code,
+)
 from galgame2voice.utils.logger import sanitize_error_detail
 
 logger = logging.getLogger("galgame2voice.routers.providers")
@@ -77,6 +83,10 @@ class ProviderTestResponse(BaseModel):
     diagnostic: str | None = None
     status_code: int | None = None
     error: str | None = None
+    diagnostic_code: str | None = None
+    summary_zh: str | None = None
+    action_zh: str | None = None
+    retryable: bool | None = None
 
 
 # ============================================================================
@@ -92,6 +102,7 @@ async def list_providers():
     async with get_db() as conn:
         providers = await crud.list_providers(conn, mask=True)
         presets = list_provider_presets()
+        builtin_presets = list_builtin_provider_presets()
         existing_ids = {p.id for p in providers}
         all_providers = [p.model_dump() for p in providers]
         for pr in presets:
@@ -110,6 +121,7 @@ async def list_providers():
         return {
             "providers": all_providers,
             "presets": presets,
+            "builtin_presets": builtin_presets,
         }
 
 
@@ -366,6 +378,35 @@ def _resolve_provider_preset_defaults(
     return model, base_url
 
 
+def _preflight_bad_request_response(
+    *,
+    detail: str,
+    diagnostic_code: str,
+    summary_zh: str,
+    action_zh: str,
+) -> JSONResponse:
+    """Builds a structured HTTP 400 response for preflight provider test rejections while preserving `detail`."""
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={
+            "detail": detail,
+            "success": False,
+            "message": detail,
+            "latency_ms": 0.0,
+            "models": [],
+            "error_code": diagnostic_code,
+            "error_title": summary_zh,
+            "diagnostic": action_zh,
+            "status_code": 400,
+            "error": summary_zh,
+            "diagnostic_code": diagnostic_code,
+            "summary_zh": summary_zh,
+            "action_zh": action_zh,
+            "retryable": False,
+        },
+    )
+
+
 @router.post(
     "/providers/test",
     response_model=ProviderTestResponse,
@@ -385,12 +426,40 @@ async def test_provider(req: ProviderTestRequest):
             if stored:
                 reasoning_effort = stored.reasoning_effort
 
-    api_key, base_url = await _resolve_provider_test_credentials(provider_id, api_key, base_url)
+    try:
+        api_key, base_url = await _resolve_provider_test_credentials(provider_id, api_key, base_url)
+    except HTTPException as exc:
+        return _preflight_bad_request_response(
+            detail=str(exc.detail),
+            diagnostic_code="CREDENTIAL_HOST_MISMATCH",
+            summary_zh="已保存密钥不能直接发往新的接口地址",
+            action_zh="更换接口地址（Base URL）测试时，请重新输入完整的 API Key，避免将原服务商密钥泄露到新地址。",
+        )
+
     model, base_url = _resolve_provider_preset_defaults(provider_id, model, base_url)
 
     # SSRF guard: the effective base_url (explicit or stored) must pass the
     # private-network check before any credentials are attached to the request.
-    allow_private = await _enforce_llm_url_guard(base_url)
+    try:
+        allow_private = await _enforce_llm_url_guard(base_url)
+    except HTTPException as exc:
+        detail_str = str(exc.detail)
+        if "允许私网 LLM 端点" in detail_str:
+            return _preflight_bad_request_response(
+                detail=detail_str,
+                diagnostic_code="PRIVATE_ENDPOINT_BLOCKED",
+                summary_zh="私网或本机模型地址未启用",
+                action_zh=(
+                    "如确需连接本机或局域网模型服务（如 Ollama、vLLM、LM Studio），"
+                    "请在设置中开启「允许私网 LLM 端点」后重试；否则请改用公网 HTTPS 接口地址。"
+                ),
+            )
+        return _preflight_bad_request_response(
+            detail=detail_str,
+            diagnostic_code="INVALID_BASE_URL",
+            summary_zh="接口地址格式或协议无效",
+            action_zh=f"{detail_str}。请检查 Base URL 配置，填写合法的 http:// 或 https:// 接口地址后重试。",
+        )
 
     # Instantiate adapter via factory
     adapter = get_llm_adapter(
@@ -417,6 +486,7 @@ async def test_provider(req: ProviderTestRequest):
             error_title = (result.error if result.error_code else None) or diag_info.get("error") or "连通性测试未通过"
             diagnostic = result.diagnostic or diag_info.get("diagnostic") or result.message
             status_code = result.status_code if result.status_code is not None else diag_info.get("status_code")
+            diagnostic_code = normalize_diagnostic_code(error_code)
             return ProviderTestResponse(
                 success=False,
                 message=result.message,
@@ -427,6 +497,10 @@ async def test_provider(req: ProviderTestRequest):
                 diagnostic=diagnostic,
                 status_code=status_code,
                 error=error_title,
+                diagnostic_code=diagnostic_code,
+                summary_zh=error_title,
+                action_zh=diagnostic,
+                retryable=is_retryable_diagnostic_code(diagnostic_code),
             )
         return ProviderTestResponse(
             success=result.success,
@@ -443,17 +517,20 @@ async def test_provider(req: ProviderTestRequest):
             raw_error=exc,
             api_key_configured=bool(str(getattr(adapter, "api_key", "") or "").strip()),
         )
-        error_title = diag_info.get("error") or "连通性测试未通过"
         return ProviderTestResponse(
             success=False,
             message=f"连接测试异常: {safe_msg}",
             latency_ms=0.0,
             models=[],
-            error_code=diag_info.get("error_code"),
-            error_title=error_title,
-            diagnostic=diag_info.get("diagnostic") or safe_msg,
-            status_code=diag_info.get("status_code"),
-            error=error_title,
+            error_code=diag_info["error_code"],
+            error_title=diag_info["error"],
+            diagnostic=diag_info["diagnostic"],
+            status_code=diag_info["status_code"],
+            error=diag_info["error"],
+            diagnostic_code=diag_info["diagnostic_code"],
+            summary_zh=diag_info["summary_zh"],
+            action_zh=diag_info["action_zh"],
+            retryable=diag_info["retryable"],
         )
 
 

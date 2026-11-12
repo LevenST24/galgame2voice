@@ -11,6 +11,50 @@ from typing import Any
 from galgame2voice.utils.logger import MaskingFilter
 
 
+RETRYABLE_DIAGNOSTIC_CODES = frozenset({
+    "NETWORK_TIMEOUT",
+    "CONNECTION_RESET",
+    "NETWORK_CONNECTION_FAILED",
+    "BAD_GATEWAY",
+    "SERVER_OVERLOADED",
+    "RATE_LIMIT",
+    "OPENAI_RATE_LIMIT",
+    "ANTHROPIC_RATE_LIMIT",
+    "STREAM_INCOMPLETE",
+    "EMPTY_REPLY",
+})
+
+_DIAGNOSTIC_CODE_ALIASES: dict[str, str] = {
+    "API_KEY_MISSING": "MISSING_API_KEY",
+    "AUTH_FAILED": "AUTH_INVALID_KEY",
+    "OPENAI_AUTH_FAILED": "AUTH_INVALID_KEY",
+    "ANTHROPIC_AUTH_FAILED": "AUTH_INVALID_KEY",
+    "XAI_AUTH_FAILED": "AUTH_INVALID_KEY",
+    "GEMINI_KEY_INVALID": "AUTH_INVALID_KEY",
+    "FORBIDDEN": "AUTH_FORBIDDEN",
+    "XAI_FORBIDDEN": "AUTH_FORBIDDEN",
+    "GEMINI_PERMISSION_DENIED": "AUTH_FORBIDDEN",
+    "GEMINI_REGION_RESTRICTED": "AUTH_FORBIDDEN",
+    "OPENAI_QUOTA_EXCEEDED": "QUOTA_EXCEEDED",
+    "XAI_QUOTA_EXCEEDED": "QUOTA_EXCEEDED",
+}
+
+
+def normalize_diagnostic_code(error_code: str | None) -> str:
+    """Normalizes provider or runtime error codes into stable UPPER_SNAKE_CASE diagnostic codes."""
+    raw = re.sub(r"[^A-Za-z0-9]+", "_", (error_code or "").strip()).strip("_").upper()
+    if not raw:
+        return "PROVIDER_ERROR"
+    return _DIAGNOSTIC_CODE_ALIASES.get(raw, raw)
+
+
+def is_retryable_diagnostic_code(diagnostic_code: str | None) -> bool:
+    """Returns True only for transient faults that can be retried directly without configuration edits."""
+    if not diagnostic_code:
+        return False
+    return diagnostic_code.strip().upper() in RETRYABLE_DIAGNOSTIC_CODES
+
+
 @dataclass
 class DiagnosticResult:
     """Structured diagnostic representation of provider or runtime errors with user guidance."""
@@ -22,11 +66,16 @@ class DiagnosticResult:
     raw_error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        diagnostic_code = normalize_diagnostic_code(self.error_code)
         return {
             "error": self.message,
             "diagnostic": self.guidance,
             "error_code": self.error_code,
             "status_code": self.status_code,
+            "diagnostic_code": diagnostic_code,
+            "summary_zh": self.message,
+            "action_zh": self.guidance,
+            "retryable": is_retryable_diagnostic_code(diagnostic_code),
         }
 
 
@@ -54,7 +103,9 @@ EMPTY_REPLY_DEFAULT = "模型这次没有返回任何内容，可以重新发送
 class EmptyReplyError(ValueError):
     """Raised when the LLM finishes generating without producing visible reply text."""
 
-    def __init__(self, message: str | None = None, *, stopped_on_length: bool = False):
+    def __init__(self, message: str | None = None, *, stopped_on_length: bool | None = None):
+        if stopped_on_length is None:
+            stopped_on_length = message == EMPTY_REPLY_STOPPED_ON_LENGTH
         if not message:
             message = EMPTY_REPLY_STOPPED_ON_LENGTH if stopped_on_length else EMPTY_REPLY_DEFAULT
         super().__init__(message)
@@ -94,6 +145,22 @@ class ConfigurationSelectionError(ValueError):
         self.status_code = status_code
 
 
+_CONFIGURATION_SELECTION_GUIDANCE: dict[str, tuple[str, str]] = {
+    "PROVIDER_NOT_FOUND": (
+        "指定的模型服务配置不存在",
+        "请打开「设置中心 → 对话模型」重新选择并启用可用的模型服务。",
+    ),
+    "VOICE_PROFILE_NOT_FOUND": (
+        "所选角色音色已不存在",
+        "请打开「设置中心 → 角色与会话」重新选择可用的角色或自定义音色。",
+    ),
+    "VOICE_PROFILE_AMBIGUOUS": (
+        "存在重名的角色音色配置",
+        "请打开「设置中心 → 角色与会话」明确选择要使用的具体音色。",
+    ),
+}
+
+
 def format_provider_error(
     provider_id: str | None = None,
     status_code: int | None = None,
@@ -125,33 +192,88 @@ def chat_error_payload(
     the matching settings page.
     """
     if isinstance(exc, ConfigurationSelectionError):
-        return {"error": str(exc), "error_code": exc.error_code, "status_code": exc.status_code}
+        diagnostic_code = normalize_diagnostic_code(exc.error_code)
+        msg = str(exc).strip()
+        default_summary = msg if re.search(r"[\u4e00-\u9fff]", msg) else "当前模型或角色配置不可用"
+        summary_zh, action_zh = _CONFIGURATION_SELECTION_GUIDANCE.get(
+            diagnostic_code,
+            (default_summary, "请打开「设置中心」检查对话模型与角色音色配置后重试。"),
+        )
+        return {
+            "error": str(exc),
+            "error_code": exc.error_code,
+            "status_code": exc.status_code,
+            "diagnostic_code": diagnostic_code,
+            "summary_zh": summary_zh,
+            "action_zh": action_zh,
+            "retryable": is_retryable_diagnostic_code(diagnostic_code),
+        }
     if isinstance(exc, EmptyReplyError):
+        if exc.stopped_on_length:
+            diagnostic_code = "EMPTY_REPLY_LENGTH_LIMIT"
+            summary_zh = "模型生成长度耗尽，未能输出回复"
+            action_zh = "请在模型设置中调低「思考强度」，或在会话设置中调大「最大生成长度」后重试。"
+        elif str(exc) == EMPTY_REPLY_CONTENT_FILTERED:
+            diagnostic_code = "EMPTY_REPLY_CONTENT_FILTERED"
+            summary_zh = "模型输出触发了服务商内容安全过滤"
+            action_zh = "请调整对话表达后重试，或切换其他模型。"
+        else:
+            diagnostic_code = "EMPTY_REPLY"
+            summary_zh = "模型本次未返回任何可见回复"
+            action_zh = "可以直接重新发送重试，或切换其他模型试试。"
         return {
             "error": str(exc),
             "error_code": "empty_reply",
             "kind": "empty_reply",
             "status_code": 200,
+            "diagnostic_code": diagnostic_code,
+            "summary_zh": summary_zh,
+            "action_zh": action_zh,
+            "retryable": is_retryable_diagnostic_code(diagnostic_code),
         }
     if isinstance(exc, StreamIncompleteError):
+        diagnostic_code = "STREAM_INCOMPLETE"
         return {
             "error": str(exc),
             "diagnostic": str(exc),
             "error_code": "stream_incomplete",
             "status_code": 200,
+            "diagnostic_code": diagnostic_code,
+            "summary_zh": "上游模型连接意外中断，回复未完整结束",
+            "action_zh": "无需修改配置，可直接重新发送尝试重试。",
+            "retryable": is_retryable_diagnostic_code(diagnostic_code),
         }
     if isinstance(exc, StreamTruncatedError):
+        if exc.stopped_on_length:
+            diagnostic_code = "STREAM_TRUNCATED_ON_LENGTH"
+            error_code = "stream_truncated_on_length"
+            summary_zh = "模型输出达到最大长度限制，回复未完整生成"
+            action_zh = "建议在会话设置中调大「最大生成长度」，或在模型设置中调低「思考强度」。"
+        else:
+            diagnostic_code = "STREAM_TRUNCATED_CONTENT_FILTERED"
+            error_code = "stream_truncated_content_filtered"
+            summary_zh = "模型输出触发内容安全过滤，回复未完整生成"
+            action_zh = "建议调整对话表达后重试，或切换其他模型。"
         return {
             "error": str(exc),
             "diagnostic": str(exc),
-            "error_code": "stream_truncated_on_length" if getattr(exc, "stopped_on_length", True) else "stream_truncated_content_filtered",
+            "error_code": error_code,
             "status_code": 200,
+            "diagnostic_code": diagnostic_code,
+            "summary_zh": summary_zh,
+            "action_zh": action_zh,
+            "retryable": is_retryable_diagnostic_code(diagnostic_code),
         }
     diag = diagnose_llm_error(exc, provider_id=provider_id, api_key_configured=api_key_configured)
+    diag_dict = diag.to_dict()
     return {
         "error": f"{diag.message}：{diag.guidance}",
         "error_code": diag.error_code,
         "status_code": diag.status_code,
+        "diagnostic_code": diag_dict["diagnostic_code"],
+        "summary_zh": diag_dict["summary_zh"],
+        "action_zh": diag_dict["action_zh"],
+        "retryable": diag_dict["retryable"],
     }
 
 
@@ -182,7 +304,10 @@ def _diagnose_local_configuration(
             guidance="如果这是你信任的本地模型（如 Ollama、LM Studio），请在「设置中心 → 对话模型」开启「允许私网 LLM 端点」后重试；否则请改用服务商提供的公网地址。",
             raw_error=sanitized_raw,
         )
-    auth_failure = any(kw in raw_lower for kw in ("authentication", "unauthorized", "api key", "401"))
+    is_timeout_text = any(kw in raw_lower for kw in ("timed out", "timeouterror", "readtimeout", "connecttimeout"))
+    auth_failure = not is_timeout_text and any(
+        kw in raw_lower for kw in ("authentication", "unauthorized", "api key", "401")
+    )
     if "api key is not configured" in raw_lower or (api_key_configured is False and auth_failure):
         name = _provider_display_name(provider_id)
         return DiagnosticResult(

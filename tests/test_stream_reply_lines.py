@@ -125,10 +125,15 @@ async def test_nonvocal_and_trailing_lines(coordinator_factory, zh, ja, statuses
         assert events[0]["event"] == "turn_started"
         assert events[0]["data"]["session_id"] == "lines"
         assert isinstance(events[0]["data"]["user_message_id"], int) and events[0]["data"]["user_message_id"] > 0
-        assert events[1] == {"event": "error", "data": {
+        assert events[1]["event"] == "error"
+        data = events[1]["data"]
+        assert {key: data[key] for key in ("error", "error_code", "kind", "status_code")} == {
             "error": "模型这次没有返回任何内容，可以重新发送或换个模型试试。",
             "error_code": "empty_reply", "kind": "empty_reply", "status_code": 200,
-        }}
+        }
+        # The stable diagnostic fields ride along with the legacy ones (tests/contracts/provider_diagnostics_v1.json).
+        assert data["diagnostic_code"] == "EMPTY_REPLY"
+        assert data["retryable"] is True
         tts.synthesize_to_file.assert_not_awaited()
         async with get_db(database) as conn:
             assert await crud.get_recent_messages(conn, "lines") == []
