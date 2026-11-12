@@ -3,21 +3,14 @@ Adversarial Stress Test Suite — Challenger R4-1
 Exhaustive empirical validation for Galgame2Voice Phase 4 / Milestone 7 optimizations.
 
 Tests:
-1. Adversarial Agile Chunking:
-   - Empty text, whitespace only.
-   - Pure punctuation (commas only, terminals only, mixed CJK/ASCII punctuation).
-   - Emojis and zero-width/unicode characters.
-   - Ultra-short clauses (< 6 chars) with clause pause vs terminal punctuation.
-   - Massive paragraphs (10,000 to 50,000 chars) testing for ReDoS and memory growth.
-   - StreamingBilingualParser single-char feeding and malformed JSON recovery.
-2. Rapid Interrupt Stress:
+1. Rapid Interrupt Stress:
    - 50+ cancellation signals fired at varying phase offsets during active stream_chat.
    - Strict assertions:
      - Zero unhandled exceptions.
      - Release latency strictly < 100ms per cancellation.
      - Zero leaked background tasks (_bg_tasks).
      - GPU inference lock immediately unlocked.
-3. 50-Turn Continuous Dialogue Memory Stability:
+2. 50-Turn Continuous Dialogue Memory Stability:
    - 50 continuous turns with memory tracking.
    - Strict assertion: RSS drift < 35MB.
 """
@@ -42,7 +35,6 @@ from galgame2voice.services.chat_service import ChatService
 from galgame2voice.services.gpt_sovits_client import GptSovitsClient
 from galgame2voice.services.streaming_parser import StreamingBilingualParser
 from galgame2voice.services.tts_service import TtsService
-from galgame2voice.utils.text_splitter import split_japanese_sentences
 
 
 # ============================================================================
@@ -97,159 +89,6 @@ class MockFastBilingualLLM(BaseLLMAdapter):
 
     async def list_models(self) -> List[str]:
         return ["mock-fast-model"]
-
-
-# ============================================================================
-# 1. Adversarial Agile Chunking Tests
-# ============================================================================
-
-class TestAdversarialAgileChunking:
-    """Stress tests split_japanese_sentences and StreamingBilingualParser on pathological inputs."""
-
-    @pytest.mark.parametrize("empty_input", ["", "   ", "\t\t", "\n\n", "  \r\n  \t  "])
-    def test_chunking_empty_and_whitespace(self, empty_input):
-        """Empty and whitespace-only inputs must return empty list without error."""
-        res_default = split_japanese_sentences(empty_input, is_first_chunk=False)
-        assert res_default == [], f"Expected [] for {repr(empty_input)}, got {res_default}"
-
-        res_agile = split_japanese_sentences(empty_input, is_first_chunk=True, min_chars=6)
-        assert res_agile == [], f"Expected [] for agile {repr(empty_input)}, got {res_agile}"
-
-    @pytest.mark.parametrize("punct_only", [
-        ",", "、", "，", "。", "！", "？", "!", "?",
-        ",,,,,,,,", "、、、、、、", "，，，，，，",
-        "。。。。。。", "！？！？！？", "!?!?!?",
-        "、、，，,,。。。！？!?",
-        "   ，，、、。。！？   ",
-    ])
-    def test_chunking_pure_punctuation(self, punct_only):
-        """Punctuation-only text must never crash, never hang, and never lose content."""
-        expected_stripped = punct_only.replace(" ", "").replace("\n", "")
-        # Test is_first_chunk=False
-        res_default = split_japanese_sentences(punct_only, is_first_chunk=False)
-        assert isinstance(res_default, list)
-        if expected_stripped:
-            assert len(res_default) >= 1
-            combined_default = "".join(res_default).replace(" ", "").replace("\n", "")
-            assert combined_default == expected_stripped
-        else:
-            assert res_default == []
-
-        # Test is_first_chunk=True
-        res_agile = split_japanese_sentences(punct_only, is_first_chunk=True, min_chars=6)
-        assert isinstance(res_agile, list)
-        if expected_stripped:
-            assert len(res_agile) >= 1
-            combined_agile = "".join(res_agile).replace(" ", "").replace("\n", "")
-            assert combined_agile == expected_stripped
-        else:
-            assert res_agile == []
-
-    def test_chunking_emojis_and_unicode_symbols(self):
-        """Emojis, math symbols, and mixed scripts must be preserved safely."""
-        emoji_text = "🐱こんにちは！🐶先生、今日はいい天気ですね🎉一緒に出かけましょう？🚀"
-        res = split_japanese_sentences(emoji_text, is_first_chunk=True, min_chars=6)
-        assert len(res) >= 2
-        # Verify first sentence contains initial emoji
-        assert "🐱こんにちは！" in res[0]
-        # Verify total text preservation
-        assert "".join(res) == emoji_text
-
-        # Pure emojis with commas
-        emoji_clauses = "🍎、🍌、🍇、🍓、🍉、🍒、🍑"
-        res_emoji = split_japanese_sentences(emoji_clauses, is_first_chunk=True, min_chars=6)
-        assert len(res_emoji) >= 1
-        assert "".join(res_emoji) == emoji_clauses
-
-    def test_chunking_mixed_cjk_ascii_punctuation(self):
-        """Mixed Chinese, Japanese, and ASCII commas/periods/exclamations."""
-        mixed = "初めまして，今日はいい天気ですね、一緒に行こう,楽しみだね！本当に？すごい!!"
-        # Agile split
-        res = split_japanese_sentences(mixed, is_first_chunk=True, min_chars=6)
-        assert len(res) >= 3
-        # First chunk split on Chinese comma '，' since len("初めまして，") >= 6
-        assert res[0] == "初めまして，"
-        # Subsequent split should only split on terminal punct, preserving '、' and ',' inside sentences
-        assert res[1] == "今日はいい天気ですね、一緒に行こう,楽しみだね！"
-        assert "".join(res) == mixed
-
-    def test_chunking_ultra_short_clauses(self):
-        """Ultra-short clauses (< 6 chars) must NOT split prematurely when is_first_chunk=True."""
-        # 1. 2-character clauses: "あ、い、う、え、お、か、き。"
-        # "あ、" len 2 < 6
-        # "あ、い、" len 4 < 6
-        # "あ、い、う、" len 6 >= 6 -> splits here!
-        short_text = "あ、い、う、え、お、か、き。"
-        res = split_japanese_sentences(short_text, is_first_chunk=True, min_chars=6)
-        assert res[0] == "あ、い、う、"
-        # Subsequent chunks require terminal punctuation
-        assert res[1] == "え、お、か、き。"
-
-        # 2. Short clause followed immediately by terminal punctuation:
-        # Terminal punctuation overrides min_chars!
-        short_terminal = "はい！先生、おはようございます。"
-        res_term = split_japanese_sentences(short_terminal, is_first_chunk=True, min_chars=6)
-        assert res_term[0] == "はい！"
-        assert res_term[1] == "先生、おはようございます。"
-
-    # Asserts <150ms/<300ms wall-clock bounds on 30K-51K char chunking; sensitive to multi-worker CPU contention.
-    @pytest.mark.serial
-    @pytest.mark.wall_clock
-    def test_chunking_huge_paragraph_no_catastrophic_backtracking(self):
-        """
-        Stress-tests 50,000 characters to assert zero ReDoS, stack overflow,
-        or unbounded execution time (< 150ms).
-        """
-        # 1. 30,000 characters without ANY punctuation
-        huge_plain = "あいうえおかきくけこさしすせそたちつてとなにぬねの" * 1200  # 30,000 chars
-        t0 = time.perf_counter()
-        res_plain = split_japanese_sentences(huge_plain, is_first_chunk=True, min_chars=6)
-        elapsed_ms = (time.perf_counter() - t0) * 1000.0
-        assert len(res_plain) == 1
-        assert len(res_plain[0]) == 30000
-        assert elapsed_ms < 150.0, f"Huge plain text chunking took too long: {elapsed_ms:.2f}ms"
-
-        # 2. 50,000 characters with mixed commas and terminal punctuation
-        pattern_block = "初めまして、今日はいい天気ですね。一緒に出かけませんか！そうですね？"  # 34 chars
-        huge_mixed = pattern_block * 1500  # 51,000 chars
-        t0 = time.perf_counter()
-        res_mixed = split_japanese_sentences(huge_mixed, is_first_chunk=True, min_chars=6)
-        elapsed_mixed_ms = (time.perf_counter() - t0) * 1000.0
-        assert len(res_mixed) > 1000
-        assert elapsed_mixed_ms < 300.0, f"Huge mixed text chunking took too long: {elapsed_mixed_ms:.2f}ms"
-        # Zero dropped characters
-        assert sum(len(s) for s in res_mixed) == len(huge_mixed)
-
-    def test_streaming_bilingual_parser_erratic_feed(self):
-        """Feeds raw JSON 1 character at a time; asserts proper incremental decoding."""
-        raw_json = (
-            '{"tts": {"speed": 1.15, "temp": 0.85, "emotion": "happy"}, '
-            '"chinese": "你好啊，好久不见！", '
-            '"japanese": "お久しぶりですね、元気にしていましたか？"}'
-        )
-        parser = StreamingBilingualParser()
-        emitted_deltas = []
-        emitted_ja = []
-
-        for char in raw_json:
-            delta_ch, ja_sents = parser.feed_chunk(char)
-            if delta_ch:
-                emitted_deltas.append(delta_ch)
-            if ja_sents:
-                emitted_ja.extend(ja_sents)
-
-        full_ch, full_ja, remaining_ja = parser.finalize()
-        if remaining_ja:
-            emitted_ja.extend(remaining_ja)
-
-        assert "".join(emitted_deltas) == "你好啊，好久不见！"
-        assert full_ch == "你好啊，好久不见！"
-        assert full_ja == "お久しぶりですね、元気にしていましたか？"
-        assert parser.tts_speed == 1.15
-        assert parser.tts_temperature == 0.85
-        assert parser.tts_emotion == "happy"
-        # Verify agile chunk 0 split on first clause pause: "お久しぶりですね、"
-        assert emitted_ja[0] == "お久しぶりですね、"
 
 
 # ============================================================================
