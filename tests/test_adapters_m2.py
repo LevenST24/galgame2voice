@@ -11,7 +11,6 @@ from pydantic import BaseModel
 
 from galgame2voice.adapters.base import (
     ChatMessage,
-    LLMResponse,
     TestResult,
     BaseLLMAdapter,
     BaseSTTAdapter,
@@ -115,15 +114,6 @@ class TestAdapterRegistryAndFactory:
 
 class TestAdaptersExecutionWithMockServer:
     """Tests LLM and STT adapter execution, streaming, and error handling with MockLLMServer."""
-
-    @pytest.mark.asyncio
-    async def test_llm_chat_execution(self, mock_llm_server):
-        adapter = DeepSeekLLMAdapter(api_key="sk-valid-key", client_override=mock_llm_server)
-        messages = [ChatMessage(role="user", content="Hello")]
-        resp = await adapter.chat(messages, model="deepseek-chat")
-        assert isinstance(resp, LLMResponse)
-        assert "chinese" in resp.content
-        assert resp.usage is not None
 
     @pytest.mark.asyncio
     async def test_llm_stream_chat_tokens(self, mock_llm_server):

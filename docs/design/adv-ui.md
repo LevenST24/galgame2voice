@@ -98,7 +98,7 @@ Phase ownership follows the approved plan; P2 has two separately gated parts:
 | --- | --- |
 | P1 | Extract the conversation controller without changing the UI; replace source-slicing tests in the same change. |
 | P2a | Normalize old replies into line/audio events, persist `lines_json` through six paths, and add line playback; prompts stay unchanged. |
-| P2b | Add optional `lines`/`act` output, acting menus, per-line reference audio, new history replay, and non-streaming/Telegram support; enable after measurement. |
+| P2b | Add optional `lines`/`act` output, acting menus, per-line reference audio, and new history replay; enable after measurement. |
 | P3 | Add opt-in ADV stage, textbox/crop, line player, acting, signed images, complete old-feature mapping, and split portrait state from rendering. |
 | P4 | Turn the message list into LOG with line replay; complete settings and interaction preferences. |
 | P5 | Add layered v3 sprites, supported blink/mouth animation, conversion tooling, tags, five Tenshi heroines, and rebuilt Natsume assets. |
@@ -624,10 +624,9 @@ Use a quote/escape/nesting-aware incremental scanner to extract complete line ob
 It must tolerate chunk boundaries inside escaped quotes and multibyte characters.
 Deliver via a side channel without changing `feed_chunk`/`finalize` signatures or
 the `text_pipeline.py` return tuple. Emit a complete first line before the full reply.
-`finalize` and `parse_full_text` both aggregate `lines` into Chinese/Japanese text.
+`finalize` aggregates `lines` into Chinese/Japanese text.
 Handle fences, preambles, truncation, and invalid acts without executing extra text.
 Keep complete validated objects on truncation; never fabricate an unfinished string.
-Telegram and non-streaming endpoints receive nonempty aggregate text and usable audio.
 
 TTS work items become `{line, ja, emotion}`; synthesize once per line unless engine
 limits require splitting. All child chunks retain that line foreign key.
@@ -960,7 +959,7 @@ the plan's intended fixture reuse is not an implementation prerequisite.
 | --- | --- |
 | P1 | Import controller directly; assert event order, busy rejection, pre-request cancellation, retry identity, failed-user marking, partial reply persistence, and origin-session isolation. Rewrite both source-slicing tests and import badge logic directly. Old UI/audio remain usable. |
 | P2a | Test equal/unequal/single-language pairing, ellipses, punctuation, and lossless aggregation; verify line-before-audio and one terminal per line on ready/skipped/failed, including partial failure. Exercise additive migration twice and reopening with old code. Round-trip all six persistence paths and use fake clocks for line audio ownership/interruption. |
-| P2b | Feed scanner every split point around escapes/nesting, fenced/prefaced/truncated arrays, trailing text, unknown acts, and missing emotion. Test `parse_full_text`, Telegram/non-streaming aggregates, menu generation, pose/face legality, sticky false, one-shot omission, per-line refs/cache identity, all prompt sources, and new-format history. Run the 13×20-turn measurement before proposing default enablement. |
+| P2b | Feed scanner every split point around escapes/nesting, fenced/prefaced/truncated arrays, trailing text, unknown acts, and missing emotion. Test menu generation, pose/face legality, sticky false, one-shot omission, per-line refs/cache identity, all prompt sources, and new-format history. Run the 13×20-turn measurement before proposing default enablement. |
 | P3 | Test line-player waits/timeouts, late audio, pages, AUTO modes, skip, typing-away queues, hidden window, JS reduced-motion changes, and once-per-line live announcements. Test shared crop/state and stale decode guards. Verify signed image expiry/tamper/traversal and token-on `<img>` loading. Exercise every old-feature row, missing art, and no-voice mode. |
 | P4 | LOG pages all history, retains skipped lines, replays only selected line, disables expired replay, and preserves interrupted drafts. Check settings persistence, opacity preview, focus return, keyboard/editor exclusions, and retry/settings recovery. |
 | P5 | Validate v3 dimensions/recipes, hair/blush order, crop-origin alignment, unsupported combinations, and whole-image fallback. Test blink timer cancellation, eyes-closed suppression, partner-only mouth frames, analyser silence/end/reset, animation cancellation, and shared crop frames. Visually inspect each of the six planned local packs. |

@@ -92,7 +92,7 @@ class TestSsrfGuard:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["sync", "stream", "models"])
+@pytest.mark.parametrize("mode", ["stream", "models"])
 async def test_saved_private_permission_reaches_real_chat_adapter_and_can_be_revoked(
     client, isolate_test_database, monkeypatch, mode,
 ):
@@ -112,10 +112,8 @@ async def test_saved_private_permission_reaches_real_chat_adapter_and_can_be_rev
         outbound.append(request)
         if mode == "models":
             return httpx.Response(200, json={"data": [{"id": "local reply"}]})
-        if mode == "stream":
-            data = 'data: {"choices":[{"delta":{"content":"local reply"}}]}\n\ndata: [DONE]\n\n'
-            return httpx.Response(200, text=data, headers={"Content-Type": "text/event-stream"})
-        return httpx.Response(200, json={"choices": [{"message": {"content": "local reply"}}]})
+        data = 'data: {"choices":[{"delta":{"content":"local reply"}}]}\n\ndata: [DONE]\n\n'
+        return httpx.Response(200, text=data, headers={"Content-Type": "text/event-stream"})
 
     monkeypatch.setattr(openai_adapter, "create_async_client", lambda **kwargs: httpx.AsyncClient(
         transport=httpx.MockTransport(upstream),
@@ -126,19 +124,17 @@ async def test_saved_private_permission_reaches_real_chat_adapter_and_can_be_rev
     async def complete(adapter, model):
         if mode == "models":
             return (await adapter.list_models())[0]
-        if mode == "stream":
-            return "".join([chunk async for chunk in adapter.stream_chat(messages, model=model)])
-        return (await adapter.chat(messages, model=model)).content
+        return "".join([chunk async for chunk in adapter.stream_chat(messages, model=model)])
 
     try:
-        adapter, model, _ = await service.get_active_llm_adapter(provider_id="custom")
+        adapter, model, _ = await service._get_active_llm_adapter(provider_id="custom")
         assert await complete(adapter, model) == "local reply"
         assert len(outbound) == 1
 
-        # Reuse the service, just as the web/Telegram chat paths do after a setting change.
+        # Reuse the service, just as the web chat path does after a setting change.
         revoked = await client.post("/api/config", json={"allow_private_llm_endpoints": False})
         assert revoked.status_code == 200
-        adapter, model, _ = await service.get_active_llm_adapter(provider_id="custom")
+        adapter, model, _ = await service._get_active_llm_adapter(provider_id="custom")
         with pytest.raises(PermissionError, match="阻止"):
             await complete(adapter, model)
         assert len(outbound) == 1, "revoking permission must block the next outbound request"

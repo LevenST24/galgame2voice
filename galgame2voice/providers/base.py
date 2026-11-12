@@ -34,19 +34,9 @@ class ProviderError(BaseModel):
 class LLMProvider(Protocol):
     """
     Protocol defining the standardized LLM Provider interface.
-    Every provider must support chat completion, streaming, connectivity testing,
+    Every provider must support streaming chat, connectivity testing,
     model discovery, and error normalization.
     """
-
-    async def chat(
-        self,
-        messages: list[ChatMessage],
-        model: str,
-        temperature: float = 1.0,
-        **kwargs: Any,
-    ) -> LLMResponse:
-        """Executes non-streaming completion for given message history."""
-        ...
 
     def stream_chat(
         self,

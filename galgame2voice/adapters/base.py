@@ -401,7 +401,7 @@ def configured_reasoning_effort(adapter: object) -> str | None:
 class BaseLLMAdapter(ABC):
     """
     Abstract Base Class for Large Language Model Adapters.
-    Provides standard unified interface for synchronous chat, streaming chat,
+    Provides standard unified interface for streaming chat,
     connection testing, and model discovery.
     """
 
@@ -416,18 +416,6 @@ class BaseLLMAdapter(ABC):
         self.extra_config: dict[str, Any] = kwargs
         self.reasoning_effort: str | None = kwargs.get("reasoning_effort")
         self.last_finish_reason: str | None = None
-
-    @abstractmethod
-    async def chat(
-        self,
-        messages: list[ChatMessage],
-        model: str,
-        temperature: float = 1.0,
-        **kwargs: Any,
-    ) -> LLMResponse:
-        """
-        Executes non-streaming completion for given message history.
-        """
 
     @abstractmethod
     def stream_chat(

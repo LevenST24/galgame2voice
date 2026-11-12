@@ -214,7 +214,10 @@ class AnthropicAdapter(BaseLLMAdapter):
         temperature: float | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
-        """Executes non-streaming chat completion via Anthropic /messages endpoint with exponential retries."""
+        """
+        Executes non-streaming chat completion via Anthropic /messages endpoint with exponential retries.
+        Only test_connection() calls this; chat turns go through stream_chat().
+        """
         self.last_finish_reason = None
         self._validate_credentials()
         url = f"{self.base_url}/messages" if not self.base_url.endswith("/messages") else self.base_url

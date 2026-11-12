@@ -34,7 +34,6 @@ from galgame2voice.database.session import get_db, init_db
 from galgame2voice.main import create_app
 from galgame2voice.services.chat_pipelines.llm_pipeline import LlmStreamPipeline
 from galgame2voice.services.chat_pipelines.stream_coordinator import StreamCoordinator
-from galgame2voice.services.chat_service import ChatService
 from galgame2voice.utils.error_diagnostics import (
     CONTENT_FILTER_FINISH_REASONS,
     EMPTY_REPLY_CONTENT_FILTERED,
@@ -544,8 +543,8 @@ def test_diagnose_llm_error_unsupported_parameter():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("effort", [None, "none", "low", "medium", "high"])
-async def test_all_request_builders_forward_only_configured_effort(tmp_path, effort):
-    adapter = SimpleNamespace(chat=AsyncMock(return_value=SimpleNamespace(content="翻訳")), reasoning_effort=effort)
+async def test_all_request_builders_forward_only_configured_effort(effort):
+    adapter = SimpleNamespace(reasoning_effort=effort)
     captured = []
 
     async def tokens(*args, **kwargs):
@@ -555,18 +554,11 @@ async def test_all_request_builders_forward_only_configured_effort(tmp_path, eff
     adapter.stream_chat = tokens
     pipeline = LlmStreamPipeline(adapter=adapter, messages=[], model_name="test", reasoning_effort=effort)
     assert [token async for token in pipeline.stream_tokens()] == ["content"]
-    database = tmp_path / "builders.db"
-    await init_db(database)
-    service = ChatService(db_path=str(database))
-    try:
-        captured.extend(call.kwargs for call in adapter.chat.call_args_list)
-        for kwargs in captured:
-            if effort is None:
-                assert "reasoning_effort" not in kwargs
-            else:
-                assert kwargs["reasoning_effort"] == effort
-    finally:
-        await service.aclose()
+    for kwargs in captured:
+        if effort is None:
+            assert "reasoning_effort" not in kwargs
+        else:
+            assert kwargs["reasoning_effort"] == effort
 
     configured = get_llm_adapter(ProviderCreate(id="gemini", name="Gemini", reasoning_effort=effort,
                                                api_base_url="https://generativelanguage.googleapis.com/v1beta/openai", chat_model="test"))
@@ -647,17 +639,9 @@ def test_diagnostics_do_not_reclassify_unrelated_errors(text, status, provider):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("effort", [None, "low"])
-async def test_nonstream_adapter_and_connectivity_probe_forward_effort(effort):
-    data = {"choices": [{"message": {"content": None}, "finish_reason": "length"}]}
-    response = SimpleNamespace(status_code=200, json=lambda: data, text="")
-    server = SimpleNamespace(handle_chat_completion=AsyncMock(return_value=response))
-    adapter = GeminiLLMAdapter(api_key="synthetic", client_override=server, reasoning_effort=effort)
-    result = await adapter.chat([], model="test")
-    assert result.content == ""
-    assert adapter.last_finish_reason == "length"
-    payload = server.handle_chat_completion.call_args.args[0]
-    assert payload.get("reasoning_effort") == effort
-    assert ("reasoning_effort" in payload) == (effort is not None)
+async def test_connectivity_probe_forwards_effort(effort):
+    response = SimpleNamespace(status_code=200, text="")
+    adapter = GeminiLLMAdapter(api_key="synthetic", reasoning_effort=effort)
     client = SimpleNamespace(post=AsyncMock(return_value=response))
     await adapter._probe_chat_fallback(client, "test", {}, "gemini", time.perf_counter())
     payload = client.post.call_args.kwargs["json"]
