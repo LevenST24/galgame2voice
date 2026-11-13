@@ -150,7 +150,7 @@ def build_early_done_event(
     *,
     partial_chinese: str | None,
     partial_japanese: str | None,
-    snapshot_lines: Sequence[Mapping[str, Any]],
+    snapshot_lines: Sequence[Mapping[str, Any]] | None,
     reply_format: str = "lines",
     message_id: int | None = None,
 ) -> dict[str, Any]:
@@ -161,7 +161,7 @@ def build_early_done_event(
             "truncated": True,
             "chinese": partial_chinese or "",
             "japanese": partial_japanese or "",
-            "lines": list(snapshot_lines),
+            "lines": list(snapshot_lines) if snapshot_lines else None,
             "reply_format": reply_format,
             **({"message_id": message_id} if message_id is not None else {}),
         },

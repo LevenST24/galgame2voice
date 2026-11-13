@@ -810,7 +810,7 @@ class StreamCoordinator:
             yield build_early_done_event(
                 partial_chinese=policy["content_chinese"],
                 partial_japanese=policy["content_japanese"],
-                snapshot_lines=policy["lines"],
+                snapshot_lines=policy["persisted_lines"],
                 reply_format=run.parser.line_scanner.format,
                 message_id=self.persisted_message_id,
             )
@@ -917,7 +917,6 @@ class StreamCoordinator:
             cancel_flagged=bool(cancel_event and cancel_event.is_set()),
             last_finish_reason=getattr(self.adapter, "last_finish_reason", None),
         )
-        final_lines = policy["final_lines"]
         run.persisted_lines = policy["persisted_lines"]
 
         if policy["abort_empty_reply"]:
@@ -970,7 +969,7 @@ class StreamCoordinator:
         yield build_completion_done_event(
             full_chinese=full_chinese,
             full_japanese=full_japanese,
-            final_lines=final_lines,
+            final_lines=policy["persisted_lines"],
             reply_format=parser.line_scanner.format,
             final_emotion=final_emotion,
             affection=affection_res,
