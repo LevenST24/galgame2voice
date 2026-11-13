@@ -1,5 +1,5 @@
 """
-Empirical Adversarial Test Suite for Milestone 1: Immersion Subsystem (Auto/Skip/Log, Audio Queue, Emotions).
+Empirical Adversarial Test Suite for Milestone 1: Immersion Subsystem (Auto/Skip/Log, Audio Queue).
 Authored by Challenger 1 (Immersion & Memory Adversarial Verifier).
 
 Coverage:
@@ -7,7 +7,6 @@ Coverage:
 2. SkipController fast-forward logic under idle, mid-stream, and concurrent audio states.
 3. LogDrawerController with empty history, massive history (1000+ items), XSS payloads, unicode/emoji strings, and audio replay triggers.
 4. StreamingAudioPlayer zero DC-offset cross-fader, volume/mute boundary clamping, and async fetch invalidation.
-5. EmotionManager 6-archetype state transitions and graceful fallbacks on corrupted inputs.
 """
 
 import asyncio
@@ -18,8 +17,6 @@ from typing import List, Dict, Any
 
 from galgame2voice.services.chat_service import (
     StreamingBilingualParser,
-    classify_emotion,
-    VALID_EMOTIONS,
     EMOTION_KEYWORDS,
 )
 
@@ -234,37 +231,3 @@ class TestLogDrawerControllerAdversarial:
             escaped_ja = self.escape_html(item.get("content_japanese", ""))
             assert "<" not in escaped_zh
             assert "<" not in escaped_ja
-
-
-class TestEmotionClassifierAdversarial:
-    """Stress-tests emotion classification against edge cases, noise, and mixed dialects."""
-
-    def test_all_six_archetypes_recognized(self):
-        assert len(VALID_EMOTIONS) == 7
-        for emo in ["gentle", "shy", "happy", "tsundere", "cool", "sad", "angry"]:
-            assert emo in VALID_EMOTIONS
-
-    def test_corrupted_and_adversarial_emotion_inputs(self):
-        """Ensures classifier never throws on malformed or extreme inputs."""
-        extreme_inputs = [
-            ("", ""),
-            ("   ", "   "),
-            ("null", "None"),
-            ("\x00\x01\x02\n\t", "\r\n"),
-            ("A" * 10000, "B" * 10000),
-            ("🌸" * 500, "✨" * 500),
-            ("DROP TABLE character_affection;--", "SELECT * FROM users;"),
-            ("<script>alert(1)</script>", "<img onerror=alert(1)>"),
-        ]
-        for zh, ja in extreme_inputs:
-            emo = classify_emotion(chinese=zh, japanese=ja)
-            assert emo in VALID_EMOTIONS
-
-    def test_tsundere_and_shy_nuances(self):
-        """Checks specific keywords for complex emotional states."""
-        assert classify_emotion("笨蛋，才不是特意给你做的！", "") == "tsundere"
-        assert classify_emotion("脸红……别盯着我看啦……///", "") == "shy"
-        assert classify_emotion("今天真是太开心了，太棒了！", "") == "happy"
-        assert classify_emotion("对不起……都是我的错，好难过……", "") == "sad"
-        assert classify_emotion("……无聊，随你便。", "") == "cool"
-        assert classify_emotion("摸摸头，乖哦，辛苦了。", "") == "gentle"

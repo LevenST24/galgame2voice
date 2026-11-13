@@ -83,6 +83,22 @@ class TestDecoupledEmotionClassifier:
         assert classify_emotion("", "") == "gentle"
         assert classify_emotion("明天温度二十度左右。", "明日は20度くらいです。") == "gentle"
 
+    def test_corrupted_and_adversarial_emotion_inputs(self):
+        """Ensures classifier never throws on malformed or extreme inputs."""
+        extreme_inputs = [
+            ("", ""),
+            ("   ", "   "),
+            ("null", "None"),
+            ("\x00\x01\x02\n\t", "\r\n"),
+            ("A" * 10000, "B" * 10000),
+            ("🌸" * 500, "✨" * 500),
+            ("DROP TABLE character_affection;--", "SELECT * FROM users;"),
+            ("<script>alert(1)</script>", "<img onerror=alert(1)>"),
+        ]
+        for zh, ja in extreme_inputs:
+            emo = classify_emotion(chinese=zh, japanese=ja)
+            assert emo in VALID_EMOTIONS
+
 
 class TestDecoupledStreamingParser:
     """Tests for galgame2voice.services.streaming_parser."""
