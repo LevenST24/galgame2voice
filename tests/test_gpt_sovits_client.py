@@ -260,3 +260,43 @@ def test_probe_audio_spec_bytes_and_raw_riff_fallback(tmp_path, monkeypatch):
     assert fallback_spec.sample_rate == 16000
 
 
+@pytest.mark.asyncio
+async def test_synthesize_empty_after_cleaning_raises_value_error(mock_gpt_sovits, sample_voice_profile):
+    """Verifies real GptSovitsClient.synthesize rejects stage-direction-only text before calling /tts."""
+    client = GptSovitsClient(server=mock_gpt_sovits)
+    await client.switch_voice_profile(sample_voice_profile)
+    calls_before = len(mock_gpt_sovits.call_history)
+
+    with pytest.raises(ValueError, match="empty after cleaning"):
+        await client.synthesize("（笑）（ため息）（静寂）")
+
+    assert len(mock_gpt_sovits.call_history) == calls_before
+    assert not any(call["endpoint"] == "/tts" for call in mock_gpt_sovits.call_history)
+
+
+@pytest.mark.parametrize("cut_option", ["cut0", "cut1", "cut2", "cut3", "cut4", "cut5"])
+@pytest.mark.asyncio
+async def test_synthesize_cut_options_map_to_text_split_method(mock_gpt_sovits, sample_voice_profile, cut_option):
+    """Verifies all 6 cut_option values map to payload text_split_method on real GptSovitsClient.synthesize."""
+    client = GptSovitsClient(server=mock_gpt_sovits)
+    await client.switch_voice_profile(sample_voice_profile)
+
+    audio = await client.synthesize("テスト", options={"cut_option": cut_option})
+
+    assert audio.startswith(b"RIFF")
+    assert mock_gpt_sovits.call_history[-1]["endpoint"] == "/tts"
+    assert mock_gpt_sovits.call_history[-1]["payload"]["text_split_method"] == cut_option
+
+
+@pytest.mark.parametrize("language", ["ja", "zh", "en"])
+@pytest.mark.asyncio
+async def test_synthesize_multilingual_text_language_option(mock_gpt_sovits, sample_voice_profile, language):
+    """Verifies text_language option (ja/zh/en) maps to payload text_lang on real GptSovitsClient.synthesize."""
+    client = GptSovitsClient(server=mock_gpt_sovits)
+    await client.switch_voice_profile(sample_voice_profile)
+
+    audio = await client.synthesize("Hello/你好/こんにちは", options={"text_language": language})
+
+    assert audio.startswith(b"RIFF")
+    assert mock_gpt_sovits.call_history[-1]["endpoint"] == "/tts"
+    assert mock_gpt_sovits.call_history[-1]["payload"]["text_lang"] == language
