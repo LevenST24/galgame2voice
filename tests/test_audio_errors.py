@@ -124,3 +124,18 @@ async def test_corrupt_payload_is_still_a_plain_value_error(monkeypatch):
 
     with pytest.raises(ValueError):
         await audio_converter.convert_ogg_to_wav(b"")
+
+
+async def test_missing_ffmpeg_on_wav_to_ogg_raises_typed_dependency_error(monkeypatch):
+    """convert_wav_to_ogg must raise FFmpegUnavailable, not an empty successful payload."""
+    monkeypatch.setattr(audio_converter, "find_ffmpeg", lambda *args, **kwargs: None)
+
+    sample_wav = (
+        b"RIFF\x24\x08\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00"
+        b"\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x08\x00\x00"
+    )
+    with pytest.raises(FFmpegUnavailable) as excinfo:
+        await audio_converter.convert_wav_to_ogg(sample_wav)
+
+    assert excinfo.value.code == "FFMPEG_UNAVAILABLE"
+    assert "ffmpeg executable not found" in str(excinfo.value)
