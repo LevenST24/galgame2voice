@@ -8,6 +8,7 @@ Operates against the live restarted portable HTTP server without adding new depe
 from __future__ import annotations
 
 import base64
+from collections.abc import Callable, Sequence
 import json
 import os
 from pathlib import Path
@@ -174,6 +175,70 @@ def stop_browser_process(proc: subprocess.Popen, timeout: float = 5.0) -> None:
             proc.wait(timeout=2.0)
         except (OSError, subprocess.TimeoutExpired):
             pass
+
+
+def launch_browser_with_devtools(
+    browser_exe: Path | str,
+    make_profile_dir: Callable[[], Path],
+    extra_args: Sequence[str],
+    *,
+    attempt_timeout: float = 15.0,
+    attempts: int = 2,
+) -> tuple[subprocess.Popen[Any], int, Path]:
+    """Starts browser with a fresh profile per attempt and polls DevToolsActivePort.
+
+    If an attempt times out while the browser process is still running, the stalled
+    process is terminated via stop_browser_process() and a retry is performed with
+    a fresh profile directory. If the process exits before exposing the port, no
+    retry is attempted and RuntimeError is raised immediately with the exit code.
+    """
+    attempt_reports: list[str] = []
+
+    for attempt in range(1, attempts + 1):
+        profile_dir = make_profile_dir()
+        cmd = [
+            str(browser_exe),
+            *extra_args,
+            f"--user-data-dir={profile_dir}",
+            "about:blank",
+        ]
+        start = time.monotonic()
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        port_file = profile_dir / "DevToolsActivePort"
+        cdp_port: int | None = None
+        deadline = start + attempt_timeout
+
+        while time.monotonic() < deadline and proc.poll() is None:
+            if port_file.is_file():
+                try:
+                    cdp_port = int(port_file.read_text(encoding="utf-8").splitlines()[0])
+                    break
+                except (OSError, ValueError, IndexError):
+                    pass
+            time.sleep(0.05)
+
+        if cdp_port is not None:
+            return proc, cdp_port, profile_dir
+
+        elapsed = time.monotonic() - start
+        exit_code = proc.poll()
+        if exit_code is not None:
+            attempt_reports.append(f"attempt {attempt} waited {elapsed:.2f}s (exit code: {exit_code})")
+            raise RuntimeError(
+                f"Browser exited before exposing DevToolsActivePort: {'; '.join(attempt_reports)}"
+            )
+
+        attempt_reports.append(f"attempt {attempt} timed out after {elapsed:.2f}s (exit code: None)")
+        stop_browser_process(proc)
+
+    raise RuntimeError(
+        f"Browser did not expose DevToolsActivePort after {attempts} attempts: {'; '.join(attempt_reports)}"
+    )
 
 
 def build_acceptance_script(target_session_id: str, prompt_text: str, repair_audio_url: str) -> str:
@@ -453,11 +518,16 @@ def run_browser_ui_acceptance(
         raise RuntimeError("No supported Chromium or Microsoft Edge browser found on host for --with-browser-ui.")
 
     scratch.mkdir(parents=True, exist_ok=True)
-    profile_dir = scratch / "ui_profile"
-    profile_dir.mkdir(parents=True, exist_ok=True)
+    created_profiles: list[Path] = []
 
-    cmd = [
-        str(browser_exe),
+    def make_profile_dir() -> Path:
+        name = "ui_profile" if not created_profiles else f"ui_profile_{len(created_profiles) + 1}"
+        profile = scratch / name
+        profile.mkdir(parents=True, exist_ok=True)
+        created_profiles.append(profile)
+        return profile
+
+    extra_args = [
         "--headless",
         "--no-sandbox",
         "--disable-gpu",
@@ -468,32 +538,18 @@ def run_browser_ui_acceptance(
         "--disable-extensions",
         "--remote-debugging-port=0",
         "--remote-allow-origins=*",
-        f"--user-data-dir={profile_dir}",
-        "about:blank",
     ]
 
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
+    proc: subprocess.Popen[Any] | None = None
     client = None
     try:
-        deadline = time.monotonic() + min(15.0, timeout)
-        port_file = profile_dir / "DevToolsActivePort"
-        cdp_port = None
-        while time.monotonic() < deadline and proc.poll() is None:
-            if port_file.is_file():
-                try:
-                    cdp_port = int(port_file.read_text(encoding="utf-8").splitlines()[0])
-                    break
-                except (OSError, ValueError, IndexError):
-                    pass
-            time.sleep(0.05)
-
-        if cdp_port is None:
-            raise RuntimeError(f"Browser did not expose DevToolsActivePort within deadline (PID {proc.pid})")
+        proc, cdp_port, _profile_dir = launch_browser_with_devtools(
+            browser_exe,
+            make_profile_dir,
+            extra_args,
+            attempt_timeout=min(15.0, timeout),
+            attempts=2,
+        )
 
         with urllib.request.urlopen(f"http://127.0.0.1:{cdp_port}/json/list", timeout=5) as res:
             targets = json.load(res)
@@ -536,6 +592,8 @@ def run_browser_ui_acceptance(
                 client.close()
             except Exception:
                 pass
-        stop_browser_process(proc, timeout=5.0)
+        if proc is not None:
+            stop_browser_process(proc, timeout=5.0)
         # Attempt non-blocking profile cleanup without recursive deletion of scratch root
-        shutil.rmtree(profile_dir, ignore_errors=True)
+        for profile in created_profiles:
+            shutil.rmtree(profile, ignore_errors=True)
