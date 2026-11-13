@@ -20,7 +20,8 @@ from galgame2voice.services.voice_manager import (
     set_voice_manager,
 )
 from galgame2voice.services.tts_service import TtsService
-from galgame2voice.database.session import init_db
+from galgame2voice.database.session import get_db, init_db
+from galgame2voice.services.character_voice_catalog import get_character_voice_catalog
 from galgame2voice.main import create_app
 
 
@@ -274,7 +275,9 @@ class TestVoiceManagerPersistenceM3:
         assert mock_gpt_sovits.current_gpt_weights == sample_voice_profile["gpt_weights_path"]
 
         # Verify active profile in DB settings
-        active_prof = await manager.get_active_profile()
+        active_prof = await get_character_voice_catalog().get_active_profile(
+            db_factory=lambda: get_db(manager.db_path),
+        )
         assert active_prof is not None
         assert active_prof.id == profile_id
 

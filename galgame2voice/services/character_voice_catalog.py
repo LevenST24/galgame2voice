@@ -25,11 +25,6 @@ from galgame2voice.database.models import (
     VoiceProfileUpdate,
 )
 from galgame2voice.database.session import _run_uncancellable, get_db, immediate_transaction
-from galgame2voice.routers.common import (
-    persist_active_voice_profile_or_raise,
-    switch_voice_profile_or_raise,
-    validate_positive_profile_id,
-)
 from galgame2voice.services.character_identity import (
     AmbiguousProfileName,
     DuplicateCharacterId,
@@ -283,6 +278,34 @@ class CharacterVoiceCatalog:
             "manifest_path": str(manifest_path) if manifest_path is not None else None,
         }
 
+    async def list_profiles(
+        self,
+        *,
+        db_factory: Callable[[], Any] | None = None,
+    ) -> list[VoiceProfileResponse]:
+        open_db = self._resolve_db_factory(db_factory)
+        async with open_db() as conn:
+            return await crud.list_voice_profiles(conn)
+
+    async def get_profile(
+        self,
+        profile_id: int,
+        *,
+        db_factory: Callable[[], Any] | None = None,
+    ) -> VoiceProfileResponse | None:
+        open_db = self._resolve_db_factory(db_factory)
+        async with open_db() as conn:
+            return await crud.get_voice_profile(conn, profile_id)
+
+    async def get_active_profile(
+        self,
+        *,
+        db_factory: Callable[[], Any] | None = None,
+    ) -> VoiceProfileResponse | None:
+        open_db = self._resolve_db_factory(db_factory)
+        async with open_db() as conn:
+            return await crud.get_active_voice_profile(conn)
+
     async def create_profile(
         self,
         profile: VoiceProfileCreate,
@@ -472,6 +495,12 @@ class CharacterVoiceCatalog:
         voice_manager: Any | None = None,
         db_factory: Callable[[], Any] | None = None,
     ) -> VoiceProfileResponse:
+        from galgame2voice.routers.common import (
+            persist_active_voice_profile_or_raise,
+            switch_voice_profile_or_raise,
+            validate_positive_profile_id,
+        )
+
         clean_name = profile_name.strip() if profile_name else None
 
         if profile_id is None and not clean_name:
