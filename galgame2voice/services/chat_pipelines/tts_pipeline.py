@@ -11,6 +11,7 @@ import logging
 import re
 from typing import Any
 
+from galgame2voice.services.tts_options import resolve_default_text_split_method
 from galgame2voice.services.tts_service import TtsService
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.services.gpt_sovits_client import SWITCH_TIMEOUT, TTS_TIMEOUT, clean_japanese_parentheses
@@ -73,9 +74,7 @@ class TtsStreamPipeline:
             # The turn's profile may predate an edit. The TTS resolver supplies
             # reference, transcript, languages and weights from one snapshot.
 
-        user_split = opts.get("text_split_method") or opts.get("cut_option") or opts.get("how_to_cut")
-        if not user_split:
-            opts["text_split_method"] = "cut0" if len(sentence.strip()) <= 80 else "cut2"
+        opts["text_split_method"] = resolve_default_text_split_method(sentence, opts)
 
         opts["_generation_id"] = self.generation_id
         opts["_priority"] = 0 if chunk_index == 0 else 1

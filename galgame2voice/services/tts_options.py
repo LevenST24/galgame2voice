@@ -17,6 +17,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from galgame2voice.utils.japanese_phonetics import normalize_japanese_for_tts
 from galgame2voice.utils.path_guard import resolve_weight_file_path
 from galgame2voice.utils.prosody import (
     clamp_dynamic_batch_size,
@@ -191,6 +192,29 @@ def validate_user_tts_options(options: dict[str, Any] | None = None) -> dict[str
     return options
 
 
+def resolve_default_text_split_method(
+    text: str | None,
+    options: dict[str, Any] | None = None,
+    *,
+    default: str = DEFAULT_SPLIT_METHOD,
+) -> str:
+    """
+    Single source of truth for resolving ``text_split_method`` across pipeline, service,
+    option resolution, and cache key generation.
+    """
+    if options:
+        for key in ("text_split_method", "cut_option", "how_to_cut"):
+            val = options.get(key)
+            if isinstance(val, str):
+                cleaned = val.strip().lower()[:64]
+                if cleaned:
+                    return cleaned
+    if text is not None:
+        clean = normalize_japanese_for_tts(text).strip()
+        return "cut0" if len(clean) <= 80 else "cut2"
+    return default
+
+
 def resolve_tts_options(options: dict[str, Any] | None = None) -> dict[str, Any]:
     """
     Merges preset defaults with user-supplied TTS inference options.
@@ -220,7 +244,11 @@ def resolve_tts_options(options: dict[str, Any] | None = None) -> dict[str, Any]
 
     text_lang_val = str(options.get("text_lang", options.get("text_language", DEFAULT_LANGUAGE)))[:32]
     prompt_lang_val = str(options.get("prompt_lang", options.get("prompt_language", options.get("refer_language", DEFAULT_LANGUAGE))))[:32]
-    split_val = str(options.get("text_split_method", options.get("how_to_cut", options.get("cut_option", base_params.get("text_split_method", DEFAULT_SPLIT_METHOD)))))[:64]
+    split_val = resolve_default_text_split_method(
+        None,
+        options,
+        default=base_params.get("text_split_method", DEFAULT_SPLIT_METHOD),
+    )
 
     temp_val = _clamped("temperature", options.get("temperature", options.get("temp", base_params.get("temperature", 1.0))), base_params.get("temperature", 1.0))
     if is_adaptive:
@@ -324,6 +352,7 @@ __all__ = [
     "TTS_PRESETS",
     "_TTS_NUMERIC_RANGES",
     "_TTS_STRING_MAXLEN",
+    "resolve_default_text_split_method",
     "validate_user_tts_options",
     "resolve_tts_options",
     "VoiceProfileWeightSpec",
