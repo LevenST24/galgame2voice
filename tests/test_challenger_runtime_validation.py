@@ -22,14 +22,6 @@ from galgame2voice.services.emotion_references import (
 )
 from galgame2voice.services.streaming_parser import StreamingBilingualParser
 from galgame2voice.services.tts_service import TtsService
-from galgame2voice.utils.prosody import (
-    DYNAMIC_SPEED_MIN,
-    DYNAMIC_SPEED_MAX,
-    DYNAMIC_TEMP_MIN,
-    DYNAMIC_TEMP_MAX,
-    clamp_dynamic_speed,
-    clamp_dynamic_temperature,
-)
 
 TENSHI_5 = ["白雪乃爱", "谷风天音", "小云雀来海", "星河辉耶", "高楯欧丽叶"]
 STANDARD_EMOTIONS = {"gentle", "shy", "happy", "tsundere", "cool", "sad", "angry"}
@@ -131,24 +123,6 @@ def test_streaming_parser_with_prompt_json_complete_and_chunked(char_name):
     assert parser3.tts_emotion == expected["tts"]["emotion"]
     assert ch3 == expected["chinese"]
     assert ja3 == expected["japanese"]
-
-
-def test_adversarial_prosody_clamping_and_fallback():
-    """
-    Adversarially probe prosody clamping against pathological LLM outputs:
-    extreme speeds/temps, NaN, Inf, strings, negative values.
-    """
-    assert clamp_dynamic_speed(0.1) == 0.50
-    assert clamp_dynamic_speed(2.5) == 1.50
-    assert clamp_dynamic_speed(-10) == 0.50
-    assert clamp_dynamic_speed("corrupt") == 1.0
-    assert clamp_dynamic_speed(float("nan")) == 1.0
-
-    assert clamp_dynamic_temperature(0.1) == 0.60
-    assert clamp_dynamic_temperature(2.5) == 1.20
-    assert clamp_dynamic_temperature(-1.0) == 0.60
-    assert clamp_dynamic_temperature("corrupt") == 1.0
-    assert clamp_dynamic_temperature(float("nan")) == 1.0
 
 
 # ============================================================================

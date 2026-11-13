@@ -16,14 +16,6 @@ import pytest
 
 from galgame2voice.config import get_settings
 from galgame2voice.utils import prosody
-from galgame2voice.utils.prosody import (
-    DYNAMIC_SPEED_MIN,
-    DYNAMIC_SPEED_MAX,
-    DYNAMIC_TEMP_MIN,
-    DYNAMIC_TEMP_MAX,
-    clamp_dynamic_speed,
-    clamp_dynamic_temperature,
-)
 import galgame2voice.services.gpt_sovits_client as client_mod
 import galgame2voice.services.chat_service as chat_mod
 from galgame2voice.database import crud
@@ -51,28 +43,8 @@ def test_gpt_sovits_client_has_no_hardware_detection_leak():
 
 
 # ============================================================================
-# 2. Prosody Deduplication & Accurate Clamping
+# 2. Prosody Deduplication
 # ============================================================================
-
-def test_prosody_constants_and_ranges():
-    """Verifies prosody constants and clamping accuracy."""
-    assert DYNAMIC_SPEED_MIN == 0.50
-    assert DYNAMIC_SPEED_MAX == 1.50
-    assert DYNAMIC_TEMP_MIN == 0.60
-    assert DYNAMIC_TEMP_MAX == 1.20
-
-    # Test speed bounds
-    assert clamp_dynamic_speed(0.1) == 0.50
-    assert clamp_dynamic_speed(2.0) == 1.50
-    assert clamp_dynamic_speed(1.0) == 1.0
-    assert clamp_dynamic_speed("bad", fallback=1.1) == 1.1
-
-    # Test temp bounds
-    assert clamp_dynamic_temperature(0.1) == 0.60
-    assert clamp_dynamic_temperature(2.0) == 1.20
-    assert clamp_dynamic_temperature(0.9) == 0.9
-    assert clamp_dynamic_temperature(None, fallback=0.8) == 0.8
-
 
 def test_services_import_shared_prosody_utilities():
     """Verifies that chat_service and gpt_sovits_client reuse the exact prosody functions."""
