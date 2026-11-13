@@ -195,7 +195,7 @@ async def test_scheduler_and_single_flight_loop_rebind():
 
 @pytest.mark.asyncio
 async def test_audio_static_files_caching_headers(tmp_path: Path):
-    """Verify that cached files get immutable headers while ephemeral files get max-age=3600."""
+    """AudioStaticFiles only adds Accept-Ranges; Cache-Control belongs to the middleware."""
     audio_dir = tmp_path / "audio"
     cache_dir = audio_dir / "cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -217,7 +217,7 @@ async def test_audio_static_files_caching_headers(tmp_path: Path):
     }
     resp_cache = await static_handler.get_response("cache/abc12345.wav", scope_cache)
     assert resp_cache.status_code == 200
-    assert "public, max-age=31536000, immutable" == resp_cache.headers.get("cache-control")
+    assert resp_cache.headers.get("cache-control") is None
     assert resp_cache.headers.get("accept-ranges") == "bytes"
 
     # Test regular ephemeral audio URL
@@ -229,5 +229,5 @@ async def test_audio_static_files_caching_headers(tmp_path: Path):
     }
     resp_eph = await static_handler.get_response("voice_001.wav", scope_eph)
     assert resp_eph.status_code == 200
-    assert "public, max-age=3600" == resp_eph.headers.get("cache-control")
+    assert resp_eph.headers.get("cache-control") is None
     assert resp_eph.headers.get("accept-ranges") == "bytes"
