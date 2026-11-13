@@ -273,12 +273,17 @@ test('home preview switches real session/stage without stealing focus for the hi
   assert.equal(h.app.actions.getActiveId(), 's_1'); assert.equal(h.app.actions.listSessions().find(s => s.id === 's_1').excerpt.zh, '假会话台词');
 });
 
-for (const [name, speed] of [['高楯欧丽叶', .88], ['常陆茉子', .90], ['白雪乃爱', 1.05], ['假角色', 1]]) {
-  test(`home newWith reuses newChat and character default speed: ${name}`, async t => {
+for (const [label, profile, speed] of [
+  ['高楯欧丽叶 without manifest speed', { id: 7, name: '高楯欧丽叶' }, 1],
+  ['manifest speed on any name', { id: 7, name: '假角色', default_tts_speed: 1.05 }, 1.05],
+  ['missing speed field', { id: 7, name: '假角色' }, 1],
+  ['null speed field', { id: 7, name: '假角色', default_tts_speed: null }, 1],
+]) {
+  test(`home newWith reuses newChat and character default speed: ${label}`, async t => {
     storedState.sessions = [{ id: 'old_home', settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: 9, ttsSpeed: 1.8 }, messages: [] }];
     storedState.activeId = 'old_home';
     const h = setup(t, { callbacks: { state: storedState, getActive: storedActive, getSession: storedSession,
-      getVoiceProfiles: () => [{ id: 7, name }] } });
+      getVoiceProfiles: () => [profile] } });
     const old = structuredClone(storedActive().settings);
     const created = h.app.actions.startNewWith({ voiceProfileId: 7, advBackground: 'fake/sea', advBgTime: 'evening' });
     assert.equal(storedActive(), created); assert.equal(created.settings.voiceProfileId, 7);

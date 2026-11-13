@@ -23,7 +23,11 @@ from galgame2voice.database.models import (
     VoiceProfileUpdate,
 )
 from galgame2voice.routers.common import validate_positive_profile_id
-from galgame2voice.services.character_manager import get_character_manager, get_character_work
+from galgame2voice.services.character_manager import (
+    get_character_default_tts_speed,
+    get_character_manager,
+    get_character_work,
+)
 from galgame2voice.services.character_voice_catalog import (
     VoiceProfileBusyError,
     get_character_voice_catalog,
@@ -86,7 +90,11 @@ async def list_voice_profiles() -> dict[str, Any]:
         active = await crud.get_active_voice_profile(conn)
         return {
             "profiles": [
-                {**p.model_dump(), "work": get_character_work(p.name)}
+                {
+                    **p.model_dump(),
+                    "work": get_character_work(p.name),
+                    "default_tts_speed": get_character_default_tts_speed(p.name),
+                }
                 for p in profiles
             ],
             "active_profile_id": active.id if active else (profiles[0].id if profiles else None),

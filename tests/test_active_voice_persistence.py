@@ -15,6 +15,7 @@ from galgame2voice.database.session import get_db, init_db
 from galgame2voice.main import create_app
 from galgame2voice.routers import characters, voice
 from galgame2voice.services import voice_manager
+from galgame2voice.services.character_voice_catalog import get_character_voice_catalog
 from galgame2voice.services.gpt_sovits_client import GptSovitsClient
 
 
@@ -273,7 +274,11 @@ async def test_manager_delete_profile_clears_active_state(stack, monkeypatch):
     monkeypatch.setattr(stack.client, "synthesize", AsyncMock(return_value=b"audio"))
 
     # 1. Deleting inactive stack.old.id must preserve active stack.new.id
-    assert await stack.manager.delete_profile(stack.old.id) is True
+    assert await get_character_voice_catalog().delete_profile(
+        stack.old.id,
+        voice_manager=stack.manager,
+        db_factory=lambda: get_db(stack.manager.db_path),
+    ) is True
     assert stack.manager.active_profile is not None
     assert stack.manager.active_profile.id == stack.new.id
     async with get_db(stack.path) as connection:
@@ -281,7 +286,11 @@ async def test_manager_delete_profile_clears_active_state(stack, monkeypatch):
         assert raw_settings.active_voice_profile_id == stack.new.id
 
     # 2. Deleting active stack.new.id must clear active profile in manager and settings
-    deleted = await stack.manager.delete_profile(stack.new.id)
+    deleted = await get_character_voice_catalog().delete_profile(
+        stack.new.id,
+        voice_manager=stack.manager,
+        db_factory=lambda: get_db(stack.manager.db_path),
+    )
     assert deleted is True
 
     async with get_db(stack.path) as connection:

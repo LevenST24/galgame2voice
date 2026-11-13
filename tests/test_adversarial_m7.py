@@ -53,12 +53,13 @@ from galgame2voice.database.models import (
     VoiceProfileCreate,
     VoiceProfileUpdate,
 )
-from galgame2voice.database.session import init_db
+from galgame2voice.database.session import get_db, init_db
 from galgame2voice.main import create_app
 from galgame2voice.routers.chat import sse_event_formatter
 from galgame2voice.services.chat_service import ChatService, StreamingBilingualParser
 from galgame2voice.services.session_manager import SessionManager, SessionTurn
 from galgame2voice.services.tts_service import TtsService
+from galgame2voice.services.character_voice_catalog import get_character_voice_catalog
 from galgame2voice.services.voice_manager import GptSovitsClient, VoiceManager
 from galgame2voice.services.gpt_sovits_client import clean_japanese_parentheses
 from galgame2voice.utils.logger import MaskingFilter
@@ -214,17 +215,20 @@ class TestFullLifecycleCrossModuleE2E:
             await crud.set_active_provider(conn, "custom_cloud")
 
             # Step 3: Create and switch to Natsume voice profile
-            await voice_manager.create_profile(VoiceProfileCreate(
-                name="Natsume",
-                gpt_weights_path="weights/natsume.ckpt",
-                sovits_weights_path="weights/natsume.pth",
-                refer_audio_path="ref/natsume.wav",
-                refer_text="おはようございます、先輩。",
-                refer_language="ja",
-                prompt_language="ja",
-                text_language="ja",
-                is_default=0,
-            ))
+            await get_character_voice_catalog().create_profile(
+                VoiceProfileCreate(
+                    name="Natsume",
+                    gpt_weights_path="weights/natsume.ckpt",
+                    sovits_weights_path="weights/natsume.pth",
+                    refer_audio_path="ref/natsume.wav",
+                    refer_text="おはようございます、先輩。",
+                    refer_language="ja",
+                    prompt_language="ja",
+                    text_language="ja",
+                    is_default=0,
+                ),
+                db_factory=lambda: get_db(voice_manager.db_path),
+            )
             switch_ok = await voice_manager.switch_profile("Natsume")
             assert switch_ok is True
 
@@ -282,17 +286,20 @@ class TestFullLifecycleCrossModuleE2E:
         chat_service = ChatService(tts_service=tts_service, db_path=m7_db_path)
 
         # Create Profile B
-        await voice_manager.create_profile(VoiceProfileCreate(
-            name="Ayase",
-            gpt_weights_path="weights/ayase.ckpt",
-            sovits_weights_path="weights/ayase.pth",
-            refer_audio_path="ref/ayase.wav",
-            refer_text="あやせです。",
-            refer_language="ja",
-            prompt_language="ja",
-            text_language="ja",
-            is_default=0,
-        ))
+        await get_character_voice_catalog().create_profile(
+            VoiceProfileCreate(
+                name="Ayase",
+                gpt_weights_path="weights/ayase.ckpt",
+                sovits_weights_path="weights/ayase.pth",
+                refer_audio_path="ref/ayase.wav",
+                refer_text="あやせです。",
+                refer_language="ja",
+                prompt_language="ja",
+                text_language="ja",
+                is_default=0,
+            ),
+            db_factory=lambda: get_db(voice_manager.db_path),
+        )
 
         mock_adapter = CustomMockLLMAdapter(provider_config={}, custom_tokens=[
             '{"chinese": "我是第一位角色。", "japanese": "私は一人目です。"}'
@@ -909,17 +916,20 @@ class TestOriginalRequestAcceptanceCriteria:
         """
         voice_manager = VoiceManager(gpt_sovits_client_or_server=m7_mock_gpt, db_path=m7_db_path)
 
-        await voice_manager.create_profile(VoiceProfileCreate(
-            name="RollbackTestProfile",
-            gpt_weights_path="weights/rb.ckpt",
-            sovits_weights_path="weights/rb.pth",
-            refer_audio_path="ref/rb.wav",
-            refer_text="ロールバックテスト",
-            refer_language="ja",
-            prompt_language="ja",
-            text_language="ja",
-            is_default=0,
-        ))
+        await get_character_voice_catalog().create_profile(
+            VoiceProfileCreate(
+                name="RollbackTestProfile",
+                gpt_weights_path="weights/rb.ckpt",
+                sovits_weights_path="weights/rb.pth",
+                refer_audio_path="ref/rb.wav",
+                refer_text="ロールバックテスト",
+                refer_language="ja",
+                prompt_language="ja",
+                text_language="ja",
+                is_default=0,
+            ),
+            db_factory=lambda: get_db(voice_manager.db_path),
+        )
 
         # Test successful switch
         res_ok = await voice_manager.switch_profile("RollbackTestProfile")

@@ -274,8 +274,6 @@ async def test_chat_service_stream_chat_includes_telemetry(tmp_path):
     svc._resolve_adapter_triple = AsyncMock(return_value=(mock_llm_adapter, "mock-model", "mock-prov"))
     svc._extract_memory_safe = AsyncMock(return_value=None)
     svc.voice_manager = MagicMock()
-    svc.voice_manager.get_active_profile = AsyncMock(return_value=None)
-    svc.voice_manager.get_profile = AsyncMock(return_value=None)
     svc.memory_service = MagicMock()
     svc.memory_service.get_relevant_memories = AsyncMock(return_value=[])
     svc.affection_service = MagicMock()

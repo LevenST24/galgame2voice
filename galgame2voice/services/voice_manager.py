@@ -15,8 +15,6 @@ from galgame2voice.config import get_settings
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db
 from galgame2voice.database.models import (
-    VoiceProfileCreate,
-    VoiceProfileUpdate,
     VoiceProfileResponse,
     VoiceProfileInDB,
 )
@@ -287,11 +285,11 @@ class VoiceManager:
         self._register_warmup_task(profile_id, current_task)
         try:
             if profile_id is not None and self.active_profile is None:
-                if await self.get_profile(profile_id) is None:
+                if await self._catalog_get_profile(profile_id) is None:
                     logger.debug("Warm-up skipped: target profile %d was deleted.", profile_id)
                     return False
 
-            profile = self.active_profile or await self.get_active_profile()
+            profile = self.active_profile or await self._catalog_get_active_profile()
             if not profile:
                 logger.debug("Warm-up skipped: no active voice profile found.")
                 return False
@@ -317,7 +315,7 @@ class VoiceManager:
                     if (
                         initial_target_id is not None
                         and self.active_profile is None
-                        and await self.get_profile(initial_target_id) is None
+                        and await self._catalog_get_profile(initial_target_id) is None
                     ):
                         logger.debug(
                             "Warm-up skipped under lock: target profile %d was deleted.",
@@ -325,14 +323,14 @@ class VoiceManager:
                         )
                         return False
 
-                    profile = self.active_profile or await self.get_active_profile()
+                    profile = self.active_profile or await self._catalog_get_active_profile()
                     if not profile:
                         return False
 
                     pid = _stored_profile_id(profile)
                     if pid is not None:
                         self._register_warmup_task(pid, current_task)
-                        verified = await self.get_profile(pid)
+                        verified = await self._catalog_get_profile(pid)
                         if verified is None:
                             if self._resolve_profile_field(self.active_profile, "id") == pid:
                                 self.active_profile = None
@@ -349,7 +347,7 @@ class VoiceManager:
                         switched = await self.client.switch_voice_profile(profile, force=False)
                         if switched and pid is not None:
                             async def verify_after_load() -> bool:
-                                if await self.get_profile(pid) is None:
+                                if await self._catalog_get_profile(pid) is None:
                                     await self._restore_loaded_profile(previous, pid)
                                     return False
                                 return True
@@ -380,7 +378,7 @@ class VoiceManager:
                     await asyncio.wait_for(
                         self.client.synthesize(WARMUP_PROBE_TEXT, options=opts), timeout=15.0
                     )
-                    if pid is not None and await self.get_profile(pid) is None:
+                    if pid is not None and await self._catalog_get_profile(pid) is None:
                         await await_protected(self._restore_loaded_profile(previous, pid))
                         return False
                 logger.info(
@@ -478,7 +476,7 @@ class VoiceManager:
                 await asyncio.to_thread(release_system_memory)
                 # Once the engine confirmed a switch, cancellation must not leave
                 # its saved selection behind merely because cleanup is still slow.
-                if success and tracked_id is not None and await self.get_profile(tracked_id) is None:
+                if success and tracked_id is not None and await self._catalog_get_profile(tracked_id) is None:
                     await self._restore_loaded_profile(previous, tracked_id)
                     raise VoiceProfileRemoved(tracked_id)
                 if success and persist:
@@ -516,7 +514,7 @@ class VoiceManager:
         previous_id = self._resolve_profile_field(previous, "id")
         if previous is not None and previous_id != removed_id:
             prev_stored_id = _stored_profile_id(previous)
-            if prev_stored_id is None or await self.get_profile(prev_stored_id) is not None:
+            if prev_stored_id is None or await self._catalog_get_profile(prev_stored_id) is not None:
                 if await self.client.switch_voice_profile(previous, force=True):
                     return
         if self._resolve_profile_field(self.client.active_profile, "id") == removed_id:
@@ -550,53 +548,20 @@ class VoiceManager:
             async for chunk in stream:
                 yield chunk
 
-    # ========================================================================
-    # Voice Profile Database CRUD Operations
-    # ========================================================================
-
-    async def list_profiles(self) -> list[VoiceProfileResponse]:
-        """Lists all voice profiles in database."""
-        async with get_db(self.db_path) as conn:
-            return await crud.list_voice_profiles(conn)
-
-    async def get_profile(self, profile_id: int) -> VoiceProfileResponse | None:
-        """Gets voice profile by ID."""
-        async with get_db(self.db_path) as conn:
-            return await crud.get_voice_profile(conn, profile_id)
-
-    async def get_active_profile(self) -> VoiceProfileResponse | None:
-        """Gets currently configured active voice profile from database."""
-        async with get_db(self.db_path) as conn:
-            return await crud.get_active_voice_profile(conn)
-
-    async def create_profile(self, profile: VoiceProfileCreate) -> VoiceProfileResponse:
-        """Creates a new voice profile in database via CharacterVoiceCatalog."""
+    async def _catalog_get_profile(self, profile_id: int) -> VoiceProfileResponse | None:
+        """Read one profile from this manager's database via the catalog."""
         from galgame2voice.services.character_voice_catalog import get_character_voice_catalog
 
-        return await get_character_voice_catalog().create_profile(
-            profile,
+        return await get_character_voice_catalog().get_profile(
+            profile_id,
             db_factory=lambda: get_db(self.db_path),
         )
 
-    async def update_profile(
-        self, profile_id: int, updates: VoiceProfileUpdate
-    ) -> VoiceProfileResponse | None:
-        """Updates an existing voice profile in database via CharacterVoiceCatalog."""
+    async def _catalog_get_active_profile(self) -> VoiceProfileResponse | None:
+        """Read the active profile from this manager's database via the catalog."""
         from galgame2voice.services.character_voice_catalog import get_character_voice_catalog
 
-        return await get_character_voice_catalog().update_profile(
-            profile_id,
-            updates,
-            db_factory=lambda: get_db(self.db_path),
-        )
-
-    async def delete_profile(self, profile_id: int) -> bool:
-        """Cancels warm-up and deletes a voice profile via CharacterVoiceCatalog."""
-        from galgame2voice.services.character_voice_catalog import get_character_voice_catalog
-
-        return await get_character_voice_catalog().delete_profile(
-            profile_id,
-            voice_manager=self,
+        return await get_character_voice_catalog().get_active_profile(
             db_factory=lambda: get_db(self.db_path),
         )
 
