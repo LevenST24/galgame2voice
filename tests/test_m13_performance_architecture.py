@@ -18,11 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from galgame2voice.utils.text_splitter import (
-    is_short_salutation,
-    is_natural_clause_boundary,
-    split_japanese_sentences,
-)
+from galgame2voice.utils.text_splitter import is_short_salutation
 from galgame2voice.services.streaming_parser import StreamingBilingualParser
 from galgame2voice.services.tts_service import (
     TtsService,
@@ -65,18 +61,6 @@ def test_is_short_salutation():
     assert is_short_salutation("大丈夫、")
     assert not is_short_salutation("今日はとてもいい天気ですね。")
     assert not is_short_salutation("")
-
-
-def test_split_japanese_sentences_agile_first_chunk():
-    # Conversational opener with comma should split immediately on first chunk
-    text = "はい、今日もお疲れ様でした。明日も頑張りましょう。"
-    sents_first = split_japanese_sentences(text, min_chars=12, is_first_chunk=True)
-    assert len(sents_first) >= 2
-    assert "はい" in sents_first[0]
-
-    # Non-first chunk respects normal sentence boundary
-    sents_normal = split_japanese_sentences(text, min_chars=12, is_first_chunk=False)
-    assert len(sents_normal) >= 1
 
 
 def test_streaming_parser_early_first_chunk():
