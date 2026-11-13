@@ -2,14 +2,13 @@
 Adversarial Challenge Test Suite 2 for Galgame2Voice Optimization.
 
 Focus areas:
-1. LLM Streaming & Non-Streaming Retry Edge Cases (HTTP 429/503 resilience, 401/403 fail-fast).
+1. LLM Streaming Retry Edge Cases (HTTP 429/503 resilience, 401/403 fail-fast).
 2. Two-Tier TTS Cache Concurrency (<1ms hits without GPU lock contention) & 0-byte Corruption Auto-Recovery.
 3. Telegram Bot Parameter & Security Gating (Unconfigured provider block, /nickname SQLite persistence & affection context, Zero-leak logger masking).
 """
 
 import asyncio
 import io
-import json
 import logging
 import os
 import time
@@ -91,7 +90,7 @@ class MockTransportWithFailures(httpx.AsyncBaseTransport):
 
 @pytest.mark.asyncio
 class TestLlmRetryEdgeCases:
-    """Rigorous challenge tests for LLM streaming and non-streaming retry resilience."""
+    """Rigorous challenge tests for LLM streaming retry resilience."""
 
     async def test_openai_stream_chat_recovers_from_429_before_yielding(self):
         """Simulates consecutive HTTP 429 rate limits, verifies backoff recovery before yielding SSE tokens."""
@@ -171,41 +170,6 @@ class TestLlmRetryEdgeCases:
 
             # Crucial check: only 1 attempt made, failed immediately!
             assert transport.attempt_count == 1
-
-    async def test_openai_non_streaming_chat_recovers_from_429_and_fails_fast_on_401(self):
-        """Verifies non-streaming chat completion recovers from 429 and fails fast on 401."""
-        json_body = json.dumps({
-            "choices": [{"message": {"role": "assistant", "content": "Recovery Non-Stream"}}],
-            "usage": {"prompt_tokens": 5, "completion_tokens": 10, "total_tokens": 15},
-        })
-        # 1. Test 429 recovery
-        transport_429 = MockTransportWithFailures([429], success_content=json_body, is_stream=False, retry_after="0.01")
-        adapter = OpenAICompatibleLLMAdapter(
-            api_key="sk-test-valid-key-12345",
-            base_url="https://api.openai.com/v1",
-            max_retries=2,
-            base_delay=0.01,
-        )
-
-        def _client_factory_429(*args, **kwargs):
-            clean_kwargs = {k: v for k, v in kwargs.items() if k != "transport"}
-            return _ORIG_HTTPX_ASYNC_CLIENT(transport=transport_429, **clean_kwargs)
-
-        with patch("httpx.AsyncClient", _client_factory_429):
-            resp = await adapter.chat([ChatMessage(role="user", content="hello")], model="gpt-4o", base_delay=0.01)
-            assert resp.content == "Recovery Non-Stream"
-            assert transport_429.attempt_count == 2
-
-        # 2. Test 401 fail-fast
-        transport_401 = MockTransportWithFailures([401, 401], success_content="", is_stream=False)
-        def _client_factory_401(*args, **kwargs):
-            clean_kwargs = {k: v for k, v in kwargs.items() if k != "transport"}
-            return _ORIG_HTTPX_ASYNC_CLIENT(transport=transport_401, **clean_kwargs)
-
-        with patch("httpx.AsyncClient", _client_factory_401):
-            with pytest.raises(ValueError, match="Authentication error"):
-                await adapter.chat([ChatMessage(role="user", content="hello")], model="gpt-4o")
-            assert transport_401.attempt_count == 1
 
     async def test_anthropic_stream_chat_recovers_and_fails_fast(self):
         """Verifies Anthropic adapter stream_chat behaves identically: 429 recovery & 401 fail fast."""

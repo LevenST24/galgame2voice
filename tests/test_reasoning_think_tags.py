@@ -10,6 +10,12 @@ from galgame2voice.utils.japanese_phonetics import (
 )
 
 
+def _parse_reply(raw_text):
+    parser = StreamingBilingualParser()
+    parser.feed_chunk(raw_text)
+    zh, ja, _ = parser.finalize()
+    return zh, ja, parser
+
 
 def test_line_scanner_ignores_draft_json_in_think_block():
     text = (
@@ -53,7 +59,7 @@ def test_streaming_parser_lines_with_think_draft():
         '<think>Let me format {"lines": [{"zh": "草稿", "ja": "下書き"}]}</think>\n'
         '{"lines": [{"zh": "正式台词", "ja": "本番のセリフ", "emotion": "happy"}]}'
     )
-    zh, ja, parser = StreamingBilingualParser.parse_full_text(raw_text)
+    zh, ja, parser = _parse_reply(raw_text)
     assert zh == "正式台词"
     assert ja == "本番のセリフ"
     assert parser.line_scanner.format == "lines"
@@ -88,7 +94,7 @@ def test_streaming_parser_streaming_lines_with_think_draft():
 
 def test_streaming_parser_prose_with_think_brackets():
     raw_text = "<think>先想一下怎么回答【テスト】</think>笨蛋，别突然凑过来啦！【バカ、急に近づかないでよ！】"
-    zh, ja, parser = StreamingBilingualParser.parse_full_text(raw_text)
+    zh, ja, parser = _parse_reply(raw_text)
 
     assert "<think>" not in zh
     assert "先想一下" not in zh
@@ -162,11 +168,6 @@ def test_unclosed_think_tag_truncation():
     assert remaining == []
     assert parser.lines_truncated is True
 
-    zh_full, ja_full, parser_full = StreamingBilingualParser.parse_full_text(raw_text)
-    assert zh_full == ""
-    assert ja_full == ""
-    assert parser_full.lines_truncated is True
-
 
 def test_japanese_phonetics_strip_reasoning_tags():
     assert strip_reasoning_tags("<think>思考中</think>こんにちは") == "こんにちは"
@@ -201,7 +202,7 @@ def test_various_think_tags_case_and_attributes():
         '<think>one</think>\n<think>two</think>\n{"lines": [{"zh": "多思考块", "ja": "複数"}]}',
     ]
     for text in cases:
-        zh, ja, parser = StreamingBilingualParser.parse_full_text(text)
+        zh, ja, parser = _parse_reply(text)
         assert zh != ""
         assert ja != ""
         assert "<think>" not in zh.lower()
@@ -213,7 +214,7 @@ def test_various_think_tags_case_and_attributes():
 
 def test_single_language_fallback_with_think():
     text = "<think>\n考え中：こんにちはと言おう\n</think>\nこんにちは！"
-    zh, ja, parser = StreamingBilingualParser.parse_full_text(text)
+    zh, ja, parser = _parse_reply(text)
     assert "<think>" not in zh
     assert "考え中" not in zh
     assert zh == "こんにちは！"
@@ -222,14 +223,14 @@ def test_single_language_fallback_with_think():
 
 def test_closing_tag_with_whitespace_and_prose():
     raw_text = "<think>思考中...</think >笨蛋，别凑过来！【バカ、近づかないで！】"
-    zh, ja, parser = StreamingBilingualParser.parse_full_text(raw_text)
+    zh, ja, parser = _parse_reply(raw_text)
     assert zh == "笨蛋，别凑过来！"
     assert ja == "バカ、近づかないで！"
     assert parser.lines_truncated is False
 
     # Also test with newline in closing tag
     raw_text_nl = "<think>思考中...</think\n>笨蛋，别凑过来！【バカ、近づかないで！】"
-    zh_nl, ja_nl, parser_nl = StreamingBilingualParser.parse_full_text(raw_text_nl)
+    zh_nl, ja_nl, parser_nl = _parse_reply(raw_text_nl)
     assert zh_nl == "笨蛋，别凑过来！"
     assert ja_nl == "バカ、近づかないで！"
     assert parser_nl.lines_truncated is False
@@ -267,7 +268,7 @@ def test_nested_thinking_tags_in_scanner_and_parser():
 
     # Nested in prose parser
     prose = "<think>外层 <thought>内层</thought> 外层结束</think>你好呀！【こんにちは！】"
-    zh, ja, parser = StreamingBilingualParser.parse_full_text(prose)
+    zh, ja, parser = _parse_reply(prose)
     assert zh == "你好呀！"
     assert ja == "こんにちは！"
     assert parser.lines_truncated is False
@@ -285,7 +286,7 @@ def test_orphaned_closing_tag_handling():
     assert strip_reasoning_tags("</thought >おはよう") == "おはよう"
     assert normalize_japanese_for_tts("</think>こんにちは") == "こんにちは"
 
-    zh, ja, parser = StreamingBilingualParser.parse_full_text("</think>你好【こんにちは】")
+    zh, ja, parser = _parse_reply("</think>你好【こんにちは】")
     assert zh == "你好"
     assert ja == "こんにちは"
     assert parser.lines_truncated is False
@@ -315,7 +316,7 @@ def test_self_closing_think_tags_in_scanner_and_parser():
         assert scanned.lines[0].zh == "你好"
         assert scanned.lines[0].ja == "こんにちは"
 
-        zh, ja, parser = StreamingBilingualParser.parse_full_text(text)
+        zh, ja, parser = _parse_reply(text)
         assert zh == "你好"
         assert ja == "こんにちは"
         assert parser.lines_truncated is False
@@ -334,7 +335,7 @@ def test_self_closing_nested_inside_think_block():
     assert len(scanned.lines) == 1
     assert scanned.lines[0].zh == "正式台词"
 
-    zh, ja, parser = StreamingBilingualParser.parse_full_text(text)
+    zh, ja, parser = _parse_reply(text)
     assert zh == "正式台词"
     assert parser.lines_truncated is False
 
@@ -347,7 +348,7 @@ def test_self_closing_tags_in_phonetics_and_prose():
         assert TtsStreamPipeline.is_vocal_sentence(tag) is False
         assert TtsStreamPipeline.is_vocal_sentence(f"{tag}こんにちは") is True
 
-    zh, ja, parser = StreamingBilingualParser.parse_full_text("<think/>笨蛋！【バカ！】")
+    zh, ja, parser = _parse_reply("<think/>笨蛋！【バカ！】")
     assert zh == "笨蛋！"
     assert ja == "バカ！"
     assert parser.lines_truncated is False
@@ -357,7 +358,7 @@ def test_non_tag_trailing_angle_bracket():
     assert strip_reasoning_tags("温度 <") == "温度 <"
     assert strip_reasoning_tags("1 < 2") == "1 < 2"
 
-    zh, ja, parser = StreamingBilingualParser.parse_full_text("温度 < 30℃")
+    zh, ja, parser = _parse_reply("温度 < 30℃")
     assert "30℃" in zh
     assert parser.lines_truncated is False
 
