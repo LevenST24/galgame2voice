@@ -1,0 +1,29 @@
+[Unit]
+Description=galgame2voice Character Package Distribution Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=g2v-dist
+Group=g2v-dist
+WorkingDirectory=/opt/g2v-dist
+Environment=G2V_DIST_STATE_DIR=/var/lib/g2v-dist
+ExecStart=/usr/bin/python3 /opt/g2v-dist/g2v_dist.py serve --host 127.0.0.1 --port 8765 --prefix /_g2v --state-dir /var/lib/g2v-dist
+Restart=on-failure
+RestartSec=3
+
+# systemd sandbox hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/g2v-dist
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
