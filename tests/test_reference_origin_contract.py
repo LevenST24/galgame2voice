@@ -177,7 +177,7 @@ async def test_api_create_and_update_with_external_references(origin_env):
     Verifies returned ID is directly queried from service's database and used for TTS parameter preparation.
     """
     transport = ASGITransport(app=origin_env.app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         # 1. Create with audio/custom_remote_ref.wav
         resp1 = await client.post("/api/voice/profiles", json={
             "name": "四季夏目",
@@ -255,7 +255,7 @@ async def test_api_create_and_update_with_external_references(origin_env):
 async def test_rescan_preserves_external_references_with_fresh_connection(origin_env):
     """sync_with_db preserves external and unmanifested refs paths, verified via a fresh DB connection."""
     transport = ASGITransport(app=origin_env.app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         # Create profiles via HTTP API
         resp1 = await client.post("/api/voice/profiles", json={
             "name": "四季夏目",

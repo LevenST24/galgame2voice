@@ -1,10 +1,9 @@
 """
 Tests for the DNS-rebinding mitigation: the /api Host-header allowlist.
 
-The automated suite disables this middleware by default (see tests/conftest.py)
-because it drives the ASGI app in-process with ``Host: test``. These tests
-explicitly opt back in and prove the protection both blocks forged Host headers
-and lets legitimate loopback access through.
+These tests prove the protection both blocks forged Host headers and lets
+legitimate loopback access through, and that setting the disable flag to 1
+really turns the middleware off.
 """
 
 import pytest
@@ -81,7 +80,7 @@ def test_non_api_paths_are_not_host_guarded(guarded_client_factory):
 
 
 def test_allowlist_is_disabled_when_flag_is_set(monkeypatch):
-    """The suite-wide opt-out must actually disable the middleware."""
+    """When the flag is set to 1, the middleware must actually be disabled."""
     monkeypatch.setenv("GALGAME2VOICE_HOST_HEADER_VALIDATION_DISABLED", "1")
     monkeypatch.setenv("GALGAME2VOICE_AUTH_DISABLED", "1")
     get_settings.cache_clear()
@@ -90,3 +89,13 @@ def test_allowlist_is_disabled_when_flag_is_set(monkeypatch):
         assert client.get("/api/health").status_code != 403
     finally:
         get_settings.cache_clear()
+
+
+def test_default_suite_rejects_non_loopback_host(monkeypatch):
+    """A non-loopback Host on /api/ is rejected when the suite does not opt out."""
+    monkeypatch.setenv("GALGAME2VOICE_AUTH_DISABLED", "1")
+    monkeypatch.setenv("GALGAME2VOICE_HOST", "127.0.0.1")
+    get_settings.cache_clear()
+    resp = TestClient(create_app(), base_url="http://test").get("/api/health")
+    assert resp.status_code == 403
+    assert "Host" in resp.json().get("detail", "")

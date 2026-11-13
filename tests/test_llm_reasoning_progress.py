@@ -118,7 +118,7 @@ async def test_reasoning_chunks_emit_throttled_progress_and_stay_out_of_the_repl
     app = create_app()
     try:
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test", timeout=30) as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080", timeout=30) as client:
             response = await client.post("/api/chat/stream", json={
                 "prompt": "这句会想很久",
                 "session_id": SESSION_ID,

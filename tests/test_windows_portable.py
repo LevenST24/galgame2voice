@@ -102,7 +102,7 @@ async def test_frozen_version_uses_release_version_without_inspecting_parent_git
     monkeypatch.setattr(system.sys, "frozen", True, raising=False)
     spawn = MagicMock()
     monkeypatch.setattr(subprocess, "Popen", spawn)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         resp = await client.get("/api/system/version?check_remote=false")
     assert resp.status_code == 200
     data = resp.json()

@@ -187,7 +187,7 @@ class TestPrecisionAPI:
         (tmp_path / "data" / "sovits_dir.txt").write_text("D:/dummy_sovits", encoding="utf-8")
 
         app = create_app()
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
             # Update to fp16
             resp = await client.post("/api/config", json={"settings": {"inference_precision": "fp16"}})
             assert resp.status_code == 200
@@ -229,7 +229,7 @@ class TestPrecisionAPI:
         assert initial_cache["device"] == "cuda"
 
         app = create_app()
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
             # 1. DB inference_precision defaults to 'auto'. Save unrelated global settings carrying inference_precision: "auto"
             resp = await client.post(
                 "/api/config",
@@ -261,7 +261,7 @@ class TestPrecisionAPI:
             lambda: (True, "Mock GPU", 0),
         )
         app = create_app()
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
             resp = await client.get("/api/system/status")
             assert resp.status_code == 200
             data = resp.json()
@@ -276,7 +276,7 @@ class TestPrecisionAPI:
         settings = get_settings()
         monkeypatch.setattr(settings, "project_root", tmp_path)
         app = create_app()
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
             resp = await client.post("/api/system/restart_sovits")
             assert resp.status_code == 400
             assert "选择文件夹" in resp.json()["detail"]
@@ -318,7 +318,7 @@ class TestPrecisionAPI:
         )
 
         app = create_app()
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
             # 1. Restart with FP32
             r1 = await client.post("/api/system/restart_sovits", json={"precision": "fp32"})
             assert r1.status_code == 200
@@ -404,7 +404,7 @@ class TestPrecisionAPI:
         assert initial_cache["device"] == "cuda"
 
         app = create_app()
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
             # 1. Default auto state (before settings row is explicitly written) preserves calibrated precision.json
             r1 = await client.post("/api/system/restart_sovits", json={"precision": "auto"})
             assert r1.status_code == 200
@@ -469,7 +469,7 @@ class TestPrecisionAPI:
         monkeypatch.setattr(rs, "_spawn_sovits_process", _recording_spawn)
 
         app = create_app()
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
             resp = await client.post("/api/system/restart_sovits", json={"precision": "fp32"})
             assert resp.status_code == 409
             detail = resp.json()["detail"]
@@ -487,7 +487,7 @@ class TestPrecisionAPI:
         (tmp_path / "data" / "sovits_dir.txt").write_text(str(fake_engine), encoding="utf-8")
 
         app = create_app()
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
             # Seed SQLite with manual fp16 to ensure CLI flags override stale DB entries
             resp = await client.post("/api/config", json={"settings": {"inference_precision": "fp16"}})
             assert resp.status_code == 200
@@ -543,7 +543,7 @@ class TestPrecisionAPI:
         (tmp_path / "data" / "sovits_dir.txt").write_text(str(fake_engine), encoding="utf-8")
 
         app = create_app()
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
             # 1. Put manual fp16 into SQLite database via /api/config
             resp = await client.post("/api/config", json={"settings": {"inference_precision": "fp16"}})
             assert resp.status_code == 200
@@ -610,7 +610,7 @@ class TestPrecisionAPI:
         assert os.environ.get("GPT_SOVITS_PRECISION") == "fp32"
 
         app = create_app()
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
             # Initial GET /api/config returns fp32
             r_init = await client.get("/api/config")
             assert r_init.status_code == 200
@@ -701,7 +701,7 @@ class TestPrecisionAPI:
         assert os.environ.get("GPT_SOVITS_PRECISION") == "fp32"
 
         app = create_app()
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
             # 1. Restart explicitly with fp16
             r_restart = await client.post("/api/system/restart_sovits", json={"precision": "fp16"})
             assert r_restart.status_code == 200
@@ -790,7 +790,7 @@ class TestPrecisionAPI:
         assert os.environ.get("GPT_SOVITS_DEVICE") == "cpu"
 
         app = create_app()
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
             # 1. Restart explicitly with fp16
             r_restart = await client.post("/api/system/restart_sovits", json={"precision": "fp16"})
             assert r_restart.status_code == 200

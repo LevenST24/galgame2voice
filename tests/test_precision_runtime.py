@@ -26,7 +26,7 @@ async def test_saving_precision_never_rewrites_original_engine_config(tmp_path, 
     (engine / "api_v2.py").write_text("# synthetic engine")
     (tmp_path / "data").mkdir()
     (tmp_path / "data/sovits_dir.txt").write_text(str(engine))
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         response = await client.post("/api/config", json={"inference_precision": "cpu"})
     assert response.status_code == 200
     assert response.json()["settings"]["inference_precision"] == "cpu"
@@ -58,7 +58,7 @@ async def test_status_distinguishes_launch_mode_from_saved_preference(monkeypatc
 
     monkeypatch.setattr(health, "_resolve_sovits_endpoint_best_effort", resolve)
     monkeypatch.setattr(health, "_probe_gpt_sovits", probe)
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         response = await client.get("/api/system/status")
     assert response.status_code == 200
     hardware = response.json()["hardware"]

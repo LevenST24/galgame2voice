@@ -93,7 +93,7 @@ async def test_switch_api_requires_saved_selection_and_allows_retry_without_relo
         stack.client.active_profile = stack.new
     original = crud.set_active_voice_profile
     monkeypatch.setattr(crud, "set_active_voice_profile", AsyncMock(return_value=False))
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         response = await client.post(endpoint, json={field: stack.new.id})
         assert response.status_code == 500, response.text
         detail = response.json()["detail"]
@@ -119,7 +119,7 @@ async def test_saved_default_does_not_prove_models_are_loaded(stack, monkeypatch
         "is_active_profile",
         voice_manager.VoiceManager.is_active_profile.__get__(stack.manager),
     )
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         response = await client.post(endpoint, json={field: stack.old.id})
     assert response.status_code == 200, response.text
     stack.client.switch_voice_profile.assert_awaited_once()
@@ -211,7 +211,7 @@ async def test_delete_active_voice_profile_clears_settings_and_manager(stack, mo
     monkeypatch.setattr(stack.client, "switch_voice_profile", AsyncMock(side_effect=fake_switch))
     monkeypatch.setattr(stack.client, "synthesize", AsyncMock(return_value=b"audio"))
 
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         # 1. Deleting an inactive profile must keep active settings and active manager intact
         del_inactive = await client.delete(f"/api/voice/profiles/{stack.new.id}")
         assert del_inactive.status_code == 200, del_inactive.text

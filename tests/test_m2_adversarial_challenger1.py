@@ -124,7 +124,7 @@ class TestChatStreamingPipelineAdversarial:
     async def test_chat_stream_empty_and_whitespace_prompts(self):
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as c:
             # Test empty string
             r1 = await c.post("/api/chat/stream", json={"prompt": ""})
             assert r1.status_code == 422
@@ -153,7 +153,7 @@ class TestChatStreamingPipelineAdversarial:
         set_chat_service(chat_service)
 
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as c:
             resp = await c.post("/api/chat/stream", json={
                 "prompt": "<script>alert('xss')</script> & 特殊字符 < > & \" '",
                 "session_id": "xss-test"

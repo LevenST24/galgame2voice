@@ -52,7 +52,7 @@ async def test_saving_remote_url_stops_owned_local_engine(monkeypatch, tmp_path)
     monkeypatch.setattr(run_server, "terminate_process_tree", terminate)
 
     app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         resp = await client.post("/api/config", json={"gpt_sovits_url": REMOTE_URL})
 
     assert resp.status_code == 200
@@ -85,7 +85,7 @@ async def test_saving_local_url_preserves_owned_local_engine(monkeypatch, tmp_pa
     )
 
     app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         resp = await client.post("/api/config", json={"gpt_sovits_url": LOCAL_URL})
 
     assert resp.status_code == 200
@@ -112,7 +112,7 @@ async def test_saving_remote_url_without_owned_engine_does_not_terminate(monkeyp
     )
 
     app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         resp = await client.post("/api/config", json={"gpt_sovits_url": REMOTE_URL})
 
     assert resp.status_code == 200
@@ -147,7 +147,7 @@ async def test_saving_remote_url_when_owned_engine_already_exited(monkeypatch, t
     )
 
     app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         resp = await client.post("/api/config", json={"gpt_sovits_url": REMOTE_URL})
 
     assert resp.status_code == 200
@@ -182,7 +182,7 @@ async def test_explicit_local_env_var_overrides_remote_config_and_preserves_engi
     )
 
     app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         resp = await client.post("/api/config", json={"gpt_sovits_url": REMOTE_URL})
 
     assert resp.status_code == 200
@@ -221,7 +221,7 @@ async def test_explicit_remote_env_var_overrides_local_config_and_stops_engine(m
     monkeypatch.setattr(run_server, "terminate_process_tree", terminate)
 
     app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         resp = await client.post("/api/config", json={"gpt_sovits_url": LOCAL_URL})
 
     assert resp.status_code == 200
@@ -254,7 +254,7 @@ async def test_saving_remote_url_preserves_records_when_termination_fails_and_pr
     monkeypatch.setattr(run_server, "terminate_process_tree", failing_kill)
 
     app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         resp = await client.post("/api/config", json={"gpt_sovits_url": REMOTE_URL})
 
     assert resp.status_code == 200
@@ -288,7 +288,7 @@ async def test_saving_remote_url_preserves_records_when_wait_times_out(monkeypat
     )
 
     app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         resp = await client.post("/api/config", json={"gpt_sovits_url": REMOTE_URL})
 
     assert resp.status_code == 200
@@ -356,7 +356,7 @@ async def test_saving_remote_url_cleans_records_if_process_exits_after_wait_time
     )
 
     app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         resp = await client.post("/api/config", json={"gpt_sovits_url": REMOTE_URL})
 
     assert resp.status_code == 200
@@ -449,7 +449,7 @@ async def test_saving_remote_url_waits_for_restart_lock_then_stops_current_engin
 
     app = create_app()
     try:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
             resp = await client.post("/api/config", json={"gpt_sovits_url": REMOTE_URL})
     finally:
         stop_holder.set()
@@ -504,7 +504,7 @@ async def test_saving_remote_url_keeps_replacement_published_during_wait(monkeyp
     monkeypatch.setattr(run_server, "terminate_process_tree", terminate)
 
     app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         resp = await client.post("/api/config", json={"gpt_sovits_url": REMOTE_URL})
 
     assert resp.status_code == 200

@@ -26,7 +26,7 @@ async def test_complete_backup_restores_unloaded_history_and_original_dates(tmp_
             "INSERT INTO messages(session_id, role, content_chinese, content_japanese, created_at) VALUES (?, ?, ?, ?, ?)",
             [("s_000", "user", f"消息 {index}", "日本語", "2024-03-02 01:02:03.456") for index in range(601)],
         )
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         pages = [(await client.get(f"/api/chat/sessions?limit=200&offset={offset}")).json() for offset in (0, 200)]
         assert pages[0]["has_more"] is True and pages[1]["has_more"] is False
         assert len({s["id"] for page in pages for s in page["sessions"]}) == 205
@@ -62,7 +62,7 @@ async def test_oversize_backup_fails_explicitly_instead_of_truncating(tmp_path, 
     async with get_db(db) as conn:
         for text in ("保留第一句", "保留第二句"):
             await crud.add_message(conn, MessageCreate(session_id="s_full", role="user", content_chinese=text))
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         response = await client.get("/api/chat/export")
         assert response.status_code == 413
         assert "data" in response.json()["detail"]
@@ -82,7 +82,7 @@ async def test_removed_reply_format_setting_is_omitted_from_export_and_import(tm
             "INSERT INTO sessions(id, title, settings_json) VALUES (?, ?, ?)",
             ("s_format", "逐句", json.dumps({"advReplyFormat": "legacy", "temperature": 0.8, "apiKey": "secret"})),
         )
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         backup = (await client.get("/api/chat/export")).json()
         session = next(s for s in backup["sessions"] if s["id"] == "s_format")
         assert "advReplyFormat" not in session["settings"]
@@ -152,7 +152,7 @@ async def test_imported_lines_round_trip_through_history_and_export(tmp_path, mo
     payload = {"sessions": [{"id": "s_import_lines", "title": "逐句", "messages": [
         {"role": "assistant", "content": "你好", "japanese": "こんにちは", "lines": lines}
     ]}]}
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         response = await client.post("/api/chat/import", json=payload)
         assert response.status_code == 200, response.text
         history = (await client.get("/api/chat/history?session_id=s_import_lines")).json()
@@ -280,7 +280,7 @@ async def test_import_sanitizes_invalid_act_values_without_dropping_lines(tmp_pa
             }
         ]
     }
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         response = await client.post("/api/chat/import", json=payload)
         assert response.status_code == 200, response.text
         history = (await client.get("/api/chat/history", params={"session_id": "s_import_invalid_act"})).json()

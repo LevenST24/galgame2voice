@@ -409,7 +409,7 @@ class TestCoreMainAndHealthEndpoints:
         """Verifies GET /api/health and GET /api/system/status on the real galgame2voice app instance."""
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             # Health check
             resp = await client.get("/api/health")
             assert resp.status_code == 200
@@ -482,7 +482,7 @@ class TestCoreMainAndHealthEndpoints:
         """Verifies GET /api/chat/history and DELETE /api/chat/history."""
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             # 1. Fetch history for empty session
             resp = await client.get("/api/chat/history?session_id=test_hist_sess")
             assert resp.status_code == 200

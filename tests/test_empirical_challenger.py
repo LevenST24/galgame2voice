@@ -43,7 +43,7 @@ class TestFastApiAdversarialEndpoints:
         """Verify non-standard and unhandled HTTP methods return 405 Method Not Allowed cleanly."""
         app = create_app()
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             for method in ["POST", "PUT", "DELETE", "PATCH", "TRACE"]:
                 res = await client.request(method, "/api/health")
                 assert res.status_code == 405, f"Expected 405 for {method} /api/health, got {res.status_code}"
@@ -107,7 +107,7 @@ class TestFastApiAdversarialEndpoints:
             error="ConnectTimeout",
         )
         with patch("galgame2voice.routers.health._probe_gpt_sovits", new=AsyncMock(return_value=mock_offline)):
-            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
                 res = await client.get("/api/system/status")
                 assert res.status_code == 200
                 data = res.json()
@@ -120,7 +120,7 @@ class TestFastApiAdversarialEndpoints:
         """Verify endpoint robustness against massive headers and oversized query strings."""
         app = create_app()
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             # 100 query parameters
             query_string = "&".join([f"key_{i}=val_{i*100}" for i in range(100)])
             res = await client.get(f"/api/health?{query_string}")
@@ -144,7 +144,7 @@ class TestFastApiAdversarialEndpoints:
         monkeypatch.setenv("GALGAME2VOICE_RATE_LIMIT_DISABLED", "1")
         app = create_app()
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             tasks = [client.get("/api/health") for _ in range(200)]
             responses = await asyncio.wait_for(asyncio.gather(*tasks), timeout=30.0)
             assert len(responses) == 200
@@ -165,7 +165,7 @@ class TestCorsSecurityAndHeaders:
         """Verify standard localhost preflight returns appropriate CORS headers."""
         app = create_app()
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             preflight_headers = {
                 "Origin": "http://localhost:8080",
                 "Access-Control-Request-Method": "POST",
@@ -182,7 +182,7 @@ class TestCorsSecurityAndHeaders:
         """Verify arbitrary external origins are rejected (CORS tightened to localhost only)."""
         app = create_app()
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             preflight_headers = {
                 "Origin": "https://external-dashboard.example.com",
                 "Access-Control-Request-Method": "GET",

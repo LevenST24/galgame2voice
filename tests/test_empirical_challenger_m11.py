@@ -76,7 +76,7 @@ async def app_client(isolate_test_database):
     await init_db(isolate_test_database)
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         yield client
 
 

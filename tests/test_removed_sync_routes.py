@@ -45,7 +45,7 @@ async def test_sync_routes_are_gone_while_streaming_routes_remain(
     chat_service._get_active_llm_adapter = _mock_adapter
     set_chat_service(chat_service)
     try:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as http:
             removed_chat = await http.post("/api/chat", json={"prompt": "你好", "session_id": "removed-check"})
             assert removed_chat.status_code in (404, 405)
 

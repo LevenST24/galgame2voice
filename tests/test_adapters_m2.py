@@ -163,7 +163,7 @@ class TestConfigAndProviderRouterEndpoints:
     async def test_config_endpoints_get_and_post(self):
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             # 1. GET /api/config
             resp = await client.get("/api/config")
             assert resp.status_code == 200
@@ -186,7 +186,7 @@ class TestConfigAndProviderRouterEndpoints:
     async def test_provider_management_endpoints(self):
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             # 1. GET /api/providers
             resp = await client.get("/api/providers")
             assert resp.status_code == 200

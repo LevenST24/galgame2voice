@@ -89,7 +89,7 @@ class TestNetworkTimeoutsAndErrorRecovery:
         """Tests provider connectivity endpoint with dead local port and unreachable base URL."""
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             # Opt in to private endpoints: this test intentionally probes
             # loopback/unreachable hosts.
             await client.post("/api/config", json={"allow_private_llm_endpoints": True})
@@ -146,7 +146,7 @@ class TestNetworkTimeoutsAndErrorRecovery:
 
         with patch.object(httpx.AsyncClient, "get", conditional_get), \
              patch.object(httpx.AsyncClient, "post", conditional_post):
-            async with AsyncClient(transport=transport, base_url="http://test") as client:
+            async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
                 resp = await client.post("/api/providers/test", json={
                     "id": "openai",
                     "api_key": "sk-testkey12345678",
@@ -162,7 +162,7 @@ class TestNetworkTimeoutsAndErrorRecovery:
         """Verifies /api/providers/test retrieves raw key from DB when frontend sends masked sk-**** key."""
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             # 1. Upsert provider in DB with raw secret key
             await client.post("/api/providers", json={
                 "id": "mock_db_prov",
@@ -210,7 +210,7 @@ class TestNetworkTimeoutsAndErrorRecovery:
                 latency_ms=2000.0,
                 error="ConnectTimeout",
             )
-            async with AsyncClient(transport=transport, base_url="http://test") as client:
+            async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
                 resp = await client.get("/api/system/status")
                 assert resp.status_code == 200
                 data = resp.json()
@@ -227,7 +227,7 @@ class TestNetworkTimeoutsAndErrorRecovery:
                 latency_ms=12.5,
                 error=None,
             )
-            async with AsyncClient(transport=transport, base_url="http://test") as client:
+            async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
                 resp2 = await client.get("/api/system/status")
                 assert resp2.status_code == 200
                 data2 = resp2.json()

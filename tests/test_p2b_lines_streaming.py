@@ -417,7 +417,7 @@ async def test_explicit_old_reply_format_uses_lines_contract_and_parser_without_
     app = create_app()
     set_chat_service(service)
     try:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
             resp = await client.post("/api/chat/stream", json={
                 "prompt": "旧标签页发来的请求",
                 "session_id": "s_old_tab",

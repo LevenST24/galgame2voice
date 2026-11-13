@@ -79,7 +79,7 @@ class FakeEngineSupervisor:
 
 async def _get_engine_status(supervisor: EngineSupervisor):
     app = create_app(engine_supervisor=supervisor)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         return await client.get("/api/system/engine-status")
 
 

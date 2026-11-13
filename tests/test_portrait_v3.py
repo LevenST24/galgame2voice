@@ -256,7 +256,7 @@ async def test_layer_route_rejects_resolved_file_outside_canvas(setup_v3_charact
     profile = setup_v3_character_db
     path = (f"/api/media/portrait/{profile.id}/layers/A/1278.webp" if signed else
             f"/api/characters/{profile.id}/portrait/layers/A/1278.webp")
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         result = await client.get(sign_media_url(path) if signed else path)
     assert result.status_code == 404
     assert b"PRIVATE" not in result.content
@@ -269,7 +269,7 @@ async def test_manifest_layer_and_legacy_urls_load(setup_v3_character_db, v3_cha
     if not signed:
         monkeypatch.setattr(characters_router, "get_media_signing_key", lambda: None)
     profile = setup_v3_character_db
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         payload = (await client.get(f"/api/characters/{profile.id}/portrait")).json()
         assert payload["version"] == 3
         assert payload["sprites"] == {}
@@ -708,7 +708,7 @@ class TestSignedLayerUrlsAndPathSafety:
         app = create_app()
         transport = httpx.ASGITransport(app=app)
 
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             resp = await client.get(f"/api/characters/{profile.id}/portrait")
             assert resp.status_code == 200
             data = resp.json()
@@ -732,7 +732,7 @@ class TestSignedLayerUrlsAndPathSafety:
         app = create_app()
         transport = httpx.ASGITransport(app=app)
 
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             path = f"/api/media/portrait/{profile.id}/layers/A/1278.webp"
             signed = sign_media_url(path)
             bad_url = signed[:-4] + "0000"
@@ -745,7 +745,7 @@ class TestSignedLayerUrlsAndPathSafety:
         app = create_app()
         transport = httpx.ASGITransport(app=app)
 
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             base = f"/api/media/portrait/{profile.id}"
             exp = compute_bucketed_expiry()
 

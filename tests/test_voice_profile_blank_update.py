@@ -45,7 +45,7 @@ async def test_blank_profile_update_is_rejected_and_keeps_the_saved_row(payload,
     """PUT /api/voice/profiles/{id} rejects a blank name or weight path and leaves the row unchanged."""
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         created = await client.post("/api/voice/profiles", json={
             "name": "原音色",
             "description": "保持不变",
@@ -81,7 +81,7 @@ async def test_blank_profile_create_is_rejected_and_leaves_no_row(field_override
     """POST /api/voice/profiles rejects blank or empty name/weights without creating a row or changing active profile."""
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         # Create an initial valid profile so we can verify active profile preservation
         initial = await client.post("/api/voice/profiles", json={
             "name": "初始基准音色",
@@ -129,7 +129,7 @@ async def test_valid_profile_create_strips_paths_and_allows_nonexistent_local_fi
     """
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         # Test path trimming
         resp_trimmed = await client.post("/api/voice/profiles", json={
             "name": "  去空白音色  ",

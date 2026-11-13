@@ -99,7 +99,7 @@ class TestTier1FeatureCoverage:
         """Verifies HTTP error responses do not leak unmasked API credentials."""
         app = create_app()
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             resp = await client.get("/api/voice/profiles/999999")
             assert resp.status_code == 404
             assert "sk-" not in resp.text
@@ -126,7 +126,7 @@ class TestTier1FeatureCoverage:
         """Verifies provider test endpoint returns failure message without unhandled exception."""
         app = create_app()
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             resp = await client.post("/api/providers/test", json={
                 "provider_type": "openai",
                 "api_key": "sk-invalidkey1234567890",
@@ -142,7 +142,7 @@ class TestTier1FeatureCoverage:
         """Verifies empty or whitespace prompt is rejected with 422 Unprocessable Entity."""
         app = create_app()
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             resp = await client.post("/api/chat/stream", json={"prompt": "   ", "session_id": "test_s"})
             assert resp.status_code == 422
 
@@ -152,7 +152,7 @@ class TestTier1FeatureCoverage:
         """Verifies /api/health returns HTTP 200 with ok status and uptime."""
         app = create_app()
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             resp = await client.get("/api/health")
             assert resp.status_code == 200
             data = resp.json()
@@ -166,7 +166,7 @@ class TestTier1FeatureCoverage:
         """Verifies /api/system/status provides comprehensive diagnostics."""
         app = create_app()
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             resp = await client.get("/api/system/status")
             assert resp.status_code == 200
             data = resp.json()
@@ -659,7 +659,7 @@ class TestTier3CrossFeatureCombinations:
         """Verifies when an error occurs with credentials, both the HTTP response and logger mask the secret."""
         app = create_app()
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             # .invalid 是 RFC 6761 为"无效域名"保留的顶级域，语义与原测试意图（不可达域名触发错误诊断路径）一致；
             # 沙箱 DNS 会污染任意域名，.invalid 已被任务 1 的 fixture 直通。
             resp = await client.post("/api/providers/test", json={
@@ -799,7 +799,7 @@ class TestTier4RealWorldApplicationScenarios:
         """
         app = create_app()
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             resp = await client.post("/api/providers/test", json={
                 "provider_type": "openai",
                 "api_key": "sk-test-key",

@@ -84,7 +84,7 @@ def app_client(clean_db):
     """Provides a TestClient with the isolated test database."""
     os.environ["DATABASE_PATH"] = clean_db
     app = create_app()
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://127.0.0.1:8080") as client:
         yield client, clean_db
 
 

@@ -192,7 +192,7 @@ async def test_provider_api_endpoints():
     """Verifies provider API round trips reasoning_effort and enforces 422 on invalid values."""
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         # Create with reasoning_effort="medium"
         create_resp = await client.post(
             "/api/providers",

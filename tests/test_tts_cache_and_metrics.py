@@ -695,7 +695,7 @@ class TestMetricsAndCacheRestEndpoints:
         tc_mod._tts_cache_manager_instance = TtsCacheManager(cache_dir=tmp_path / "audio" / "cache", db_path=str(db_p))
         mc_mod._metrics_collector_instance = MetricsCollector(db_path=str(db_p))
 
-        self.client = TestClient(app)
+        self.client = TestClient(app, base_url="http://127.0.0.1:8080")
         yield
         tc_mod._tts_cache_manager_instance = None
         mc_mod._metrics_collector_instance = None

@@ -48,7 +48,7 @@ async def test_fresh_db_seed_default_provider_consistent_deepseek(isolated_fresh
         assert active_ids == ["deepseek"]
 
     transport = ASGITransport(app=create_app())
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         resp = await client.get("/api/config")
         assert resp.status_code == 200
         payload = resp.json()

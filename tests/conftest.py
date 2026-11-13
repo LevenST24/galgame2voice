@@ -32,10 +32,6 @@ for _proxy_var in ("no_proxy", "NO_PROXY"):
         os.environ[_proxy_var] = re.sub(r"\[([0-9a-fA-F:]+)\]", r"\1", _val)
 
 os.environ.setdefault("GALGAME2VOICE_SKIP_MEM_CHECK", "1")
-# The suite drives the ASGI app in-process (Host: "test"), which the DNS-rebinding
-# Host allowlist would reject; the middleware has its own dedicated test that opts
-# back in explicitly.
-os.environ.setdefault("GALGAME2VOICE_HOST_HEADER_VALIDATION_DISABLED", "1")
 
 
 def pytest_configure(config):

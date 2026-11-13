@@ -184,7 +184,7 @@ async def test_model_discovery_includes_data_pth_and_excludes_pretrained_models(
 
         # 2. Via HTTP API route GET /api/voice/scan-models
         voice._scan_cache.clear()
-        async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+        async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
             response = await client.get("/api/voice/scan-models")
             assert response.status_code == 200
             payload = response.json()
@@ -262,7 +262,7 @@ async def test_model_discovery_excludes_tts_audio_cache_and_preserves_user_refer
 
         # 2. Via HTTP API route GET /api/voice/scan-models
         voice._scan_cache.clear()
-        async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+        async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
             response = await client.get("/api/voice/scan-models")
             assert response.status_code == 200
             payload = response.json()
@@ -338,7 +338,7 @@ async def test_model_discovery_skips_synth_temp_audio_and_preserves_custom_cache
 
         # 2. Via HTTP API route GET /api/voice/scan-models
         voice._scan_cache.clear()
-        async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+        async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
             response = await client.get("/api/voice/scan-models")
             assert response.status_code == 200
             payload = response.json()

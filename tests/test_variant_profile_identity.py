@@ -69,7 +69,7 @@ async def test_parenthesized_variant_keeps_its_own_identity(project, isolate_tes
 
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         scanned = await client.post("/api/characters/rescan")
         assert scanned.status_code == 200, scanned.text
         assert scanned.json()["characters"] == ["安娜"]
@@ -153,7 +153,7 @@ async def test_unreadable_character_catalog_keeps_the_voice_usable(project, isol
     """A failing package lookup leaves the voice on its own resources instead of blocking TTS."""
     _install_anna(project)
     app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         scanned = await client.post("/api/characters/rescan")
         assert scanned.status_code == 200, scanned.text
         anna = _profile_by_name((await client.get("/api/voice/profiles")).json(), "安娜")

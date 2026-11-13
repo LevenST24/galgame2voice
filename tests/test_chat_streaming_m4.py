@@ -358,7 +358,7 @@ class TestChatRouterEndpointsM4:
         set_chat_service(chat_service)
 
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as c:
             resp = await c.post("/api/chat/stream", json={"prompt": "你好！", "session_id": "sse-test"})
             assert resp.status_code == 200
             assert "text/event-stream" in resp.headers["content-type"]
@@ -373,7 +373,7 @@ class TestChatRouterEndpointsM4:
     async def test_chat_stream_empty_prompt_validation(self):
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as c:
             resp = await c.post("/api/chat/stream", json={"prompt": "  "})
             assert resp.status_code == 422
 

@@ -24,7 +24,7 @@ async def test_old_export_with_removed_adv_toggle_imports_without_data_loss(tmp_
     db = tmp_path / "legacy-adv.db"
     monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db))
     await init_db(db)
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         response = await client.post("/api/chat/import", json={
             "format": "galgame2voice.chat", "version": 1, "sessions": [{
                 "id": "s_import_old_adv", "title": "旧会话", "settings": {
@@ -85,7 +85,7 @@ async def test_old_export_with_removed_reply_format_imports_without_data_loss(tm
     db = tmp_path / "legacy-reply-format.db"
     monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db))
     await init_db(db)
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         response = await client.post("/api/chat/import", json={
             "format": "galgame2voice.chat", "version": 1, "sessions": [{
                 "id": "s_import_old_reply_format", "title": "旧回复格式会话", "settings": {
@@ -127,7 +127,7 @@ async def test_invalid_p3_export_import_round_trip(tmp_path, monkeypatch):
         await conn.execute("INSERT INTO sessions (id, title, settings_json) VALUES (?, ?, ?)",
                            ("s_bad", "bad", json.dumps({**invalid, "temperature": 0.9})))
         await conn.commit()
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         settings = (await client.get("/api/chat/export")).json()["sessions"][0]["settings"]
         assert not (set(invalid) & set(settings))
         assert settings["temperature"] == 0.9
@@ -162,7 +162,7 @@ async def test_player_name_of_40_graphemes_round_trips(tmp_path, monkeypatch, gr
     db = tmp_path / "graphemes.db"
     monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db))
     await init_db(db)
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         response = await client.post("/api/chat/import", json={"sessions": [{
             "id": "s_import_name", "title": "name", "messages": [], "settings": {"advPlayerName": name},
         }]})
@@ -181,7 +181,7 @@ async def test_all_p3_settings_survive_backup_export_and_import(tmp_path, monkey
             "s_adv", "ADV", json.dumps({**P3_SETTINGS, "privateKey": "never-export"}),
         ))
         await conn.commit()
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         response = await client.get("/api/chat/export")
         assert response.status_code == 200
         assert "never-export" not in response.text
@@ -203,7 +203,7 @@ async def test_backup_rejects_invalid_settings_container_atomically(tmp_path, mo
     db = tmp_path / "invalid.db"
     monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db))
     await init_db(db)
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         response = await client.post("/api/chat/import", json={"sessions": [
             {"id": "s_import_valid", "title": "valid", "messages": [], "settings": P3_SETTINGS},
             {"id": "s_import_invalid", "title": "invalid", "messages": [], "settings": settings},

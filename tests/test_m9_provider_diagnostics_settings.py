@@ -151,7 +151,7 @@ class TestProviderRegistryAndSeeds:
         """Non-existent provider without preset still returns 404."""
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             resp = await client.get("/api/providers/completely_unknown_xyz")
             assert resp.status_code == 404
 
@@ -160,7 +160,7 @@ class TestProviderRegistryAndSeeds:
         """GET /api/providers includes active providers and presets."""
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             resp = await client.get("/api/providers")
             assert resp.status_code == 200
             data = resp.json()
@@ -414,7 +414,7 @@ class TestErrorDiagnosticsEngine:
 
         with patch.object(httpx.AsyncClient, "get", conditional_get), \
              patch.object(httpx.AsyncClient, "post", conditional_post):
-            async with AsyncClient(transport=transport, base_url="http://test") as client:
+            async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
                 resp = await client.post("/api/providers/test", json={
                     "id": "openai",
                     "api_key": "sk-invalid-test-key-12345",

@@ -368,7 +368,7 @@ class TestChatRouterDynamicVoiceAPI:
         set_chat_service(chat_service)
 
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as c:
             resp = await c.post("/api/chat/stream", json={
                 "prompt": "你好",
                 "session_id": "api-test-adaptive",

@@ -673,7 +673,7 @@ async def test_failed_persona_save_keeps_the_old_manifest_and_reports_the_duplic
         edited = "NEW PERSONA THAT THE FAILURE MUST NOT KEEP"
         app = create_app()
         transport = ASGITransport(app=app, raise_app_exceptions=False)
-        async with AsyncClient(transport=transport, base_url="http://test", timeout=30.0) as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080", timeout=30.0) as client:
             scanned = await client.post("/api/characters/rescan")
             assert scanned.status_code == 200, scanned.text
             ann = _profile_named((await client.get("/api/voice/profiles")).json(), "Ann")
@@ -732,7 +732,7 @@ async def test_overlapping_persona_saves_keep_manifest_and_database_together(
         folder = install(project, "ann", "Ann")
         app = create_app()
         transport = ASGITransport(app=app, raise_app_exceptions=False)
-        async with AsyncClient(transport=transport, base_url="http://test", timeout=30.0) as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080", timeout=30.0) as client:
             scanned = await client.post("/api/characters/rescan")
             assert scanned.status_code == 200, scanned.text
             ann = _profile_named((await client.get("/api/voice/profiles")).json(), "Ann")
@@ -797,7 +797,7 @@ async def _rescan_and_list(project, monkeypatch):
     manager = CharacterManager(project / "characters")
     for module in (character_manager, characters, voice):
         monkeypatch.setattr(module, "get_character_manager", lambda: manager)
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         scan = await client.post("/api/characters/rescan")
         listed = await client.get("/api/voice/profiles")
     assert scan.status_code == 200 and listed.status_code == 200
@@ -879,7 +879,7 @@ async def test_saving_persona_on_utf8_bom_manifest_succeeds_and_writes_utf8_with
         manifest_path = folder / "manifest.json"
         app = create_app()
         transport = ASGITransport(app=app, raise_app_exceptions=False)
-        async with AsyncClient(transport=transport, base_url="http://test", timeout=30.0) as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080", timeout=30.0) as client:
             scanned = await client.post("/api/characters/rescan")
             assert scanned.status_code == 200, scanned.text
             ann = _profile_named((await client.get("/api/voice/profiles")).json(), "Ann")
@@ -929,7 +929,7 @@ async def test_persona_save_character_scan_does_not_block_other_requests(
         ann_folder = install(project, "ann", "Ann")
         app = create_app()
         transport = ASGITransport(app=app, raise_app_exceptions=False)
-        async with AsyncClient(transport=transport, base_url="http://test", timeout=30.0) as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080", timeout=30.0) as client:
             scanned = await client.post("/api/characters/rescan")
             assert scanned.status_code == 200, scanned.text
             ann = _profile_named((await client.get("/api/voice/profiles")).json(), "Ann")
@@ -1006,7 +1006,7 @@ async def test_rescan_reports_long_folder_with_corrupt_manifest(project, isolate
         (corrupt_dir / "manifest.json").write_text("{ invalid json", encoding="utf-8")
 
         app = create_app()
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
             scan_res = await client.post("/api/characters/rescan")
             assert scan_res.status_code == 200, scan_res.text
             scan = scan_res.json()
@@ -1057,7 +1057,7 @@ async def ann_package(project, isolate_test_database):
 
         app = create_app()
         transport = ASGITransport(app=app, raise_app_exceptions=False)
-        async with AsyncClient(transport=transport, base_url="http://test", timeout=30.0) as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080", timeout=30.0) as client:
             scanned = await client.post("/api/characters/rescan")
             assert scanned.status_code == 200, scanned.text
             ann = _profile_named((await client.get("/api/voice/profiles")).json(), "Ann")
@@ -1214,7 +1214,7 @@ async def test_update_persona_db_failure_standalone_profile(
     try:
         app = create_app()
         transport = ASGITransport(app=app, raise_app_exceptions=False)
-        async with AsyncClient(transport=transport, base_url="http://test", timeout=30.0) as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080", timeout=30.0) as client:
             async with characters.get_db() as conn:
                 created = await profile(conn, "CustomStandalone", system_prompt="Old Standalone Persona")
 

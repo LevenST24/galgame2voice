@@ -101,7 +101,7 @@ async def test_first_http_switch_after_bootstrap_really_loads_models(warmup, mon
         if run_background:
             assert await pending.pop() is True
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=main.create_app()), base_url="http://test"
+            transport=httpx.ASGITransport(app=main.create_app()), base_url="http://127.0.0.1:8080"
         ) as client:
             response = await client.post("/api/voice/switch", json={"profile_id": warmup.a.id})
         assert response.status_code == 200, response.text
