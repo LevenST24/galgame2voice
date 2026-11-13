@@ -92,7 +92,7 @@ async def test_lines_roundtrip_crud_history_backup_import(isolate_test_database)
         assert created.lines == lines
         raw = await (await conn.execute("SELECT lines_json FROM messages WHERE id=?", (created.id,))).fetchone()
         assert json.loads(raw[0]) == lines
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         history = await client.get("/api/chat/history", params={"session_id": "original"})
         assert history.status_code == 200
         assert history.json()["messages"][0]["lines"] == lines
@@ -154,7 +154,7 @@ async def test_nested_malformed_lines_are_null_in_history_and_backup(isolate_tes
     assert session["messages"][0]["lines"] is None
     async with get_db() as conn:
         assert (await crud.get_recent_messages(conn, "nested_bad"))[0].lines is None
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         history = await client.get("/api/chat/history", params={"session_id": "nested_bad"})
         assert history.status_code == 200
         assert history.json()["messages"][0]["lines"] is None

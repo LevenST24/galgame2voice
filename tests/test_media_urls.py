@@ -326,7 +326,7 @@ async def test_endpoint_expiry_and_cache_control(setup_test_character_db, monkey
     app = create_app()
     transport = httpx.ASGITransport(app=app)
 
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         t0 = 1700000000.0
         monkeypatch.setattr(time, "time", lambda: t0)
 
@@ -358,7 +358,7 @@ async def test_endpoint_tampering_rejected_with_403(setup_test_character_db):
     app = create_app()
     transport = httpx.ASGITransport(app=app)
 
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         path = f"/api/media/portrait/{profile.id}/casual/gentle.png"
         signed_url = sign_media_url(path, v="v1", now=1700000000.0)
 
@@ -406,7 +406,7 @@ async def test_endpoint_path_traversal_rejection(setup_test_character_db):
     app = create_app()
     transport = httpx.ASGITransport(app=app)
 
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         base = f"/api/media/portrait/{profile.id}"
         exp = compute_bucketed_expiry()
 
@@ -720,7 +720,7 @@ async def test_signed_portrait_with_percent_hex_literal_and_double_encoding_defe
     app = create_app()
     transport = httpx.ASGITransport(app=app)
 
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         # 1. Fetch portrait manifest to obtain the signed media URL
         resp = await client.get(f"/api/characters/{profile.id}/portrait")
         assert resp.status_code == 200

@@ -85,7 +85,7 @@ class TestApiKeyMaskingEdgeCases:
         """
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             # 1. Create a provider with a high-entropy secret
             secret_key = "sk-live-deepseek-adversarial-99887766554433221100"
             create_resp = await client.post("/api/providers", json={
@@ -146,7 +146,7 @@ class TestConcurrencyAndRaceConditions:
         transport = ASGITransport(app=app)
 
         async def worker(idx: int):
-            async with AsyncClient(transport=transport, base_url="http://test") as client:
+            async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
                 speed = 1.0 + (idx % 10) * 0.05
                 temp = 0.5 + (idx % 5) * 0.1
                 top_k = 10 + (idx % 20)
@@ -188,7 +188,7 @@ class TestConcurrencyAndRaceConditions:
 
         provider_ids = [f"race_prov_{i}" for i in range(5)]
 
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             # Pre-create 5 providers
             for pid in provider_ids:
                 await client.post("/api/providers", json={
@@ -239,7 +239,7 @@ class TestConcurrencyAndRaceConditions:
         test_provider_id = "concurrent_mask_target"
         real_api_key = "sk-super-secret-production-key-999888777"
 
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             # Create target provider
             await client.post("/api/providers", json={
                 "id": test_provider_id,
@@ -289,7 +289,7 @@ class TestConsoleRoutingAndDefensiveBoundaries:
         """
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             resp = await client.post("/api/config", json={
                 "malicious_sql_injection": "DROP TABLE settings;",
                 "__proto__": {"polluted": True},
@@ -310,7 +310,7 @@ class TestConsoleRoutingAndDefensiveBoundaries:
         """
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             prov_id = "custom-special_123"
             custom_headers = {
                 "X-Custom-Header": "Value-123",
@@ -349,7 +349,7 @@ class TestConsoleRoutingAndDefensiveBoundaries:
         transport = ASGITransport(app=app)
         test_prov_id = "test_connectivity_fallback"
 
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             # 1. Store provider in DB
             await client.post("/api/providers", json={
                 "id": test_prov_id,
@@ -383,7 +383,7 @@ class TestConsoleRoutingAndDefensiveBoundaries:
         """
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             resp = await client.get("/api/system/status")
             assert resp.status_code == 200
             telemetry = resp.json()

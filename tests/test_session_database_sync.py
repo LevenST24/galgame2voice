@@ -16,7 +16,7 @@ async def test_session_explicit_null_unbinds_voice_and_empty_settings_clear(tmp_
         profile = await crud.create_voice_profile(conn, VoiceProfileCreate(
             name="User voice", gpt_weights_path="voice.ckpt", sovits_weights_path="voice.pth",
         ))
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         bound = await client.post("/api/chat/sessions", json={
             "id": "s_binding", "voice_profile_id": profile.id, "settings": {"voiceProfileId": profile.id},
         })
@@ -50,7 +50,7 @@ async def test_session_overview_does_not_restore_a_deleted_voice(tmp_path, monke
             profiles[name] = await crud.create_voice_profile(conn, VoiceProfileCreate(
                 name=name, gpt_weights_path=f"{name}.ckpt", sovits_weights_path=f"{name}.pth",
             ))
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         for name, profile in profiles.items():
             saved = await client.post("/api/chat/sessions", json={
                 "id": f"s_{name}", "voice_profile_id": profile.id,
@@ -100,7 +100,7 @@ async def test_session_overview_and_history_sync(tmp_path, monkeypatch):
             content_japanese="",
         ))
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         # 1. GET /api/chat/sessions
         resp = await client.get("/api/chat/sessions")
         assert resp.status_code == 200
@@ -177,7 +177,7 @@ async def test_session_history_cursor_pagination(tmp_path, monkeypatch):
                 ),
             )
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         # Page 1: latest 10 messages (16..25)
         p1 = await client.get("/api/chat/history?session_id=s_long_chat&limit=10")
         assert p1.status_code == 200
@@ -213,7 +213,7 @@ async def test_characters_rescan_endpoint(tmp_path, monkeypatch):
     await init_db(test_db)
 
     app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         resp = await client.post("/api/characters/rescan")
         assert resp.status_code == 200
         data = resp.json()

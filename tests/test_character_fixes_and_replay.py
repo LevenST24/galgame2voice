@@ -425,7 +425,7 @@ async def test_session_upsert_endpoint_voice_profile_persistence(tmp_path, monke
 
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         # Create session with voice_profile_id=prof_id and custom_system_prompt
         resp = await client.post("/api/chat/sessions", json={
             "id": "sess_test_switch",

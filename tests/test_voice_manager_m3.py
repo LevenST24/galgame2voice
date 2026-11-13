@@ -334,7 +334,7 @@ class TestVoiceRouterEndpointsM3:
         app = create_app()
         transport = ASGITransport(app=app)
 
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             # 1. Create Voice Profile
             post_resp = await client.post("/api/voice/profiles", json=sample_voice_profile)
             assert post_resp.status_code == 201
@@ -373,7 +373,7 @@ class TestVoiceRouterEndpointsM3:
         app = create_app()
         transport = ASGITransport(app=app)
 
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             # Switch nonexistent profile
             resp_switch = await client.post("/api/voice/switch", json={"profile_id": 99999})
             assert resp_switch.status_code == 404

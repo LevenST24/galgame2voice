@@ -102,7 +102,7 @@ async def test_delete_voice_profile_during_warmup_cancels_probe_and_never_resurr
     app = create_app()
     transport = ASGITransport(app=app, raise_app_exceptions=False)
     try:
-        async with AsyncClient(transport=transport, base_url="http://test", timeout=15.0) as http:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080", timeout=15.0) as http:
             fb_res = await http.post(
                 "/api/voice/profiles",
                 json={
@@ -266,7 +266,7 @@ async def test_delete_voice_profile_unbinds_session_settings_json_voice_profile_
 
     app = create_app()
     transport = ASGITransport(app=app, raise_app_exceptions=False)
-    async with AsyncClient(transport=transport, base_url="http://test", timeout=15.0) as http:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080", timeout=15.0) as http:
         p1_res = await http.post(
             "/api/voice/profiles",
             json={
@@ -367,7 +367,7 @@ async def test_update_persona_never_exposes_dirty_manifest_on_disk_during_or_aft
 
         app = create_app()
         transport = ASGITransport(app=app, raise_app_exceptions=False)
-        async with AsyncClient(transport=transport, base_url="http://test", timeout=15.0) as http:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080", timeout=15.0) as http:
             scan_res = await http.post("/api/characters/rescan")
             assert scan_res.status_code == 200, scan_res.text
             profiles = (await http.get("/api/voice/profiles")).json()["profiles"]

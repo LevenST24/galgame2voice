@@ -251,7 +251,7 @@ async def test_turn_reply_route_matches_all_five_contract_statuses(tmp_path, mon
             )
             await conn.commit()
 
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             # 1. pending: user message 101 exists, no assistant reply yet
             direct_pending = await get_turn_reply(session_id="sess_contract_1", user_message_id=101)
             assert direct_pending == expected_responses["pending"]

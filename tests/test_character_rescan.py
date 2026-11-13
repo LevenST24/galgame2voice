@@ -119,7 +119,7 @@ async def test_rescans_serialize_scan_and_db_sync_per_app(monkeypatch):
 
     monkeypatch.setattr("galgame2voice.routers.characters.get_character_manager", lambda: Manager())
     app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         first = asyncio.create_task(client.post("/api/characters/rescan"))
         await asyncio.wait_for(entered.wait(), timeout=5)
         second = asyncio.create_task(client.post("/api/characters/rescan"))
@@ -169,7 +169,7 @@ async def test_rescan_package_rename_with_alias_updates_profile_and_preserves_as
     await init_db()
 
     app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         # Initial scan creates profile for 夏目
         res = await client.post("/api/characters/rescan")
         assert res.status_code == 200

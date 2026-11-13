@@ -32,7 +32,7 @@ async def test_lookup_status_ready_and_pending(lookup_db):
             session_id="sess_1", role="user", content_chinese="你好"
         ))
 
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         # 1. Pending: user exists, assistant message not committed yet
         resp = await client.get(f"/api/chat/turn-reply?session_id=sess_1&user_message_id={user_msg.id}")
         assert resp.status_code == 200
@@ -68,7 +68,7 @@ async def test_lookup_status_gone(lookup_db):
             session_id="sess_gone", role="user", content_chinese="删除测试"
         ))
 
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         # Delete the user message
         async with get_db(lookup_db) as conn:
             await crud.delete_message(conn, user_msg.id)
@@ -101,7 +101,7 @@ async def test_lookup_cross_session_isolation(lookup_db):
             reply_to_message_id=user_msg_a.id
         ))
 
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         resp = await client.get(f"/api/chat/turn-reply?session_id=session_B&user_message_id={user_msg_a.id}")
         assert resp.status_code == 200
         data = resp.json()
@@ -132,7 +132,7 @@ async def test_lookup_status_ambiguous(lookup_db):
             reply_to_message_id=user_msg.id
         ))
 
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         resp = await client.get(f"/api/chat/turn-reply?session_id=sess_ambig&user_message_id={user_msg.id}")
         assert resp.status_code == 200
         data = resp.json()
@@ -147,7 +147,7 @@ async def test_lookup_validation_and_errors(lookup_db):
     app = create_app()
     transport = ASGITransport(app=app)
 
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         # Empty session_id
         r1 = await client.get("/api/chat/turn-reply?session_id=&user_message_id=1")
         assert r1.status_code == 422
@@ -178,7 +178,7 @@ async def test_lookup_unavailable_on_locked_db(lookup_db):
         sync_conn.execute("PRAGMA locking_mode = EXCLUSIVE;")
         sync_conn.execute("BEGIN EXCLUSIVE;")
 
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             resp = await asyncio.wait_for(
                 client.get("/api/chat/turn-reply?session_id=sess_lock&user_message_id=1"),
                 timeout=2.0,  # Must complete far below default 5s busy timeout

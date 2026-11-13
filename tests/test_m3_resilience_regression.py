@@ -71,7 +71,7 @@ async def test_voice_switch_nonexistent_profile_404_precedence(temp_db_path, moc
 
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         resp = await client.post("/api/voice/switch", json={"profile_id": 99999})
         # REST semantics: Non-existent profile should be 404, not 503!
         assert resp.status_code == 404, f"Expected 404 for missing profile, got {resp.status_code}: {resp.text}"
@@ -96,7 +96,7 @@ async def test_voice_switch_existing_profile_low_memory_503_and_force_override(
 
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         post_resp = await client.post("/api/voice/profiles", json=sample_voice_profile)
         assert post_resp.status_code == 201
         profile_id = post_resp.json()["id"]
@@ -233,7 +233,7 @@ async def test_cgroup_quota_triggers_503_on_voice_switch(tmp_path, temp_db_path,
 
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         post_resp = await client.post("/api/voice/profiles", json=sample_voice_profile)
         assert post_resp.status_code == 201
         profile_id = post_resp.json()["id"]
@@ -368,7 +368,7 @@ async def test_concurrent_voice_switch_serialization_and_toctou_prevention(temp_
 
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         # Create Profile A
         p_a = await client.post("/api/voice/profiles", json={
             "name": "Character A",
@@ -413,7 +413,7 @@ async def test_concurrent_voice_switch_same_profile_optimization(temp_db_path, m
 
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         p = await client.post("/api/voice/profiles", json=sample_voice_profile)
         p_id = p.json()["id"]
 
@@ -544,7 +544,7 @@ async def test_voice_switch_same_profile_with_different_refer_audio_triggers_swi
 
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         # Create initial profile
         p_resp = await client.post("/api/voice/profiles", json=sample_voice_profile)
         p_id = p_resp.json()["id"]
@@ -590,7 +590,7 @@ async def test_voice_switch_concurrent_deletion_returns_404_under_lock(
 
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         p_resp = await client.post("/api/voice/profiles", json=sample_voice_profile)
         p_id = p_resp.json()["id"]
 
@@ -670,7 +670,7 @@ async def test_deleting_a_voice_while_it_is_loading_returns_conflict_and_keeps_i
     set_voice_manager(manager)
     started, release = _hold_target_weight_load(mock_gpt_sovits, "just-created")
     app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         _default_id, in_use, target = await _three_voices(client)
         enabled = await client.post(endpoint, json={field: in_use})
         assert enabled.status_code == 200, enabled.text
@@ -713,7 +713,7 @@ async def test_voice_removed_during_load_is_not_committed_as_the_enabled_voice(
     set_voice_manager(manager)
     started, release = _hold_target_weight_load(mock_gpt_sovits, "just-created")
     app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         default_id, in_use, target = await _three_voices(client)
         enabled = await client.post(endpoint, json={field: in_use})
         assert enabled.status_code == 200, enabled.text

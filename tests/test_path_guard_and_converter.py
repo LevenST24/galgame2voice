@@ -246,7 +246,7 @@ async def test_multi_drive_and_nested_gpt_sovits_discovery_and_guard(tmp_path, m
     # API verification: POST /api/voice/profiles creates profile using scanned multi-drive paths
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         resp = await client.post("/api/voice/profiles", json={
             "name": "MultiDriveVoice",
             "gpt_weights_path": str(d_ckpt),

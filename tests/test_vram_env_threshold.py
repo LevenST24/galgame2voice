@@ -48,7 +48,7 @@ async def test_voice_switch_rejects_when_free_vram_below_env_threshold(
     manager = VoiceManager(gpt_sovits_client_or_server=mock_gpt_sovits, db_path=temp_db_path)
     set_voice_manager(manager)
     transport = ASGITransport(app=create_app())
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         created = await client.post("/api/voice/profiles", json=sample_voice_profile)
         assert created.status_code == 201, created.text
         profile_id = created.json()["id"]
@@ -72,7 +72,7 @@ async def test_voice_switch_keeps_builtin_vram_floor_without_env(
     manager = VoiceManager(gpt_sovits_client_or_server=mock_gpt_sovits, db_path=temp_db_path)
     set_voice_manager(manager)
     transport = ASGITransport(app=create_app())
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         created = await client.post("/api/voice/profiles", json=sample_voice_profile)
         assert created.status_code == 201, created.text
         profile_id = created.json()["id"]

@@ -56,7 +56,7 @@ def github(monkeypatch):
 
 
 async def get(app, path):
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         return await client.get(path)
 
 
@@ -87,7 +87,7 @@ def local_only(error=None):
 @pytest.mark.asyncio
 async def test_update_check_and_apply_routes_are_gone(app):
     assert (await get(app, "/api/system/update/check")).status_code == 404
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         response = await client.post("/api/system/update/apply", json={"discard_local_changes": True})
     assert response.status_code == 404
 

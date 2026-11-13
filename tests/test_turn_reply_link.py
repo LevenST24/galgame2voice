@@ -99,7 +99,7 @@ async def test_reproduce_business_defect_and_verify_fix(tmp_path):
     try:
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             resp = await client.get(
                 f"/api/chat/turn-reply?session_id=test_repro&user_message_id={user_msg.id}"
             )
@@ -222,7 +222,7 @@ async def test_import_chat_does_not_populate_reply_to_link(tmp_path):
     try:
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             import_payload = {
                 "sessions": [
                     {

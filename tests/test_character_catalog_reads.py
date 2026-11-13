@@ -123,7 +123,7 @@ async def test_profile_list_exposes_manifest_default_tts_speed(monkeypatch):
         await crud.create_voice_profile(conn, _profile("有默认语速"))
         await crud.create_voice_profile(conn, _profile("没有角色包"))
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         response = await client.get("/api/voice/profiles")
 
     assert response.status_code == 200

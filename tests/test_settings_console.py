@@ -143,7 +143,7 @@ class TestSecurityAndKeyMasking:
         """Verifies GET /api/providers and GET /api/providers/{id} return masked keys."""
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             # Create a provider with plaintext key
             await client.post("/api/providers", json={
                 "id": "security_test_provider",
@@ -173,7 +173,7 @@ class TestSecurityAndKeyMasking:
         """Verifies submitting masked key (e.g. sk-****7766) does NOT overwrite plaintext secret in DB."""
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             # 1. Create with secret
             await client.post("/api/providers", json={
                 "id": "retain_test_prov",
@@ -204,7 +204,7 @@ class TestSecurityAndKeyMasking:
         """Verifies submitting empty key on update does not erase stored secret."""
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             await client.post("/api/providers", json={
                 "id": "empty_key_prov",
                 "name": "Empty Key Test",
@@ -230,7 +230,7 @@ class TestSecurityAndKeyMasking:
         """Verifies submitting a new valid plaintext key updates the secret in DB."""
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             await client.post("/api/providers", json={
                 "id": "change_key_prov",
                 "name": "Change Key Test",
@@ -263,7 +263,7 @@ class TestProviderManagementEndpoints:
         """Verifies POST /api/providers/{id}/activate sets active provider and syncs settings."""
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             resp = await client.post("/api/providers/openai/activate")
             assert resp.status_code == 200
             data = resp.json()
@@ -280,7 +280,7 @@ class TestProviderManagementEndpoints:
         """Verifies DELETE /api/providers/{id} deletes a configured provider."""
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             # Create
             await client.post("/api/providers", json={
                 "id": "prov_to_delete",
@@ -311,7 +311,7 @@ class TestVoiceAndInferenceTuning:
         """Verifies voice profiles listing, creation, and updates."""
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             # 1. Create Profile
             create_resp = await client.post("/api/voice/profiles", json={
                 "name": "ConsoleTestCharacter",
@@ -347,7 +347,7 @@ class TestVoiceAndInferenceTuning:
         """Verifies POST /api/config updates all fine-tuning knobs and persists them."""
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             knobs = {
                 "text_split_method": "cut5",
                 "speed_factor": 1.15,
@@ -392,7 +392,7 @@ class TestSystemDiagnostics:
         """Verifies GET /api/system/status provides full telemetry response."""
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             resp = await client.get("/api/system/status")
             assert resp.status_code == 200
             data = resp.json()
@@ -673,7 +673,7 @@ class TestConsoleVoiceAndProviderIntegration:
         app = create_app()
         transport = ASGITransport(app=app)
         unique_name = f"SwitchableProfile_{uuid.uuid4().hex[:6]}"
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             # Create a test profile
             create_resp = await client.post("/api/voice/profiles", json={
                 "name": unique_name,
@@ -703,7 +703,7 @@ class TestConsoleVoiceAndProviderIntegration:
         """Verifies POST /api/voice/switch with non-existent ID returns 404."""
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             switch_resp = await client.post("/api/voice/switch", json={"profile_id": 99999})
             assert switch_resp.status_code == 404
 
@@ -712,7 +712,7 @@ class TestConsoleVoiceAndProviderIntegration:
         """Verifies GET /api/health endpoint."""
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             # Health
             h_resp = await client.get("/api/health")
             assert h_resp.status_code == 200

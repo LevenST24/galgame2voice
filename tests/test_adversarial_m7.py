@@ -846,7 +846,7 @@ class TestOriginalRequestAcceptanceCriteria:
         AC: Health check endpoint (/api/health) responds with status of galgame2voice.
         """
         app = create_app()
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
             # Check /api/health
             resp_health = await client.get("/api/health")
             assert resp_health.status_code == 200

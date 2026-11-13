@@ -44,7 +44,7 @@ async def test_profile_accepts_ref_audio_under_external_gpt_sovits_dir(tmp_path,
     await init_db()
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         created = await client.post("/api/voice/profiles", json=_profile_payload(engine, ref_audio))
         assert created.status_code == 201, created.text
         stored = created.json()["profile"]["ref_audio_path"]

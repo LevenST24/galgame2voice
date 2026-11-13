@@ -36,7 +36,7 @@ def app(isolate_test_database):
 
 @pytest.fixture
 async def client(app):
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as c:
         yield c
 
 

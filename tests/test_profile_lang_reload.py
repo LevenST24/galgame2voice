@@ -40,7 +40,7 @@ async def test_editing_enabled_voice_languages_reaches_the_engine(
     expected = {"prompt_lang": "ja", "text_lang": "ja", field: value}
 
     transport = httpx.ASGITransport(app=create_app())
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         created = await client.post("/api/voice/profiles", json={
             "name": "Language voice",
             "gpt_weights_path": "weights/voice.ckpt",

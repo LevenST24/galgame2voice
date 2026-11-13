@@ -69,7 +69,7 @@ async def test_create_voice_profile_reports_full_disk(monkeypatch):
         "galgame2voice.routers.voice.crud.create_voice_profile",
         AsyncMock(side_effect=sqlite3.OperationalError("database or disk is full")),
     )
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         response = await client.post("/api/voice/profiles", json={
             "name": "音色", "gpt_weights_path": "weights/a.ckpt", "sovits_weights_path": "weights/a.pth",
             "ref_audio_path": "audio/a.wav", "prompt_text": "こんにちは",

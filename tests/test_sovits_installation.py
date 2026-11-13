@@ -102,7 +102,7 @@ async def test_directory_api_feeds_model_scan_and_authorized_roots(tmp_path, mon
         (engine / folder).mkdir()
         (engine / folder / filename).write_bytes(b"test model marker")
     voice._scan_cache["result"] = (9999999999, {"stale": True})
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         empty = await client.get("/api/system/sovits-directory")
         assert empty.json()["directory"] == ""
         result = await client.put("/api/system/sovits-directory", json={"directory": str(engine)})

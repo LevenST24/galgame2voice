@@ -79,14 +79,14 @@ async def app_client(isolate_test_database):
     await init_db(isolate_test_database)
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         yield client
 
 
 def mock_external_http_responses(matchers: dict):
     """
     Creates mock get/post patches for httpx.AsyncClient that:
-    1. Forwards any request targeting 'http://test' or relative paths to the ASGI transport.
+    1. Forwards any request targeting 'http://127.0.0.1:8080' or relative paths to the ASGI transport.
     2. Matches external requests against matchers (url substring -> Response or callable).
     3. Defaults to a 200 OK Response so unmocked external requests never hang or timeout.
     """
@@ -94,7 +94,7 @@ def mock_external_http_responses(matchers: dict):
     orig_post = httpx.AsyncClient.post
 
     def _is_internal(url_str: str) -> bool:
-        return (not url_str.startswith("http://") and not url_str.startswith("https://")) or url_str.startswith("http://test")
+        return (not url_str.startswith("http://") and not url_str.startswith("https://")) or url_str.startswith("http://127.0.0.1:8080")
 
     async def mocked_get(self_client, url, *args, **kwargs):
         url_str = str(url)

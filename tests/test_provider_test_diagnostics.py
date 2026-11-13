@@ -31,7 +31,7 @@ async def app_client(isolate_test_database):
     await init_db(isolate_test_database)
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         yield client
 
 
@@ -42,7 +42,7 @@ def _patch_upstream(monkeypatch, handler):
     def _is_internal(url_str: str) -> bool:
         return (
             not url_str.startswith("http://") and not url_str.startswith("https://")
-        ) or url_str.startswith("http://test")
+        ) or url_str.startswith("http://127.0.0.1:8080")
 
     async def mocked_get(self_client, url, *args, **kwargs):
         url_str = str(url)

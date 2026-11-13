@@ -117,7 +117,7 @@ class TestSseStreamingBackpressureAndDisconnect:
         set_chat_service(chat_service)
 
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             resp = await client.post("/api/chat/stream", json={"prompt": "Test disconnect", "session_id": "disc-test"})
             assert resp.status_code == 200
             assert "text/event-stream" in resp.headers["content-type"]

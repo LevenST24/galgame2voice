@@ -26,7 +26,7 @@ async def test_telegram_routes_are_removed():
     route_paths = [getattr(route, "path", "") for route in app.routes]
     assert all("telegram" not in path.lower() for path in route_paths)
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         resp = await client.post("/api/telegram/test", json={"token": "123456:ABCDEF"})
         assert resp.status_code == 404
 
@@ -50,7 +50,7 @@ async def test_legacy_telegram_sqlite_data_and_backup_compatibility(isolate_test
         await conn.commit()
 
     app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         # 1. GET /api/config omits telegram_* keys without wiping SQLite columns
         get_cfg = await client.get("/api/config")
         assert get_cfg.status_code == 200

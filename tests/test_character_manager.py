@@ -730,7 +730,7 @@ def test_character_switch_api_all_characters_and_aliases():
     from fastapi.testclient import TestClient
     from galgame2voice.main import app
 
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1:8080")
 
     with patch("galgame2voice.services.voice_manager.VoiceManager.switch_profile", new_callable=AsyncMock) as mock_switch:
         mock_switch.return_value = True

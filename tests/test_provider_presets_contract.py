@@ -130,7 +130,7 @@ async def test_provider_test_endpoint_probes_preset_model_for_unregistered_custo
         patch.object(httpx.AsyncClient, "get", fake_get),
         patch.object(httpx.AsyncClient, "post", fake_post),
     ):
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
             resp = await client.post(
                 "/api/providers/test",
                 json={

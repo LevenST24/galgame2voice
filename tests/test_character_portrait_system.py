@@ -38,7 +38,7 @@ async def setup_test_characters(request):
 
 
 async def _client():
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080")
 
 
 async def _natsume_id(client) -> int:

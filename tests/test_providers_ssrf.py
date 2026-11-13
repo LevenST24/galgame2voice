@@ -24,7 +24,7 @@ async def client(isolate_test_database):
     conn.close()
     app = create_app()
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as c:
         yield c
 
 
