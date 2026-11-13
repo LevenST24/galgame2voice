@@ -7,8 +7,8 @@
   <title>Gal2Voice · AI 多会话聊天</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%236c7ce0'/%3E%3Cpath d='M16 5l6 8.2c.9 1.2.7 2.6-.3 3.6L16 27l-5.7-10.2c-1-1-1.2-2.4-.3-3.6L16 5z' fill='%23ffffff'/%3E%3C/svg%3E" />
 
-  <script type="module" crossorigin src="/static/assets/index-CfAzUit9.js"></script>
-  <link rel="stylesheet" crossorigin href="/static/assets/index-DF_7pyvS.css">
+  <script type="module" crossorigin src="/static/assets/index-E_TjLJNp.js"></script>
+  <link rel="stylesheet" crossorigin href="/static/assets/index-gpgZVriU.css">
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -553,6 +553,7 @@
   <!-- 会话设置 -->
   <div class="overlay hidden" id="sessionModal">
     <div class="modal" role="dialog" aria-modal="true" aria-label="角色与会话">
+      <div id="sVoiceDropOverlay" class="voice-drop-overlay hidden" aria-hidden="true">松开即可导入角色包</div>
       <header class="modal-head">
         <h2>角色与会话 <span class="modal-sub" id="smTitle"></span></h2>
         <button class="icon-btn" data-close aria-label="关闭"><svg class="icon"><use href="#i-x"></use></svg></button>
@@ -566,9 +567,13 @@
           <label>角色音色<b id="sVoiceActive"></b></label>
           <div class="voice-select-row">
             <select id="sVoice"></select>
+            <button type="button" class="btn primary" id="sVoiceImport" title="选择角色包 .zip 压缩包导入（也可直接拖进窗口）">导入角色包</button>
+            <button type="button" class="btn ghost" id="sVoiceImportFolder" title="选择已解压的角色包文件夹导入">选择文件夹</button>
             <button type="button" class="btn ghost" id="sVoiceRescan" title="扫描 characters/ 目录中新解压的角色包与模型">扫描</button>
             <button type="button" class="btn ghost danger" id="sVoiceDelete">删除</button>
           </div>
+          <input type="file" id="sVoiceImportZipInput" accept=".zip,application/zip" hidden />
+          <input type="file" id="sVoiceImportDirInput" webkitdirectory directory multiple hidden />
         </div>
         <div id="sCustomVoiceBox" class="custom-provider-box hidden">
           <div class="field">
