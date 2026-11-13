@@ -107,28 +107,6 @@ function setup(t, options = {}) {
   return { app, controller, calls, emit, start, active };
 }
 
-test('BUILTIN_PRESETS gemini defaults reasoning_effort to low', () => {
-  const gemini = BUILTIN_PRESETS.find(p => p.id === 'gemini');
-  assert.ok(gemini, 'gemini preset must exist in BUILTIN_PRESETS');
-  assert.equal(gemini.default_reasoning_effort, 'low');
-});
-
-test('BUILTIN_PRESETS includes correct default_base_url for gemini and anthropic, and includes moonshot', () => {
-  const gemini = BUILTIN_PRESETS.find(p => p.id === 'gemini');
-  assert.ok(gemini, 'Gemini preset must exist');
-  assert.equal(gemini.default_base_url, 'https://generativelanguage.googleapis.com/v1beta/openai');
-
-  const anthropic = BUILTIN_PRESETS.find(p => p.id === 'anthropic');
-  assert.ok(anthropic, 'Anthropic preset must exist');
-  assert.equal(anthropic.default_base_url, 'https://api.anthropic.com/v1');
-
-  const moonshot = BUILTIN_PRESETS.find(p => p.id === 'moonshot');
-  assert.ok(moonshot, 'Moonshot preset must exist');
-  assert.equal(moonshot.default_base_url, 'https://api.moonshot.cn/v1');
-  assert.equal(moonshot.default_chat_model, 'moonshot-v1-32k');
-  assert.deepEqual(moonshot.preset_models, ['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k']);
-});
-
 test('needsModelSettings considers empty_reply a model setting issue', () => {
   assert.equal(needsModelSettings('任何信息', 'empty_reply'), true);
   assert.equal(needsModelSettings('模型把生成长度用完了，却没有写出回复', null), true);

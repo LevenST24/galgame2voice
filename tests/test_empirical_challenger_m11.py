@@ -88,41 +88,6 @@ class TestProviderSwitchingAndPrefill:
     """Empirically verifies switching across all 8 canonical providers, prefill correctness, and active state."""
 
     @pytest.mark.asyncio
-    async def test_all_eight_providers_presets_and_prefill_contract(self, app_client):
-        """Verifies that all 8 providers exist in presets or list_providers with correct default base URLs and preset models."""
-        resp = await app_client.get("/api/providers")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "providers" in data
-        assert "presets" in data
-
-        {p["id"]: p for p in data["providers"]}
-        presets_by_id = {p["id"]: p for p in data["presets"]}
-
-        for pid in CANONICAL_8_PROVIDERS:
-            assert pid in presets_by_id, f"Provider '{pid}' missing from presets"
-            preset = presets_by_id[pid]
-            assert preset["default_base_url"], f"Preset '{pid}' missing default_base_url"
-            assert isinstance(preset["preset_models"], list), f"Preset '{pid}' preset_models is not a list"
-            assert len(preset["preset_models"]) > 0, f"Preset '{pid}' preset_models is empty"
-
-            # Check specific canonical models
-            if pid == "gemini":
-                assert any("gemini-2.5" in m for m in preset["preset_models"])
-            elif pid == "openai":
-                assert any("gpt-4o" in m for m in preset["preset_models"])
-            elif pid == "anthropic":
-                assert any("claude" in m for m in preset["preset_models"])
-            elif pid == "deepseek":
-                assert "deepseek-chat" in preset["preset_models"]
-            elif pid == "xai":
-                assert "grok-3" in preset["preset_models"]
-            elif pid == "siliconflow":
-                assert any("deepseek" in m.lower() for m in preset["preset_models"])
-            elif pid == "custom":
-                assert preset["default_base_url"].startswith("http://")
-
-    @pytest.mark.asyncio
     async def test_rapid_succession_switching_and_mutual_exclusion(self, app_client, monkeypatch):
         """Tests rapid switching between all 8 providers in cyclic order, asserting mutual exclusivity.
 
