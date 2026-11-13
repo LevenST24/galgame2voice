@@ -12,7 +12,7 @@ Element.prototype.append = function (...nodes) { nodes.forEach(node => this.appe
 const doc = fakeDocument();
 globalThis.document = doc;
 
-const { BUILTIN_PRESETS, formatProviderDiagnostic } = await import('../frontend/src/settings.js');
+const { BUILTIN_PRESETS, formatProviderDiagnostic, resolvePresetCapabilities } = await import('../frontend/src/settings.js');
 const { needsModelSettings } = await import('../frontend/src/ui.js');
 const { mountAdv } = await import('../frontend/src/adv/adv_app.js');
 const { DEFAULT_SESSION_SETTINGS } = await import('../frontend/src/store.js');
@@ -52,6 +52,27 @@ test('formatProviderDiagnostic falls back safely when structured fields are miss
     title: '连通性测试未通过',
     guidance: '连接失败，请检查网络或参数配置。',
   });
+});
+
+test('formatProviderDiagnostic prefers summary_zh and action_zh over legacy title and guidance', () => {
+  assert.deepEqual(formatProviderDiagnostic({
+    error_title: '旧标题',
+    summary_zh: '新标题',
+    diagnostic: '旧说明',
+    action_zh: '新说明',
+  }), { title: '新标题', guidance: '新说明' });
+});
+
+test('resolvePresetCapabilities uses the server preset for key requirement and reasoning effort', () => {
+  assert.equal(typeof resolvePresetCapabilities, 'function');
+  const resolved = resolvePresetCapabilities({
+    legacyPreset: { name: 'OpenAI' },
+    builtinPreset: { requires_api_key: false, default_reasoning_effort: 'low' },
+    fallbackPreset: { default_reasoning_effort: 'medium' },
+    providerId: 'openai',
+  });
+  assert.equal(resolved.requires_api_key, false);
+  assert.equal(resolved.default_reasoning_effort, 'low');
 });
 
 function setup(t, options = {}) {
@@ -109,8 +130,10 @@ function setup(t, options = {}) {
 
 test('needsModelSettings considers empty_reply a model setting issue', () => {
   assert.equal(needsModelSettings('任何信息', 'empty_reply'), true);
-  assert.equal(needsModelSettings('模型把生成长度用完了，却没有写出回复', null), true);
-  assert.equal(needsModelSettings('模型这次没有返回内容。请点「重新发送」再试；仍失败请检查「对话模型」设置。', null), true);
+  assert.equal(needsModelSettings('模型把生成长度用完了，却没有写出回复', null), false);
+  assert.equal(needsModelSettings('模型这次没有返回内容。请点「重新发送」再试；仍失败请检查「对话模型」设置。', null), false);
+  assert.equal(needsModelSettings('任何信息', 'EMPTY_REPLY'), true);
+  assert.equal(needsModelSettings('任何信息', 'EMPTY_REPLY_LENGTH_LIMIT'), true);
 });
 
 test('ADV textbox displays empty_reply with 重新发送 and 去设置 actions', t => {

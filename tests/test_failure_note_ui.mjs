@@ -28,11 +28,17 @@ test('older failed messages have no retry; only the latest is eligible', t => {
   assert.deepEqual(entries[0].querySelectorAll('.adv-error-btn').map(b => b.textContent), ['去设置']);
   assert.deepEqual(entries[1].querySelectorAll('.adv-error-btn').map(b => b.textContent), ['重新发送', '去设置']);
 });
-test('error codes decide model-settings toast actions; text is the fallback', () => {
+test('error codes decide model-settings toast actions; text without a code does not', () => {
   assert.equal(needsModelSettings('anything', 'PRIVATE_ENDPOINT_BLOCKED'), true);
   assert.equal(needsModelSettings('请求过于频繁', 'OPENAI_RATE_LIMIT'), false);
-  assert.equal(needsModelSettings('API Key 无效', null), true);
+  assert.equal(needsModelSettings('API Key 无效', null), false);
   assert.equal(needsModelSettings('连接中断，请检查服务与网络后再试。', null), false);
+  assert.equal(needsModelSettings('连接超时，响应里提到 API Key', 'NETWORK_TIMEOUT'), false);
+  assert.equal(needsModelSettings('连接超时，响应里提到 API Key', 'CONNECTION_RESET'), false);
+  assert.equal(needsModelSettings('连接超时，响应里提到 API Key', 'NETWORK_CONNECTION_FAILED'), false);
+  assert.equal(needsModelSettings('连接超时，响应里提到 API Key', 'BAD_GATEWAY'), false);
+  assert.equal(needsModelSettings('连接超时，响应里提到 API Key', 'SERVER_OVERLOADED'), false);
+  assert.equal(needsModelSettings('连接超时，响应里提到 API Key', 'REQUEST_TIMEOUT'), false);
 });
 
 test('missing or ambiguous voice selections open character settings while missing providers open model settings', () => {

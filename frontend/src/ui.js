@@ -103,9 +103,18 @@ export function renderSessionList(container, { sessions, activeId, onSelect, onD
   container.appendChild(frag);
 }
 
-/** 失败是否需要去「对话模型」处理：后端给出错误码时按码判断，频率超限只需稍后重试。 */
-export function needsModelSettings(error, code = null) {
-  if (/^VOICE_PROFILE_/.test(code || '')) return false;
-  if (code) return !/RATE_LIMIT$/.test(code);
-  return /模型|密钥|Key|Provider|401|403|未配置/i.test(error || '');
+const TRANSIENT_DIAGNOSTIC_CODES = new Set([
+  'NETWORK_TIMEOUT',
+  'CONNECTION_RESET',
+  'NETWORK_CONNECTION_FAILED',
+  'BAD_GATEWAY',
+  'SERVER_OVERLOADED',
+  'REQUEST_TIMEOUT',
+]);
+
+/** 失败是否需要去「对话模型」处理。只看错误码，不根据错误原文猜测。 */
+export function needsModelSettings(_error, code = null) {
+  const normalized = String(code ?? '').trim().toUpperCase();
+  if (!normalized || normalized.startsWith('VOICE_PROFILE_')) return false;
+  return !TRANSIENT_DIAGNOSTIC_CODES.has(normalized) && !normalized.endsWith('RATE_LIMIT');
 }

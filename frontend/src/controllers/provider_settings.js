@@ -3,7 +3,7 @@ import {
   fetchProviders,
   testProviderConnection,
 } from '../api.js';
-import { formatProviderDiagnostic, BUILTIN_PRESETS } from '../settings.js';
+import { formatProviderDiagnostic, BUILTIN_PRESETS, resolvePresetCapabilities } from '../settings.js';
 import { showToast } from '../ui.js';
 import { saveConfirmedProvider, activateConfirmedProvider } from './provider_recovery.js';
 
@@ -45,6 +45,7 @@ export class ProviderSettingsController {
     this.coordinator = coordinator || {};
     this.cachedProviders = [];
     this.cachedPresets = [];
+    this.cachedBuiltinPresets = [];
     this.currentActiveProvider = null;
     this.loadedProviderId = '';
     this.providersLoaded = false;
@@ -219,6 +220,15 @@ export class ProviderSettingsController {
     }
   }
 
+  presetCapabilities(providerId) {
+    return resolvePresetCapabilities({
+      legacyPreset: this.cachedPresets.find((p) => p.id === providerId) || null,
+      builtinPreset: this.cachedBuiltinPresets.find((p) => p.id === providerId) || null,
+      fallbackPreset: BUILTIN_PRESETS.find((p) => p.id === providerId) || null,
+      providerId,
+    });
+  }
+
   renderProviderForm(keepDraft = false) {
     if (this.disposed || !this.dom.gProvider) return;
     const fill = (field, apply) => {
@@ -229,7 +239,7 @@ export class ProviderSettingsController {
     const realId = isCustom ? 'custom' : pid;
 
     const stored = this.cachedProviders.find((p) => p.id === realId);
-    const preset = this.cachedPresets.find((p) => p.id === realId) || BUILTIN_PRESETS.find((p) => p.id === realId);
+    const capabilities = this.presetCapabilities(realId);
 
     // 1. 自定义提供商名称字段显隐
     if (this.dom.gCustomNameField) {
@@ -248,7 +258,7 @@ export class ProviderSettingsController {
     }
     if (this.dom.gProviderDesc) {
       this.dom.gProviderDesc.textContent =
-        preset?.description ||
+        capabilities.description ||
         stored?.description ||
         (isCustom ? '本地或私有部署的 OpenAI 兼容推理服务 (Ollama / vLLM / LMStudio)' : '外部 AI 大模型服务提供商');
     }
@@ -272,20 +282,20 @@ export class ProviderSettingsController {
       if (this.dom.gProviderKeyTag) this.dom.gProviderKeyTag.className = 'provider-status-tag tag-configured';
       if (this.dom.gKeyStatusText) this.dom.gKeyStatusText.textContent = `已配置密钥 (${maskedKey})`;
       if (this.dom.gApiKeyTip) this.dom.gApiKeyTip.textContent = '密钥已保存。如需修改，请在此输入新密钥后保存。';
-    } else if (isCustom) {
+    } else if (!capabilities.requires_api_key) {
       if (this.dom.gApiKey) this.dom.gApiKey.placeholder = 'sk-…（本地 Ollama / vLLM 等无鉴权服务可留空）';
       if (this.dom.gProviderKeyTag) this.dom.gProviderKeyTag.className = 'provider-status-tag tag-optional';
       if (this.dom.gKeyStatusText) this.dom.gKeyStatusText.textContent = '可选 (本地服务可免密)';
       if (this.dom.gApiKeyTip) this.dom.gApiKeyTip.textContent = '本地服务（如 Ollama）无需填写，公网中转或鉴权服务请输入对应凭据。';
     } else {
-      if (this.dom.gApiKey) this.dom.gApiKey.placeholder = `请输入 ${preset?.name || pid} 的有效 API Key (必填)`;
+      if (this.dom.gApiKey) this.dom.gApiKey.placeholder = `请输入 ${capabilities.name || pid} 的有效 API Key (必填)`;
       if (this.dom.gProviderKeyTag) this.dom.gProviderKeyTag.className = 'provider-status-tag tag-unconfigured';
       if (this.dom.gKeyStatusText) this.dom.gKeyStatusText.textContent = '未配置 API Key · 无法调用';
       if (this.dom.gApiKeyTip) this.dom.gApiKeyTip.textContent = '该提供商尚未配置密钥。请前往官方控制台申领并在此填入。';
     }
 
     // 4. Base URL 填充与一键恢复默认
-    const defaultUrl = preset?.default_base_url || (isCustom ? 'http://127.0.0.1:11434/v1' : 'https://api.openai.com/v1');
+    const defaultUrl = capabilities.default_base_url || (isCustom ? 'http://127.0.0.1:11434/v1' : 'https://api.openai.com/v1');
     const currentUrl = stored?.api_base_url || defaultUrl;
     fill('gBaseUrl', el => { el.value = currentUrl; el.placeholder = defaultUrl; });
     if (this.dom.gBtnResetBaseUrl) {
@@ -302,7 +312,7 @@ export class ProviderSettingsController {
     }
 
     // 5. 对话模型选择
-    const presetModels = preset?.preset_models || (stored?.chat_model ? [stored.chat_model] : []);
+    const presetModels = capabilities.preset_models || (stored?.chat_model ? [stored.chat_model] : []);
     const keepModelSelect = keepDraft && this.dirtyProviderFields.has('gChatModelSelect');
     if (this.dom.gChatModelSelect && !keepModelSelect) {
       this.dom.gChatModelSelect.innerHTML = '';
@@ -323,7 +333,7 @@ export class ProviderSettingsController {
     }
 
     const currentModel = keepDraft && this.dirtyProviderFields.has('gChatModel') ? this.dom.gChatModel.value
-      : stored?.chat_model || preset?.default_chat_model || presetModels[0] || '';
+      : stored?.chat_model || capabilities.default_chat_model || presetModels[0] || '';
     fill('gChatModel', el => { el.value = currentModel; });
     if (this.dom.gChatModelSelect && !keepModelSelect) {
       if (presetModels.includes(currentModel)) {
@@ -336,7 +346,7 @@ export class ProviderSettingsController {
     }
 
     // 6. 思考强度设置
-    fill('gReasoningEffort', el => { el.value = stored ? (stored.reasoning_effort || '') : (preset?.default_reasoning_effort || ''); });
+    fill('gReasoningEffort', el => { el.value = stored ? (stored.reasoning_effort || '') : (capabilities.default_reasoning_effort || ''); });
 
     // 7. 诊断输出框重置
     this.resetTestResultBox();
@@ -376,6 +386,7 @@ export class ProviderSettingsController {
       if (load !== this.providerLoad || this.disposed) return;
       this.cachedProviders = data && data.providers ? data.providers : [];
       this.cachedPresets = data && data.presets && data.presets.length ? data.presets : BUILTIN_PRESETS;
+      this.cachedBuiltinPresets = data && Array.isArray(data.builtin_presets) ? data.builtin_presets : [];
 
       const active = this.cachedProviders.find((p) => p.is_active);
       this.currentActiveProvider = active || null;
@@ -459,6 +470,7 @@ export class ProviderSettingsController {
         showToast(`列表暂时无法刷新，当前输入已保留：${e.message}`, 'error');
         return;
       }
+      this.cachedBuiltinPresets = [];
       if (this.dom.gProvider) {
         this.dom.gProvider.innerHTML = '';
         BUILTIN_PRESETS.forEach((p) => {
@@ -631,17 +643,17 @@ export class ProviderSettingsController {
       }
 
       const stored = this.cachedProviders.find((p) => p.id === pid);
-      const preset = this.cachedPresets.find((p) => p.id === pid) || BUILTIN_PRESETS.find((p) => p.id === pid);
+      const capabilities = this.presetCapabilities(pid);
 
       const hasExistingKey = Boolean(stored?.api_key && stored.api_key.length > 0);
-      if (!isCustom && !hasExistingKey && !apiKey) {
+      if (capabilities.requires_api_key && !hasExistingKey && !apiKey) {
         if (this.dom.gApiKey) this.dom.gApiKey.focus();
-        throw new Error(`请先输入 ${preset?.name || pid} 的 API Key 再启用`);
+        throw new Error(`请先输入 ${capabilities.name || pid} 的 API Key 再启用`);
       }
 
       const payload = {
         id: pid,
-        name: isCustom ? customName || '自定义模型' : preset?.name || stored?.name || pid,
+        name: isCustom ? customName || '自定义模型' : capabilities.name || stored?.name || pid,
         api_base_url: baseUrl,
         chat_model: chatModel,
         reasoning_effort: reasoningEffort || null,
