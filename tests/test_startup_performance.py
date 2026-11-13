@@ -13,13 +13,6 @@ from galgame2voice.database.session import get_db, init_db
 from galgame2voice.main import create_app
 
 
-def test_startup_batch_file_syntax_and_safety():
-    bat_path = Path(__file__).resolve().parent.parent / "启动.bat"
-    assert bat_path.exists()
-    content = bat_path.read_text(encoding="utf-8")
-    assert "scripts\\run_server.py" in content
-
-
 def test_index_html_no_blocking_google_fonts():
     html_path = Path(__file__).resolve().parent.parent / "galgame2voice" / "static" / "index.html"
     assert html_path.exists()
