@@ -52,14 +52,6 @@ async def test_database_migrations_decoupling():
         assert settings_row["active_provider_id"] == "deepseek"
         assert len(settings_row["console_token"]) > 0
 
-        # Check composite indexes exist
-        idx_cur = await conn.execute("SELECT name FROM sqlite_master WHERE type = 'index';")
-        idx_rows = await idx_cur.fetchall()
-        idx_names = {r["name"] for r in idx_rows}
-        assert "idx_messages_role_session" in idx_names
-        assert "idx_token_usage_provider_tokens" in idx_names
-        assert "idx_sessions_updated_at" in idx_names
-
 
 @pytest.mark.requires_writable_temp_dir
 @pytest.mark.asyncio

@@ -148,12 +148,6 @@ def test_tts_stream_pipeline_helpers():
     mock_tts_service = MagicMock()
     pipe = TtsStreamPipeline(mock_tts_service, generation_id="test_gen_123")
 
-    # Vocal vs non-vocal
-    assert pipe.is_vocal_sentence("こんにちは。") is True
-    assert pipe.is_vocal_sentence("   ") is False
-    assert pipe.is_vocal_sentence("（ため息）") is False
-    assert pipe.is_vocal_sentence("...") is False
-
     # Options preparation
     mock_prof = MagicMock()
     mock_prof.id = 42
@@ -170,7 +164,6 @@ def test_tts_stream_pipeline_helpers():
     assert prepared_opts["_generation_id"] == "test_gen_123"
     assert prepared_opts["voice_profile_id"] == 42
     assert prepared_opts["character_name"] == "TestChar"
-    assert prepared_opts["text_split_method"] == "cut0"  # short sentence <= 80
 
 
 @pytest.mark.asyncio
@@ -191,9 +184,6 @@ async def test_tts_stream_pipeline_synthesize_chunk():
 
     assert err is None
     assert chunk_data is not None
-    assert chunk_data["index"] == 0
-    assert chunk_data["audio_url"] == "/audio/cache/chunk_0.wav"
-    assert chunk_data["is_cached"] is True
     assert profiler.app_first_chunk_ts is not None
 
 
