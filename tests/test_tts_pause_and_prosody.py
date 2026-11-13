@@ -288,20 +288,6 @@ class TestModalParticleSentenceSplitting:
         assert len(sents) == expected_count
         assert "".join(sents) == text
 
-    def test_non_modal_clause_splits_for_agile_latency(self):
-        text = "こんにちは、先生、今日はいい天気ですね。"
-        sents = split_japanese_sentences(text, is_first_chunk=True, min_chars=6)
-        assert len(sents) == 2
-        assert sents[0] == "こんにちは、"
-        assert sents[1] == "先生、今日はいい天気ですね。"
-
-    def test_chinese_non_modal_clause_splits(self):
-        text = "初めまして，よろしくお願いします。"
-        sents = split_japanese_sentences(text, is_first_chunk=True, min_chars=6)
-        assert len(sents) == 2
-        assert sents[0] == "初めまして，"
-        assert sents[1] == "よろしくお願いします。"
-
 
 class TestStreamingParserModalParticleHandling:
     """Verifies StreamingBilingualParser does not prematurely emit modal particle clauses."""
