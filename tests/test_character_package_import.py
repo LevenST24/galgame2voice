@@ -87,7 +87,7 @@ def _assert_temp_empty() -> None:
 async def test_import_zip_root_nested_and_ustar_tar(tmp_path, monkeypatch):
     root, app = _setup_app(tmp_path, monkeypatch)
     await init_db()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         r1 = await client.post(
             "/api/characters/import",
             params={"filename": "爱丽丝.zip"},
@@ -137,7 +137,7 @@ async def test_import_rejects_traversal_absolute_and_symlinks(tmp_path, monkeypa
         sym_zip.getvalue(),
         sym_tar.getvalue(),
     ]
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         for payload in payloads:
             res = await client.post("/api/characters/import", params={"filename": "evil.zip"}, content=payload)
             assert res.status_code == 400, res.text
@@ -150,7 +150,7 @@ async def test_import_rejects_traversal_absolute_and_symlinks(tmp_path, monkeypa
 async def test_invalid_package_rolls_back_leaving_existing_intact(tmp_path, monkeypatch):
     root, app = _setup_app(tmp_path, monkeypatch)
     await init_db()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         ok_res = await client.post(
             "/api/characters/import",
             params={"filename": "alice.zip"},
@@ -178,7 +178,7 @@ async def test_conflict_409_overwrite_backup_and_failed_overwrite_restore(tmp_pa
     v2 = _make_package_bytes("zip", "natsume", "夏目", prefix="natsume/", system_prompt="第二版人设")
     bad_v3 = _make_package_bytes("zip", "natsume", "夏目", prefix="natsume/", valid=False)
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         assert (
             await client.post("/api/characters/import", params={"filename": "n.zip"}, content=v1)
         ).status_code == 200
@@ -222,7 +222,7 @@ async def test_import_exceeding_size_limit_returns_413(tmp_path, monkeypatch):
     monkeypatch.setattr(cpi, "MAX_IMPORT_BYTES", 512)
     payload = _make_package_bytes("zip", "alice", "爱丽丝")
     assert len(payload) > 512
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         res = await client.post("/api/characters/import", params={"filename": "alice.zip"}, content=payload)
     assert res.status_code == 413
     _assert_temp_empty()
