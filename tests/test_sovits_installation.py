@@ -301,4 +301,27 @@ def test_launcher_discovery_handles_quoted_env_override(tmp_path, monkeypatch):
     assert not Path(saved_text).is_absolute()
 
 
+def test_find_gpt_sovits_directory_prefers_hint_in_configured_project_root(tmp_path, monkeypatch):
+    stale = make_engine(tmp_path / "stale-engine")
+    chosen = make_engine(tmp_path / "chosen-engine")
+    install = tmp_path / "install"
+    custom = tmp_path / "custom-data"
+    installation.save_sovits_directory(install, str(stale))
+    installation.save_sovits_directory(custom, str(chosen))
+    monkeypatch.setattr(run_server, "PROJECT_ROOT", install)
+    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(custom))
+    get_settings.cache_clear()
+    assert Path(get_settings().project_root) != run_server._DEFAULT_PROJECT_ROOT
+    monkeypatch.delenv("GPT_SOVITS_DIR", raising=False)
+    monkeypatch.delenv("GALGAME2VOICE_DATA_ROOT", raising=False)
+    found = run_server.find_gpt_sovits_directory()
+    assert found == chosen.resolve()
+    assert installation.read_sovits_directory(install) == stale.resolve()
+    assert installation.read_sovits_directory(custom) == chosen.resolve()
+
+    # Legacy absolute hint in configured root rewrites back to configured root, not install root.
+    (custom / "data" / "sovits_dir.txt").write_text(str(chosen.resolve()), encoding="utf-8")
+    assert run_server.find_gpt_sovits_directory() == chosen.resolve()
+    assert not Path((custom / "data" / "sovits_dir.txt").read_text(encoding="utf-8").strip()).is_absolute()
+    assert installation.read_sovits_directory(install) == stale.resolve()
 
