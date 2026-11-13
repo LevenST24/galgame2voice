@@ -41,6 +41,7 @@ from galgame2voice.utils.prosody import (
     calculate_adaptive_prosody,
 )
 from galgame2voice.services.tts_cache_manager import get_tts_cache_manager, TtsCacheManager
+from galgame2voice.services.tts_options import resolve_default_text_split_method
 from galgame2voice.services.tts_scheduler import get_tts_scheduler, TtsPriority
 from galgame2voice.services.character_identity import AmbiguousProfileName
 from galgame2voice.services.voice_resolver import VoiceContextChangedError, VoiceContextUnavailableError
@@ -403,8 +404,8 @@ class TtsService:
             if "batch_size" in opts and opts["batch_size"] is not None:
                 opts["batch_size"] = clamp_dynamic_batch_size(opts["batch_size"], fallback=1)
 
-        if text is not None and "text_split_method" not in opts and "cut_option" not in opts and "how_to_cut" not in opts:
-            opts["text_split_method"] = "cut0" if len(text.strip()) <= 80 else "cut2"
+        if text is not None:
+            opts["text_split_method"] = resolve_default_text_split_method(text, opts)
 
         return opts
 

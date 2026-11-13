@@ -22,7 +22,7 @@ from galgame2voice.database.session import get_db, get_database_path
 from galgame2voice.services.gpt_sovits_client import (
     normalize_japanese_for_tts,
 )
-from galgame2voice.services.tts_options import resolve_tts_options
+from galgame2voice.services.tts_options import resolve_default_text_split_method, resolve_tts_options
 from galgame2voice.utils.async_tasks import drain_background_tasks
 from galgame2voice.utils.audio_spec import project_file
 from galgame2voice.services.audio_identity import AudioIdentity, database_scope
@@ -123,15 +123,7 @@ def _build_canonical_params_dict(
     top_p_str = f"{top_p:.3f}"
     seed = resolved["seed"]
     batch_size = resolved["batch_size"]
-    user_split = (
-        opts.get("text_split_method")
-        or opts.get("cut_option")
-        or opts.get("how_to_cut")
-    )
-    if user_split:
-        text_split_method = resolved["text_split_method"].lower()
-    else:
-        text_split_method = "cut0" if len(clean_text.strip()) <= 80 else "cut2"
+    text_split_method = resolve_default_text_split_method(clean_text, opts)
     fragment_interval = resolved["fragment_interval"]
     frag_str = f"{fragment_interval:.3f}"
 
