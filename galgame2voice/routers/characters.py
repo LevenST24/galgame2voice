@@ -23,6 +23,7 @@ from galgame2voice.security.media_urls import (
     verify_media_url_signature,
 )
 from galgame2voice.services.character_manager import get_character_manager, get_character_work
+from galgame2voice.services.character_package_import import import_character_archive
 from galgame2voice.services.character_voice_catalog import get_character_voice_catalog
 from galgame2voice.schemas.character_manifest import clean_character_work
 from galgame2voice.services.portrait_manifest import (
@@ -222,6 +223,33 @@ async def rescan_character_packages(request: Request) -> dict[str, Any]:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"扫描角色包失败: {safe_err}",
+        ) from exc
+
+
+@router.post(
+    "/import",
+    response_model=None,
+    summary="Import Character Package Archive",
+    description="Streams a .zip or .tar character package archive, validates it, installs into characters/, and syncs voice_profiles.",
+)
+async def import_character_packages(
+    request: Request,
+    filename: str = Query(default="", max_length=512, description="Original archive or folder name"),
+    overwrite: bool = Query(default=False, description="Backup and overwrite existing folder(s) with the same name"),
+) -> Any:
+    try:
+        return await import_character_archive(
+            request,
+            filename=filename,
+            overwrite=overwrite,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        safe_err = sanitize_error_detail(exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"导入角色包失败: {safe_err}",
         ) from exc
 
 

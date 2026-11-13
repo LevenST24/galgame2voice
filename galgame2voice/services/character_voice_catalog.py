@@ -409,28 +409,42 @@ class CharacterVoiceCatalog:
     ) -> dict[str, Any]:
         effective_lock = lock if lock is not None else self._get_loop_lock(self._rescan_locks)
         async with effective_lock:
-            char_mgr = self._resolve_character_manager(character_manager)
-            open_db = self._resolve_db_factory(db_factory)
-            discovered = await asyncio.to_thread(char_mgr.discover_characters)
-            async with open_db() as conn:
-                synced = await char_mgr.sync_with_db(conn)
-                profiles = await crud.list_voice_profiles(conn)
-                active = await crud.get_active_voice_profile(conn)
-            import galgame2voice.routers.voice as voice_router
+            return await self.rescan_packages_unlocked(
+                character_manager=character_manager,
+                db_factory=db_factory,
+            )
 
-            scan_cache = voice_router._scan_cache
-            generation = scan_cache.get("generation", 0) + 1
-            scan_cache.clear()
-            scan_cache["generation"] = generation
-            return {
-                "status": "ok",
-                "discovered_count": len(discovered),
-                "synced_count": synced,
-                "total_profiles": len(profiles),
-                "active_profile_id": active.id if active else (profiles[0].id if profiles else None),
-                "characters": [p.name for p in discovered],
-                "catalog_warning": char_mgr.catalog_warning,
-            }
+    async def rescan_packages_unlocked(
+        self,
+        *,
+        character_manager: Any | None = None,
+        db_factory: Callable[[], Any] | None = None,
+        validate_before_sync: Callable[[Any, list[Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        char_mgr = self._resolve_character_manager(character_manager)
+        open_db = self._resolve_db_factory(db_factory)
+        discovered = await asyncio.to_thread(char_mgr.discover_characters)
+        if validate_before_sync is not None:
+            validate_before_sync(char_mgr, discovered)
+        async with open_db() as conn:
+            synced = await char_mgr.sync_with_db(conn)
+            profiles = await crud.list_voice_profiles(conn)
+            active = await crud.get_active_voice_profile(conn)
+        import galgame2voice.routers.voice as voice_router
+
+        scan_cache = voice_router._scan_cache
+        generation = scan_cache.get("generation", 0) + 1
+        scan_cache.clear()
+        scan_cache["generation"] = generation
+        return {
+            "status": "ok",
+            "discovered_count": len(discovered),
+            "synced_count": synced,
+            "total_profiles": len(profiles),
+            "active_profile_id": active.id if active else (profiles[0].id if profiles else None),
+            "characters": [p.name for p in discovered],
+            "catalog_warning": char_mgr.catalog_warning,
+        }
 
     async def resolve_profile_by_name(
         self,

@@ -205,6 +205,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 }
 @keyframes fadeIn { from { opacity: 0; } }
 .modal {
+  position: relative;
   width: min(560px, 94vw);
   max-height: 86dvh;
   display: flex;
@@ -260,6 +261,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .settings-shortcuts .btn { min-height: 36px; padding: 6px 12px; }
 .settings-header-actions, .settings-page-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .settings-page-actions[hidden], #gExperienceSave[hidden], .modal-foot .btn[hidden] { display: none; }
+.settings-session-editor { position: relative; }
 .settings-session-editor > .modal {
   display: block; width: auto; max-height: none; border: 0; border-radius: 0;
   box-shadow: none; background: none; overflow: visible;
@@ -390,9 +392,27 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 }
 .check-line input { accent-color: var(--brand); width: 15px; height: 15px; }
 
-/* 音色选择 + 扫描/删除按钮同行 */
-.voice-select-row { display: flex; gap: 8px; align-items: stretch; }
-.voice-select-row select { height: 42px; flex: 1; min-width: 0; }
+/* 音色选择 + 导入/扫描/删除按钮同行 */
+.voice-select-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; }
+.voice-select-row select { height: 42px; flex: 1 1 180px; min-width: 0; }
+.voice-select-row .btn { flex: none; white-space: nowrap; }
+.voice-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  border-radius: 14px;
+  border: 2px dashed var(--brand);
+  background: rgba(16, 19, 31, 0.84);
+  color: #ffffff;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-align: center;
+  pointer-events: none;
+}
 .btn.danger { color: var(--danger); border: 1px solid #f3c1c1; background: var(--danger-soft); white-space: nowrap; }
 .btn.danger:hover { background: #f9dcdc; }
 

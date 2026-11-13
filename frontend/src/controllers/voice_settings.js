@@ -4,6 +4,11 @@ import { showToast } from '../ui.js';
 import { requestJson } from '../api.js';
 import { getErrorMessage } from '../request.js';
 import { persistSession } from '../session_api.js';
+import { getConsoleToken, promptConsoleToken } from '../auth.js';
+import { packTarBlob } from '../tar_pack.js';
+
+export const FIRST_USE_VOICE_HINT =
+  '首次使用：点「导入角色包」选择角色包（文件夹或 .zip），也可以直接拖进来；没有角色包时，可以用模型权重和参考音频新建音色。';
 
 let _dom = {};
 let _callbacks = {};
@@ -32,6 +37,9 @@ const serverMessage = e => (e?.data ? getErrorMessage(e.data, '') : '');
 const VOICE_LIST_UNAVAILABLE = '__unavailable__';
 let profilesRevision = 0;
 let lastShownCatalogWarning = '';
+let isImporting = false;
+let dragEnterDepth = 0;
+let cleanupDragListeners = null;
 
 export function invalidateScannedModels() {
   scannedModels = null;
@@ -40,8 +48,16 @@ export function invalidateScannedModels() {
 }
 
 export function initVoiceSettings(dom, callbacks = {}) {
+  cleanupDragListeners?.();
+  cleanupDragListeners = null;
+  isImporting = false;
+  dragEnterDepth = 0;
+
   _dom = dom;
   _callbacks = callbacks;
+  _promptBaseline = '';
+  _promptOwnerId = null;
+  _promptSelection = '';
   lastSwitchFailed = false;
   lastShownCatalogWarning = '';
   failedSwitchProfileId = null;
@@ -51,19 +67,15 @@ export function initVoiceSettings(dom, callbacks = {}) {
   profilesRevision += 1;
   activeProfileRevision += 1;
 
-  if (_dom.sVoice) {
-    _dom.sVoice.addEventListener('change', syncSystemPromptToSelectedVoice);
-    _dom.sVoice.addEventListener('change', syncCustomVoiceBox);
-  }
-  if (_dom.sVoiceRescan) {
-    _dom.sVoiceRescan.addEventListener('click', handleRescanCharacters);
-  }
-  if (_dom.sVoiceDelete) {
-    _dom.sVoiceDelete.addEventListener('click', deleteVoiceProfile);
-  }
-  if (_dom.sCvCreate) {
-    _dom.sCvCreate.addEventListener('click', createCustomVoice);
-  }
+  _dom.sVoice?.addEventListener('change', handleVoiceSelectionChange);
+  _dom.sVoiceImport?.addEventListener('click', () => !isImporting && _dom.sVoiceImportZipInput?.click());
+  _dom.sVoiceImportFolder?.addEventListener('click', () => !isImporting && _dom.sVoiceImportDirInput?.click());
+  _dom.sVoiceImportZipInput?.addEventListener('change', handleZipInputChange);
+  _dom.sVoiceImportDirInput?.addEventListener('change', handleFolderInputChange);
+  _dom.sVoiceRescan?.addEventListener('click', handleRescanCharacters);
+  _dom.sVoiceDelete?.addEventListener('click', deleteVoiceProfile);
+  _dom.sCvCreate?.addEventListener('click', createCustomVoice);
+  cleanupDragListeners = bindSessionDropTarget();
 
   // Sliders range input sync
   const sliders = [
@@ -120,7 +132,11 @@ export function getVoiceProfiles() {
   return voiceProfiles;
 }
 
-export function cancelSessionSettingsLoad() { editorRevision += 1; }
+export function cancelSessionSettingsLoad() {
+  editorRevision += 1;
+  dragEnterDepth = 0;
+  _dom.sVoiceDropOverlay?.classList?.add('hidden');
+}
 
 function syncInitialSessionVoiceSelection(session) {
   if (!_dom.sVoice) return;
@@ -204,14 +220,22 @@ export function syncRangeLabels() {
   }
 }
 
-function refreshActiveLoadedBadges() {
+function updateVoiceActiveHint(session) {
   const active = activeProfileId != null ? voiceProfiles.find((p) => Number(p.id) === Number(activeProfileId)) : null;
   if (_dom.sVoiceActive) {
-    const activeSession = getActive();
-    _dom.sVoiceActive.textContent = active ? `当前加载：${active.name}`
-      : (!voiceProfiles.length && !activeSession?.settings?.voiceProfileId
-        ? '首次使用：请选择模型权重和参考音频，创建会话音色。' : '');
+    _dom.sVoiceActive.textContent = active
+      ? `当前加载：${active.name}`
+      : (!voiceProfiles.length && !session?.settings?.voiceProfileId ? FIRST_USE_VOICE_HINT : '');
   }
+  if (_dom.sVoiceImport) {
+    _dom.sVoiceImport.classList.toggle('primary', !voiceProfiles.length);
+    _dom.sVoiceImport.classList.toggle('ghost', !!voiceProfiles.length);
+  }
+  return active;
+}
+
+function refreshActiveLoadedBadges() {
+  updateVoiceActiveHint(getActive());
   const options = Array.from(_dom.sVoice?.options || _dom.sVoice?.children || []);
   for (const opt of options) {
     const optId = Number(opt.value);
@@ -356,7 +380,7 @@ async function applySessionVoice(session, { silent = false }, want, isCurrent) {
   }
 }
 
-export async function loadSessionVoiceSelect(session, { preserveDraft = false } = {}) {
+export async function loadSessionVoiceSelect(session, { preserveDraft = false, syncCustomBox = true } = {}) {
   if (!_dom.sVoice) return;
   const revision = ++voiceSelectRevision;
   const editor = editorRevision;
@@ -374,12 +398,7 @@ export async function loadSessionVoiceSelect(session, { preserveDraft = false } 
     // A placeholder left by an earlier failed load is not a user choice.
     if (draftSelection === VOICE_LIST_UNAVAILABLE) draftSelection = String(session?.settings?.voiceProfileId || '');
     _dom.sVoice.innerHTML = '<option value="">跟随后端当前音色</option>';
-    const active = voiceProfiles.find((p) => p.id === activeProfileId);
-    if (_dom.sVoiceActive) {
-      _dom.sVoiceActive.textContent = active ? `当前加载：${active.name}`
-        : (!voiceProfiles.length && !session?.settings?.voiceProfileId
-          ? '首次使用：请选择模型权重和参考音频，创建会话音色。' : '');
-    }
+    const active = updateVoiceActiveHint(session);
     const sortedProfiles = active ? [active, ...voiceProfiles.filter((p) => p !== active)] : voiceProfiles;
     for (const p of sortedProfiles) {
       const opt = document.createElement('option');
@@ -430,7 +449,9 @@ export async function loadSessionVoiceSelect(session, { preserveDraft = false } 
       throw e;
     }
   }
-  syncCustomVoiceBox();
+  if (syncCustomBox) {
+    syncCustomVoiceBox();
+  }
 }
 
 /**
@@ -476,6 +497,11 @@ export function syncCustomVoiceBox() {
   const show = _dom.sVoice.value === '__custom__';
   _dom.sCustomVoiceBox.classList.toggle('hidden', !show);
   if (show) populateScanOptions();
+}
+
+function handleVoiceSelectionChange() {
+  syncSystemPromptToSelectedVoice();
+  syncCustomVoiceBox();
 }
 
 export async function populateScanOptions() {
@@ -614,7 +640,7 @@ export async function createCustomVoice() {
 }
 
 export async function handleRescanCharacters() {
-  if (_dom.sVoiceRescan?.disabled) return;
+  if (isImporting || _dom.sVoiceRescan?.disabled) return;
   if (_dom.sVoiceRescan) _dom.sVoiceRescan.disabled = true;
   try {
     const res = await requestJson('/api/characters/rescan', { method: 'POST' }, { timeoutMs: 30000 });
@@ -634,8 +660,162 @@ export async function handleRescanCharacters() {
     console.error('扫描角色包失败:', e);
     showToast('扫描角色包失败：现有角色包列表保持不变，请检查角色包目录后重试', 'error');
   } finally {
-    if (_dom.sVoiceRescan) _dom.sVoiceRescan.disabled = false;
+    if (_dom.sVoiceRescan && !isImporting) _dom.sVoiceRescan.disabled = false;
   }
+}
+
+function setImportBusy(busy) {
+  isImporting = busy;
+  if (_dom.sVoiceImport) {
+    _dom.sVoiceImport.disabled = busy;
+    _dom.sVoiceImport.textContent = busy ? '正在导入…' : '导入角色包';
+  }
+  if (_dom.sVoiceImportFolder) _dom.sVoiceImportFolder.disabled = busy;
+  if (_dom.sVoiceRescan) _dom.sVoiceRescan.disabled = busy;
+}
+
+function sendImportArchiveXhr(blob, filename, { overwrite = false, retriedAuth = false } = {}) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const qs = new URLSearchParams([...(filename ? [['filename', filename]] : []), ...(overwrite ? [['overwrite', '1']] : [])]).toString();
+    xhr.open('POST', `/api/characters/import${qs ? `?${qs}` : ''}`);
+    xhr.setRequestHeader('Content-Type', blob.type || 'application/octet-stream');
+    const token = getConsoleToken();
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    if (xhr.upload) xhr.upload.onprogress = (ev) => {
+      if (ev.lengthComputable && ev.total > 0 && _dom.sVoiceImport) {
+        _dom.sVoiceImport.textContent = `正在导入…${Math.min(100, Math.max(0, Math.round((ev.loaded / ev.total) * 100)))}%`;
+      }
+    };
+    xhr.onload = async () => {
+      if (xhr.status === 401 && !retriedAuth) {
+        let token = null;
+        try { token = await promptConsoleToken('服务需要访问令牌验证'); } catch {}
+        if (token) {
+          sendImportArchiveXhr(blob, filename, { overwrite, retriedAuth: true }).then(resolve, reject);
+          return;
+        }
+      }
+      let data = null;
+      try { data = xhr.responseText ? JSON.parse(xhr.responseText) : null; } catch {}
+      resolve({ status: xhr.status, data });
+    };
+    xhr.onerror = () => reject(new Error('无法连接本机服务，请确认程序正在运行后重试。'));
+    xhr.onabort = () => reject(new Error('导入已取消。'));
+    xhr.send(blob);
+  });
+}
+
+async function importCharacterArchive(blob, filename) {
+  if (isImporting || !blob) return;
+  setImportBusy(true);
+  try {
+    let { status, data } = await sendImportArchiveXhr(blob, filename, { overwrite: false });
+    if (status === 409 && data?.code === 'package_exists') {
+      const names = Array.isArray(data.names) && data.names.length ? data.names.join('、') : (filename || '该角色');
+      if (!window.confirm(`已有同名角色包「${names}」，覆盖它吗？旧的会先备份。`)) return;
+      if (_dom.sVoiceImport) _dom.sVoiceImport.textContent = '正在导入…';
+      ({ status, data } = await sendImportArchiveXhr(blob, filename, { overwrite: true }));
+    }
+    if (status < 200 || status >= 300) {
+      showToast(getErrorMessage(data, '') || `导入角色包失败（HTTP ${status}）`, 'error');
+      return;
+    }
+    invalidateScannedModels();
+    await loadSessionVoiceSelect(getActive(), { preserveDraft: true, syncCustomBox: false });
+    const imported = Array.isArray(data?.imported) ? data.imported : [];
+    if (imported[0]?.profile_id != null && _dom.sVoice) {
+      _dom.sVoice.value = String(imported[0].profile_id);
+      handleVoiceSelectionChange();
+    } else syncCustomVoiceBox();
+    const label = imported.length ? imported.map((item) => `「${item.name}」`).join('、') : `「${filename || '角色包'}」`;
+    showToast(`已导入${label}，点「保存」即可使用`, 'success');
+  } catch (err) {
+    console.error('导入角色包失败:', err);
+    showToast(err?.message || '导入角色包失败，请重试。', 'error');
+  } finally {
+    setImportBusy(false);
+  }
+}
+
+async function handleZipInputChange() {
+  const input = _dom.sVoiceImportZipInput, file = input?.files?.[0];
+  if (input) input.value = '';
+  if (file) await importCharacterArchive(file, file.name || 'character_package.zip');
+}
+
+async function handleFolderInputChange() {
+  const input = _dom.sVoiceImportDirInput, files = Array.from(input?.files || []);
+  if (input) input.value = '';
+  if (!files.length) return;
+  try {
+    const entries = files.map((f) => ({ path: String(f.webkitRelativePath || f.name || '').trim(), file: f })).filter((e) => e.path);
+    await importCharacterArchive(packTarBlob(entries), entries[0]?.path?.split('/')[0] || 'character_package');
+  } catch (err) { showToast(err?.message || '打包角色包文件夹失败。', 'error'); }
+}
+
+async function collectEntryFiles(entry, parentPath = '') {
+  const relPath = parentPath ? `${parentPath}/${entry.name}` : entry.name;
+  if (entry.isFile) return [{ path: relPath, file: await new Promise((res, rej) => entry.file(res, rej)) }];
+  if (!entry.isDirectory || entry.name === '__MACOSX') return [];
+  const reader = entry.createReader();
+  const children = await new Promise((res, rej) => {
+    const all = [];
+    const next = () => reader.readEntries((b) => (!b?.length ? res(all) : (all.push(...b), next())), rej);
+    next();
+  });
+  const out = [];
+  for (const child of children) out.push(...(await collectEntryFiles(child, relPath)));
+  return out;
+}
+
+function bindSessionDropTarget() {
+  const target = _dom.sessionModal;
+  if (!target) return null;
+  const active = () => !target.hidden && !target.classList?.contains('hidden');
+  const hasFiles = (ev) => Array.from(ev?.dataTransfer?.types || []).includes('Files');
+  const setOverlay = (on) => _dom.sVoiceDropOverlay?.classList?.toggle('hidden', !on);
+  const handlers = {
+    dragenter: (ev) => {
+      if (isImporting || !active() || !hasFiles(ev)) return;
+      ev.preventDefault?.(); dragEnterDepth += 1; setOverlay(true);
+    },
+    dragover: (ev) => {
+      if (isImporting || !active() || !hasFiles(ev)) return;
+      ev.preventDefault?.(); setOverlay(true);
+      if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'copy';
+    },
+    dragleave: () => {
+      if (active() && (dragEnterDepth = Math.max(0, dragEnterDepth - 1)) === 0) setOverlay(false);
+    },
+    drop: async (ev) => {
+      if (!active() || !hasFiles(ev)) return;
+      ev.preventDefault?.(); ev.stopPropagation?.();
+      dragEnterDepth = 0; setOverlay(false);
+      if (isImporting) return;
+      const entries = Array.from(ev.dataTransfer?.items || []).map((it) => it?.webkitGetAsEntry?.()).filter(Boolean);
+      if (!entries.length) return;
+      try {
+        if (entries.length === 1 && entries[0].isFile) {
+          const file = await new Promise((res, rej) => entries[0].file(res, rej));
+          return await importCharacterArchive(file, file.name || entries[0].name || 'character_package');
+        }
+        if (entries.some((e) => e.isFile && /\.(zip|tar|7z|rar)$/i.test(e.name || ''))) {
+          return showToast('请一次拖入一个压缩包，或拖入包含多个角色包的文件夹。', 'error');
+        }
+        const collected = [];
+        for (const entry of entries) collected.push(...(await collectEntryFiles(entry)));
+        if (!collected.length) return showToast('拖入的文件夹为空，请选择包含 manifest.json 的角色包。', 'error');
+        // Several loose items (e.g. the files inside a package folder) have no folder name: the server takes the manifest's.
+        await importCharacterArchive(packTarBlob(collected), entries.length === 1 ? entries[0].name : '');
+      } catch (err) {
+        console.error('拖放导入角色包失败:', err);
+        showToast(err?.message || '读取拖入的角色包失败，请改用「导入角色包」按钮选择。', 'error');
+      }
+    },
+  };
+  for (const [type, fn] of Object.entries(handlers)) target.addEventListener?.(type, fn);
+  return () => { for (const [type, fn] of Object.entries(handlers)) target.removeEventListener?.(type, fn); };
 }
 
 export async function deleteVoiceProfile() {
