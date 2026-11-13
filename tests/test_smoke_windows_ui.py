@@ -6,11 +6,12 @@ import base64
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
-import time
 from typing import Any
 import unittest
 from unittest.mock import MagicMock, patch
@@ -22,6 +23,7 @@ if str(REPO_ROOT) not in sys.path:
 from scripts.smoke_windows_turn_reply import (  # noqa: E402
     verify_sqlite_turn_cardinality,
 )
+import scripts.smoke_windows_ui as smoke_windows_ui  # noqa: E402
 from scripts.smoke_windows_ui import (  # noqa: E402
     SimpleCdpClient,
     build_acceptance_script,
@@ -495,6 +497,113 @@ class TestSmokeWindowsUi(unittest.TestCase):
         business_calls = [expr for expr in eval_calls if "adv-stage" in expr]
         self.assertEqual(len(business_calls), 1)
 
+    def _make_browser_harness(self, root: Path, outcomes: list[tuple[int | None, int | None]]) -> Any:
+        profiles, procs, cmds = [], [], []
+        n = 0
+
+        def make_profile_dir() -> Path:
+            nonlocal n
+            n += 1
+            p = root / f"profile_{n}"
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+
+        def fake_popen(cmd: list[str], *args: Any, **kwargs: Any) -> MagicMock:
+            poll_val, port = outcomes[len(procs)]
+            profile = Path(next(a.split("=", 1)[1] for a in cmd if a.startswith("--user-data-dir=")))
+            self.assertEqual(list(profile.iterdir()), [])
+            profiles.append(profile)
+            cmds.append(list(cmd))
+            proc = MagicMock(pid=1000 + len(procs))
+            proc.poll.return_value = poll_val
+            procs.append(proc)
+            if port is not None:
+                (profile / "DevToolsActivePort").write_text(f"{port}\n/devtools/browser/fake", encoding="utf-8")
+            return proc
+
+        return make_profile_dir, fake_popen, procs, profiles, cmds
+
+    def test_run_browser_ui_acceptance_retries_with_fresh_profile_when_first_launch_stalls(self) -> None:
+        mock_client = MagicMock()
+        mock_client.send_command.side_effect = lambda m, p=None: (
+            {"result": {"value": {"url": "http://127.0.0.1:8000/", "readyState": "complete"}}}
+            if m == "Runtime.evaluate" and "document.URL" in (p or {}).get("expression", "")
+            else ({"result": {"value": {"ok": True}}} if m == "Runtime.evaluate" else {})
+        )
+        resp = MagicMock()
+        resp.read.return_value = json.dumps([{"type": "page", "webSocketDebuggerUrl": "ws://127.0.0.1:9333/page/fake"}]).encode()
+        resp.__enter__.return_value = resp
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            _, fake_popen, procs, profiles, _ = self._make_browser_harness(Path(tmp_dir), [(None, None), (None, 9333)])
+            with patch("scripts.smoke_windows_ui.find_browser", return_value=Path("C:/dummy/chrome.exe")), \
+                 patch("scripts.smoke_windows_ui.subprocess.Popen", side_effect=fake_popen), \
+                 patch("scripts.smoke_windows_ui.make_cdp_client", return_value=mock_client), \
+                 patch("urllib.request.urlopen", return_value=resp) as urlopen_mock:
+                res = run_browser_ui_acceptance("http://127.0.0.1:8000", Path(tmp_dir), "s1", "hi", "/a.wav", timeout=0.3)
+        self.assertEqual(res, {"ok": True})
+        self.assertEqual(len(profiles), 2)
+        self.assertNotEqual(profiles[0], profiles[1])
+        self.assertIn(":9333/", urlopen_mock.call_args.args[0])
+        procs[0].terminate.assert_called_once()
+        procs[1].terminate.assert_called_once()
+
+    def test_launch_browser_with_devtools_retries_once_on_stall_and_stops_first_proc(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            make_profile_dir, fake_popen, procs, profiles, cmds = self._make_browser_harness(
+                Path(tmp_dir), [(None, None), (None, 9444)]
+            )
+            with patch("scripts.smoke_windows_ui.subprocess.Popen", side_effect=fake_popen):
+                proc, port, profile_dir = smoke_windows_ui.launch_browser_with_devtools(
+                    Path("C:/dummy/chrome.exe"), make_profile_dir, ["--headless", "--remote-debugging-port=0"],
+                    attempt_timeout=0.3, attempts=2,
+                )
+        self.assertIs(proc, procs[1])
+        self.assertEqual(port, 9444)
+        self.assertEqual(profile_dir, profiles[1])
+        self.assertEqual(len(profiles), 2)
+        self.assertNotEqual(profiles[0], profiles[1])
+        procs[0].terminate.assert_called_once()
+        procs[1].terminate.assert_not_called()
+        self.assertIn(f"--user-data-dir={profiles[1]}", cmds[1])
+
+    def test_launch_browser_with_devtools_does_not_retry_when_process_exits(self) -> None:
+        for exit_code in (42, 0):
+            with self.subTest(exit_code=exit_code), tempfile.TemporaryDirectory() as tmp_dir:
+                make_profile_dir, fake_popen, procs, profiles, _ = self._make_browser_harness(
+                    Path(tmp_dir), [(exit_code, None)]
+                )
+                with patch("scripts.smoke_windows_ui.subprocess.Popen", side_effect=fake_popen) as popen_mock:
+                    with self.assertRaises(RuntimeError) as ctx:
+                        smoke_windows_ui.launch_browser_with_devtools(
+                            Path("C:/dummy/chrome.exe"), make_profile_dir, ["--headless"],
+                            attempt_timeout=0.3, attempts=2,
+                        )
+                self.assertEqual(popen_mock.call_count, 1)
+                self.assertEqual(len(profiles), 1)
+                procs[0].terminate.assert_not_called()
+                self.assertIn(f"exit code: {exit_code}", str(ctx.exception))
+
+    def test_launch_browser_with_devtools_fails_with_attempt_durations_and_exit_codes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            make_profile_dir, fake_popen, procs, profiles, _ = self._make_browser_harness(
+                Path(tmp_dir), [(None, None), (None, None)]
+            )
+            with patch("scripts.smoke_windows_ui.subprocess.Popen", side_effect=fake_popen) as popen_mock:
+                with self.assertRaises(RuntimeError) as ctx:
+                    smoke_windows_ui.launch_browser_with_devtools(
+                        Path("C:/dummy/chrome.exe"), make_profile_dir, ["--headless"],
+                        attempt_timeout=0.2, attempts=2,
+                    )
+        self.assertEqual(popen_mock.call_count, 2)
+        self.assertEqual(len(profiles), 2)
+        procs[0].terminate.assert_called_once()
+        procs[1].terminate.assert_called_once()
+        msg = str(ctx.exception)
+        self.assertGreaterEqual(len(re.findall(r"\d+\.\d+s", msg)), 2, msg)
+        self.assertIn("attempt 1", msg)
+        self.assertIn("attempt 2", msg)
+        self.assertEqual(msg.count("exit code: None"), 2)
+
     def test_real_browser_synthetic_navigation_proof(self) -> None:
         browser_exe = find_browser()
         if not browser_exe:
@@ -528,11 +637,17 @@ class TestSmokeWindowsUi(unittest.TestCase):
         t.start()
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            profile_dir = Path(tmp_dir) / "profile"
-            profile_dir.mkdir()
+            tmp_root = Path(tmp_dir)
+            attempt_count = 0
 
-            cmd = [
-                str(browser_exe),
+            def make_profile_dir() -> Path:
+                nonlocal attempt_count
+                attempt_count += 1
+                profile = tmp_root / f"profile_{attempt_count}"
+                profile.mkdir(parents=True, exist_ok=True)
+                return profile
+
+            extra_args = [
                 "--headless",
                 "--no-sandbox",
                 "--disable-gpu",
@@ -543,26 +658,17 @@ class TestSmokeWindowsUi(unittest.TestCase):
                 "--disable-extensions",
                 "--remote-debugging-port=0",
                 "--remote-allow-origins=*",
-                f"--user-data-dir={profile_dir}",
-                "about:blank",
             ]
-            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            proc = None
             client = None
             try:
-                port_file = profile_dir / "DevToolsActivePort"
-                cdp_port = None
-                # Same 15 s budget as scripts/smoke_windows_ui.py. The old 5 s ran out twice in a row on the
-                # Linux job while pytest-xdist kept the other CPUs busy (run 42960316374, attempts 1 and 2).
-                deadline = time.monotonic() + 15.0
-                while time.monotonic() < deadline and proc.poll() is None:
-                    if port_file.is_file():
-                        try:
-                            cdp_port = int(port_file.read_text(encoding="utf-8").splitlines()[0])
-                            break
-                        except Exception:
-                            pass
-                    time.sleep(0.05)
-                self.assertIsNotNone(cdp_port, f"DevToolsActivePort not exposed (Chrome exit code: {proc.poll()})")
+                proc, cdp_port, _profile_dir = smoke_windows_ui.launch_browser_with_devtools(
+                    browser_exe,
+                    make_profile_dir,
+                    extra_args,
+                    attempt_timeout=15.0,
+                    attempts=2,
+                )
 
                 import urllib.request
                 with urllib.request.urlopen(f"http://127.0.0.1:{cdp_port}/json/list", timeout=5) as res:
@@ -578,7 +684,8 @@ class TestSmokeWindowsUi(unittest.TestCase):
             finally:
                 if client:
                     client.close()
-                stop_browser_process(proc)
+                if proc is not None:
+                    stop_browser_process(proc)
                 server.shutdown()
                 server.server_close()
 
