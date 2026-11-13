@@ -265,24 +265,30 @@ def find_gpt_sovits_directory() -> Path | None:
         if extra:
             candidates.append(Path(extra))
 
-    # Fast cache lookup to avoid repeating disk searches on every run
+    # Fast cache lookup to avoid repeating disk searches on every run.
+    # A redirected project_root owns the folder saved from Settings, so check it
+    # before the install-tree copy; sibling and drive search stay on PROJECT_ROOT.
     # Strictly use utf-8-sig to strip any invisible Windows PowerShell UTF-8 BOM (\ufeff)
-    cache_file = PROJECT_ROOT / "data" / "sovits_dir.txt"
-    if cache_file.exists():
-        try:
-            cached_path = read_sovits_directory(PROJECT_ROOT)
-            if cached_path is not None:
-                valid_cached = _check_sovits_dir(cached_path)
-                if valid_cached:
-                    try:
-                        raw_hint = cache_file.read_text(encoding="utf-8-sig").strip().strip("\"'")
-                        if Path(raw_hint).is_absolute() and valid_cached.resolve().is_relative_to(PROJECT_ROOT.resolve().parent):
-                            write_sovits_directory_hint(PROJECT_ROOT, valid_cached)
-                    except Exception:
-                        pass
-                    return valid_cached
-        except Exception:
-            pass
+    install_root = Path(PROJECT_ROOT)
+    configured_root = _resolve_project_root()
+    hint_roots = (install_root,) if configured_root == install_root else (configured_root, install_root)
+    for hint_root in hint_roots:
+        cache_file = hint_root / "data" / "sovits_dir.txt"
+        if cache_file.exists():
+            try:
+                cached_path = read_sovits_directory(hint_root)
+                if cached_path is not None:
+                    valid_cached = _check_sovits_dir(cached_path)
+                    if valid_cached:
+                        try:
+                            raw_hint = cache_file.read_text(encoding="utf-8-sig").strip().strip("\"'")
+                            if Path(raw_hint).is_absolute() and valid_cached.resolve().is_relative_to(hint_root.resolve().parent):
+                                write_sovits_directory_hint(hint_root, valid_cached)
+                        except Exception:
+                            pass
+                        return valid_cached
+            except Exception:
+                pass
 
     for p in candidates:
         valid_dir = _check_sovits_dir(p)
