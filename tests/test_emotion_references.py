@@ -122,9 +122,12 @@ async def test_tts_service_populates_emotion_reference(configured_voice):
     async with get_db() as conn:
         await crud.update_voice_profile(conn, configured_voice.id, VoiceProfileUpdate(name="四季夏目"))
     tts = TtsService()
+    from galgame2voice.services.character_voice_catalog import get_character_voice_catalog
     from galgame2voice.services.voice_manager import get_voice_manager
     vm = get_voice_manager()
-    active = await vm.get_active_profile()
+    active = await get_character_voice_catalog().get_active_profile(
+        db_factory=lambda: get_db(vm.db_path),
+    )
     char_name = (getattr(active, "name", "") or "四季夏目")
     expected = resolve_emotion_reference(char_name, "tsundere")
 

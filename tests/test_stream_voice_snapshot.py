@@ -261,13 +261,19 @@ async def test_emotion_reference_works_when_profile_reference_is_empty(voice, mo
 
 
 @pytest.mark.parametrize("engine_has_reference", [False, True])
-async def test_voice_manager_keeps_selection_explicit_and_does_not_copy_stale_profile(voice, engine_has_reference):
+async def test_voice_manager_keeps_selection_explicit_and_does_not_copy_stale_profile(
+    voice, engine_has_reference, monkeypatch,
+):
+    from galgame2voice.services.character_voice_catalog import get_character_voice_catalog
     from galgame2voice.services.voice_manager import VoiceManager
 
     manager = VoiceManager.__new__(VoiceManager)
     manager.client = SimpleNamespace(current_refer_audio=str(voice.root / "old.wav") if engine_has_reference else None)
-    manager.get_profile = AsyncMock(return_value=voice.old)
-    manager.get_active_profile = AsyncMock(return_value=voice.old)
+    catalog = get_character_voice_catalog()
+    get_profile = AsyncMock(return_value=voice.old)
+    get_active_profile = AsyncMock(return_value=voice.old)
+    monkeypatch.setattr(catalog, "get_profile", get_profile)
+    monkeypatch.setattr(catalog, "get_active_profile", get_active_profile)
 
     by_name = await manager._resolve_active_options({"character_name": "Other"})
     assert "voice_profile_id" not in by_name
@@ -277,8 +283,8 @@ async def test_voice_manager_keeps_selection_explicit_and_does_not_copy_stale_pr
     resolved = await voice.service._populate_voice_profile_opts(by_alias)
     assert Path(resolved["gpt_weights_path"]) == voice.root / "new.ckpt"
     assert Path(resolved["ref_audio_path"]) == voice.root / "new.wav"
-    manager.get_profile.assert_not_awaited()
-    manager.get_active_profile.assert_not_awaited()
+    get_profile.assert_not_awaited()
+    get_active_profile.assert_not_awaited()
 
 
 async def test_legacy_id_and_canonical_id_keep_selection_precedence(voice):

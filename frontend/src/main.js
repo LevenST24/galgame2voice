@@ -58,7 +58,7 @@ import {
 } from './controllers/global_settings.js';
 import {
   initAudioPlayerUi,
-  playVoice,
+  playUserVoice,
   stopCurrentVoice,
   revokeAllCachedAudioUrls,
   toggleVoiceMode,
@@ -352,8 +352,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         onHome: () => returnHome(),
         onNewSession: newChat,
         loadOlderHistory: session => loadOlderSessionHistory(session),
-        playUserVoice: (msg, ctl) => playVoice(msg, ctl),
-        playLegacyVoice: (msg, ctl) => playVoice(msg, ctl),
+        playUserVoice,
         regenerateLineAudio,
         getRecoveryVoice: () => getVoiceProfiles().find(profile => profile.id === getActive()?.settings?.voiceProfileId) || null,
         subscribeOverlay: onModalChange,
@@ -690,9 +689,10 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       const active = voiceProfiles.find((p) => p.id === (selection ? selection.voiceProfileId : activeProfileId));
       if (active) {
         s.settings.voiceProfileId = active.id;
-        if (active.name === '高楯欧丽叶') s.settings.ttsSpeed = 0.88;
-        else if (active.name === '常陆茉子') s.settings.ttsSpeed = 0.90;
-        else if (active.name === '白雪乃爱') s.settings.ttsSpeed = 1.05;
+        const manifestSpeed = Number(active.default_tts_speed);
+        s.settings.ttsSpeed = Number.isFinite(manifestSpeed) && manifestSpeed > 0
+          ? manifestSpeed
+          : DEFAULT_SESSION_SETTINGS.ttsSpeed;
       }
     }
     saveState();

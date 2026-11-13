@@ -873,6 +873,18 @@ def get_character_work(char_name: str) -> str | None:
     return clean_character_work(getattr(pkg.manifest, "work", None))
 
 
+def get_character_default_tts_speed(char_name: str) -> float | None:
+    """Manifest default speech speed; None when the package is missing or invalid."""
+    if not char_name:
+        return None
+    pkg = get_character_manager().get_character(char_name)
+    if pkg is None or not pkg.is_valid:
+        return None
+    params = getattr(pkg.manifest, "default_voice_params", None)
+    speed = getattr(params, "speed", None) if params is not None else None
+    return float(speed) if speed is not None else None
+
+
 __all__ = [
     "CharacterManager",
     "CharacterManifest",
@@ -880,6 +892,7 @@ __all__ = [
     "EmotionConfig",
     "VoiceParamsConfig",
     "_AUDIO_PROBE_CACHE",
+    "get_character_default_tts_speed",
     "get_character_manager",
     "get_character_work",
 ]
