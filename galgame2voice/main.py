@@ -350,21 +350,13 @@ async def lifespan(app: FastAPI):
 class AudioStaticFiles(StaticFiles):
     """
     Enhanced StaticFiles handler for audio files.
-    Applies aggressive Cache-Control headers to immutable content-addressed cache files
-    (e.g., /audio/cache/*.wav) and standard cache lifetimes to ephemeral chunks,
-    while ensuring Accept-Ranges: bytes support.
+    Cache-Control is written only by StaticCacheControlMiddleware.
+    This class only adds Accept-Ranges: bytes on successful responses.
     """
 
     async def get_response(self, path: str, scope: Scope) -> Response:
-        import posixpath
-
         response = await super().get_response(path, scope)
         if response.status_code in (200, 206):
-            norm_path = posixpath.normpath(path.replace("\\", "/")).strip("/")
-            if norm_path == "cache" or norm_path.startswith("cache/"):
-                response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-            else:
-                response.headers["Cache-Control"] = "public, max-age=3600"
             if "accept-ranges" not in response.headers:
                 response.headers["Accept-Ranges"] = "bytes"
         return response
