@@ -671,3 +671,55 @@ test('SSE parser: tolerates variable colon whitespace, CRLF line endings, and sp
   assert.equal(end.meta.error, null);
   assert.equal(end.meta.cancelled, false);
 });
+
+test('error diagnostics: formats summary_zh/action_zh, kept-lines notice, HTTP diagnostics, and fallbacks', async () => {
+  const cases = [
+    {
+      events: [{ event: 'error', data: { error: 'Empty reply from model', error_code: 'empty_reply', diagnostic_code: 'EMPTY_REPLY', summary_zh: '模型返回了空回复', action_zh: '可直接重新发送；若反复出现，请在「设置中心」更换模型或调低思考强度。' } }],
+      expectedError: '模型返回了空回复：可直接重新发送；若反复出现，请在「设置中心」更换模型或调低思考强度。',
+      expectedCode: 'empty_reply',
+    },
+    {
+      events: [
+        { event: 'line', data: { index: 0, zh: '先说第一句。', ja: 'まず一言目。' } },
+        { event: 'error', data: { error: 'Stream truncated at max_tokens', error_code: 'stream_truncated', diagnostic_code: 'STREAM_TRUNCATED', summary_zh: '模型输出达到最大长度限制，回复未完整生成', action_zh: '建议在会话设置中调大「最大生成长度」，或在模型设置中调低「思考强度」。' } },
+      ],
+      expectedError: '模型输出达到最大长度限制，回复未完整生成。已收到的台词保留在 LOG 里。建议在会话设置中调大「最大生成长度」，或在模型设置中调低「思考强度」。',
+      expectedCode: 'stream_truncated',
+    },
+    {
+      events: [{ event: 'error', data: { error: 'Server busy', error_code: 'turn_unavailable' } }],
+      expectedError: '对话已被删除或清空，本次回复未保存。',
+      expectedCode: 'turn_unavailable',
+    },
+    {
+      events: [{ event: 'error', data: { error: 'Raw upstream failure' } }],
+      expectedError: '对话暂时未完成，请检查「设置中心」中的模型地址、密钥与模型名称，再重新发送消息。',
+      expectedCode: null,
+    },
+    {
+      status: 502,
+      payload: { error: 'Upstream gateway error', diagnostic_code: 'BAD_GATEWAY', summary_zh: '模型服务网关返回错误（502）', action_zh: '请稍后重试，或检查模型代理地址是否稳定。' },
+      expectedError: '模型服务网关返回错误（502）：请稍后重试，或检查模型代理地址是否稳定。',
+      expectedCode: 'bad_gateway',
+    },
+  ];
+
+  for (const row of cases) {
+    const fetch = row.status
+      ? async () => new Response(JSON.stringify(row.payload), { status: row.status, headers: { 'Content-Type': 'application/json' } })
+      : createSseFetch(row.events);
+    const meta = await new Promise((resolve) => {
+      streamChat({ prompt: '诊断测试', sessionId: 'sess_diag', fetch, onEnd: (_acc, m) => resolve(m) });
+    });
+    assert.equal(meta.error, row.expectedError);
+    assert.equal(meta.errorCode, row.expectedCode);
+  }
+
+  const harness = setupConversationHarness(cases[0].events, 'sess_diag_conv');
+  harness.conversation.send('你好');
+  const settled = await harness.settledPromise;
+  assert.equal(settled.type, 'error');
+  assert.equal(settled.payload.error, cases[0].expectedError);
+  assert.equal(settled.payload.kind, 'empty_reply');
+});
