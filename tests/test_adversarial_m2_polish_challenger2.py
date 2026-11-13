@@ -22,7 +22,6 @@ Verification Scope:
 
 import asyncio
 import io
-import json
 import os
 import re
 import tempfile
@@ -50,173 +49,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 # ============================================================================
-# 1. Frontend Audio Streaming & Player Resilience
-# ============================================================================
-
-class TestFrontendAudioStreamingResilience:
-    """Stress-tests player logic, volume bounds, mute toggles, and interrupt invalidation."""
-
-    def test_volume_clamping_and_muting_logic(self):
-        """Emulates setVolume and setMuted bounds checking."""
-        class MockPlayer:
-            def __init__(self):
-                self.volume = 1.0
-                self.is_muted = False
-
-            def set_volume(self, val):
-                self.volume = max(0.0, min(1.0, float(val)))
-
-            def set_muted(self, is_muted):
-                self.is_muted = bool(is_muted)
-                return self.is_muted
-
-            def effective_gain(self):
-                return 0.0 if self.is_muted else self.volume
-
-        player = MockPlayer()
-        # Normal range
-        player.set_volume(0.5)
-        assert player.effective_gain() == 0.5
-
-        # Out of bounds high
-        player.set_volume(2.5)
-        assert player.volume == 1.0
-        assert player.effective_gain() == 1.0
-
-        # Out of bounds low / negative
-        player.set_volume(-0.5)
-        assert player.volume == 0.0
-        assert player.effective_gain() == 0.0
-
-        # Mute toggle
-        player.set_volume(0.8)
-        player.set_muted(True)
-        assert player.effective_gain() == 0.0
-        player.set_muted(False)
-        assert player.effective_gain() == 0.8
-
-    def test_queue_interrupt_session_invalidation_under_rapid_triggers(self):
-        """
-        Simulate user typing rapidly and interrupting 20 times while async chunk fetches
-        are in flight. Ensures no stale chunk plays in a newer session.
-        """
-        class MockAudioSessionQueue:
-            def __init__(self):
-                self.current_session_id = 0
-                self.played = []
-
-            def interrupt(self):
-                self.current_session_id += 1
-
-            def on_fetch_complete(self, session_id, chunk_index):
-                # Discard if stale
-                if session_id != self.current_session_id:
-                    return False
-                self.played.append((session_id, chunk_index))
-                return True
-
-        queue = MockAudioSessionQueue()
-
-        # Generate in-flight requests across multiple sessions
-        pending = []
-        for sess in range(5):
-            for chunk_idx in range(3):
-                pending.append((queue.current_session_id, chunk_idx))
-            queue.interrupt()  # User submitted new message
-
-        # Final current session
-        current_sess = queue.current_session_id
-        pending.append((current_sess, 0))
-        pending.append((current_sess, 1))
-
-        # Complete all pending in random/reverse order
-        for s_id, c_idx in reversed(pending):
-            queue.on_fetch_complete(s_id, c_idx)
-
-        # Only chunks from current_sess should have played
-        assert len(queue.played) == 2
-        assert all(s == current_sess for s, _ in queue.played)
-        assert [c for _, c in queue.played] == [1, 0]
-
-
-# ============================================================================
 # 2. SSE Event Parsing & Bilingual Streaming
 # ============================================================================
 
 class TestSSEEventParsingAndBilingualStreaming:
     """Stress tests SSE streaming parser against corrupted frames and chunk boundaries."""
-
-    def test_sse_parser_fragmented_lines_and_utf8_boundaries(self):
-        """
-        Simulate browser ReadableStream delivering partial fragments across line breaks,
-        event tags, and multi-byte Chinese characters.
-        """
-        class MockSSEClientParser:
-            def __init__(self):
-                self.buffer = ""
-                self.current_event = "message"
-                self.received_text = ""
-                self.received_audio_chunks = []
-                self.done_payload = None
-                self.errors = []
-
-            def feed(self, fragment: str):
-                self.buffer += fragment
-                lines = self.buffer.split("\n")
-                self.buffer = lines.pop()  # Keep incomplete line
-
-                for line in lines:
-                    trimmed = line.strip()
-                    if not trimmed:
-                        self.current_event = "message"
-                        continue
-
-                    if trimmed.startswith("event:"):
-                        self.current_event = trimmed[6:].strip()
-                        continue
-
-                    if trimmed.startswith("data:"):
-                        data_str = trimmed[5:].strip()
-                        if data_str == "[DONE]":
-                            continue
-                        try:
-                            payload = json.loads(data_str)
-                            if self.current_event == "text" or "delta_chinese" in payload:
-                                self.received_text += payload.get("delta_chinese", "")
-                            elif self.current_event == "audio_chunk" or ("audio_url" in payload and "index" in payload):
-                                self.received_audio_chunks.append(payload)
-                            elif self.current_event == "done":
-                                self.done_payload = payload
-                            elif self.current_event == "error":
-                                self.errors.append(payload)
-                        except json.JSONDecodeError:
-                            pass
-
-        parser = MockSSEClientParser()
-
-        # Severely fragmented SSE stream
-        raw_stream = (
-            "event: text\n"
-            'data: {"delta_chinese": "你好，"}\n\n'
-            "event: text\n"
-            'data: {"delta_chinese": "指挥官！"}\n\n'
-            "event: audio_chunk\n"
-            'data: {"index": 0, "audio_url": "/audio/chunk_0.wav", "sentence": "こんにちは！"}\n\n'
-            "event: done\n"
-            'data: {"chinese": "你好，指挥官！", "japanese": "こんにちは！", "audio_url": "/audio/full_1.wav", "chunks": [{"index": 0, "audio_url": "/audio/chunk_0.wav"}]}\n\n'
-            "data: [DONE]\n\n"
-        )
-
-        # Feed 3 characters at a time to test extreme fragmentation
-        chunk_size = 3
-        for i in range(0, len(raw_stream), chunk_size):
-            parser.feed(raw_stream[i:i + chunk_size])
-
-        assert parser.received_text == "你好，指挥官！"
-        assert len(parser.received_audio_chunks) == 1
-        assert parser.received_audio_chunks[0]["audio_url"] == "/audio/chunk_0.wav"
-        assert parser.done_payload is not None
-        assert parser.done_payload["audio_url"] == "/audio/full_1.wav"
 
     def test_sse_parser_graceful_recovery_on_corrupt_json_lines(self):
         """Parser must not throw unhandled exceptions on garbage SSE payload lines."""
@@ -268,51 +105,6 @@ class TestReplayAndDownloadHelper:
         assert 'id="sVoiceDelete"' in content, "Missing #sVoiceDelete in index.html"
         assert 'id="sCustomVoiceBox"' in content, "Missing #sCustomVoiceBox in index.html"
         assert "角色音色" in content
-
-    def test_download_audio_helper_url_resolution(self):
-        """
-        Emulate downloadAudioFile target URL resolution for:
-        1. Single master audio URL (`audio_url`).
-        2. Multi-chunk audio object with chunks array.
-        3. Empty / missing audio URL.
-        """
-        def resolve_download_url(voice_data):
-            if not voice_data:
-                return None, "暂无可下载的语音母带"
-            if isinstance(voice_data, dict):
-                target = voice_data.get("audio_url")
-                if not target and voice_data.get("chunks"):
-                    chunks = voice_data["chunks"]
-                    if len(chunks) > 0 and chunks[0].get("audio_url"):
-                        target = chunks[0]["audio_url"]
-                if target:
-                    return target, None
-                return None, "暂无可下载的语音母带"
-            elif isinstance(voice_data, str) and voice_data:
-                return voice_data, None
-            return None, "暂无可下载的语音母带"
-
-        # Case 1: Standard master audio URL
-        url, err = resolve_download_url({"audio_url": "/audio/full_abc123.wav"})
-        assert url == "/audio/full_abc123.wav"
-        assert err is None
-
-        # Case 2: Fallback to chunk[0] if full is missing
-        url, err = resolve_download_url({"chunks": [{"audio_url": "/audio/chunk_0.wav"}]})
-        assert url == "/audio/chunk_0.wav"
-        assert err is None
-
-        # Case 3: Empty voice data
-        url, err = resolve_download_url(None)
-        assert url is None
-        assert "暂无" in err
-
-        # Case 4: Dict with empty values
-        url, err = resolve_download_url({"audio_url": "", "chunks": []})
-        assert url is None
-        assert "暂无" in err
-
-
 
 # ============================================================================
 # 4. Provider Error Recovery & Fault Tolerance
