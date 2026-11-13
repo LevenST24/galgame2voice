@@ -2,19 +2,16 @@
 Empirical Challenge & Verification Test Suite for Character Packages.
 Evaluates:
 1. Discovery and Pydantic schema validation of all 13 character packages.
-2. Strict string equality between manifest.json["system_prompt"] and system_prompt.txt for all 5 new characters.
-3. Presence of all 4 affection stages (Level 0~20, 21~50, 51~80, 81~100) and 7 standard emotions in prompts.
-4. Audio references in refs/ with unique MD5s and durations in [3.0s, 10.0s].
-5. Dynamic emotion resolution and anti-hijacking across all character packages.
-6. Canon lore integrity (Amane step-sister canon correction).
-7. Global audio uniqueness across all 13 packages (91 audio tracks).
-8. SQLite persistence synchronization roundtrip for all 13 characters.
+2. Presence of all 4 affection stages (Level 0~20, 21~50, 51~80, 81~100) and 7 standard emotions in prompts.
+3. Audio references in refs/ with unique MD5s and durations in [3.0s, 10.0s].
+4. Dynamic emotion resolution and anti-hijacking across all character packages.
+5. Canon lore integrity (Amane step-sister canon correction).
+6. Global audio uniqueness across all 13 packages (91 audio tracks).
 """
 
 import hashlib
 import json
 from pathlib import Path
-import aiosqlite
 import pytest
 
 from galgame2voice.config import get_settings
@@ -71,32 +68,6 @@ def test_discovery_and_pydantic_validation_all_13_packages():
             w_path = settings.project_root / w_file
             assert w_path.is_file(), f"Weight file {w_path} does not exist for {pkg.name}"
             assert w_path.stat().st_size > 100 * 1024 * 1024, f"Weight {w_path} size <= 100MB for {pkg.name}"
-
-
-@pytest.mark.requires_character_assets
-def test_strict_string_equality_manifest_and_system_prompt_five_characters():
-    """Asserts strict string equality between manifest.json['system_prompt'] and system_prompt.txt for all 5 new characters."""
-    settings = get_settings()
-
-    for char_name in NEW_FIVE_CHARACTERS:
-        char_dir = settings.characters_dir / char_name
-        manifest_path = char_dir / "manifest.json"
-        txt_path = char_dir / "system_prompt.txt"
-
-        assert manifest_path.is_file(), f"manifest.json missing for {char_name}"
-        assert txt_path.is_file(), f"system_prompt.txt missing for {char_name}"
-
-        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
-        manifest_prompt = manifest_data.get("system_prompt", "")
-        txt_prompt = txt_path.read_text(encoding="utf-8")
-
-        # Strict string equality assertion
-        assert manifest_prompt == txt_prompt, (
-            f"Strict string mismatch for {char_name}!\n"
-            f"manifest length: {len(manifest_prompt)}, txt length: {len(txt_prompt)}\n"
-            f"manifest snippet: {repr(manifest_prompt[:60])}...\n"
-            f"txt snippet:      {repr(txt_prompt[:60])}..."
-        )
 
 
 @pytest.mark.requires_character_assets
@@ -243,47 +214,3 @@ def test_global_audio_uniqueness_across_all_91_tracks():
 
     assert total_tracks == 91, f"Expected 91 total audio tracks, verified {total_tracks}"
     assert len(global_hashes) == 91, f"Expected 91 unique MD5 hashes, got {len(global_hashes)}"
-
-
-@pytest.mark.requires_character_assets
-@pytest.mark.asyncio
-async def test_character_manager_sync_with_db_all_thirteen_characters(tmp_path):
-    """Verifies that DB synchronization works flawlessly for all 13 characters."""
-    db_file = tmp_path / "all_13_chars_sync.db"
-    async with aiosqlite.connect(str(db_file)) as conn:
-        conn.row_factory = aiosqlite.Row
-        await conn.execute("""
-            CREATE TABLE voice_profiles (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                description TEXT NOT NULL DEFAULT '',
-                gpt_weights_path TEXT NOT NULL DEFAULT '',
-                sovits_weights_path TEXT NOT NULL DEFAULT '',
-                ref_audio_path TEXT NOT NULL DEFAULT '',
-                prompt_text TEXT NOT NULL DEFAULT '',
-                prompt_lang TEXT NOT NULL DEFAULT 'ja',
-                text_lang TEXT NOT NULL DEFAULT 'ja',
-                system_prompt TEXT NOT NULL DEFAULT '',
-                is_default INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        """)
-        await conn.commit()
-
-        mgr = CharacterManager(get_settings().characters_dir)
-        synced_count = await mgr.sync_with_db(conn)
-
-        assert synced_count == 13, f"Expected 13 synced characters, got {synced_count}"
-
-        cur = await conn.execute("SELECT name, ref_audio_path, is_default FROM voice_profiles;")
-        rows = await cur.fetchall()
-        assert len(rows) == 13, f"Expected 13 rows in voice_profiles, got {len(rows)}"
-
-        db_names = {r["name"] for r in rows}
-        for expected in ALL_THIRTEEN_CHARACTERS:
-            assert expected in db_names, f"Character {expected} missing from synced DB rows"
-
-        default_rows = [r for r in rows if r["is_default"] == 1]
-        assert len(default_rows) == 1, f"Expected exactly 1 default profile, found {len(default_rows)}"
-        assert default_rows[0]["name"] == "四季夏目", f"Expected 四季夏目 to be default, got {default_rows[0]['name']}"

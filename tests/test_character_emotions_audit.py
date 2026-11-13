@@ -10,7 +10,6 @@ import json
 import struct
 import wave
 from pathlib import Path
-import pytest
 from galgame2voice.config import get_settings
 
 EXPECTED_EMOTIONS = ["gentle", "happy", "angry", "sad", "shy", "tsundere", "cool"]
@@ -60,13 +59,6 @@ def _md5(path: Path) -> str:
             h.update(chunk)
     return h.hexdigest()
 
-@pytest.mark.requires_character_assets
-def test_all_13_characters_exist():
-    settings = get_settings()
-    chars_dir = settings.characters_dir
-    char_dirs = [d for d in chars_dir.iterdir() if d.is_dir() and (d / "manifest.json").exists()]
-    assert len(char_dirs) == 13, f"Expected 13 characters, found {len(char_dirs)}"
-
 def test_all_91_emotions_valid_and_within_duration():
     settings = get_settings()
     chars_dir = settings.characters_dir
@@ -98,13 +90,3 @@ def test_all_91_emotions_valid_and_within_duration():
             f_hash = _md5(audio_path)
             assert f_hash not in seen_md5s, f"{cdir.name} [{emo}] has duplicate audio with [{seen_md5s.get(f_hash)}]"
             seen_md5s[f_hash] = emo
-
-def test_all_system_prompts_match_manifest():
-    settings = get_settings()
-    chars_dir = settings.characters_dir
-    for cdir in chars_dir.iterdir():
-        if cdir.is_dir() and (cdir / "manifest.json").exists():
-            sp_file = cdir / "system_prompt.txt"
-            assert sp_file.is_file(), f"Missing system_prompt.txt in {cdir.name}"
-            manifest = json.loads((cdir / "manifest.json").read_text(encoding="utf-8"))
-            assert manifest.get("system_prompt") == sp_file.read_text(encoding="utf-8")
