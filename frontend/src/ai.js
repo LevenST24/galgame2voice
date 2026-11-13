@@ -4,6 +4,26 @@ import { getErrorMessage, connectionMessage } from './request.js';
 
 const MAX_VOICE_WAIT_MS = 600000;
 const KEPT_LINES = '已收到的台词保留在 LOG 里。';
+
+const pickText = value => (typeof value === 'string' ? value.trim() : '');
+
+function extractChatErrorCode(data) {
+  if (!data || typeof data !== 'object') return null;
+  return pickText(data.error_code) || pickText(data.diagnostic_code).toLowerCase() || null;
+}
+
+function formatChatErrorPayload(data, fallback, receivedReply = false) {
+  if (!data || typeof data !== 'object') return getErrorMessage(data, fallback);
+  if (extractChatErrorCode(data) === 'turn_unavailable') {
+    return '对话已被删除或清空，本次回复未保存。';
+  }
+  const summary = pickText(data.summary_zh).replace(/[。；;：:，,]+$/, '');
+  const action = pickText(data.action_zh);
+  if (summary && action) {
+    return receivedReply ? `${summary}。${KEPT_LINES}${action}` : `${summary}：${action}`;
+  }
+  return getErrorMessage(data, fallback);
+}
 // Received reply text is saved with the turn. Do not tell the user to resend it.
 const idleTimeoutMessage = receivedReply => (receivedReply
   ? `回复等待超时，${KEPT_LINES}请在「设置中心」检查网络、模型与语音服务。`
@@ -167,7 +187,8 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
         let msg = `请求失败 (${res.status})`;
         try {
           const data = await withDeadline(() => res.json());
-          msg = getErrorMessage(data, `HTTP ${res.status}`);
+          errorCode = extractChatErrorCode(data);
+          msg = formatChatErrorPayload(data, `HTTP ${res.status}`);
         } catch (error) {
           if (timedOut || controller.signal.aborted) throw error;
           /* 忽略非 JSON 错误体 */
@@ -265,13 +286,11 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
             audioError ||= getErrorMessage(json, '本轮角色语音暂不可用，文字回复已保留。请在「设置中心 → 运行状态」启动引擎，或切换 CPU 稳定模式后重试。');
             console.warn('[streamChat] audio chunk error:', json.error, json.sentence);
           } else if (currentEvent === 'error') {
-            errorCode = typeof json.error_code === 'string' ? json.error_code : null;
+            errorCode = extractChatErrorCode(json);
             const fallback = receivedReply
               ? `对话暂时未完成，${KEPT_LINES}请检查「设置中心」中的模型地址、密钥与模型名称。`
               : '对话暂时未完成，请检查「设置中心」中的模型地址、密钥与模型名称，再重新发送消息。';
-            finish(false, errorCode === 'turn_unavailable'
-              ? '对话已被删除或清空，本次回复未保存。'
-              : getErrorMessage(json, fallback));
+            finish(false, formatChatErrorPayload(json, fallback, receivedReply));
             return;
           } else if (currentEvent === 'done') {
             doneMeta = json;
