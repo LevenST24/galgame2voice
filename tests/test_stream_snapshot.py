@@ -178,6 +178,14 @@ def test_early_exit_snapshot_on_truncation_and_early_done_event():
             "message_id": 42,
         },
     }
+    assert (
+        build_early_done_event(
+            partial_chinese="早安。",
+            partial_japanese="おはよう。",
+            snapshot_lines=[],
+        )["data"]["lines"]
+        is None
+    )
 
 
 def test_early_exit_snapshot_on_user_cancellation():

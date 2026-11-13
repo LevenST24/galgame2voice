@@ -522,6 +522,26 @@ def test_message_create_turn_action_and_completion_done_event_builders():
     )
     assert done_lines_trunc["data"]["truncated"] is True
 
+    done_empty_lines = build_completion_done_event(
+        full_chinese="早安。",
+        full_japanese="おはよう。",
+        final_lines=[],
+        reply_format="plain",
+        final_emotion="gentle",
+        affection={"score": 55},
+        metrics={},
+        total_audio_url="/audio/0.wav",
+        chunks=[],
+        latency_ms=100,
+        tts_params=None,
+        persisted_message_id=90,
+        telemetry={},
+        cancel_flagged=False,
+        has_meaningful_content=True,
+        lines_truncated=False,
+    )
+    assert done_empty_lines["data"]["lines"] is None
+
     assert hasattr(chat_pipelines, "stream_persist_policy")
     for exported_name in (
         "resolve_concat_pause_seconds",
