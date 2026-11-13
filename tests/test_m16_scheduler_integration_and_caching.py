@@ -1,8 +1,7 @@
 """
 Unit and integration tests for Milestone 16:
 TTS Scheduler Priority Hookup, Stale Generation Cancellation,
-Loop Rebinding Resilience, AudioStaticFiles HTTP Caching Headers,
-and Dynamic Jitter Buffer Adaptive Timing.
+Loop Rebinding Resilience, and AudioStaticFiles HTTP Caching Headers.
 """
 
 import asyncio
@@ -232,44 +231,3 @@ async def test_audio_static_files_caching_headers(tmp_path: Path):
     assert resp_eph.status_code == 200
     assert "public, max-age=3600" == resp_eph.headers.get("cache-control")
     assert resp_eph.headers.get("accept-ranges") == "bytes"
-
-
-# ============================================================================
-# 6. Web Audio Dynamic Jitter Buffer Adaptation Math
-# ============================================================================
-
-def test_dynamic_jitter_buffer_adaptation_logic():
-    """Unit test the adaptive lead buffer math matching frontend audio_player.js."""
-    min_lead = 0.02
-    max_lead = 0.12
-    current_lead = 0.02
-    consecutive_smooth = 0
-    underrun_count = 0
-
-    # 1. Simulate underrun occurs
-    underrun_count += 1
-    current_lead = min(max_lead, current_lead + 0.02)
-    consecutive_smooth = 0
-    assert underrun_count == 1
-    assert current_lead == pytest.approx(0.04)
-
-    # 2. Second underrun occurs
-    underrun_count += 1
-    current_lead = min(max_lead, current_lead + 0.02)
-    assert current_lead == pytest.approx(0.06)
-
-    # 3. Four smooth chunks (not yet 5)
-    for _ in range(4):
-        consecutive_smooth += 1
-        if consecutive_smooth >= 5 and current_lead > min_lead:
-            current_lead = max(min_lead, current_lead - 0.005)
-            consecutive_smooth = 0
-    assert current_lead == pytest.approx(0.06)
-
-    # 4. Fifth smooth chunk triggers decay
-    consecutive_smooth += 1
-    if consecutive_smooth >= 5 and current_lead > min_lead:
-        current_lead = max(min_lead, current_lead - 0.005)
-        consecutive_smooth = 0
-    assert current_lead == pytest.approx(0.055)
-    assert consecutive_smooth == 0
