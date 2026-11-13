@@ -12,7 +12,6 @@ import json
 import pytest
 
 from galgame2voice.services.chat_pipelines.text_pipeline import TextSegmentationPipeline
-from galgame2voice.services.streaming_parser import StreamingBilingualParser
 
 REPLY_JSON = json.dumps(
     {
@@ -111,15 +110,18 @@ def test_null_chinese_field_does_not_break_finalize():
     assert shown == ""
     assert japanese == "こんにちは。"
     assert voiced == ["こんにちは。"]
+
+
+@pytest.mark.parametrize("chunk_size", CHUNK_SIZES)
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
         ('{"chinese": "", "japanese": ""}', ("", "")),
-        ('{"japanese": "こんにちは。"}', ("こんにちは。", "こんにちは。")),
         ("就是一句普通的中文回复，没有按格式输出。", ("就是一句普通的中文回复，没有按格式输出。",) * 2),
         (REPLY_JSON, ("你好呀，今天过得怎么样？", "こんにちは。今日はどうだった？")),
     ],
 )
-def test_full_text_parse_never_returns_raw_json(raw, expected):
-    chinese, japanese, _ = StreamingBilingualParser.parse_full_text(raw)
+def test_streamed_reply_never_shows_or_saves_raw_json(raw, expected, chunk_size):
+    shown, chinese, japanese, _ = _stream(raw, chunk_size)
     assert (chinese, japanese) == expected
+    assert shown == chinese

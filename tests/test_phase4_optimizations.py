@@ -84,56 +84,6 @@ class TestLLMRetryPolicies:
         assert delay <= 60.0
 
     @pytest.mark.asyncio
-    async def test_openai_adapter_chat_retry_on_429(self):
-        adapter = OpenAICompatibleLLMAdapter(api_key="sk-test", base_url="https://api.openai.com/v1")
-        attempts = 0
-
-        async def mock_post(url, json, headers):
-            nonlocal attempts
-            attempts += 1
-            if attempts < 3:
-                return httpx.Response(429, headers={"retry-after": "0.01"}, text="Too Many Requests")
-            return httpx.Response(
-                200,
-                json={"choices": [{"message": {"content": "Success after 429"}}], "usage": {"total_tokens": 10}},
-            )
-
-        with patch("httpx.AsyncClient.post", side_effect=mock_post):
-            resp = await adapter.chat(
-                messages=[ChatMessage(role="user", content="ping")],
-                model="gpt-4o",
-                max_retries=3,
-                base_delay=0.01,
-            )
-            assert resp.content == "Success after 429"
-            assert attempts == 3
-
-    @pytest.mark.asyncio
-    async def test_openai_adapter_chat_retry_on_network_timeout(self):
-        adapter = OpenAICompatibleLLMAdapter(api_key="sk-test", base_url="https://api.openai.com/v1")
-        attempts = 0
-
-        async def mock_post(url, json, headers):
-            nonlocal attempts
-            attempts += 1
-            if attempts == 1:
-                raise httpx.ConnectTimeout("Connection timed out")
-            return httpx.Response(
-                200,
-                json={"choices": [{"message": {"content": "Success after timeout"}}]},
-            )
-
-        with patch("httpx.AsyncClient.post", side_effect=mock_post):
-            resp = await adapter.chat(
-                messages=[ChatMessage(role="user", content="ping")],
-                model="gpt-4o",
-                max_retries=2,
-                base_delay=0.01,
-            )
-            assert resp.content == "Success after timeout"
-            assert attempts == 2
-
-    @pytest.mark.asyncio
     async def test_anthropic_adapter_chat_retry_on_503(self):
         adapter = AnthropicAdapter(api_key="sk-ant-test", base_url="https://api.anthropic.com/v1")
         attempts = 0

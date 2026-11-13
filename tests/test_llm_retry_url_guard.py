@@ -10,8 +10,8 @@ from galgame2voice.adapters.llm import anthropic_adapter, openai_adapter
 from galgame2voice.security import url_guard
 
 
-@pytest.mark.parametrize('kind', ['openai', 'anthropic'])
-@pytest.mark.parametrize('stream', [False, True])
+# Chat turns stream; only the Anthropic connection test still makes a non-streaming call.
+@pytest.mark.parametrize(('kind', 'stream'), [('openai', True), ('anthropic', False), ('anthropic', True)])
 @pytest.mark.parametrize('failure', ['status', 'connection'])
 @pytest.mark.parametrize('mode', ['blocked', 'allow_private', 'public'])
 async def test_retry_rechecks_dns_before_sending(monkeypatch, kind, stream, failure, mode):
@@ -41,9 +41,7 @@ async def test_retry_rechecks_dns_before_sending(monkeypatch, kind, stream, fail
                     if kind == 'openai' else
                     'data: {"type":"content_block_delta","delta":{"text":"ok"}}\n\n')
             return httpx.Response(200, text=data + 'data: [DONE]\n\n', request=request)
-        payload = ({'choices': [{'message': {'content': 'ok'}}]} if kind == 'openai'
-                   else {'content': [{'type': 'text', 'text': 'ok'}]})
-        return httpx.Response(200, json=payload, request=request)
+        return httpx.Response(200, json={'content': [{'type': 'text', 'text': 'ok'}]}, request=request)
 
     def create_client(**kwargs):
         client = httpx.AsyncClient(transport=httpx.MockTransport(handle), trust_env=False)

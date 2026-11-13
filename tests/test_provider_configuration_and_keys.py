@@ -1142,7 +1142,7 @@ class TestProviderPresetSeedsAndFallback:
             await conn.commit()
 
         service = ChatService(db_path=db_path)
-        adapter, model_name, provider_id = await service.get_active_llm_adapter()
+        adapter, model_name, provider_id = await service._get_active_llm_adapter()
 
         assert provider_id == "deepseek"
         assert model_name == "deepseek-chat"
@@ -1155,7 +1155,7 @@ class TestProviderPresetSeedsAndFallback:
             await conn.execute("UPDATE settings SET active_provider_id = 'xai' WHERE id = 1;")
             await conn.commit()
 
-        adapter, model_name, provider_id = await service.get_active_llm_adapter()
+        adapter, model_name, provider_id = await service._get_active_llm_adapter()
         assert provider_id == "xai"
         assert model_name == "grok-3"
         assert model_name != "gpt-4o-mini"
@@ -1167,7 +1167,7 @@ class TestProviderPresetSeedsAndFallback:
             await conn.execute("UPDATE settings SET active_provider_id = 'moonshot' WHERE id = 1;")
             await conn.commit()
 
-        adapter, model_name, provider_id = await service.get_active_llm_adapter()
+        adapter, model_name, provider_id = await service._get_active_llm_adapter()
         assert provider_id == "moonshot"
         assert model_name == "moonshot-v1-32k"
         assert model_name != "gpt-4o-mini"
@@ -1182,6 +1182,6 @@ class TestProviderPresetSeedsAndFallback:
             await conn.execute("UPDATE settings SET active_provider_id = 'custom_unknown' WHERE id = 1;")
             await conn.commit()
 
-        adapter, model_name, provider_id = await service.get_active_llm_adapter()
+        adapter, model_name, provider_id = await service._get_active_llm_adapter()
         assert provider_id == "custom_unknown"
         assert model_name == "gpt-4o-mini"

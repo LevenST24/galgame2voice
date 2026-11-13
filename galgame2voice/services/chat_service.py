@@ -217,18 +217,6 @@ class ChatService:
         async with get_db(self.db_path) as local_conn:
             return await _fetch(local_conn)
 
-    async def get_active_llm_adapter(
-        self,
-        conn: aiosqlite.Connection | None = None,
-        provider_id: str | None = None,
-    ) -> tuple[BaseLLMAdapter, str, str]:
-        """Public interface for getting the active LLM adapter.
-
-        Returns (adapter, chat_model, provider_id). External callers should use
-        this instead of the private _get_active_llm_adapter.
-        """
-        return await self._get_active_llm_adapter(conn=conn, provider_id=provider_id)
-
     async def _prepare_messages(
         self,
         conn: aiosqlite.Connection,
@@ -253,33 +241,6 @@ class ChatService:
             session_manager=self.session_manager,
             memory_service=self.memory_service,
             character_name=character_name,
-            system_prompt_override=system_prompt_override,
-            max_history_override=max_history_override,
-            active_profile=active_profile,
-            session=session,
-            outfit=outfit,
-            reply_format="lines",
-        )
-
-    async def prepare_messages(
-        self,
-        conn: aiosqlite.Connection,
-        session_id: str,
-        user_prompt: str,
-        character_name: str | None = None,
-        system_prompt_override: str | None = None,
-        max_history_override: int | None = None,
-        active_profile: Any | None = None,
-        session: Any | None = None,
-        reply_format: str = "lines",
-        outfit: str | None = None,
-    ) -> list[ChatMessage]:
-        """Public interface for preparing chat messages.
-
-        External callers should use this instead of the private _prepare_messages.
-        """
-        return await self._prepare_messages(
-            conn, session_id, user_prompt, character_name,
             system_prompt_override=system_prompt_override,
             max_history_override=max_history_override,
             active_profile=active_profile,

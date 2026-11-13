@@ -95,8 +95,10 @@ def test_truncation_at_every_character_retains_only_closed_lines():
 
 @pytest.mark.parametrize("lines", [LINES, [LINES[0]], [{"zh": "只有中文。", "ja": ""}],
                                       [{"zh": "", "ja": "日本語だけ。"}], []])
-def test_parse_full_text_aggregates_without_fabricating_a_missing_language(lines):
-    zh, ja, parser = StreamingBilingualParser.parse_full_text("前言\n```json\n" + reply(lines) + "\n```尾声")
+def test_finalize_aggregates_without_fabricating_a_missing_language(lines):
+    parser = StreamingBilingualParser()
+    parser.feed_chunk("前言\n```json\n" + reply(lines) + "\n```尾声")
+    zh, ja, _ = parser.finalize()
     assert (zh, ja) == ("".join(x["zh"] for x in lines), "".join(x["ja"] for x in lines))
     assert len(parser.normalized_lines()) == len(lines)
 
@@ -344,7 +346,9 @@ async def test_service_forwards_format_and_persists_aggregate(tmp_path, monkeypa
 
 
 def test_lines_tts_defaults_clamps_and_user_overrides():
-    _, _, parser = StreamingBilingualParser.parse_full_text(reply())
+    parser = StreamingBilingualParser()
+    parser.feed_chunk(reply())
+    parser.finalize()
     options = parser.get_dynamic_tts_options({"speed_factor": 1.2, "temp": 0.8}, sentence_text=JA)
     assert options["speed_factor"] == 1.2
     assert options["temp"] == 0.8
@@ -352,7 +356,9 @@ def test_lines_tts_defaults_clamps_and_user_overrides():
     assert options["speed"] == 1.05
     assert options["temperature"] == 0.95
     raw = json.dumps({"tts": {"speed": 999, "temp": -999}, "lines": LINES})
-    _, _, parser = StreamingBilingualParser.parse_full_text(raw)
+    parser = StreamingBilingualParser()
+    parser.feed_chunk(raw)
+    parser.finalize()
     assert parser.tts_speed < 999 and parser.tts_temperature > -999
 
 
