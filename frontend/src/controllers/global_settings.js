@@ -15,6 +15,7 @@ import {
   createEngineSettingsController,
 } from './engine_settings.js';
 import { initSettingsTabs } from '../settings_ui.js';
+import { createSettingsDraftStore } from './settings_draft_store.js';
 
 const $ = (id) => (typeof document !== 'undefined' ? document.getElementById?.(id) : null);
 
@@ -405,71 +406,35 @@ export async function loadGlobalConfig() {
   }
 }
 
-export async function saveGlobalConfig() {
-  if (configSaving || (providerController?.isProviderSaving() ?? false)) return;
-  if (!configLoaded) {
-    showToast('还没有读取到当前配置，保存会用默认值覆盖已有设置。正在重新读取，请稍后再保存。', 'error');
-    loadGlobalConfig();
-    return;
-  }
-
-  const coordinatorRevision = settingsCoordinatorRevision;
-  const targetProviderController = providerController;
-  const targetEngineDirectory = engineDirectory;
-  configSaving = true;
-  updateSaveButtons();
-  let modelSaved = false;
-  let modelResult;
-  try {
-    if (targetEngineDirectory?.isDirty?.()) {
-      const dirSaved = await targetEngineDirectory.save();
-      if (coordinatorRevision !== settingsCoordinatorRevision || targetProviderController?.disposed) return;
-      if (dirSaved === false) return;
-    }
-    const saveModel = targetProviderController?.isProviderDirty() ?? false;
-    const savedRevision = configRevision;
-    const payload = {
-      gpt_sovits_url: _dom.gParamSovitsUrl ? _dom.gParamSovitsUrl.value.trim() || 'http://127.0.0.1:9880' : undefined,
-      inference_precision: _dom.gPrecision ? _dom.gPrecision.value : undefined,
-      audio_retention_minutes: _dom.gAudioRetention ? Math.max(1, Number(_dom.gAudioRetention.value) || 30) : 30,
-    };
-
-    // Start the provider save now so it captures this click's model draft, but
-    // reserve the config write before later autosaves can overtake it.
-    modelResult = saveModel && targetProviderController ? targetProviderController.saveAndActivateProvider({ fromFooter: true }).then(saved => {
-      modelSaved = saved;
-      return saved;
-    }) : Promise.resolve(true);
-    // The earlier config write can fail and skip this queued callback while
-    // the independent provider request is already in flight.
-    modelResult.catch(() => {});
-    const saved = await runSettingsMutation(async (save) => {
-      if (saveModel && !await modelResult) return false;
-      await save(payload);
-      return true;
-    });
-    if (coordinatorRevision !== settingsCoordinatorRevision || targetProviderController?.disposed) return;
-    if (!saved) return;
+const settingsDraftStore = createSettingsDraftStore({
+  isConfigSaving: () => configSaving,
+  getProviderController: () => providerController,
+  isConfigLoaded: () => configLoaded,
+  showToast,
+  reloadConfig: () => { loadGlobalConfig(); },
+  getEngineDirectory: () => engineDirectory,
+  getCoordinatorRevision: () => settingsCoordinatorRevision,
+  setConfigSaving: (saving) => {
+    configSaving = saving;
+    updateSaveButtons();
+  },
+  getConfigRevision: () => configRevision,
+  readConfigPayload: () => ({
+    gpt_sovits_url: _dom.gParamSovitsUrl ? _dom.gParamSovitsUrl.value.trim() || 'http://127.0.0.1:9880' : undefined,
+    inference_precision: _dom.gPrecision ? _dom.gPrecision.value : undefined,
+    audio_retention_minutes: _dom.gAudioRetention ? Math.max(1, Number(_dom.gAudioRetention.value) || 30) : 30,
+  }),
+  runSettingsMutation,
+  clearConfigDirtyIfUnchanged: (savedRevision) => {
     if (savedRevision === configRevision) {
       configDirty = false;
       dirtyConfigFields.clear();
     }
+  },
+  isConfigDirty: () => configDirty,
+  refreshTelemetry: () => { fetchSystemTelemetry(); },
+});
 
-    const currentProviderDirty = targetProviderController?.isProviderDirty() ?? false;
-    const currentDirectoryDirty = targetEngineDirectory?.isDirty?.() ?? false;
-    showToast(configDirty || currentProviderDirty || currentDirectoryDirty
-      ? (saveModel ? '模型设置已保存并启用，之前的全局配置已保存；当前修改尚未保存。' : '之前的配置已保存；当前修改尚未保存。')
-      : (saveModel ? '全局配置和模型设置已保存，模型已启用。' : '全局配置已保存'), 'success');
-    loadGlobalConfig();
-    fetchSystemTelemetry();
-  } catch (e) {
-    if (modelResult) await modelResult.catch(() => false);
-    if (coordinatorRevision !== settingsCoordinatorRevision || targetProviderController?.disposed) return;
-    showToast(`${modelSaved ? '模型设置已保存并启用；全局配置保存失败' : '保存失败'}: ${e.message || e}`, 'error');
-  } finally {
-    if (coordinatorRevision === settingsCoordinatorRevision) {
-      configSaving = false;
-      updateSaveButtons();
-    }
-  }
+export async function saveGlobalConfig() {
+  return settingsDraftStore.commitAll();
 }

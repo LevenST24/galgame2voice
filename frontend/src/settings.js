@@ -7,9 +7,55 @@
  * @returns {{ title: string, guidance: string }}
  */
 export function formatProviderDiagnostic(data = {}) {
-  const title = String(data.error_title || data.error || '').trim() || '连通性测试未通过';
-  const guidance = String(data.diagnostic || data.message || '').trim() || '连接失败，请检查网络或参数配置。';
+  const title = String(data.summary_zh || data.error_title || data.error || '').trim() || '连通性测试未通过';
+  const guidance = String(data.action_zh || data.diagnostic || data.message || '').trim() || '连接失败，请检查网络或参数配置。';
   return { title, guidance };
+}
+
+function firstText(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value !== '') return value;
+  }
+  return '';
+}
+
+function firstList(...values) {
+  for (const value of values) {
+    if (Array.isArray(value)) return value;
+  }
+  return null;
+}
+
+/**
+ * 合并服务端预设能力、旧 presets 与本地回退。
+ * 密钥是否必填和默认思考强度优先用服务端；描述、地址和模型列表仍先用旧 presets。
+ */
+export function resolvePresetCapabilities({
+  legacyPreset = null,
+  builtinPreset = null,
+  fallbackPreset = null,
+  providerId = '',
+} = {}) {
+  const display = (key) => firstText(legacyPreset?.[key], fallbackPreset?.[key], builtinPreset?.[key]);
+  return {
+    requires_api_key: typeof builtinPreset?.requires_api_key === 'boolean'
+      ? builtinPreset.requires_api_key
+      : providerId !== 'custom',
+    default_reasoning_effort: firstText(
+      builtinPreset?.default_reasoning_effort,
+      legacyPreset?.default_reasoning_effort,
+      fallbackPreset?.default_reasoning_effort,
+    ),
+    name: display('name'),
+    description: display('description'),
+    default_base_url: display('default_base_url'),
+    default_chat_model: display('default_chat_model'),
+    preset_models: firstList(
+      legacyPreset?.preset_models,
+      fallbackPreset?.preset_models,
+      builtinPreset?.preset_models,
+    ),
+  };
 }
 
 /**
