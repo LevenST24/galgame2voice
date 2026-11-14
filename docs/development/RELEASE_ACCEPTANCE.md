@@ -15,9 +15,9 @@ npm --prefix frontend run deploy
 uv run --frozen --extra dev pytest -q
 uv run --frozen --extra dev ruff check galgame2voice scripts
 uv run --frozen --extra desktop python scripts/build_windows_portable.py
-uv run --frozen --extra desktop python scripts/verify_windows_portable.py dist/galgame2voice-v3.1.2-windows-x64.zip
-uv run --frozen --extra desktop python scripts/smoke_windows_portable.py dist/galgame2voice-v3.1.2-windows-x64.zip
-uv run --frozen --extra desktop python scripts/smoke_windows_turn_reply.py --archive dist/galgame2voice-v3.1.2-windows-x64.zip --expected-sha <sha256> --scratch .local/smoke-turn-reply --with-browser-ui
+uv run --frozen --extra desktop python scripts/verify_windows_portable.py dist/galgame2voice-v3.2.0-windows-x64.zip
+uv run --frozen --extra desktop python scripts/smoke_windows_portable.py dist/galgame2voice-v3.2.0-windows-x64.zip
+uv run --frozen --extra desktop python scripts/smoke_windows_turn_reply.py --archive dist/galgame2voice-v3.2.0-windows-x64.zip --expected-sha <sha256> --scratch .local/smoke-turn-reply --with-browser-ui
 ```
 
 `verify_windows_portable.py` 检查校验和、必需运行文件、空用户目录、模型和凭据排除，以及 ZIP、已部署网页和 Vite 产物的一致性。
@@ -51,4 +51,4 @@ uv run --frozen --extra desktop python scripts/smoke_windows_turn_reply.py --arc
 
 ## 节点交接与发布指引
 
-有关 v3.1.2 版本的详细交接范围、核心模块架构、数据库增量迁移、远端 CI 状态及未合并 PR 边界，请参阅 [RELEASE_HANDOFF_3_1_2.md](RELEASE_HANDOFF_3_1_2.md)。
+有关 v3.2.0 版本的详细交接范围、核心模块变更、升级兼容边界及发布步骤，请参阅 [RELEASE_HANDOFF_3_2_0.md](RELEASE_HANDOFF_3_2_0.md)。
