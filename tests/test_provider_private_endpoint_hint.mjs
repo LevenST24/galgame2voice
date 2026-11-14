@@ -23,11 +23,18 @@ function element(tag = 'div', initialValue = '') {
   const listeners = {};
   let _value = initialValue;
   let _innerHTML = '';
+  let _textContent = '';
   const children = [];
 
   const el = {
     tag,
-    textContent: '',
+    get textContent() {
+      return _textContent + children.map(c => c.textContent).join('');
+    },
+    set textContent(val) {
+      _textContent = String(val);
+      children.length = 0;
+    },
     disabled: false,
     checked: false,
     hidden: true,
@@ -180,9 +187,35 @@ test('active cloud provider without a key is marked unusable', async t => {
   openModal(dom.globalModal);
   await loadProviders();
   const selected = dom.gProvider.children.find((opt) => opt.value === 'deepseek');
-  assert.equal(dom.gProviderActiveBadge.textContent, '还不能用');
-  assert.match(selected.textContent, /还不能用/);
+  assert.equal(dom.gProviderActiveBadge.textContent, '未填密钥');
+  assert.match(selected.textContent, /未填密钥/);
   assert.doesNotMatch(selected.textContent, /当前生效/);
+});
+
+test('missing key tip links to provider API key page and clears on configured or custom provider', async t => {
+  globalThis.fetch = async (url) => response(url === '/api/providers' ? {
+    providers: [
+      { id: 'deepseek', name: 'DeepSeek', is_active: true, chat_model: 'deepseek-chat', api_key: '' },
+      { id: 'openai', name: 'OpenAI', is_active: false, chat_model: 'gpt-4o', api_key: 'sk-***1234' },
+    ],
+    presets: [], builtin_presets: [],
+  } : { status: 'ok', settings: {} });
+  const { dom } = fixture(t);
+  openModal(dom.globalModal);
+  await loadProviders();
+  assert.match(dom.gApiKeyTip.textContent, /^还没有填写密钥。/);
+  const links = dom.gApiKeyTip.children.filter((c) => c.tag === 'a');
+  assert.equal(links.length, 1);
+  assert.equal(links[0].href, 'https://platform.deepseek.com/api_keys');
+  assert.equal(links[0].target, '_blank');
+  assert.match(links[0].rel, /\bnoopener\b/);
+  assert.equal(links[0].textContent, '去 DeepSeek 官网申请 API 密钥');
+  dom.gProvider.value = 'openai';
+  onProviderChange();
+  assert.equal(dom.gApiKeyTip.children.filter((c) => c.tag === 'a').length, 0);
+  dom.gProvider.value = '__custom__';
+  onProviderChange();
+  assert.equal(dom.gApiKeyTip.children.filter((c) => c.tag === 'a').length, 0);
 });
 
 test('blocks handleProviderTest locally for custom provider with loopback or private URLs when gAllowPrivateEndpoints is unchecked', async t => {
