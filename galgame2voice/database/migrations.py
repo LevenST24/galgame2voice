@@ -18,7 +18,7 @@ from galgame2voice.database.session import (
     set_schema_version,
 )
 from galgame2voice.security.crypto import MasterKeyError, encrypt_secret, upgrade_secret_encryption
-from galgame2voice.adapters.registry import PROVIDER_PRESETS
+from galgame2voice.adapters.registry import PROVIDER_PRESETS, RETIRED_CHAT_MODELS
 
 logger = logging.getLogger("galgame2voice.database.migrations")
 
@@ -662,6 +662,13 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
 
     except Exception as exc:
         logger.debug("Provider presets sync during schema init skipped: %s", exc)
+
+    for (p_id, old_model), (new_model, effort) in RETIRED_CHAT_MODELS.items():
+        await conn.execute(
+            "UPDATE providers SET chat_model = ?, reasoning_effort = COALESCE(?, reasoning_effort), "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = ? AND chat_model = ?;",
+            (new_model, effort, p_id, old_model),
+        )
 
     # Auto-heal missing or broken reference audio paths across existing voice profiles
     try:

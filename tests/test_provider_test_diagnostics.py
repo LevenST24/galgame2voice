@@ -328,10 +328,7 @@ async def test_get_providers_includes_builtin_presets_without_breaking_legacy_pr
             assert item["requires_api_key"] is True
 
         assert item["supports_stt"] is (item["id"] in stt_supported_ids)
-        if item["id"] == "gemini":
-            assert item["default_reasoning_effort"] == "low"
-        else:
-            assert item["default_reasoning_effort"] is None
+        assert item["default_reasoning_effort"] == {"gemini": "low", "deepseek": "none"}.get(item["id"])
 
     # Mutating returned preset_models must not mutate global PROVIDER_PRESETS
     from galgame2voice.adapters import registry

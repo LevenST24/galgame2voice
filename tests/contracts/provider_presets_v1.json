@@ -36,13 +36,14 @@
       "id": "deepseek",
       "name": "DeepSeek",
       "default_base_url": "https://api.deepseek.com",
-      "default_chat_model": "deepseek-chat",
+      "default_chat_model": "deepseek-flash",
       "default_stt_model": "",
       "preset_models": [
-        "deepseek-chat",
-        "deepseek-reasoner"
+        "deepseek-flash",
+        "deepseek-v4-pro"
       ],
-      "description": "DeepSeek 官方 API (deepseek-chat 与 deepseek-reasoner)"
+      "description": "DeepSeek 官方 API（deepseek-flash 与 deepseek-v4-pro）",
+      "default_reasoning_effort": "none"
     },
     {
       "id": "anthropic",

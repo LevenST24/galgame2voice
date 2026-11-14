@@ -66,15 +66,16 @@ PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
         "id": "deepseek",
         "name": "DeepSeek",
         "default_base_url": "https://api.deepseek.com",
-        "default_chat_model": "deepseek-chat",
+        "default_chat_model": "deepseek-flash",
         "default_stt_model": "",
+        "default_reasoning_effort": "none",
         "adapter_class": DeepSeekLLMAdapter,
         "stt_adapter_class": None,
         "preset_models": [
-            "deepseek-chat",
-            "deepseek-reasoner",
+            "deepseek-flash",
+            "deepseek-v4-pro",
         ],
-        "description": "DeepSeek 官方 API (deepseek-chat 与 deepseek-reasoner)",
+        "description": "DeepSeek 官方 API（deepseek-flash 与 deepseek-v4-pro）",
     },
     "anthropic": {
         "id": "anthropic",
@@ -186,6 +187,11 @@ PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
         ],
         "description": "月之暗面 Kimi 官方 API (moonshot-v1 长上下文系列)",
     },
+}
+
+RETIRED_CHAT_MODELS: dict[tuple[str, str], tuple[str, str | None]] = {
+    ("deepseek", "deepseek-chat"): ("deepseek-flash", "none"),
+    ("deepseek", "deepseek-reasoner"): ("deepseek-flash", None),
 }
 
 

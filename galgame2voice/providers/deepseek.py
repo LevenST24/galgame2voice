@@ -9,7 +9,7 @@ from galgame2voice.adapters.llm.deepseek_adapter import DeepSeekLLMAdapter
 
 class DeepSeekProvider(BaseLLMProvider, DeepSeekLLMAdapter):
     """
-    DeepSeek Provider supporting deepseek-chat (V3) and deepseek-reasoner (R1).
+    DeepSeek Provider supporting deepseek-flash and deepseek-v4-pro.
     """
 
     def __init__(

@@ -8,7 +8,7 @@ from galgame2voice.adapters.llm.openai_adapter import OpenAICompatibleLLMAdapter
 
 
 class DeepSeekLLMAdapter(OpenAICompatibleLLMAdapter):
-    """DeepSeek API Adapter (deepseek-chat, deepseek-reasoner)."""
+    """DeepSeek API Adapter (deepseek-flash, deepseek-v4-pro)."""
 
     def __init__(
         self,
@@ -23,3 +23,8 @@ class DeepSeekLLMAdapter(OpenAICompatibleLLMAdapter):
             client_override=client_override,
             **kwargs,
         )
+
+    def _reasoning_fields(self, effort: str | None, model: str) -> dict[str, Any]:
+        if effort == "none":
+            return {"thinking": {"type": "disabled"}}
+        return super()._reasoning_fields(effort, model)

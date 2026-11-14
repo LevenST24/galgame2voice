@@ -27,6 +27,8 @@ DEFAULT_MODEL_KEY = "default"
 MODEL_PRICING_MAP: dict[str, dict[str, tuple[float, float]]] = {
     "deepseek": {
         DEFAULT_MODEL_KEY: (0.14, 0.28),
+        "deepseek-flash": (0.30, 1.20),
+        "deepseek-v4-pro": (1.32, 3.96),
         "deepseek-chat": (0.14, 0.28),
         "deepseek-reasoner": (0.55, 2.19),
     },
