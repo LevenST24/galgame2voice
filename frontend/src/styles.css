@@ -396,6 +396,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .voice-select-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; }
 .voice-select-row select { height: 42px; flex: 1 1 180px; min-width: 0; }
 .voice-select-row .btn { flex: none; white-space: nowrap; }
+.redeem-panel { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.redeem-query { display: flex; gap: 8px; align-items: center; }
+.redeem-query input { flex: 1; min-width: 0; }
+.redeem-item { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+.redeem-status { margin: 0; font-size: 13px; color: var(--text-2); }
 .voice-drop-overlay {
   position: absolute;
   inset: 0;

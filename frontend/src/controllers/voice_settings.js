@@ -38,6 +38,7 @@ const VOICE_LIST_UNAVAILABLE = '__unavailable__';
 let profilesRevision = 0;
 let lastShownCatalogWarning = '';
 let isImporting = false;
+let redeemCode = '';
 let dragEnterDepth = 0;
 let cleanupDragListeners = null;
 
@@ -51,6 +52,7 @@ export function initVoiceSettings(dom, callbacks = {}) {
   cleanupDragListeners?.();
   cleanupDragListeners = null;
   isImporting = false;
+  redeemCode = '';
   dragEnterDepth = 0;
 
   _dom = dom;
@@ -70,6 +72,8 @@ export function initVoiceSettings(dom, callbacks = {}) {
   _dom.sVoice?.addEventListener('change', handleVoiceSelectionChange);
   _dom.sVoiceImport?.addEventListener('click', () => !isImporting && _dom.sVoiceImportZipInput?.click());
   _dom.sVoiceImportFolder?.addEventListener('click', () => !isImporting && _dom.sVoiceImportDirInput?.click());
+  _dom.sVoiceRedeem?.addEventListener('click', () => _dom.sVoiceRedeemPanel?.classList.toggle('hidden'));
+  _dom.sVoiceRedeemQuery?.addEventListener('click', queryRedeemCode);
   _dom.sVoiceImportZipInput?.addEventListener('change', handleZipInputChange);
   _dom.sVoiceImportDirInput?.addEventListener('change', handleFolderInputChange);
   _dom.sVoiceRescan?.addEventListener('click', handleRescanCharacters);
@@ -671,6 +675,8 @@ function setImportBusy(busy) {
     _dom.sVoiceImport.textContent = busy ? '正在导入…' : '导入角色包';
   }
   if (_dom.sVoiceImportFolder) _dom.sVoiceImportFolder.disabled = busy;
+  if (_dom.sVoiceRedeem) _dom.sVoiceRedeem.disabled = busy;
+  if (_dom.sVoiceRedeemQuery) _dom.sVoiceRedeemQuery.disabled = busy;
   if (_dom.sVoiceRescan) _dom.sVoiceRescan.disabled = busy;
 }
 
@@ -706,14 +712,30 @@ function sendImportArchiveXhr(blob, filename, { overwrite = false, retriedAuth =
   });
 }
 
+function confirmPackageOverwrite(data, filename) {
+  const names = Array.isArray(data?.names) && data.names.length ? data.names.join('、') : (filename || '该角色');
+  return window.confirm(`已有同名角色包「${names}」，覆盖它吗？旧的会先备份。`);
+}
+
+async function finishCharacterImport(data, filename) {
+  invalidateScannedModels();
+  await loadSessionVoiceSelect(getActive(), { preserveDraft: true, syncCustomBox: false });
+  const imported = Array.isArray(data?.imported) ? data.imported : [];
+  if (imported[0]?.profile_id != null && _dom.sVoice) {
+    _dom.sVoice.value = String(imported[0].profile_id);
+    handleVoiceSelectionChange();
+  } else syncCustomVoiceBox();
+  const label = imported.length ? imported.map((item) => `「${item.name}」`).join('、') : `「${filename || '角色包'}」`;
+  showToast(`已导入${label}，点「保存」即可使用`, 'success');
+}
+
 async function importCharacterArchive(blob, filename) {
   if (isImporting || !blob) return;
   setImportBusy(true);
   try {
     let { status, data } = await sendImportArchiveXhr(blob, filename, { overwrite: false });
     if (status === 409 && data?.code === 'package_exists') {
-      const names = Array.isArray(data.names) && data.names.length ? data.names.join('、') : (filename || '该角色');
-      if (!window.confirm(`已有同名角色包「${names}」，覆盖它吗？旧的会先备份。`)) return;
+      if (!confirmPackageOverwrite(data, filename)) return;
       if (_dom.sVoiceImport) _dom.sVoiceImport.textContent = '正在导入…';
       ({ status, data } = await sendImportArchiveXhr(blob, filename, { overwrite: true }));
     }
@@ -721,20 +743,129 @@ async function importCharacterArchive(blob, filename) {
       showToast(getErrorMessage(data, '') || `导入角色包失败（HTTP ${status}）`, 'error');
       return;
     }
-    invalidateScannedModels();
-    await loadSessionVoiceSelect(getActive(), { preserveDraft: true, syncCustomBox: false });
-    const imported = Array.isArray(data?.imported) ? data.imported : [];
-    if (imported[0]?.profile_id != null && _dom.sVoice) {
-      _dom.sVoice.value = String(imported[0].profile_id);
-      handleVoiceSelectionChange();
-    } else syncCustomVoiceBox();
-    const label = imported.length ? imported.map((item) => `「${item.name}」`).join('、') : `「${filename || '角色包'}」`;
-    showToast(`已导入${label}，点「保存」即可使用`, 'success');
+    await finishCharacterImport(data, filename);
   } catch (err) {
     console.error('导入角色包失败:', err);
     showToast(err?.message || '导入角色包失败，请重试。', 'error');
   } finally {
     setImportBusy(false);
+  }
+}
+
+const _KB = 1024, _MB = 1024 ** 2, _GB = 1024 ** 3;
+function redeemUnit(n) {
+  if (n >= _GB) return [_GB, 'GB'];
+  if (n >= _MB) return [_MB, 'MB'];
+  if (n >= _KB) return [_KB, 'KB'];
+  return [1, 'B'];
+}
+function redeemScaled(n, size) {
+  return size === 1 ? String(Math.round(n)) : (n / size).toFixed(1);
+}
+export function formatRedeemProgress(progress) {
+  if (progress.phase === 'import') return '正在导入…';
+  if (progress.phase !== 'download') return '';
+  const done = Number(progress.done) || 0, total = Number(progress.total) || 0;
+  const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+  const [size, label] = redeemUnit(Math.max(done, total));
+  return `正在下载「${progress.name || ''}」… ${pct}%（${redeemScaled(done, size)} / ${redeemScaled(total, size)} ${label}）`;
+}
+function formatRedeemSize(n) {
+  const value = Number(n) || 0, [size, label] = redeemUnit(value);
+  return `${redeemScaled(value, size)} ${label}`;
+}
+
+function renderRedeemList(packages) {
+  const list = _dom.sVoiceRedeemList;
+  if (!list) return;
+  list.innerHTML = '';
+  for (const pkg of packages) {
+    const row = document.createElement('div');
+    row.className = 'redeem-item';
+    const label = document.createElement('span');
+    label.textContent = `${pkg.name} · ${formatRedeemSize(pkg.size)} · 还可下载 ${pkg.remaining} 次`;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn ghost';
+    button.textContent = '下载并导入';
+    button.addEventListener('click', () => downloadRedeemPackage(pkg));
+    row.appendChild(label);
+    row.appendChild(button);
+    list.appendChild(row);
+  }
+}
+
+async function queryRedeemCode() {
+  const input = _dom.sVoiceRedeemCode;
+  const code = String(input?.value || '').trim();
+  if (!code) return showToast('请先粘贴兑换码', 'error');
+  if (isImporting) return;
+  try {
+    const data = await requestJson('/api/characters/redeem/list', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    }, { timeoutMs: 45000 });
+    redeemCode = code;
+    const packages = Array.isArray(data?.packages) ? data.packages : [];
+    renderRedeemList(packages);
+    if (input) input.value = '';
+    if (_dom.sVoiceRedeemStatus) {
+      _dom.sVoiceRedeemStatus.textContent = packages.length ? '' : '这个兑换码下没有可下载的角色包。';
+    }
+  } catch (err) {
+    redeemCode = '';
+    renderRedeemList([]);
+    showToast(err?.message || '查询兑换码失败', 'error');
+  }
+}
+
+async function pollRedeemStatus() {
+  if (!isImporting || !_dom.sVoiceRedeemStatus) return;
+  try {
+    const progress = await requestJson('/api/characters/redeem/progress', {}, { timeoutMs: 10000 });
+    if (!isImporting || !_dom.sVoiceRedeemStatus) return;
+    _dom.sVoiceRedeemStatus.textContent = formatRedeemProgress(progress);
+  } catch {
+    // 下一秒再查
+  }
+}
+
+async function downloadRedeemPackage(pkg) {
+  if (isImporting || !redeemCode || !pkg.id) return;
+  setImportBusy(true);
+  if (_dom.sVoiceRedeemStatus) {
+    _dom.sVoiceRedeemStatus.textContent = formatRedeemProgress({
+      phase: 'download',
+      done: 0,
+      total: Number(pkg.size) || 0,
+      name: pkg.name,
+    });
+  }
+  const timer = setInterval(pollRedeemStatus, 1000);
+  const post = (overwrite) => requestJson('/api/characters/redeem/download', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code: redeemCode, package_id: pkg.id, overwrite }),
+  }, { timeoutMs: 0 });
+  try {
+    let data;
+    try {
+      data = await post(false);
+    } catch (err) {
+      const conflict = err?.status === 409 && err?.data?.code === 'package_exists';
+      if (!conflict || !confirmPackageOverwrite(err.data, pkg.name)) throw err;
+      if (_dom.sVoiceRedeemStatus) _dom.sVoiceRedeemStatus.textContent = '正在导入…';
+      data = await post(true);
+    }
+    await finishCharacterImport(data, pkg.name);
+  } catch (err) {
+    if (err?.status === 409 && err?.data?.code === 'package_exists') return;
+    showToast(err?.message || '下载并导入失败，请重试。', 'error');
+  } finally {
+    clearInterval(timer);
+    setImportBusy(false);
+    if (_dom.sVoiceRedeemStatus) _dom.sVoiceRedeemStatus.textContent = '';
   }
 }
 

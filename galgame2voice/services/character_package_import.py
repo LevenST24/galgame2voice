@@ -341,19 +341,16 @@ def _validate_placed_packages(mgr: Any, placed: list[Path], out_pkgs: list[Chara
     out_pkgs.extend(resolved)
 
 
-async def import_character_archive(
-    request: Request, *, filename: str = "", overwrite: bool = False
+async def import_character_archive_file(
+    request: Request, archive_path: Path, *, filename: str = "", overwrite: bool = False
 ) -> dict[str, Any] | JSONResponse:
-    """Streams, safely unpacks, validates, and installs character package(s)."""
+    """Safely unpacks, validates, and installs character package(s) from a local archive file."""
     settings = get_settings()
     temp_root = settings.data_dir / "character_import"
     await asyncio.to_thread(temp_root.mkdir, parents=True, exist_ok=True)
     staging_dir = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="imp-", dir=str(temp_root)))
 
     try:
-        archive_path = staging_dir / "upload.bin"
-        await _stream_request_to_file(request, archive_path, MAX_IMPORT_BYTES)
-
         def _prepare() -> list[tuple[str, Path]]:
             fmt = detect_archive_format(archive_path)
             extract_archive_safely(archive_path, fmt, staging_dir / "extracted", max_bytes=MAX_IMPORT_BYTES)
@@ -426,3 +423,19 @@ async def import_character_archive(
             }
     finally:
         await asyncio.to_thread(_rmtree_force, staging_dir)
+
+
+async def import_character_archive(
+    request: Request, *, filename: str = "", overwrite: bool = False
+) -> dict[str, Any] | JSONResponse:
+    """Streams, safely unpacks, validates, and installs character package(s)."""
+    temp_root = get_settings().data_dir / "character_import"
+    await asyncio.to_thread(temp_root.mkdir, parents=True, exist_ok=True)
+    fd, raw_upload = await asyncio.to_thread(tempfile.mkstemp, prefix="up-", suffix=".bin", dir=str(temp_root))
+    os.close(fd)
+    upload_path = Path(raw_upload)
+    try:
+        await _stream_request_to_file(request, upload_path, MAX_IMPORT_BYTES)
+        return await import_character_archive_file(request, upload_path, filename=filename, overwrite=overwrite)
+    finally:
+        await asyncio.to_thread(upload_path.unlink, missing_ok=True)
