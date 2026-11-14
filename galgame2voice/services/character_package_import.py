@@ -39,6 +39,14 @@ MAX_PACKAGE_DISCOVERY_DEPTH = 3
 NO_PACKAGE_FOUND_DETAIL = "没有找到角色包：需要包含 manifest.json 的文件夹"
 SIZE_LIMIT_EXCEEDED_DETAIL = "角色包文件过大（上限 8 GiB），请精简无关文件后重试。"
 
+
+def _missing_package_detail(filename: str) -> str:
+    name = filename.strip().lower()
+    if name.endswith((".zip", ".tar", ".tgz", ".tar.gz")):
+        return "这个压缩包里没有 manifest.json"
+    return NO_PACKAGE_FOUND_DETAIL
+
+
 _WINDOWS_RESERVED_NAMES = frozenset(
     {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 )
@@ -245,7 +253,7 @@ def discover_extracted_packages(extract_dir: Path, *, filename: str = "") -> lis
 
     _walk(extract_dir, 0)
     if not found:
-        raise HTTPException(422, NO_PACKAGE_FOUND_DETAIL)
+        raise HTTPException(422, _missing_package_detail(filename))
     seen: set[str] = set()
     for folder_name, _ in found:
         if folder_name in seen:

@@ -752,7 +752,7 @@ class GptSovitsClient:
                     'text_lang': opts.get('text_lang', 'ja'),
                 }
                 if not await self._switch_voice_profile_locked(target):
-                    raise ValueError('所选音色的语音模型未能加载，请在「运行状态」检查引擎后重试。')
+                    raise ValueError('语音引擎还没准备好，现在只有文字、没有声音。可在「运行状态」查看引擎。')
         await asyncio.to_thread(identity.validate, opts, self)
         # Hot URL swaps do not wait for the potentially long inference mutex.
         if identity.engine_url and identity.engine_url != self.base_url.rstrip("/"):

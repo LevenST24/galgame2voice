@@ -138,6 +138,12 @@ export class TelemetrySettingsController {
     if (this.dom.gDashSovitsUrl && status.base_url) {
       this.dom.gDashSovitsUrl.textContent = status.base_url;
     }
+    const button = this.dom.gBtnRestartSovits;
+    const idle = button && !button.disabled && !this.coordinator.isRestarting?.();
+    if (idle && (ready || status.state === 'failed' || status.state === 'unavailable')) {
+      const label = ready ? '重启 SoVITS 引擎' : '启动 SoVITS 引擎';
+      button.innerHTML = `<svg class="icon"><use href="#i-play"></use></svg><span>${label}</span>`;
+    }
   }
 
   async fetchSystemTelemetry() {

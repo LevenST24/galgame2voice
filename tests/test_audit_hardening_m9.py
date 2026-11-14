@@ -460,7 +460,7 @@ class TestAnthropicEmptyApiKeyFastFail:
         payload = chat_error_payload(exc_info.value, provider_id="anthropic", api_key_configured=is_configured)
         assert payload["error_code"] == "API_KEY_MISSING"
         assert "Anthropic Claude" in payload["error"]
-        assert "设置中心 → 对话模型" in payload["error"]
+        assert "在上面的 API 密钥里填入后再测试" in payload["error"]
 
         payload_default = chat_error_payload(exc_info.value, provider_id="anthropic")
         assert payload_default["error_code"] == "API_KEY_MISSING"

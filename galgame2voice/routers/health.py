@@ -728,7 +728,7 @@ async def _restart_local_engine(endpoint: SovitsEndpoint, payload: RestartSovits
     live_owned = owned is not None and owned.poll() is None
     owns_endpoint = live_owned and supervisor.get_managed_launch(endpoint) is not None
     if not owns_endpoint and await asyncio.to_thread(supervisor.is_port_in_use, endpoint.port, endpoint.host):
-        raise HTTPException(status_code=409, detail="语音引擎已在其他窗口运行，可直接使用。若需重启，请先关闭该引擎窗口，再在「运行状态」点击「重启 SoVITS 引擎」。")
+        raise HTTPException(status_code=409, detail="语音引擎已在其他窗口运行，可直接使用。若需重启，请先关闭该引擎窗口，再在「运行状态」页启动引擎。")
     # Determine precision and device target only after validation and ownership checks.
     req_prec = str(payload.precision).strip().lower() if (payload and payload.precision) else None
     device, is_half, source = await _apply_sovits_precision_config(settings.project_root, sovits_dir, req_prec)

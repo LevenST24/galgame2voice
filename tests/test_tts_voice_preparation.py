@@ -455,7 +455,7 @@ async def test_failed_preparation_preserves_selection_and_does_not_cache_wrong_a
             return httpx.Response(503, text='synthetic model load refused')
         return await original(method, path, **kwargs)
     monkeypatch.setattr(stack.engine, 'handle_request', refusal)
-    with pytest.raises(ValueError, match='模型未能加载'):
+    with pytest.raises(ValueError, match='没有声音'):
         await render(stack, 'bytes')
     assert not any(path == '/tts' for _, path in stack.engine.calls)
     async with get_db(stack.db) as conn:

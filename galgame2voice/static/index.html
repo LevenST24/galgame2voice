@@ -7,7 +7,7 @@
   <title>Gal2Voice · AI 多会话聊天</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%236c7ce0'/%3E%3Cpath d='M16 5l6 8.2c.9 1.2.7 2.6-.3 3.6L16 27l-5.7-10.2c-1-1-1.2-2.4-.3-3.6L16 5z' fill='%23ffffff'/%3E%3C/svg%3E" />
 
-  <script type="module" crossorigin src="/static/assets/index-BoltXvJf.js"></script>
+  <script type="module" crossorigin src="/static/assets/index-CWpet2Z5.js"></script>
   <link rel="stylesheet" crossorigin href="/static/assets/index-DgKLOYV_.css">
 </head>
 <body>
@@ -193,7 +193,7 @@
               <div class="status-card-act" style="display: flex; gap: 6px;">
                 <button type="button" class="btn-card-action" id="gBtnRestartSovits">
                   <svg class="icon"><use href="#i-play"></use></svg>
-                  <span>重启 SoVITS 引擎</span>
+                  <span>启动 SoVITS 引擎</span>
                 </button>
                 <button type="button" class="btn-card-action" id="gBtnGoSovitsSetup" title="配置引擎文件夹或地址">
                   <svg class="icon"><use href="#i-sliders"></use></svg>
@@ -329,6 +329,7 @@
               <button type="button" class="btn-input-action" id="gSaveSovitsDirectory">保存目录</button>
             </div>
             <small id="gSovitsDirectoryStatus" aria-live="polite">连接远端引擎时无需设置本机目录。</small>
+            <small>还没有引擎时，按<a href="https://github.com/RVC-Boss/GPT-SoVITS#windows" target="_blank" rel="noopener noreferrer">使用说明</a>下载官方 Windows 整合包（含运行环境），选里面有 <code>api_v2.py</code> 的文件夹；只打字可以先跳过。</small>
           </div>
           <div class="field">
             <label>计算方式</label>
@@ -408,8 +409,8 @@
               <small class="field-tip" id="gBaseUrlTip">支持本地反代、Cloudflare Workers 中转或私有网关。</small>
             </div>
             <div class="field">
-              <label class="check-line"><input type="checkbox" id="gAllowPrivateEndpoints" aria-describedby="gPrivateEndpointsStatus" /> 允许私网 LLM 端点（本机 / 局域网模型）</label>
-              <small id="gPrivateEndpointsStatus" role="status">使用 Ollama、LM Studio 或局域网模型时开启；更改后自动保存。仅填写你信任的服务地址。</small>
+              <label class="check-line"><input type="checkbox" id="gAllowPrivateEndpoints" aria-describedby="gPrivateEndpointsStatus" /> 允许连接本机或局域网的模型服务</label>
+              <small id="gPrivateEndpointsStatus" role="status">允许连接本机或局域网的模型服务。使用 Ollama、LM Studio 或局域网模型时开启；更改后自动保存。仅填写你信任的服务地址。</small>
             </div>
 
             <!-- 对话模型选择项（预设下拉 + 自定义输入结合） -->

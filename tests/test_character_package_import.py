@@ -216,6 +216,26 @@ async def test_conflict_409_overwrite_backup_and_failed_overwrite_restore(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_missing_manifest_names_zip_and_folder(tmp_path, monkeypatch):
+    _root, app = _setup_app(tmp_path, monkeypatch)
+    await init_db()
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w") as zf:
+        zf.writestr("readme.txt", b"no manifest")
+    tar_buf = io.BytesIO()
+    with tarfile.open(fileobj=tar_buf, mode="w", format=tarfile.USTAR_FORMAT) as tf:
+        info = tarfile.TarInfo("角色文件夹/readme.txt")
+        info.size = 2
+        tf.addfile(info, io.BytesIO(b"no"))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
+        zipped = await client.post("/api/characters/import", params={"filename": "bad.zip"}, content=zip_buf.getvalue())
+        folder = await client.post("/api/characters/import", params={"filename": "角色文件夹"}, content=tar_buf.getvalue())
+    assert zipped.status_code == 422 and zipped.json()["detail"] == "这个压缩包里没有 manifest.json"
+    folder_detail = folder.json()["detail"]
+    assert folder.status_code == 422 and "文件夹" in folder_detail and "压缩包" not in folder_detail
+
+
+@pytest.mark.asyncio
 async def test_import_exceeding_size_limit_returns_413(tmp_path, monkeypatch):
     root, app = _setup_app(tmp_path, monkeypatch)
     await init_db()

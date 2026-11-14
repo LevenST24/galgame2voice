@@ -67,8 +67,8 @@ test('continuing the same session after silent home failure retries once and rep
   h.home.element.querySelector('.home-continue').click(); await tick();
   assert.deepEqual(h.requests, [1, 1]); await h.finish();
   assert.equal(h.toasts.children.length, 1);
-  assert.match(h.toasts.children[0].dataset.msg, /音色切换失败：请打开「运行状态」确认语音引擎正常后重试/);
-  assert.doesNotMatch(h.toasts.children[0].dataset.msg, /语音模型尚未加载/);
+  assert.match(h.toasts.children[0].dataset.msg, /没有声音/);
+  assert.doesNotMatch(h.toasts.children[0].dataset.msg, /重试|语音模型尚未加载/);
 });
 
 test('home visibility callback suppresses session-settings voice results and uses visibility when results arrive', async t => {
@@ -107,7 +107,7 @@ test('home reports a confirmed deleted voice while preserving the explicit bindi
 for (const status of [200, 502]) test(`ADV drawer switches keep notifications after leaving home: ${status}`, async t => {
   const h = await homeVoiceFixture(t, { status });
   await h.app.switchSession('home_2'); await tick();
-  assert.deepEqual(h.requests, [2]); assert.match(h.toasts.children[0].dataset.msg, status === 200 ? /已切换音色/ : /音色切换失败/);
+  assert.deepEqual(h.requests, [2]); assert.match(h.toasts.children[0].dataset.msg, status === 200 ? /已切换音色/ : /没有声音/);
 });
 
 for (const terminal of ['done', 'error', 'cancelled']) test(`LOG opened mid-stream includes existing lines through ${terminal}`, async t => {
