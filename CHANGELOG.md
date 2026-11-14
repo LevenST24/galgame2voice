@@ -27,6 +27,14 @@ All notable changes to galgame2voice are documented here. The format follows
 - 新操作提示出现时会替换画面上已停留的旧提示，同一次操作中紧接着触发的多条提示仍一并保留。
 - 自动扫描模型与参考音频时不再重复遍历数据目录与音频目录，音频文件较多时扫描更快。
 - 统一界面用词与标点（「会话」「运行状态」「返回首页」等），并将音色管理、角色扫描与检查更新失败提示统一改为说明原因、影响与下一步操作的中文指引。
+### Removed
+- 移除 Telegram 机器人功能与设置中心里的「Telegram」页面，原有的 Telegram 历史对话与旧版聊天备份仍可在网页端正常查看、导出和导入。
+- 移除设置中的「回复格式」选项与旧版残留无效的「日文原文显示」选项，新对话统一按逐句台词与演出生成，旧会话配置、历史整段消息回看及语音重生成不受影响。
+- 移除旧的同步聊天接口（`POST /api/chat`）、独立语音合成接口（`POST /api/voice/synthesize`）及应用内覆盖更新接口（`POST /api/system/update/apply`），对话统一使用 `POST /api/chat/stream`，历史语音失效后可到 LOG 重新生成。
+- 移除已无调用方的早期接口（`GET/POST /ai/chat`、`POST /api/chat/japanese`、`GET /status`、`GET /api/voice/fs-browse`、`GET /api/voice/presets`、`GET /api/providers/presets`、`GET /api/providers/{id}/models` 及独立的好感度、长期记忆与性能指标接口），服务存活检查请使用 `GET /api/health`，预设列表随 `GET /api/providers` 返回。
+[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.0...HEAD
+[3.2.0]: https://github.com/LevenST24/galgame2voice/releases/tag/v3.2.0
+### Fixed
 - 修复 1366×768 等桌面窗口打开标题画面时欢迎词被截断、看不见发送方式与设置中心说明的问题。
 - 修复首次使用时语音未就绪、未填密钥、引擎目录少进一层、角色压缩包不合规或端口被占等场景下提示指引与画面按钮不一致的问题。
 - 修复尚未导入角色包且未配置音色时，生成语音误引导去检查语音引擎的问题，现会提示前往「角色与会话」导入角色包或创建自定义音色。
@@ -81,13 +89,6 @@ All notable changes to galgame2voice are documented here. The format follows
 - 修复早期创建或导出的会话仍显示旧版默认欢迎语引导不存在入口的问题，现加载或导入时会自动刷新完全匹配的默认欢迎语且不影响真实对话记录。
 - 修复聊天输入框超过 4000 字发送时清空草稿且报错失真，以及打开设置中心时未立即停止首页正在播放的试听语音的问题。
 - 修复在输入框使用中文/日文输入法组字时按 Esc 取消候选词会直接关闭弹窗，以及在背景选择对话框按 Tab 或 Shift+Tab 时焦点跳出对话框的问题。
-- 移除 Telegram 机器人功能与设置中心里的「Telegram」页面，原有的 Telegram 历史对话与旧版聊天备份仍可在网页端正常查看、导出和导入。
-- 移除设置中的「回复格式」选项与旧版残留无效的「日文原文显示」选项，新对话统一按逐句台词与演出生成，旧会话配置、历史整段消息回看及语音重生成不受影响。
-- 移除旧的同步聊天接口（`POST /api/chat`）、独立语音合成接口（`POST /api/voice/synthesize`）及应用内覆盖更新接口（`POST /api/system/update/apply`），对话统一使用 `POST /api/chat/stream`，历史语音失效后可到 LOG 重新生成。
-- 移除已无调用方的早期接口（`GET/POST /ai/chat`、`POST /api/chat/japanese`、`GET /status`、`GET /api/voice/fs-browse`、`GET /api/voice/presets`、`GET /api/providers/presets`、`GET /api/providers/{id}/models` 及独立的好感度、长期记忆与性能指标接口），服务存活检查请使用 `GET /api/health`，预设列表随 `GET /api/providers` 返回。
-[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.0...HEAD
-[3.2.0]: https://github.com/LevenST24/galgame2voice/releases/tag/v3.2.0
-
 
 ## [3.1.2] - 2026-11-04
 
