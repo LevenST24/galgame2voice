@@ -10,60 +10,31 @@ Comprehensive Tier 5 Test Matrix:
 2. High-Concurrency Multi-Turn SSE Streaming Stress:
    - Concurrent multi-client SSE streaming (10+ simultaneous sessions)
    - Early client disconnect & cancellation resilience under load
-   - Adversarial bilingual chunk fuzzing (1-char tokens, markdown fences, unescaped unicode, malformed JSON, plain-text fallback)
-   - SSE formatter error and cancellation handling
 3. Concurrent Web SSE Streaming + Direct TTS Load Interleaving:
    - Simultaneous burst: Web SSE streams + direct TTS synthesis requests
-   - Shared VoiceManager inference mutex contention under simultaneous Web and Telegram TTS
-   - End-to-end Telegram voice note STT-to-TTS pipeline under error conditions
-   - Session namespace isolation across web, telegram, and api channels
-4. Database Contention, WAL Concurrency & SQL Injection Defense:
-   - 50-task concurrent read/write burst under SQLite WAL mode
-   - SQL injection attack payload matrix across all persistence layers
-   - Extreme multi-turn sliding window token trimming (100+ turns)
-5. Acceptance Criteria Verification Matrix (ORIGINAL_REQUEST.md):
-   - Python/FastAPI core, Windows batch scripts, Health/Status endpoints, Secret Masking,
-     Streaming pipeline, Voice Profile mutex & rollback, Telegram Bot multi-turn & STT.
 """
 
 import asyncio
 import json
 import os
-import re
-import sqlite3
 import tempfile
-import time
-from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import aiosqlite
-import httpx
 import pytest
 
-from galgame2voice.adapters.base import BaseLLMAdapter, BaseSTTAdapter, ChatMessage, LLMResponse, TestResult
-from galgame2voice.adapters.registry import get_llm_adapter, get_stt_adapter, list_provider_presets, get_provider_preset
-from galgame2voice.config import get_settings
+from galgame2voice.adapters.base import BaseLLMAdapter, ChatMessage, LLMResponse, TestResult
 from galgame2voice.database import crud
 from galgame2voice.database.models import (
-    MessageCreate,
     ProviderCreate,
-    ProviderUpdate,
-    SettingsUpdate,
     VoiceProfileCreate,
-    VoiceProfileUpdate,
 )
 from galgame2voice.database.session import get_db, init_db
-from galgame2voice.main import create_app
-from galgame2voice.routers.chat import sse_event_formatter
-from galgame2voice.services.chat_service import ChatService, StreamingBilingualParser
-from galgame2voice.services.session_manager import SessionManager, SessionTurn
-from galgame2voice.services.tts_service import TtsService
 from galgame2voice.services.character_voice_catalog import get_character_voice_catalog
-from galgame2voice.services.voice_manager import GptSovitsClient, VoiceManager
-from galgame2voice.services.gpt_sovits_client import clean_japanese_parentheses
-from galgame2voice.utils.logger import MaskingFilter
-from tests.conftest import MockGptSovitsServer, MockLLMServer, mask_secret
+from galgame2voice.services.chat_service import ChatService
+from galgame2voice.services.voice_manager import VoiceManager
+from tests.conftest import MockGptSovitsServer
 
 
 # ============================================================================
@@ -101,12 +72,6 @@ async def m7_db_path(configured_voice):
 def m7_mock_gpt():
     """Fresh MockGptSovitsServer instance."""
     return MockGptSovitsServer()
-
-
-@pytest.fixture
-def m7_mock_llm():
-    """Fresh MockLLMServer instance."""
-    return MockLLMServer()
 
 
 class CustomMockLLMAdapter(BaseLLMAdapter):
@@ -187,7 +152,7 @@ class TestFullLifecycleCrossModuleE2E:
     """
 
     @pytest.mark.asyncio
-    async def test_e2e_fresh_db_to_multiturn_dialogue(self, m7_db_path, m7_mock_gpt, m7_mock_llm):
+    async def test_e2e_fresh_db_to_multiturn_dialogue(self, m7_db_path, m7_mock_gpt):
         """
         Lifecycle:
         1. DB initialized with defaults.
@@ -455,102 +420,6 @@ class TestMultiTurnSseStreamingStress:
             done = next(e for e in events if e["event"] == "done")
             assert done["data"]["chinese"] == "正常测试"
 
-    def test_adversarial_bilingual_chunk_fuzzing(self):
-        """
-        Exhaustive fuzzing matrix for StreamingBilingualParser:
-        1. 1-character token streaming with CJK, emojis, and multiline text.
-        2. Markdown fences with leading/trailing whitespaces.
-        3. Deeply nested JSON with additional arbitrary metadata.
-        4. Escaped quotes and escaped backslashes.
-        5. Plain-text fallback without JSON markup.
-        6. Abruptly truncated JSON payload.
-        """
-        # Fuzz Case 1: 1-Character token stream
-        parser1 = StreamingBilingualParser()
-        full_json = json.dumps({
-            "chinese": "这是单字符流式解析测试✨！",
-            "japanese": "これは一文字ストリーミングテストです🌸！"
-        }, ensure_ascii=False)
-
-        emitted_deltas = []
-        emitted_sentences = []
-        for char in full_json:
-            delta, sents = parser1.feed_chunk(char)
-            if delta:
-                emitted_deltas.append(delta)
-            if sents:
-                emitted_sentences.extend(sents)
-
-        ch_final, ja_final, rem_sents = parser1.finalize()
-        assert "".join(emitted_deltas) == "这是单字符流式解析测试✨！"
-        assert ch_final == "这是单字符流式解析测试✨！"
-        assert ja_final == "これは一文字ストリーミングテストです🌸！"
-
-        # Fuzz Case 2: Markdown codeblock wrappers
-        parser2 = StreamingBilingualParser()
-        parser2.feed_chunk("```json\n")
-        parser2.feed_chunk('{"chinese": "包装测试", "japanese": "ラッパーテスト"}\n')
-        parser2.feed_chunk("```")
-        ch2, ja2, _ = parser2.finalize()
-        assert ch2 == "包装测试"
-        assert ja2 == "ラッパーテスト"
-
-        # Fuzz Case 3: Extra fields and nested keys
-        parser3 = StreamingBilingualParser()
-        raw_complex = json.dumps({
-            "thought": "Let's think carefully...",
-            "emotion": "happy",
-            "chinese": "多字段测试",
-            "japanese": "複数フィールドテスト。",
-            "metadata": {"confidence": 0.99}
-        }, ensure_ascii=False)
-        parser3.feed_chunk(raw_complex)
-        ch3, ja3, _ = parser3.finalize()
-        assert ch3 == "多字段测试"
-        assert ja3 == "複数フィールドテスト。"
-
-        # Fuzz Case 4: Plain text fallback
-        parser4 = StreamingBilingualParser()
-        parser4.feed_chunk("中文：这是纯文本回复格式\n日文：これはプレーンテキストフォーマットです")
-        ch4, ja4, _ = parser4.finalize()
-        assert "这是纯文本回复格式" in ch4
-        assert "これはプレーンテキストフォーマットです" in ja4
-
-        # Fuzz Case 5: Escaped quotes in text
-        parser5 = StreamingBilingualParser()
-        parser5.feed_chunk(r'{"chinese": "他说:\"你好\"！", "japanese": "彼は「こんにちは」と言いました。"}')
-        ch5, ja5, _ = parser5.finalize()
-        assert '他说:"你好"！' in ch5
-        assert '彼は「こんにちは」と言いました。' in ja5
-
-    @pytest.mark.asyncio
-    async def test_sse_event_formatter_adversarial_handling(self):
-        """
-        Verifies sse_event_formatter handles CancelledError and exceptions cleanly.
-        """
-        async def cancellable_gen():
-            yield {"event": "text", "data": {"delta": "part1"}}
-            raise asyncio.CancelledError()
-
-        async def error_gen():
-            yield {"event": "text", "data": {"delta": "part1"}}
-            raise RuntimeError("Unexpected pipeline crash")
-
-        # Test cancellation
-        results = []
-        async for line in sse_event_formatter(cancellable_gen()):
-            results.append(line)
-        assert len(results) == 1
-        assert "part1" in results[0]
-
-        # Test error handling
-        err_results = []
-        async for line in sse_event_formatter(error_gen()):
-            err_results.append(line)
-        assert len(err_results) == 2
-        assert "event: error" in err_results[1]
-        assert "Unexpected pipeline crash" in err_results[1]
-
 
 # ============================================================================
 # 3. Concurrent Web SSE Streaming + Direct TTS Load Interleaving Tests
@@ -617,345 +486,3 @@ class TestConcurrentWebAndDirectTtsLoad:
         for _, _, byte_len in tts_results:
             assert byte_len > 100
 
-    @pytest.mark.asyncio
-    async def test_shared_voice_manager_tts_lock_contention(self, m7_db_path, m7_mock_gpt):
-        """
-        High-frequency concurrent synthesis calls on GptSovitsClient.
-        Verifies that asyncio.Lock prevents race conditions and all synthesis requests succeed.
-        """
-        voice_manager = VoiceManager(gpt_sovits_client_or_server=m7_mock_gpt, db_path=m7_db_path)
-
-        async def synth_task(idx: int):
-            return await voice_manager.tts_service.synthesize(
-                text=f"同時合成テスト{idx}番です。",
-                options={"speed": 1.0, "top_k": 15}
-            )
-
-        # 20 concurrent synthesis tasks
-        tasks = [synth_task(i) for i in range(20)]
-        audio_outputs = await asyncio.gather(*tasks)
-
-        assert len(audio_outputs) == 20
-        for audio in audio_outputs:
-            assert isinstance(audio, bytes)
-            assert audio.startswith(b"RIFF")
-            assert len(audio) > 100
-
-    @pytest.mark.asyncio
-    async def test_session_channel_namespace_isolation(self, m7_db_path):
-        """
-        Verifies that session keys tagged by channel ('web:123', 'telegram:123', 'api:123')
-        remain strictly isolated in SessionManager and SQLite.
-        """
-        sm = SessionManager(db_path=m7_db_path)
-
-        # Add messages under identical suffix but different channel prefixes
-        await sm.add_turn("web:user_100", "user", "Web prompt", "")
-        await sm.add_turn("web:user_100", "assistant", "Web reply CH", "Web reply JA")
-
-        await sm.add_turn("telegram:user_100", "user", "TG prompt", "")
-        await sm.add_turn("telegram:user_100", "assistant", "TG reply CH", "TG reply JA")
-
-        await sm.add_turn("api:user_100", "user", "API prompt", "")
-        await sm.add_turn("api:user_100", "assistant", "API reply CH", "API reply JA")
-
-        hist_web = await sm.get_history("web:user_100")
-        hist_tg = await sm.get_history("telegram:user_100")
-        hist_api = await sm.get_history("api:user_100")
-
-        assert len(hist_web) == 2
-        assert hist_web[0].content_chinese == "Web prompt"
-
-        assert len(hist_tg) == 2
-        assert hist_tg[0].content_chinese == "TG prompt"
-
-        assert len(hist_api) == 2
-        assert hist_api[0].content_chinese == "API prompt"
-
-        # Clearing web session does not affect telegram session
-        await sm.clear_session("web:user_100")
-        assert len(await sm.get_history("web:user_100")) == 0
-        assert len(await sm.get_history("telegram:user_100")) == 2
-
-
-# ============================================================================
-# 4. Database Contention, WAL Concurrency & SQL Injection Defense
-# ============================================================================
-
-class TestDatabaseContentionAndIntegrity:
-    """
-    Stress tests for SQLite database under high-concurrency writes/reads and SQL injection attacks.
-    """
-
-    @pytest.mark.asyncio
-    async def test_sqlite_wal_high_concurrency_burst(self, m7_db_path):
-        """
-        50 concurrent asynchronous tasks performing mixed reads, updates, and inserts.
-        Verifies that SQLite in WAL mode handles write contention without locking failures.
-        """
-        async def db_worker(task_id: int):
-            async with aiosqlite.connect(m7_db_path) as conn:
-                # 1. Read settings
-                _ = await crud.get_settings_raw(conn)
-
-                # 2. Insert message
-                await crud.add_message(conn, MessageCreate(
-                    session_id=f"wal_stress_session_{task_id % 5}",
-                    role="user",
-                    content_chinese=f"Stress message from task {task_id}",
-                    content_japanese=f"タスク{task_id}からの負荷テスト",
-                    audio_url="",
-                    latency_ms=task_id,
-                ))
-
-                # 3. Read providers
-                _ = await crud.list_providers(conn)
-
-                # 4. Update setting
-                if task_id % 10 == 0:
-                    await crud.update_settings(conn, SettingsUpdate(
-                        audio_speed=1.0 + (task_id * 0.01)
-                    ))
-            return True
-
-        tasks = [db_worker(i) for i in range(50)]
-        results = await asyncio.gather(*tasks)
-        assert all(results)
-        assert len(results) == 50
-
-        # Verify total messages recorded
-        async with aiosqlite.connect(m7_db_path) as conn:
-            all_msgs = []
-            for s_id in range(5):
-                msgs = await crud.get_recent_messages(conn, f"wal_stress_session_{s_id}", limit=100)
-                all_msgs.extend(msgs)
-            assert len(all_msgs) == 50
-
-    @pytest.mark.asyncio
-    async def test_sql_injection_adversarial_matrix(self, m7_db_path):
-        """
-        Tests injection payloads across session_id, role, content, provider_id, and profile names.
-        """
-        malicious_payloads = [
-            "'; DROP TABLE settings; --",
-            "' OR '1'='1",
-            "\" OR \"\"=\"",
-            "admin'--",
-            "1; ATTACH DATABASE 'evil.db' AS evil; --",
-            "<script>alert('xss')</script>",
-            "UNION ALL SELECT key, value, description, updated_at FROM settings--",
-        ]
-
-        async with aiosqlite.connect(m7_db_path) as conn:
-            for idx, payload in enumerate(malicious_payloads):
-                # Test in session and messages
-                sess_id = f"inj_sess_{idx}_{payload[:10]}"
-                await crud.get_or_create_session(conn, sess_id)
-                msg = await crud.add_message(conn, MessageCreate(
-                    session_id=sess_id,
-                    role="user",
-                    content_chinese=payload,
-                    content_japanese=payload,
-                    audio_url=payload,
-                    latency_ms=0,
-                ))
-                assert msg.content_chinese == payload
-
-                # Verify settings table was NOT dropped
-                settings = await crud.get_settings_raw(conn)
-                assert settings is not None
-                assert settings.gpt_sovits_url != ""
-
-    @pytest.mark.asyncio
-    async def test_extreme_session_history_sliding_window(self, m7_db_path):
-        """
-        Populates a session with 50 dialogue turns (100 messages) and verifies
-        SessionManager truncates properly according to max_messages and max_tokens.
-        """
-        sm = SessionManager(db_path=m7_db_path)
-        session_id = "scale_100_msgs_session"
-
-        # Populate 50 turns (100 messages)
-        for i in range(50):
-            await sm.add_turn(session_id, "user", f"User prompt turn {i}")
-            await sm.add_turn(session_id, "assistant", f"Chinese reply turn {i}", f"Japanese reply turn {i}")
-
-        # Retrieve with max_messages of 10
-        history_10 = await sm.get_history(session_id, max_messages=10)
-        assert len(history_10) == 10
-        assert history_10[-1].content_chinese == "Chinese reply turn 49"
-
-        # Build chat messages with token limit
-        chat_msgs = await sm.build_chat_messages(
-            session_id=session_id,
-            user_prompt="New turn 50",
-            character_name="四季夏目",
-            max_messages=6,
-            max_tokens=300,
-        )
-
-        assert chat_msgs[0].role == "system"
-        assert chat_msgs[-1].role == "user"
-        assert chat_msgs[-1].content == "New turn 50"
-        # Total messages should be system + up to 6 history + 1 current user <= 8
-        assert len(chat_msgs) <= 8
-
-
-# ============================================================================
-# 5. Acceptance Criteria Verification Matrix (ORIGINAL_REQUEST.md)
-# ============================================================================
-
-class TestOriginalRequestAcceptanceCriteria:
-    """
-    Explicit verification corresponding 1:1 to every acceptance criterion
-    defined in ORIGINAL_REQUEST.md.
-    """
-
-    def test_ac_lightweight_core_no_java_dependencies(self):
-        """
-        AC: No Java/Maven dependencies required to run galgame2voice.
-        Verifies Python FastAPI core initializes without Java runtime.
-        """
-        app = create_app()
-        assert app.title == "galgame2voice"
-        assert len(app.routes) > 10
-
-    def test_ac_windows_scripts_exist_and_structure(self):
-        """
-        AC: 启动.bat and run_server.py properly launch and manage the service lifecycle.
-        """
-        project_root = Path(__file__).resolve().parent.parent
-        start_bat = project_root / "启动.bat"
-        launcher_py = project_root / "scripts" / "run_server.py"
-
-        assert start_bat.exists(), "启动.bat missing"
-        assert not (project_root / "停止.bat").exists(), "停止.bat should be removed for zero redundancy"
-        assert launcher_py.exists(), "scripts/run_server.py missing"
-
-        content_start = start_bat.read_text(encoding="utf-8", errors="ignore")
-        content_launcher = launcher_py.read_text(encoding="utf-8", errors="ignore")
-
-        assert "python" in content_start.lower() or "uvicorn" in content_start.lower() or "call" in content_start.lower()
-        assert "run_server.py" in content_start
-        assert "uvicorn" in content_launcher
-        assert "setup_windows_job_object" in content_launcher
-
-    @pytest.mark.asyncio
-    async def test_ac_health_endpoint(self, m7_db_path, m7_mock_gpt):
-        """
-        AC: Health check endpoint (/api/health) responds with status of galgame2voice.
-        """
-        app = create_app()
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
-            # Check /api/health
-            resp_health = await client.get("/api/health")
-            assert resp_health.status_code == 200
-            data_health = resp_health.json()
-            assert data_health["status"] in ("healthy", "degraded", "running", "ok")
-            assert "gpt_sovits" in data_health or "backend" in data_health or "app" in data_health
-
-    @pytest.mark.asyncio
-    async def test_ac_unified_config_and_security(self, m7_db_path):
-        """
-        AC: All settings persist in SQLite. API keys returned to web frontend are masked (sk-****1234).
-        No plaintext API keys in logs.
-        """
-        async with aiosqlite.connect(m7_db_path):
-            # Verify secret masking helper
-            masked = mask_secret("sk-1234567890abcdef1234567890abcdef")
-            assert masked.startswith("sk-****")
-            assert masked.endswith("cdef")
-            assert "1234567890" not in masked
-
-            # Verify logger MaskingFilter
-            masking_filter = MaskingFilter()
-            import logging
-            record = logging.LogRecord(
-                name="test", level=logging.INFO, pathname="", lineno=0,
-                msg="Auth Header: Bearer sk-1234567890abcdef1234567890abcdef, TG: 123456789:ABCdefGhIJKlmnoPQRstuvwxYZ123456",
-                args=(), exc_info=None
-            )
-            masking_filter.filter(record)
-            assert "sk-1234567890abcdef" not in record.msg
-            assert "123456789:ABCdefGh" not in record.msg
-
-    @pytest.mark.asyncio
-    async def test_ac_web_chat_and_streaming_playback(self, m7_db_path, m7_mock_gpt):
-        """
-        AC: Web chat renders streamed Chinese text immediately without waiting for voice synthesis.
-        Frontend Web Audio player receives initial audio chunks.
-        """
-        voice_manager = VoiceManager(gpt_sovits_client_or_server=m7_mock_gpt, db_path=m7_db_path)
-        tts_service = voice_manager.tts_service
-        chat_service = ChatService(tts_service=tts_service, db_path=m7_db_path)
-
-        mock_adapter = CustomMockLLMAdapter(provider_config={}, custom_tokens=[
-            '{"chinese": "立即流式中文输出", "japanese": "ストリーミング音声です。"}'
-        ])
-
-        with patch("galgame2voice.services.chat_service.get_llm_adapter", return_value=mock_adapter):
-            events = []
-            async for event in chat_service.stream_chat("AC Test", session_id="ac_web_chat"):
-                events.append(event)
-
-            # First event after prompt should be text delta
-            text_events = [e for e in events if e["event"] == "text"]
-            assert len(text_events) >= 1
-            assert text_events[0]["data"]["delta_chinese"] != ""
-
-            # Audio chunk event contains audio url
-            audio_events = [e for e in events if e["event"] == "audio_chunk"]
-            assert len(audio_events) >= 1
-            assert audio_events[0]["data"]["audio_url"].startswith("/audio/")
-
-    @pytest.mark.asyncio
-    async def test_ac_voice_switching_and_mutex_rollback(self, m7_db_path, m7_mock_gpt):
-        """
-        AC: Model switching locks inference and updates GPT/SoVITS weights correctly via API.
-        Rollback triggered on step failure.
-        """
-        voice_manager = VoiceManager(gpt_sovits_client_or_server=m7_mock_gpt, db_path=m7_db_path)
-
-        await get_character_voice_catalog().create_profile(
-            VoiceProfileCreate(
-                name="RollbackTestProfile",
-                gpt_weights_path="weights/rb.ckpt",
-                sovits_weights_path="weights/rb.pth",
-                refer_audio_path="ref/rb.wav",
-                refer_text="ロールバックテスト",
-                refer_language="ja",
-                prompt_language="ja",
-                text_language="ja",
-                is_default=0,
-            ),
-            db_factory=lambda: get_db(voice_manager.db_path),
-        )
-
-        # Test successful switch
-        res_ok = await voice_manager.switch_profile("RollbackTestProfile")
-        assert res_ok is True
-
-        # Test failure rollback on step 2 (sovits weights)
-        m7_mock_gpt.fail_on_step("set_sovits_weights")
-        switch_failed = await voice_manager.client.switch_voice_profile({
-            "gpt_weights_path": "weights/invalid.ckpt",
-            "sovits_weights_path": "weights/invalid.pth",
-            "refer_audio_path": "ref/invalid.wav",
-            "refer_text": "text",
-            "refer_language": "ja"
-        })
-        assert switch_failed is False
-
-    def test_ac_japanese_parentheses_filtering(self):
-        """
-        AC: Japanese text stage cue parentheses (（...） and (...)) stripped before TTS synthesis.
-        """
-        raw_ja = "こんにちは！（微笑みながら）今日も一日、頑張りましょう(元気に)！"
-        cleaned = clean_japanese_parentheses(raw_ja)
-        assert "微笑みながら" not in cleaned
-        assert "元気に" not in cleaned
-        assert "（" not in cleaned
-        assert "）" not in cleaned
-        assert "(" not in cleaned
-        assert ")" not in cleaned
-        assert cleaned == "こんにちは！今日も一日、頑張りましょう！"

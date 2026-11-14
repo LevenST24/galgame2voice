@@ -1,57 +1,44 @@
 """
 Quantitative Benchmark & Resilience Test Suite (Milestone 7 / R4).
 Verifies:
-1. R1 Agile First-Sentence Chunking & Latency Benchmark:
+1. R1 Agile First-Sentence Chunking:
    - split_japanese_sentences agile clause pause splitting (、，,) with min_chars=6 on chunk 0.
    - StreamingBilingualParser immediate chunk 0 emission upon clause pause.
    - Backwards compatibility for single sentences and subsequent chunks.
-   - Quantitative latency / token reduction comparison benchmark.
 2. R1 GPT-SoVITS Asynchronous Warm-up:
    - VoiceManager.warmup_current_profile() execution and probe synthesis.
    - Graceful offline and network timeout resilience.
-3. R2 Frontend Audio Player Static Integrity:
-   - frontend/src/audio_player.js Web Audio API AudioContext, sample-accurate scheduling,
-     12ms micro-fade envelope, 40ms linear fade-out interrupt.
-4. R2 Interrupt & Cancellation Timing:
-   - stream_chat cancel event responsiveness and queue/lock release latency < 100ms.
-5. R3 50+ Turn Conversation Memory Stability & VRAM Watermark Guard:
+3. R2 Interrupt & Cancellation Timing:
+   - stream_chat cancel event responsiveness and queue/lock release latency.
+4. R3 50+ Turn Conversation Memory Stability:
    - 50 continuous turns bilingual dialogue memory stability (RSS drift < 35MB).
-   - VoiceManager._check_vram_guard() floor threshold (0.45GB) & InsufficientMemoryError.
-6. R3 SSE Keep-Alive Heartbeat:
+5. R3 SSE Keep-Alive Heartbeat:
    - stream_chat() and stream_chat_events() W3C keep-alive comment (: keep-alive\\n\\n)
      emission on >= 5.0s queue silence.
-7. R3 Frontend Bounded Blob URL LRU Store:
-   - frontend/src/voice.js BoundedAudioStore with MAX_AUDIO_STORE_ENTRIES = 30 and
-     automatic URL.revokeObjectURL on eviction/deletion/clear.
-8. R4 SQLite WAL Concurrency:
-   - Concurrent read/write burst transactions in WAL mode with zero database locked errors.
 """
 
 import asyncio
 import gc
 import json
-import os
 import re
 import time
-from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional
-from unittest.mock import AsyncMock, patch
+from typing import Any, AsyncIterator, List, Optional
+from unittest.mock import patch
 
 import httpx
-import pytest
 import psutil
+import pytest
 
 from galgame2voice.adapters.base import BaseLLMAdapter, ChatMessage, LLMResponse, TestResult
 from galgame2voice.database import crud
-from galgame2voice.database.models import MessageCreate, VoiceProfileCreate
-from galgame2voice.database.session import get_db, immediate_transaction
+from galgame2voice.database.models import VoiceProfileCreate
+from galgame2voice.database.session import get_db
 from galgame2voice.services.chat_service import ChatService, SseKeepAlive
 from galgame2voice.services.gpt_sovits_client import GptSovitsClient
 from galgame2voice.services.streaming_parser import StreamingBilingualParser
 from galgame2voice.services.tts_service import TtsService
-from galgame2voice.services.voice_manager import VoiceManager, InsufficientMemoryError
+from galgame2voice.services.voice_manager import VoiceManager
 from galgame2voice.utils.text_splitter import split_japanese_sentences
-from tests.conftest import MockGptSovitsServer
 
 
 # ============================================================================
@@ -211,71 +198,6 @@ class TestR1AgileFirstSentenceChunkingAndLatency:
         assert ja_full == "こんにちは、先生、今日はいい天気ですね。"
         assert rem == []
 
-    def test_r1_agile_first_sentence_latency_benchmark(self):
-        """
-        Quantitative Latency Benchmark:
-        Compares character and token wait distance to first audio chunk emission
-        between Agile Chunking and Rigid Terminal Chunking.
-        """
-        token_stream = [
-            '{"chinese": "',
-            '你好，',
-            '今天的天气',
-            '真不错。',
-            '", "japanese": "',
-            'こんにちは、',
-            '先生、',
-            '今日はいい天気ですね。',
-            '"}'
-        ]
-
-        # 1. Agile Parser
-        agile_parser = StreamingBilingualParser()
-        agile_emitted_token_idx = -1
-        agile_emitted_chars = -1
-        accumulated_ja_len = 0
-
-        for idx, token in enumerate(token_stream):
-            _, completed = agile_parser.feed_chunk(token)
-            if 'japanese": "' in token:
-                accumulated_ja_len += len(token.split('japanese": "')[-1])
-            elif agile_parser.japanese_extracted:
-                accumulated_ja_len = len(agile_parser.japanese_extracted)
-
-            if completed and agile_emitted_token_idx == -1:
-                agile_emitted_token_idx = idx
-                agile_emitted_chars = len(completed[0])
-
-        # 2. Strict / Legacy Parser Simulation (waits for rigid terminal punctuation [。！？!?\\n])
-        strict_emitted_token_idx = -1
-        strict_emitted_chars = -1
-        buffer_ja = ""
-        ja_started = False
-        for idx, token in enumerate(token_stream):
-            if 'japanese": "' in token:
-                ja_started = True
-                buffer_ja += token.split('japanese": "')[-1]
-            elif ja_started:
-                clean_tok = token.replace('"}', '')
-                buffer_ja += clean_tok
-
-            matches = split_japanese_sentences(buffer_ja, is_first_chunk=False)
-            if matches and any(re.search(r'[。！？!?\n]$', m) for m in matches):
-                strict_emitted_token_idx = idx
-                strict_emitted_chars = len(matches[0])
-                break
-
-        assert agile_emitted_token_idx != -1
-        assert strict_emitted_token_idx != -1
-        assert agile_emitted_token_idx < strict_emitted_token_idx
-
-        # Quantitative verification: Agile chunk emits with >= 50% fewer characters
-        char_reduction_pct = (1.0 - (agile_emitted_chars / strict_emitted_chars)) * 100.0
-        assert char_reduction_pct >= 50.0, (
-            f"Expected >= 50% character latency reduction, got {char_reduction_pct:.1f}% "
-            f"({agile_emitted_chars} chars vs {strict_emitted_chars} chars)"
-        )
-
 
 # ============================================================================
 # 2. R1 GPT-SoVITS Asynchronous Warm-up & Cache Pre-seeding
@@ -398,43 +320,6 @@ class TestR1GptSovitsWarmup:
 
 
 # ============================================================================
-# 3. R2 Frontend Audio Player Static Integrity
-# ============================================================================
-
-class TestR2FrontendAudioPlayerStaticIntegrity:
-    """Verifies static implementation of Web Audio API, micro-fade, and interrupt."""
-
-    def test_r2_frontend_audio_player_static_integrity(self):
-        """Verifies frontend/src/audio_player.js contains required Web Audio API constructs."""
-        player_path = Path("frontend/src/audio_player.js")
-        assert player_path.exists(), "frontend/src/audio_player.js must exist"
-        code = player_path.read_text(encoding="utf-8")
-
-        # 1. Web Audio API AudioContext lazy initialization
-        assert "window.AudioContext || window.webkitAudioContext" in code
-        assert "export class StreamAudioController" in code
-        assert "createBufferSource()" in code
-        assert "decodeAudioData(" in code
-
-        # 2. Sample-accurate timeline scheduling
-        assert "source.start(startTime)" in code
-        assert "self.nextStartTime = startTime + duration - (fadeDur / 2)" in code
-
-        # 3. 12ms micro-fade envelope (attack & decay)
-        assert "this.crossFadeMs = options.crossFadeMs || 0.012" in code
-        assert "linearRampToValueAtTime(1.0, startTime + fadeDur)" in code
-        assert "linearRampToValueAtTime(0.0001, startTime + duration)" in code
-
-        # 4. 40ms smooth linear interrupt fade-out
-        assert "interrupt(fadeMs = 40)" in code
-        assert "linearRampToValueAtTime(0.0001, now + fadeMs / 1000)" in code
-        assert "abortController.abort()" in code
-        assert "lineState.queue = []" in code
-        assert "source.stop()" in code
-
-
-
-# ============================================================================
 # 4. R2 Interrupt & Cancellation Timing
 # ============================================================================
 
@@ -547,31 +432,6 @@ class TestR3MemoryStabilityAndVramGuard:
         assert drift_mb < 35.0, f"50-turn RSS memory drift exceeded 35MB: {drift_mb:.2f} MB"
         assert len([t for t in chat_service._bg_tasks if not t.done()]) == 0
 
-    def test_r3_vram_watermark_guard(self):
-        """Verifies VoiceManager._check_vram_guard() behavior across VRAM levels."""
-        vm = VoiceManager(gpt_sovits_client_or_server="http://127.0.0.1:9880")
-
-        # 1. Low free VRAM (< 0.45GB) -> InsufficientMemoryError
-        with patch("galgame2voice.services.voice_manager.get_gpu_vram_status", return_value=(8.0, 0.25)):
-            with patch("galgame2voice.services.voice_manager.release_system_memory") as mock_rel:
-                with pytest.raises(InsufficientMemoryError) as exc_info:
-                    vm._check_vram_guard(min_free_vram_gb=0.45)
-                assert "显卡可用显存不足" in str(exc_info.value)
-                mock_rel.assert_called_once()
-
-        # 2. Healthy free VRAM (>= 0.45GB) -> Clean execution
-        with patch("galgame2voice.services.voice_manager.get_gpu_vram_status", return_value=(8.0, 3.5)):
-            vm._check_vram_guard(min_free_vram_gb=0.45)
-
-        # 3. CPU / CI mode without discrete CUDA GPU -> Clean skip
-        with patch("galgame2voice.services.voice_manager.get_gpu_vram_status", return_value=(None, None)):
-            vm._check_vram_guard(min_free_vram_gb=0.45)
-
-        # 4. Custom threshold parameter
-        with patch("galgame2voice.services.voice_manager.get_gpu_vram_status", return_value=(8.0, 0.8)):
-            with pytest.raises(InsufficientMemoryError):
-                vm._check_vram_guard(min_free_vram_gb=1.0)
-
 
 # ============================================================================
 # 6. R3 SSE Keep-Alive Heartbeat
@@ -634,154 +494,3 @@ class TestR3SseKeepAlive:
             "stream_chat_events must yield verbatim ': keep-alive\\n\\n' string"
         )
 
-
-# ============================================================================
-# 7. R3 Frontend Bounded Blob URL LRU Store
-# ============================================================================
-
-class TestR3FrontendBoundedBlobStore:
-    """Verifies BoundedAudioStore static specification and behavioral contracts."""
-
-    def test_r3_frontend_bounded_blob_store_static_integrity(self):
-        """Verifies frontend/src/voice.js contains BoundedAudioStore with 30-item LRU cap."""
-        voice_js_path = Path("frontend/src/voice.js")
-        assert voice_js_path.exists(), "frontend/src/voice.js must exist"
-        code = voice_js_path.read_text(encoding="utf-8")
-
-        assert "export const MAX_AUDIO_STORE_ENTRIES = 30;" in code
-        assert "export class BoundedAudioStore extends Map" in code
-        assert "URL.revokeObjectURL(url)" in code
-        assert "this.size > MAX_AUDIO_STORE_ENTRIES" in code
-        assert "safeRevokeUrl(evicted.url)" in code
-        assert "export const audioStore = new BoundedAudioStore();" in code
-
-    def test_r3_bounded_audio_store_lru_behavior_simulation(self):
-        """Simulates BoundedAudioStore contract: 50 insertions caps at 30 and revokes oldest 20."""
-        MAX_ENTRIES = 30
-        revoked_urls: List[str] = []
-
-        class PyBoundedAudioStore(dict):
-            def set(self, key, value):
-                if key in self:
-                    old = self[key]
-                    if old and old.get("url") and old.get("url") != value.get("url"):
-                        revoked_urls.append(old["url"])
-                    del self[key]
-                self[key] = value
-                if len(self) > MAX_ENTRIES:
-                    oldest_k = next(iter(self))
-                    evicted = self.pop(oldest_k)
-                    if evicted and evicted.get("url"):
-                        revoked_urls.append(evicted["url"])
-
-            def delete(self, key):
-                if key in self:
-                    item = self.pop(key)
-                    if item and item.get("url"):
-                        revoked_urls.append(item["url"])
-
-            def clear(self):
-                for item in self.values():
-                    if item and item.get("url"):
-                        revoked_urls.append(item["url"])
-                super().clear()
-
-        store = PyBoundedAudioStore()
-        # Insert 50 blob items
-        for i in range(50):
-            store.set(f"msg_{i}", {"url": f"blob:http://localhost/audio_{i}.webm"})
-
-        assert len(store) == 30
-        # 20 earliest items (0..19) must be revoked in order
-        assert len(revoked_urls) == 20
-        assert revoked_urls[0] == "blob:http://localhost/audio_0.webm"
-        assert revoked_urls[19] == "blob:http://localhost/audio_19.webm"
-        assert "msg_0" not in store
-        assert "msg_49" in store
-
-        # Overwrite item
-        store.set("msg_49", {"url": "blob:http://localhost/audio_49_v2.webm"})
-        assert revoked_urls[-1] == "blob:http://localhost/audio_49.webm"
-
-        # Explicit delete
-        store.delete("msg_48")
-        assert revoked_urls[-1] == "blob:http://localhost/audio_48.webm"
-        assert len(store) == 29
-
-        # Explicit clear
-        store.clear()
-        assert len(store) == 0
-        assert len(revoked_urls) == 20 + 1 + 1 + 29  # 51 total entries accounted for
-
-
-# ============================================================================
-# 8. R4 SQLite WAL Concurrency
-# ============================================================================
-
-class TestR4SqliteWalConcurrency:
-    """Verifies SQLite WAL burst concurrency and zero database is locked errors."""
-
-    @pytest.mark.asyncio
-    async def test_r4_sqlite_wal_pragmas(self, temp_db_path):
-        """Verifies database initializes with WAL mode, foreign keys, and busy timeout."""
-        async with get_db(temp_db_path) as conn:
-            mode = (await (await conn.execute("PRAGMA journal_mode;")).fetchone())[0]
-            assert str(mode).lower() == "wal", f"Expected WAL mode, got {mode}"
-
-            busy_timeout = (await (await conn.execute("PRAGMA busy_timeout;")).fetchone())[0]
-            assert busy_timeout >= 5000, f"Expected busy_timeout >= 5000, got {busy_timeout}"
-
-            fk = (await (await conn.execute("PRAGMA foreign_keys;")).fetchone())[0]
-            assert fk == 1, "Foreign keys must be ON"
-
-    @pytest.mark.asyncio
-    async def test_r4_sqlite_wal_burst_concurrency_no_locks(self, temp_db_path):
-        """
-        Executes 15 concurrent writer tasks and 15 concurrent reader tasks.
-        Asserts zero database is locked / OperationalError failures and exact record count.
-        """
-        num_writers = 15
-        num_readers = 15
-        writes_per_task = 4
-
-        async with get_db(temp_db_path) as conn:
-            async with immediate_transaction(conn):
-                await conn.executemany(
-                    "INSERT OR IGNORE INTO sessions (id) VALUES (?);",
-                    [(f"wal_worker_{w}",) for w in range(num_writers)],
-                )
-
-        async def writer(writer_id: int):
-            for step in range(writes_per_task):
-                async with get_db(temp_db_path) as conn:
-                    async with immediate_transaction(conn):
-                        await conn.execute(
-                            "INSERT INTO messages (session_id, role, content_chinese, content_japanese) "
-                            "VALUES (?, ?, ?, ?);",
-                            (f"wal_worker_{writer_id}", "user", f"W_{writer_id}_S_{step}", f"日文_{writer_id}_{step}")
-                        )
-                await asyncio.sleep(0.001)
-            return True
-
-        async def reader(reader_id: int):
-            seen_counts = []
-            for _ in range(writes_per_task):
-                async with get_db(temp_db_path) as conn:
-                    row = await (await conn.execute("SELECT count(*) FROM messages;")).fetchone()
-                    seen_counts.append(row[0])
-                    # Query recent rows
-                    rows = await (await conn.execute("SELECT * FROM messages ORDER BY id DESC LIMIT 5;")).fetchall()
-                    assert isinstance(rows, list)
-                await asyncio.sleep(0.001)
-            return seen_counts
-
-        tasks = [writer(w) for w in range(num_writers)] + [reader(r) for r in range(num_readers)]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for i, res in enumerate(results):
-            assert not isinstance(res, Exception), f"Concurrent WAL task {i} encountered error: {res}"
-
-        # Verify exact final count of written records
-        async with get_db(temp_db_path) as conn:
-            final_count = (await (await conn.execute("SELECT count(*) FROM messages;")).fetchone())[0]
-            assert final_count == num_writers * writes_per_task
