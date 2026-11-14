@@ -765,7 +765,7 @@ class TestProviderPresetSeedsAndFallback:
         for pid, blank, expected in [
             ("deepseek", "", "deepseek-flash"),
             ("xai", "   ", "grok-4.7"),
-            ("moonshot", "", "moonshot-v1-32k"),
+            ("moonshot", "", "kimi-k3.1-pro"),
         ]:
             async with get_db(db_path) as conn:
                 await conn.execute("UPDATE providers SET is_active = 0;")
@@ -815,3 +815,19 @@ class TestProviderPresetSeedsAndFallback:
                 raw = await crud.get_provider_raw(conn, "openai")
                 assert raw.api_key == "sk-oa-saved-1234"
                 assert (raw.chat_model, raw.reasoning_effort) == (expected_model, expected_effort)
+
+    @pytest.mark.asyncio
+    async def test_retired_moonshot_models_migrate_to_kimi_k3(self, tmp_path):
+        """Retired Moonshot/Kimi models migrate to kimi-k3.1-pro and reasoning_effort low."""
+        from galgame2voice.database.models import ProviderUpdate
+
+        db_path = tmp_path / "moonshot_migrate.db"
+        await init_db(db_path)
+        async with get_db(db_path) as conn:
+            upd = ProviderUpdate(api_key="sk-kimi-saved-1234", chat_model="moonshot-v1-32k", reasoning_effort=None)
+            await crud.update_provider(conn, "moonshot", upd)
+        await init_db(db_path)
+        async with get_db(db_path) as conn:
+            raw = await crud.get_provider_raw(conn, "moonshot")
+            assert raw.api_key == "sk-kimi-saved-1234"
+            assert (raw.chat_model, raw.reasoning_effort) == ("kimi-k3.1-pro", "low")

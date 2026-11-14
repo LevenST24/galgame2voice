@@ -62,10 +62,10 @@ def test_url_default_test_models_derive_from_provider_presets():
     explicit_adapter = OpenAICompatibleLLMAdapter(
         api_key="sk-test",
         base_url="https://api.moonshot.cn/v1",
-        default_model="moonshot-v1-8k",
+        default_model="kimi-k3",
     )
-    assert explicit_adapter._resolve_test_model("moonshot-v1-128k") == "moonshot-v1-128k"
-    assert explicit_adapter._resolve_test_model(None) == "moonshot-v1-8k"
+    assert explicit_adapter._resolve_test_model("kimi-k3.1-pro-highspeed") == "kimi-k3.1-pro-highspeed"
+    assert explicit_adapter._resolve_test_model(None) == "kimi-k3"
 
     generic_default_adapter = OpenAICompatibleLLMAdapter(
         api_key="sk-test",

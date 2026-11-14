@@ -922,3 +922,40 @@ def test_gemini_payload_translates_none_reasoning_effort_to_minimal():
     low_payload = gemini._build_payload(msgs, model="gemini-3.8-flash", extra={"reasoning_effort": "low"})
     assert off_payload.get("reasoning_effort") == "minimal"
     assert low_payload.get("reasoning_effort") == "low"
+
+
+@pytest.mark.asyncio
+async def test_moonshot_k3_payload_and_probe_rules():
+    import httpx
+    from galgame2voice.adapters.llm import MoonshotLLMAdapter
+
+    kimi = get_llm_adapter("moonshot", api_key="sk-test", reasoning_effort="none")
+    assert isinstance(kimi, MoonshotLLMAdapter)
+    msgs = [{"role": "user", "content": "hi"}]
+    extra = {"top_p": 1.0, "frequency_penalty": 0, "presence_penalty": 0, "max_tokens": 1024}
+
+    p_none = kimi._build_payload(msgs, "kimi-k3.1-pro", temperature=0.7, extra={**extra, "reasoning_effort": "none"})
+    for dropped in ("temperature", "top_p", "frequency_penalty", "presence_penalty", "max_tokens"):
+        assert dropped not in p_none
+    assert (p_none["max_completion_tokens"], p_none["reasoning_effort"]) == (1024, "low")
+
+    p_med = kimi._build_payload(msgs, "kimi-k3.1-pro", temperature=0.7, extra={**extra, "reasoning_effort": "medium"})
+    assert p_med["reasoning_effort"] == "high"
+    p_null = kimi._build_payload(msgs, "kimi-k3.1-pro", temperature=0.7, extra={**extra, "reasoning_effort": None})
+    assert "reasoning_effort" not in p_null
+
+    p_k26 = kimi._build_payload(msgs, "kimi-k2.6", temperature=0.7, extra={**extra, "reasoning_effort": "none"})
+    assert (p_k26["temperature"], p_k26["top_p"], p_k26["max_tokens"]) == (0.7, 1.0, 1024)
+    assert (p_k26["frequency_penalty"], p_k26["presence_penalty"], p_k26["reasoning_effort"]) == (0, 0, "none")
+    assert "max_completion_tokens" not in p_k26
+
+    probed: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        probed.append(json.loads(req.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await kimi._probe_chat_fallback(client, "kimi-k3.1-pro", {}, "moonshot", time.perf_counter())
+    assert (probed[0].get("max_completion_tokens"), probed[0].get("reasoning_effort")) == (1, "low")
+    assert "max_tokens" not in probed[0]
