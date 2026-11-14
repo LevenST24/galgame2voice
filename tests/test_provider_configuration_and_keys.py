@@ -734,6 +734,28 @@ class TestProviderPresetSeedsAndFallback:
                 assert (raw.chat_model, raw.reasoning_effort) == (expected_model, expected_effort)
 
     @pytest.mark.asyncio
+    async def test_retired_xai_and_gemini_models_migrate(self, tmp_path):
+        """Retired xAI and Gemini models migrate to current models with expected reasoning_effort."""
+        from galgame2voice.database.models import ProviderUpdate
+
+        cases = [
+            ("xai", "grok-3", None, "grok-4.7", "low"),
+            ("xai", "grok-3-mini", "high", "grok-4.7", "high"),
+            ("gemini", "gemini-2.5-flash", "high", "gemini-3.8-flash", "high"),
+        ]
+        for idx, (pid, old_model, old_effort, expected_model, expected_effort) in enumerate(cases):
+            db_path = tmp_path / f"migrate_xg_{idx}.db"
+            await init_db(db_path)
+            async with get_db(db_path) as conn:
+                upd = ProviderUpdate(api_key="sk-saved-1234", chat_model=old_model, reasoning_effort=old_effort)
+                await crud.update_provider(conn, pid, upd)
+            await init_db(db_path)
+            async with get_db(db_path) as conn:
+                raw = await crud.get_provider_raw(conn, pid)
+                assert raw.api_key == "sk-saved-1234"
+                assert (raw.chat_model, raw.reasoning_effort) == (expected_model, expected_effort)
+
+    @pytest.mark.asyncio
     async def test_empty_chat_model_falls_back_to_preset_default_not_gpt4omini(self, tmp_path):
         """When provider chat_model is empty/blank in DB, ChatService uses preset default_chat_model, not gpt-4o-mini."""
         db_path = tmp_path / "empty_model.db"
@@ -742,7 +764,7 @@ class TestProviderPresetSeedsAndFallback:
 
         for pid, blank, expected in [
             ("deepseek", "", "deepseek-flash"),
-            ("xai", "   ", "grok-3"),
+            ("xai", "   ", "grok-4.7"),
             ("moonshot", "", "moonshot-v1-32k"),
         ]:
             async with get_db(db_path) as conn:

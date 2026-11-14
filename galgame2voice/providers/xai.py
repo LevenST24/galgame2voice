@@ -9,7 +9,7 @@ from galgame2voice.adapters.llm.xai_adapter import XAILLMAdapter
 
 class XAIProvider(BaseLLMProvider, XAILLMAdapter):
     """
-    xAI Grok Provider supporting grok-2, grok-beta, and Grok 3.
+    xAI Grok Provider supporting grok-4.7 and grok-4.20-0309-non-reasoning.
     """
 
     def __init__(

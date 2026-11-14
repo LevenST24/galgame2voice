@@ -46,10 +46,10 @@ class TestOpenAICompatibleTestConnection:
 
     @pytest.mark.asyncio
     async def test_test_connection_resolves_xai_preset_default_model(self):
-        """Ensures xAI adapter test_connection uses grok-3, never falling back to gpt-4o-mini."""
+        """Ensures xAI adapter test_connection uses grok-4.7, never falling back to gpt-4o-mini."""
         adapter = XAILLMAdapter(api_key="xai-test-key")
-        assert adapter._resolve_test_model(None) == "grok-3"
-        assert adapter._resolve_test_model("grok-3-mini") == "grok-3-mini"
+        assert adapter._resolve_test_model(None) == "grok-4.7"
+        assert adapter._resolve_test_model("grok-4.20-0309-non-reasoning") == "grok-4.20-0309-non-reasoning"
 
     @pytest.mark.asyncio
     async def test_test_connection_resolves_gemini_base_url_model(self):
@@ -141,10 +141,9 @@ class TestProviderRegistryAndSeeds:
         preset = get_provider_preset("xai")
         assert preset is not None
         assert preset["default_base_url"] == "https://api.x.ai/v1"
-        assert preset["default_chat_model"] == "grok-3"
-        assert "grok-3" in preset["preset_models"]
-        assert "grok-3-mini" in preset["preset_models"]
-        assert "grok-2" in preset["preset_models"]
+        assert preset["default_chat_model"] == "grok-4.7"
+        assert preset["default_reasoning_effort"] == "low"
+        assert preset["preset_models"] == ["grok-4.7", "grok-4.20-0309-non-reasoning"]
 
     @pytest.mark.asyncio
     async def test_get_provider_unknown_returns_404(self):
