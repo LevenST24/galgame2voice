@@ -3,7 +3,7 @@ import {
   fetchProviders,
   testProviderConnection,
 } from '../api.js';
-import { formatProviderDiagnostic, BUILTIN_PRESETS, resolvePresetCapabilities } from '../settings.js';
+import { describeProviderModelCheck, formatProviderDiagnostic, BUILTIN_PRESETS, resolvePresetCapabilities } from '../settings.js';
 import { showToast } from '../ui.js';
 import { saveConfirmedProvider, activateConfirmedProvider } from './provider_recovery.js';
 
@@ -551,18 +551,21 @@ export class ProviderSettingsController {
 
       if (data.success) {
         const lat = Math.round(data.latency_ms || 0);
-        showToast(`连通性测试成功（耗时 ${lat} ms）`, 'success');
+        const checked = describeProviderModelCheck(chatModel, data.models);
+        showToast(
+          checked.ok ? `连通性测试成功（耗时 ${lat} ms）` : `连通性测试未通过: ${checked.title}`,
+          checked.ok ? 'success' : 'error',
+        );
         if (this.dom.gProviderTestResult) {
-          this.dom.gProviderTestResult.className = 'test-result-box test-result-success';
+          this.dom.gProviderTestResult.className = checked.ok
+            ? 'test-result-box test-result-success'
+            : 'test-result-box test-result-error';
         }
-        if (this.dom.gTestResultTitle) this.dom.gTestResultTitle.textContent = '连通性测试通过';
-        if (this.dom.gTestResultLatency) this.dom.gTestResultLatency.textContent = `耗时 ${lat}ms`;
-        if (this.dom.gTestResultBody) {
-          const modelsCount = Array.isArray(data.models) ? data.models.length : 0;
-          this.dom.gTestResultBody.textContent =
-            `已成功连接至目标端点，模型 ${chatModel || '默认'} 就绪。` +
-            (modelsCount > 0 ? ` (发现 ${modelsCount} 个可用模型)` : '');
+        if (this.dom.gTestResultTitle) this.dom.gTestResultTitle.textContent = checked.title;
+        if (this.dom.gTestResultLatency) {
+          this.dom.gTestResultLatency.textContent = checked.ok ? `耗时 ${lat}ms` : '失败';
         }
+        if (this.dom.gTestResultBody) this.dom.gTestResultBody.textContent = checked.body;
       } else {
         const diag = formatProviderDiagnostic(data);
         showToast(`连通性测试未通过: ${diag.title}`, 'error');
