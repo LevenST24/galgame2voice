@@ -9,7 +9,7 @@ from galgame2voice.adapters.llm.openai_adapter import OpenAICompatibleLLMAdapter
 
 class OpenAIProvider(BaseLLMProvider, OpenAICompatibleLLMAdapter):
     """
-    Standard OpenAI Provider supporting GPT-4o, GPT-4o-mini, o3-mini and compatible gateways.
+    Standard OpenAI Provider supporting GPT-6 Luna, GPT-6.1 Sol and compatible gateways.
     """
 
     def __init__(

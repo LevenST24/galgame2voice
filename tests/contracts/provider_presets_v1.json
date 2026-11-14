@@ -21,16 +21,14 @@
       "id": "openai",
       "name": "OpenAI",
       "default_base_url": "https://api.openai.com/v1",
-      "default_chat_model": "gpt-4o",
+      "default_chat_model": "gpt-6-luna",
       "default_stt_model": "whisper-1",
       "preset_models": [
-        "gpt-4o",
-        "gpt-4o-mini",
-        "o3-mini",
-        "gpt-4-turbo",
-        "gpt-3.5-turbo"
+        "gpt-6-luna",
+        "gpt-6.1-sol"
       ],
-      "description": "OpenAI 官方 API (GPT-4o 系列, o3-mini, Whisper)"
+      "description": "OpenAI 官方 API（GPT-6 Luna / GPT-6.1 Sol，Whisper 语音识别）",
+      "default_reasoning_effort": "none"
     },
     {
       "id": "deepseek",

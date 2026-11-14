@@ -70,7 +70,7 @@ def test_url_default_test_models_derive_from_provider_presets():
     generic_default_adapter = OpenAICompatibleLLMAdapter(
         api_key="sk-test",
         base_url="https://api.moonshot.cn/v1",
-        default_model="gpt-4o-mini",
+        default_model="gpt-6-luna",
     )
     assert generic_default_adapter._resolve_test_model(None) == PROVIDER_PRESETS["moonshot"]["default_chat_model"]
 
@@ -92,7 +92,7 @@ def test_url_default_test_models_derive_from_provider_presets():
         api_key="sk-test",
         base_url="https://proxy.example.org/openai.com/v1",
     )
-    assert unknown_adapter._resolve_test_model(None) == "gpt-4o-mini"
+    assert unknown_adapter._resolve_test_model(None) == "gpt-6-luna"
 
 
 @pytest.mark.asyncio

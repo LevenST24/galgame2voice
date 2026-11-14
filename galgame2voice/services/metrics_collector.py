@@ -34,6 +34,8 @@ MODEL_PRICING_MAP: dict[str, dict[str, tuple[float, float]]] = {
     },
     "openai": {
         DEFAULT_MODEL_KEY: (0.15, 0.60),
+        "gpt-6-luna": (0.10, 0.50),
+        "gpt-6.1-sol": (2.00, 10.00),
         "gpt-4o-mini": (0.15, 0.60),
         "gpt-4o": (2.50, 10.00),
         "o3-mini": (1.10, 4.40),

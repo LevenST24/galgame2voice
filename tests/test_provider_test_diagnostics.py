@@ -329,7 +329,7 @@ async def test_get_providers_includes_builtin_presets_without_breaking_legacy_pr
 
         assert item["supports_stt"] is (item["id"] in stt_supported_ids)
         assert item["default_reasoning_effort"] == {
-            "gemini": "low", "deepseek": "none", "anthropic": "none",
+            "gemini": "low", "openai": "none", "deepseek": "none", "anthropic": "none",
         }.get(item["id"])
 
     # Mutating returned preset_models must not mutate global PROVIDER_PRESETS
