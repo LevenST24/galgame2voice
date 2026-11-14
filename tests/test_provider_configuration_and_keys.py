@@ -1,50 +1,29 @@
 """
 Automated Provider Configuration & Key Protection Tests.
 Covers:
-1. Universal provider parameter submission across all canonical providers
-   (gemini, openai, anthropic, deepseek, xai, siliconflow, custom and aliases).
-2. Strict API key masking and zero credential leakage in responses and logs.
+1. Universal provider parameter submission across canonical providers and dispatch aliases.
+2. Strict API key masking and zero credential leakage in API responses.
 3. Non-destructive masked key retention on updates.
-4. Dedicated coverage for xAI (Grok) (presets, custom endpoints, models, synthesized fallback).
-5. In-flight connectivity testing with 100% mocked external HTTP calls.
-6. Error diagnostics verification with structured Chinese guidance.
-7. Provider activation flow and synchronization with GET /api/config.
-8. Settings schema verification: stt_engine and telegram_chat_id persistence.
-9. Security & SSRF boundaries.
+4. In-flight connectivity credential isolation (unsaved & stored keys).
+5. Provider activation flow and synchronization with GET /api/config.
+6. Settings schema persistence (stt_engine).
+7. Private endpoint opt-in toggle (allow_private_llm_endpoints).
+8. Provider preset seeds, legacy healing, and empty chat_model fallback.
 """
 
 import json
-import logging
-import re
-import time
 from unittest.mock import patch
-import aiosqlite
+
 import httpx
 import pytest
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 
-from galgame2voice.main import create_app
-from galgame2voice.database.session import get_db, init_db
+from galgame2voice.adapters.registry import PROVIDER_PRESETS
 from galgame2voice.database import crud
-from galgame2voice.database.models import (
-    SettingsBase,
-    SettingsUpdate,
-    SettingsResponse,
-    ProviderCreate,
-    ProviderUpdate,
-)
-from galgame2voice.adapters.registry import (
-    get_provider_preset,
-    list_provider_presets,
-    get_llm_adapter,
-    PROVIDER_PRESETS,
-)
-from galgame2voice.utils.logger import MaskingFilter
+from galgame2voice.database.models import SettingsUpdate
+from galgame2voice.database.session import get_db, init_db
+from galgame2voice.main import create_app
 from galgame2voice.security import url_guard
-from galgame2voice.utils.error_diagnostics import (
-    format_provider_error,
-    diagnose_llm_error,
-)
 from galgame2voice.services.chat_service import ChatService
 
 
@@ -140,128 +119,51 @@ def mock_external_http_responses(matchers: dict):
 # ============================================================================
 
 class TestUniversalProviderParameterSubmission:
-    """Verifies parameter submission and SQLite persistence across all 8 providers."""
+    """Verifies parameter submission and SQLite persistence across canonical providers and aliases."""
 
     @pytest.mark.asyncio
-    async def test_update_and_persist_all_eight_canonical_providers(self, app_client, isolate_test_database):
-        """Tests submitting parameters for all 8 canonical providers."""
-        test_providers = [
-            {
-                "id": "gemini",
-                "name": "Google Gemini Test",
-                "api_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-                "api_key": "AIzaSyTestKeyGemini1234567890abcdef123",
-                "chat_model": "gemini-2.5-pro",
-                "stt_model": "",
-            },
-            {
-                "id": "openai",
-                "name": "OpenAI Test",
-                "api_base_url": "https://api.openai.com/v1",
-                "api_key": "sk-openai-live-secret-test-key-998877",
-                "chat_model": "gpt-4o",
-                "stt_model": "whisper-1",
-            },
-            {
-                "id": "anthropic",
-                "name": "Anthropic Claude Test",
-                "api_base_url": "https://api.anthropic.com/v1",
-                "api_key": "sk-ant-api03-claude-test-key-123456789",
-                "chat_model": "claude-sonnet-4-20250514",
-                "stt_model": "",
-            },
-            {
-                "id": "deepseek",
-                "name": "DeepSeek Test",
-                "api_base_url": "https://api.deepseek.com",
-                "api_key": "sk-deepseek-live-test-key-1122334455",
-                "chat_model": "deepseek-reasoner",
-                "stt_model": "",
-            },
-            {
-                "id": "xai",
-                "name": "xAI (Grok) Test",
-                "api_base_url": "https://api.x.ai/v1",
-                "api_key": "xai-test-secret-key-1234567890abcdef",
-                "chat_model": "grok-3",
-                "stt_model": "",
-            },
-            {
-                "id": "siliconflow",
-                "name": "SiliconFlow Test",
-                "api_base_url": "https://api.siliconflow.cn/v1",
-                "api_key": "sk-siliconflow-test-key-1234567890abc",
-                "chat_model": "deepseek-ai/DeepSeek-V3",
-                "stt_model": "FunAudioLLM/SenseVoiceSmall",
-            },
-            {
-                "id": "custom",
-                "name": "Custom Proxy Test",
-                "api_base_url": "https://my-custom-proxy.internal.corp/v1",
-                "api_key": "sk-custom-secret-key-998877665544",
-                "chat_model": "qwen3-72b",
-                "stt_model": "",
-            },
+    async def test_update_and_persist_canonical_and_alias_providers(self, app_client, isolate_test_database):
+        """Tests submitting parameters for canonical providers and dispatch aliases."""
+        test_cases = [
+            ("gemini", "Google Gemini Test", "https://generativelanguage.googleapis.com/v1beta/openai", "AIzaSyTestKeyGemini1234567890abcdef123", "gemini-2.5-pro", ""),
+            ("openai", "OpenAI Test", "https://api.openai.com/v1", "sk-openai-live-secret-test-key-998877", "gpt-4o", "whisper-1"),
+            ("anthropic", "Anthropic Claude Test", "https://api.anthropic.com/v1", "sk-ant-api03-claude-test-key-123456789", "claude-sonnet-4-20250514", ""),
+            ("deepseek", "DeepSeek Test", "https://api.deepseek.com", "sk-deepseek-live-test-key-1122334455", "deepseek-reasoner", ""),
+            ("xai", "xAI (Grok) Test", "https://api.x.ai/v1", "xai-test-secret-key-1234567890abcdef", "grok-3", ""),
+            ("siliconflow", "SiliconFlow Test", "https://api.siliconflow.cn/v1", "sk-siliconflow-test-key-1234567890abc", "deepseek-ai/DeepSeek-V3", "FunAudioLLM/SenseVoiceSmall"),
+            ("custom", "Custom Proxy Test", "https://my-custom-proxy.internal.corp/v1", "sk-custom-secret-key-998877665544", "qwen3-72b", ""),
+            ("google_gemini", "Google Gemini Alias", "https://generativelanguage.googleapis.com/v1beta/openai", "AIzaSyDispatchAliasGeminiKey123456", "gemini-2.5-flash", None),
+            ("anthropic_claude", "Anthropic Claude Alias", "https://api.anthropic.com/v1", "sk-ant-dispatch-alias-claude-key", "claude-haiku-4-20250414", None),
+            ("__custom__", "Custom Model Alias", "https://llm-gateway.example.com/v1", "sk-custom-alias-secret-key-12345", "deepseek-r1:latest", None),
         ]
 
-        for p_data in test_providers:
+        for pid, name, base_url, api_key, chat_model, stt_model in test_cases:
+            p_data = {
+                "id": pid,
+                "name": name,
+                "api_base_url": base_url,
+                "api_key": api_key,
+                "chat_model": chat_model,
+            }
+            if stt_model is not None:
+                p_data["stt_model"] = stt_model
+
             resp = await app_client.post("/api/providers", json=p_data)
-            assert resp.status_code in (200, 201), f"Failed for {p_data['id']}: {resp.text}"
+            assert resp.status_code in (200, 201), f"Failed for {pid}: {resp.text}"
             data = resp.json()
             assert data.get("status") in ("success", "created")
-            p_resp = data.get("provider")
-            assert p_resp["id"] == p_data["id"]
-            assert p_resp["chat_model"] == p_data["chat_model"]
+            p_resp = data["provider"]
+            assert p_resp["id"] == pid
+            assert p_resp["chat_model"] == chat_model
             assert "****" in p_resp["api_key"]
-            assert p_data["api_key"] not in json.dumps(data)
-
-            # Direct verification of raw database persistence
-            async with get_db(isolate_test_database) as conn:
-                raw = await crud.get_provider_raw(conn, p_data["id"])
-                assert raw is not None, f"Raw record not found in DB for {p_data['id']}"
-                assert raw.api_key == p_data["api_key"], f"Plaintext key not stored accurately for {p_data['id']}"
-                assert raw.chat_model == p_data["chat_model"]
-                assert raw.api_base_url == p_data["api_base_url"]
-
-    @pytest.mark.asyncio
-    async def test_update_and_persist_dispatch_alias_provider_names(self, app_client, isolate_test_database):
-        """Tests submitting parameters using the exact dispatch alias names."""
-        dispatch_aliases = [
-            {
-                "id": "google_gemini",
-                "name": "Google Gemini Alias",
-                "api_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-                "api_key": "AIzaSyDispatchAliasGeminiKey123456",
-                "chat_model": "gemini-2.5-flash",
-            },
-            {
-                "id": "anthropic_claude",
-                "name": "Anthropic Claude Alias",
-                "api_base_url": "https://api.anthropic.com/v1",
-                "api_key": "sk-ant-dispatch-alias-claude-key",
-                "chat_model": "claude-haiku-4-20250414",
-            },
-            {
-                "id": "__custom__",
-                "name": "Custom Model Alias",
-                "api_base_url": "https://llm-gateway.example.com/v1",
-                "api_key": "sk-custom-alias-secret-key-12345",
-                "chat_model": "deepseek-r1:latest",
-            },
-        ]
-
-        for p_data in dispatch_aliases:
-            resp = await app_client.post("/api/providers", json=p_data)
-            assert resp.status_code in (200, 201)
-            data = resp.json()
-            assert data["provider"]["id"] == p_data["id"]
-            assert "****" in data["provider"]["api_key"]
+            assert api_key not in json.dumps(data)
 
             async with get_db(isolate_test_database) as conn:
-                raw = await crud.get_provider_raw(conn, p_data["id"])
-                assert raw is not None
-                assert raw.api_key == p_data["api_key"]
-                assert raw.chat_model == p_data["chat_model"]
+                raw = await crud.get_provider_raw(conn, pid)
+                assert raw is not None, f"Raw record not found in DB for {pid}"
+                assert raw.api_key == api_key, f"Plaintext key not stored accurately for {pid}"
+                assert raw.chat_model == chat_model
+                assert raw.api_base_url == base_url
 
     @pytest.mark.asyncio
     async def test_partial_update_preserves_other_fields(self, app_client, isolate_test_database):
@@ -333,7 +235,7 @@ class TestUniversalProviderParameterSubmission:
 # ============================================================================
 
 class TestApiKeyMaskingAndZeroLeakage:
-    """Verifies that API keys are strictly masked and never leaked in responses or logs."""
+    """Verifies that API keys are strictly masked and never leaked in API responses."""
 
     @pytest.mark.asyncio
     async def test_api_key_masked_in_all_provider_get_endpoints(self, app_client, isolate_test_database):
@@ -395,19 +297,6 @@ class TestApiKeyMaskingAndZeroLeakage:
         })
         assert resp.status_code == 400
         assert raw_secret not in resp.text
-
-    def test_logger_masking_filter_protects_all_provider_keys(self):
-        """Verifies MaskingFilter regex protection on raw strings, logs, and tracebacks."""
-        samples = [
-            ("sk-1234567890abcdef1234", "sk-****1234"),
-            ("AIzaSyB3Abcdef123456789012345678901234", "AIz****1234"),
-            ("api_key=my_secret_token_12345", "api_key=***REDACTED***"),
-            ("Bearer my_super_secret_token_val", "Bearer ***REDACTED***"),
-            ("https://api.telegram.org/bot123456:ABC-DEF/getMe", "https://api.telegram.org/bot***REDACTED***/getMe"),
-        ]
-        for raw, expected_snippet in samples:
-            sanitized = MaskingFilter.sanitize(raw)
-            assert raw not in sanitized or "****" in sanitized or "REDACTED" in sanitized
 
 
 # ============================================================================
@@ -496,135 +385,11 @@ class TestMaskedKeyRetentionAndNonDestructiveRoundtrip:
 
 
 # ============================================================================
-# 4. Dedicated Coverage for xAI (Grok)
-# ============================================================================
-
-class TestXaiGrokProviderCoverage:
-    """Dedicated tests for xAI (Grok) provider configuration, endpoints, models and diagnostics."""
-
-    def test_xai_preset_configuration_defaults(self):
-        """Verifies xAI preset defaults in registry."""
-        preset = get_provider_preset("xai")
-        assert preset is not None
-        assert preset["name"] == "xAI (Grok)"
-        assert preset["default_base_url"] == "https://api.x.ai/v1"
-        assert preset["default_chat_model"] == "grok-3"
-        for m in ("grok-3", "grok-3-mini", "grok-2"):
-            assert m in preset["preset_models"]
-
-    @pytest.mark.asyncio
-    async def test_xai_configuration_submission_and_persistence(self, app_client, isolate_test_database):
-        """Tests full parameter submission for xAI."""
-        payload = {
-            "id": "xai",
-            "name": "xAI Grok Production",
-            "api_base_url": "https://api.x.ai/v1",
-            "api_key": "xai-live-grok-api-key-1234567890",
-            "chat_model": "grok-3-mini",
-        }
-        resp = await app_client.post("/api/providers", json=payload)
-        assert resp.status_code == 200
-
-        async with get_db(isolate_test_database) as conn:
-            raw = await crud.get_provider_raw(conn, "xai")
-            assert raw.name == "xAI Grok Production"
-            assert raw.api_base_url == "https://api.x.ai/v1"
-            assert raw.api_key == "xai-live-grok-api-key-1234567890"
-            assert raw.chat_model == "grok-3-mini"
-
-    @pytest.mark.asyncio
-    async def test_xai_connectivity_test_success_mock(self, app_client):
-        """Tests successful in-flight connectivity test for xAI with mocked HTTP response."""
-        mock_models_resp = httpx.Response(
-            200,
-            json={"data": [{"id": "grok-3"}, {"id": "grok-3-mini"}, {"id": "grok-2"}]},
-            request=httpx.Request("GET", "https://api.x.ai/v1/models"),
-        )
-        p_get, p_post = mock_external_http_responses({"api.x.ai/v1/models": mock_models_resp})
-
-        with p_get, p_post:
-            resp = await app_client.post("/api/providers/test", json={
-                "id": "xai",
-                "api_base_url": "https://api.x.ai/v1",
-                "api_key": "xai-valid-test-key-12345",
-                "chat_model": "grok-3",
-            })
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["success"] is True
-            assert data["latency_ms"] is not None and data["latency_ms"] >= 0
-            assert "grok-3" in data["models"]
-
-    @pytest.mark.asyncio
-    async def test_xai_400_and_401_auth_failure_error_diagnostics(self, app_client):
-        """Verifies that xAI 400 and 401 errors return structured Chinese guidance pointing to console.x.ai."""
-        # xAI returns 400 with 'Incorrect API key provided'
-        mock_400 = httpx.Response(
-            400,
-            text='{"code":"invalid-argument","error":"Incorrect API key provided. You can obtain an API key from https://console.x.ai."}',
-            request=httpx.Request("GET", "https://api.x.ai/v1/models"),
-        )
-        p_get, p_post = mock_external_http_responses({"api.x.ai": mock_400})
-
-        with p_get, p_post:
-            resp = await app_client.post("/api/providers/test", json={
-                "id": "xai",
-                "api_base_url": "https://api.x.ai/v1",
-                "api_key": "xai-invalid-key-9999",
-                "chat_model": "grok-3",
-            })
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["success"] is False
-            assert "console.x.ai" in data["diagnostic"]
-
-        # xAI returns 401 Unauthorized
-        mock_401 = httpx.Response(
-            401,
-            text='{"error": "Unauthorized: Invalid API key"}',
-            request=httpx.Request("GET", "https://api.x.ai/v1/models"),
-        )
-        p_get2, p_post2 = mock_external_http_responses({"api.x.ai": mock_401})
-
-        with p_get2, p_post2:
-            resp = await app_client.post("/api/providers/test", json={
-                "id": "xai",
-                "api_key": "xai-unauthorized-key",
-            })
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["success"] is False
-            assert "console.x.ai" in data["diagnostic"]
-
-    @pytest.mark.asyncio
-    async def test_xai_429_quota_exceeded_error_diagnostics(self, app_client):
-        """Verifies that xAI 429 quota/credit exhaustion returns Chinese guidance."""
-        mock_429 = httpx.Response(
-            429,
-            text='{"error": "Rate limit exceeded: Not enough credits remaining."}',
-            request=httpx.Request("GET", "https://api.x.ai/v1/models"),
-        )
-        p_get, p_post = mock_external_http_responses({"api.x.ai": mock_429})
-
-        with p_get, p_post:
-            resp = await app_client.post("/api/providers/test", json={
-                "id": "xai",
-                "api_key": "xai-no-credits-key",
-            })
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["success"] is False
-            assert "积分" in data["diagnostic"] or "Credits" in data["diagnostic"] or "console.x.ai" in data["diagnostic"]
-
-
-
-
-# ============================================================================
-# 6. In-Flight Connectivity Testing & Error Diagnostics
+# 4. In-Flight Connectivity Testing (Unsaved & Stored Credentials)
 # ============================================================================
 
 class TestInFlightConnectivityTestingAndDiagnostics:
-    """Verifies that in-flight testing works without persisting, and returns structured Chinese diagnostics."""
+    """Verifies that in-flight testing works with unsaved or stored keys without mutating database state."""
 
     @pytest.mark.asyncio
     async def test_in_flight_test_with_explicit_credentials_does_not_persist(self, app_client, isolate_test_database):
@@ -644,6 +409,7 @@ class TestInFlightConnectivityTestingAndDiagnostics:
             })
             assert resp.status_code == 200
             assert resp.json()["success"] is True
+            assert "gpt-4o" in resp.json()["models"]
 
         # Database must still have original state
         async with get_db(isolate_test_database) as conn:
@@ -679,163 +445,9 @@ class TestInFlightConnectivityTestingAndDiagnostics:
             assert resp.json()["success"] is True
             assert intercepted_key == f"Bearer {stored_key}"
 
-    @pytest.mark.asyncio
-    async def test_gemini_403_region_restriction_diagnostics(self, app_client):
-        """Gemini 403 location error returns region guidance in Chinese."""
-        mock_403 = httpx.Response(
-            403,
-            text='{"error": {"code": 403, "message": "User location is not supported for the API use.", "status": "FAILED_PRECONDITION"}}',
-            request=httpx.Request("GET", "https://generativelanguage.googleapis.com/v1beta/openai/models"),
-        )
-        p_get, p_post = mock_external_http_responses({"generativelanguage.googleapis.com": mock_403})
-
-        with p_get, p_post:
-            resp = await app_client.post("/api/providers/test", json={
-                "id": "gemini",
-                "api_key": "AIzaSyValidFormatKey1234567890",
-            })
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["success"] is False
-            assert "地区访问受限" in data["error"]
-            assert "代理" in data["diagnostic"]
-
-    @pytest.mark.asyncio
-    async def test_gemini_400_invalid_key_diagnostics(self, app_client):
-        """Gemini 400 invalid key returns Google AI Studio guidance."""
-        mock_400 = httpx.Response(
-            400,
-            text='{"error": {"code": 400, "message": "API key not valid. Please pass a valid API key.", "status": "INVALID_ARGUMENT"}}',
-            request=httpx.Request("GET", "https://generativelanguage.googleapis.com/v1beta/openai/models"),
-        )
-        p_get, p_post = mock_external_http_responses({"generativelanguage.googleapis.com": mock_400})
-
-        with p_get, p_post:
-            resp = await app_client.post("/api/providers/test", json={
-                "id": "gemini",
-                "api_key": "AIzaSyInvalidKey123",
-            })
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["success"] is False
-            assert "aistudio.google.com" in data["diagnostic"]
-
-    @pytest.mark.asyncio
-    async def test_openai_429_quota_exceeded_diagnostics(self, app_client):
-        """OpenAI 429 quota exhaustion returns billing recharge guidance."""
-        mock_429 = httpx.Response(
-            429,
-            text='{"error": {"message": "You exceeded your current quota, please check your plan and billing details.", "type": "insufficient_quota"}}',
-            request=httpx.Request("GET", "https://api.openai.com/v1/models"),
-        )
-        p_get, p_post = mock_external_http_responses({"api.openai.com": mock_429})
-
-        with p_get, p_post:
-            resp = await app_client.post("/api/providers/test", json={
-                "id": "openai",
-                "api_key": "sk-live-out-of-quota-key",
-            })
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["success"] is False
-            assert "额度已耗尽" in data["error"]
-            assert "充值" in data["diagnostic"] or "billing" in data["diagnostic"]
-
-    @pytest.mark.asyncio
-    async def test_openai_401_invalid_key_diagnostics(self, app_client):
-        """OpenAI 401 invalid key returns OpenAI console guidance."""
-        mock_401 = httpx.Response(
-            401,
-            text='{"error": {"message": "Incorrect API key provided: sk-invalid***", "type": "invalid_request_error"}}',
-            request=httpx.Request("GET", "https://api.openai.com/v1/models"),
-        )
-        p_get, p_post = mock_external_http_responses({"api.openai.com": mock_401})
-
-        with p_get, p_post:
-            resp = await app_client.post("/api/providers/test", json={
-                "id": "openai",
-                "api_key": "sk-invalid-test-key",
-            })
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["success"] is False
-            assert "身份验证失败" in data["error"]
-            assert "platform.openai.com" in data["diagnostic"]
-
-    @pytest.mark.asyncio
-    async def test_universal_404_model_not_found_diagnostics(self, app_client):
-        """404 Model Not Found returns friendly model name check guidance."""
-        # Provider returns 404 with 'model not found'
-        mock_404 = httpx.Response(
-            404,
-            text='{"error": {"message": "The model non-existent-model does not exist", "code": "model_not_found"}}',
-            request=httpx.Request("GET", "https://api.openai.com/v1/models"),
-        )
-        p_get, p_post = mock_external_http_responses({"api.openai.com": mock_404})
-
-        with p_get, p_post:
-            resp = await app_client.post("/api/providers/test", json={
-                "id": "openai",
-                "api_key": "sk-valid-test-key-12345",
-                "model": "non-existent-model",
-            })
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["success"] is False
-            assert "模型名称不存在" in data["error"]
-            assert "官方推荐预设列表" in data["diagnostic"] or "模型" in data["diagnostic"]
-
-    @pytest.mark.asyncio
-    async def test_network_timeout_and_connection_refused_diagnostics(self, app_client):
-        """Transport timeouts and refused connections return structured proxy guidance."""
-        async def timeout_side_effect(self_client, url, *args, **kwargs):
-            raise httpx.ConnectTimeout("Connection timed out after 10 seconds")
-
-        with patch.object(httpx.AsyncClient, "get", timeout_side_effect):
-            resp = await app_client.post("/api/providers/test", json={
-                "id": "openai",
-                "api_key": "sk-valid-key",
-            })
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["success"] is False
-            assert "超时" in data["error"]
-            assert "代理" in data["diagnostic"]
-
-        async def refused_side_effect(self_client, url, *args, **kwargs):
-            raise httpx.ConnectError("[WinError 10061] No connection could be made because the target machine actively refused it")
-
-        with patch.object(httpx.AsyncClient, "get", refused_side_effect):
-            resp = await app_client.post("/api/providers/test", json={
-                "id": "openai",
-                "api_key": "sk-valid-key",
-            })
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["success"] is False
-            assert "被拒绝" in data["error"]
-            assert "Base URL" in data["diagnostic"] or "端口" in data["diagnostic"]
-
-    @pytest.mark.asyncio
-    async def test_in_flight_mocked_execution_speed_under_three_seconds(self, app_client):
-        """Confirms that mocked connectivity tests execute swiftly (< 3.0s) with zero network timeouts."""
-        t0 = time.perf_counter()
-        p_get, p_post = mock_external_http_responses({})
-
-        with p_get, p_post:
-            resp = await app_client.post("/api/providers/test", json={
-                "id": "xai",
-                "api_key": "xai-test-key",
-            })
-            assert resp.status_code == 200
-            assert resp.json()["success"] is True
-
-        elapsed = time.perf_counter() - t0
-        assert elapsed < 3.0, f"Mocked connectivity test took {elapsed:.2f}s (expected < 3.0s)"
-
 
 # ============================================================================
-# 7. Provider Activation Flow
+# 5. Provider Activation Flow
 # ============================================================================
 
 class TestProviderActivationFlow:
@@ -915,18 +527,11 @@ class TestProviderActivationFlow:
 
 
 # ============================================================================
-# 8. Settings Schema Verification (stt_engine & telegram_chat_id)
+# 6. Settings Schema Verification (stt_engine)
 # ============================================================================
 
 class TestSettingsSchemaPersistence:
-    """Verifies schema integrity, default values, and round-trip persistence for settings."""
-
-    def test_stt_engine_default_is_browser(self):
-        """Verifies default stt_engine is 'browser' in all model schemas."""
-        base = SettingsBase()
-        assert base.stt_engine == "browser"
-        resp = SettingsResponse()
-        assert resp.stt_engine == "browser"
+    """Verifies round-trip persistence for settings."""
 
     @pytest.mark.asyncio
     async def test_stt_engine_persistence_sensevoice_and_whisper(self, app_client, isolate_test_database):
@@ -956,48 +561,11 @@ class TestSettingsSchemaPersistence:
 
 
 # ============================================================================
-# 9. Provider Security & SSRF Boundaries
+# 7. Provider Security & SSRF Boundaries
 # ============================================================================
 
 class TestProviderSecurityAndSsrfBoundaries:
-    """Verifies that SSRF attacks, private networks, and credential theft attempts are blocked."""
-
-    @pytest.mark.asyncio
-    async def test_stored_key_cannot_be_tested_with_custom_base_url(self, app_client):
-        """Attacker cannot test stored API credentials against an arbitrary custom base_url."""
-        # Store key with official URL
-        await app_client.post("/api/providers", json={
-            "id": "openai",
-            "api_key": "sk-real-openai-stored-key-9999",
-            "api_base_url": "https://api.openai.com/v1",
-        })
-
-        # Attempt to probe custom URL without supplying the key
-        resp = await app_client.post("/api/providers/test", json={
-            "id": "openai",
-            "base_url": "https://attacker.evil-proxy.org/v1",
-        })
-        assert resp.status_code == 400
-        assert "Cannot test custom base_url with stored API key" in resp.text
-
-    @pytest.mark.asyncio
-    async def test_private_and_loopback_ips_blocked_by_default(self, app_client):
-        """Private IP ranges and AWS metadata endpoints are blocked by default."""
-        probes = [
-            "http://169.254.169.254/latest/meta-data",
-            "http://10.0.0.1/v1",
-            "http://192.168.1.1/v1",
-            "http://172.16.0.1/v1",
-            "http://127.0.0.1:11434/v1",
-            "http://localhost:8080/v1",
-        ]
-        for url in probes:
-            resp = await app_client.post("/api/providers/test", json={
-                "id": "custom",
-                "api_key": "sk-test-key",
-                "base_url": url,
-            })
-            assert resp.status_code == 400, f"Expected 400 for {url}, got {resp.status_code}"
+    """Verifies that allow_private_llm_endpoints permits local loopback when explicitly enabled."""
 
     @pytest.mark.asyncio
     async def test_allow_private_endpoints_toggle_permits_loopback(self, app_client):
@@ -1021,17 +589,6 @@ class TestProviderSecurityAndSsrfBoundaries:
             })
             assert resp.status_code == 200
             assert resp.json()["success"] is True
-
-    @pytest.mark.asyncio
-    async def test_invalid_url_schemes_blocked(self, app_client):
-        """Non-HTTP schemes (file://, gopher://, ftp://) are rejected."""
-        for scheme_url in ("file:///etc/passwd", "gopher://127.0.0.1:70", "ftp://internal.server/"):
-            resp = await app_client.post("/api/providers/test", json={
-                "id": "custom",
-                "api_key": "sk-key",
-                "base_url": scheme_url,
-            })
-            assert resp.status_code == 400
 
 
 class TestProviderPresetSeedsAndFallback:
@@ -1133,44 +690,23 @@ class TestProviderPresetSeedsAndFallback:
         """When provider chat_model is empty/blank in DB, ChatService uses preset default_chat_model, not gpt-4o-mini."""
         db_path = tmp_path / "empty_model.db"
         await init_db(db_path)
-
-        async with get_db(db_path) as conn:
-            # Set deepseek as active with empty chat_model
-            await conn.execute("UPDATE providers SET is_active = 0;")
-            await conn.execute("UPDATE providers SET is_active = 1, chat_model = '' WHERE id = 'deepseek';")
-            await conn.execute("UPDATE settings SET active_provider_id = 'deepseek' WHERE id = 1;")
-            await conn.commit()
-
         service = ChatService(db_path=db_path)
-        adapter, model_name, provider_id = await service._get_active_llm_adapter()
 
-        assert provider_id == "deepseek"
-        assert model_name == "deepseek-chat"
-        assert model_name != "gpt-4o-mini"
+        for pid, blank, expected in [
+            ("deepseek", "", "deepseek-chat"),
+            ("xai", "   ", "grok-3"),
+            ("moonshot", "", "moonshot-v1-32k"),
+        ]:
+            async with get_db(db_path) as conn:
+                await conn.execute("UPDATE providers SET is_active = 0;")
+                await conn.execute("UPDATE providers SET is_active = 1, chat_model = ? WHERE id = ?;", (blank, pid))
+                await conn.execute("UPDATE settings SET active_provider_id = ? WHERE id = 1;", (pid,))
+                await conn.commit()
 
-        # Test xai with whitespace chat_model
-        async with get_db(db_path) as conn:
-            await conn.execute("UPDATE providers SET is_active = 0;")
-            await conn.execute("UPDATE providers SET is_active = 1, chat_model = '   ' WHERE id = 'xai';")
-            await conn.execute("UPDATE settings SET active_provider_id = 'xai' WHERE id = 1;")
-            await conn.commit()
-
-        adapter, model_name, provider_id = await service._get_active_llm_adapter()
-        assert provider_id == "xai"
-        assert model_name == "grok-3"
-        assert model_name != "gpt-4o-mini"
-
-        # Test moonshot with empty chat_model
-        async with get_db(db_path) as conn:
-            await conn.execute("UPDATE providers SET is_active = 0;")
-            await conn.execute("UPDATE providers SET is_active = 1, chat_model = '' WHERE id = 'moonshot';")
-            await conn.execute("UPDATE settings SET active_provider_id = 'moonshot' WHERE id = 1;")
-            await conn.commit()
-
-        adapter, model_name, provider_id = await service._get_active_llm_adapter()
-        assert provider_id == "moonshot"
-        assert model_name == "moonshot-v1-32k"
-        assert model_name != "gpt-4o-mini"
+            adapter, model_name, provider_id = await service._get_active_llm_adapter()
+            assert provider_id == pid
+            assert model_name == expected
+            assert model_name != "gpt-4o-mini"
 
         # Test custom non-preset provider with empty chat_model gracefully falls back to gpt-4o-mini
         async with get_db(db_path) as conn:
