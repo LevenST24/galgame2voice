@@ -791,128 +791,6 @@ test('startup sync failure retains local messages in memory and storage, and ret
   assert.equal(reStoredSession.messages[1].content, '去江边走走吧');
 });
 
-test('startup sync preserves voiceKey and dur on local user message when server adds assistant reply', async t => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-  const root = doc.createElement('div');
-  root.id = 'advRoot';
-  doc.body.appendChild(root);
-  const toasts = doc.createElement('div');
-  toasts.id = 'toastRoot';
-  doc.body.appendChild(toasts);
-
-  const session = {
-    id: 's_voice_preserve',
-    title: '录音的对话',
-    createdAt: 1_700_000_000_000,
-    updatedAt: 1_700_000_100_000,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
-    messages: [{
-      id: 'm_local_user_voice',
-      role: 'user',
-      content: '今天去哪',
-      voiceKey: 'user_m_local_user_voice',
-      dur: 3.5,
-      ts: 1_700_000_100_000,
-    }],
-  };
-  const server = {
-    id: session.id,
-    title: session.title,
-    voice_profile_id: null,
-    created_at: '2024-06-01 00:00:00',
-    updated_at: '2024-06-01 00:00:02',
-    message_count: 2,
-    last_message: '去江边走走吧',
-    settings: { ...session.settings },
-  };
-
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
-    sessions: [session],
-    activeId: session.id,
-    global: { ...DEFAULT_GLOBAL },
-  })]]);
-
-  globalThis.localStorage = {
-    getItem: key => storage.get(key) ?? null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: key => storage.delete(key),
-  };
-  globalThis.location = { origin: 'http://127.0.0.1:8000' };
-  globalThis.window = {
-    innerWidth: 1280,
-    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
-    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
-    prompt: () => null,
-  };
-
-  globalThis.window.fetch = async (url) => {
-    const target = String(url);
-    if (target.includes('/api/chat/sessions')) {
-      return Response.json({ sessions: [server], has_more: false, count: 1 });
-    }
-    if (target.includes('/api/chat/history')) {
-      return Response.json({
-        session_id: session.id,
-        has_more: false,
-        oldest_id: 10,
-        count: 2,
-        messages: [
-          { id: 10, role: 'user', content_chinese: '今天去哪', content_japanese: '', created_at: '2024-06-01 00:00:00' },
-          { id: 11, role: 'assistant', content_chinese: '去江边走走吧', content_japanese: '海辺へ', created_at: '2024-06-01 00:00:02' },
-        ],
-      });
-    }
-    if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
-    if (target.includes('/api/providers')) return Response.json({
-      providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
-      active_provider: 'p1',
-    });
-    if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-    if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
-    return Response.json({});
-  };
-  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
-
-  const app = initApp({
-    dom: { advRoot: root },
-    renderSessionList() {},
-  });
-
-  t.after(() => {
-    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
-    for (const toast of toasts.children) clearTimeout(toast._timer);
-    delete globalThis.document;
-    delete globalThis.window;
-    delete globalThis.localStorage;
-    delete globalThis.fetch;
-    delete globalThis.location;
-  });
-
-  await app.ready;
-  for (let i = 0; i < 5; i++) await tick();
-
-  // 1. 刷新后两条都在
-  const activeSession = storedActive();
-  assert.equal(activeSession.messages.length, 2, '刷新后应有两条消息');
-  assert.equal(activeSession.messages[0].role, 'user');
-  assert.equal(activeSession.messages[0].content, '今天去哪');
-  assert.equal(activeSession.messages[1].role, 'assistant');
-  assert.equal(activeSession.messages[1].content, '去江边走走吧');
-
-  // 2. 用户消息仍带原来的 voiceKey 和 dur
-  assert.equal(activeSession.messages[0].voiceKey, 'user_m_local_user_voice', '用户消息应保留原来的 voiceKey');
-  assert.equal(activeSession.messages[0].dur, 3.5, '用户消息应保留原来的 dur');
-
-  // 3. localStorage 中也保存了 voiceKey 和 dur
-  const storedJson = JSON.parse(storage.get('gal2voice.chat.v1'));
-  const storedSessionData = storedJson.sessions.find(s => s.id === session.id);
-  assert.equal(storedSessionData.messages.length, 2);
-  assert.equal(storedSessionData.messages[0].voiceKey, 'user_m_local_user_voice');
-  assert.equal(storedSessionData.messages[0].dur, 3.5);
-});
-
 test('startup sync correctly pairs voiceKey when earlier of duplicate messages had voice', async t => {
   const doc = fakeDocument();
   globalThis.document = doc;
@@ -1037,6 +915,10 @@ test('startup sync correctly pairs voiceKey when earlier of duplicate messages h
   assert.equal(activeSession.messages[0].voiceKey, 'user_m_user_1', '第一句（发语音的）应获得 voiceKey');
   assert.equal(activeSession.messages[0].dur, 2.0);
   assert.equal(activeSession.messages[2].voiceKey, undefined, '第二句（打字的）不应被错误配上 voiceKey');
+  const storedMsgs = JSON.parse(storage.get('gal2voice.chat.v1')).sessions.find(s => s.id === session.id).messages;
+  assert.equal(storedMsgs[0].voiceKey, 'user_m_user_1');
+  assert.equal(storedMsgs[0].dur, 2.0);
+  assert.equal(storedMsgs[2].voiceKey, undefined);
 });
 
 test('title screen excerpt presents server last_message when multi-turn session is behind server', async t => {
@@ -1262,133 +1144,6 @@ test('startup sync preserves voiceKey on message with matching server ID when se
   assert.equal(msg10?.voiceKey, 'user_m_10', '服务端 ID 为 10 的消息应保留 voiceKey');
   assert.equal(msg10?.dur, 2.5);
   assert.equal(msg12?.voiceKey, undefined, '后续同文的服务端 ID 12 不应被错误配上 voiceKey');
-});
-
-test('startup sync retains unsent failed user message at the end of session history and keeps retry available', async t => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-  const root = doc.createElement('div');
-  root.id = 'advRoot';
-  doc.body.appendChild(root);
-  const toasts = doc.createElement('div');
-  toasts.id = 'toastRoot';
-  doc.body.appendChild(toasts);
-
-  const session = {
-    id: 's_failed_retained',
-    title: '失败消息保留',
-    createdAt: 1_700_000_000_000,
-    updatedAt: 1_700_000_100_000,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
-    messages: [
-      { id: 'm_1', serverMessageId: 1, role: 'user', content: '第一问', ts: 1_700_000_050_000 },
-      { id: 'm_2', serverMessageId: 2, role: 'assistant', content: '第一答', ts: 1_700_000_080_000 },
-      {
-        id: 'm_local_failed',
-        role: 'user',
-        content: '失败的问题',
-        failed: { error: '网络连接失败', code: 'NETWORK_ERROR' },
-        ts: 1_700_000_100_000,
-      },
-    ],
-  };
-  const server = {
-    id: session.id,
-    title: session.title,
-    voice_profile_id: null,
-    created_at: '2024-06-01 00:00:00',
-    updated_at: '2024-06-01 00:00:03',
-    message_count: 4,
-    last_message: '第二答',
-    settings: { ...session.settings },
-  };
-
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
-    sessions: [session],
-    activeId: session.id,
-    global: { ...DEFAULT_GLOBAL },
-  })]]);
-
-  globalThis.localStorage = {
-    getItem: key => storage.get(key) ?? null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: key => storage.delete(key),
-  };
-  globalThis.location = { origin: 'http://127.0.0.1:8000' };
-  globalThis.window = {
-    innerWidth: 1280,
-    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
-    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
-    prompt: () => null,
-  };
-
-  globalThis.window.fetch = async (url) => {
-    const target = String(url);
-    if (target.includes('/api/chat/sessions')) {
-      return Response.json({ sessions: [server], has_more: false, count: 1 });
-    }
-    if (target.includes('/api/chat/history')) {
-      return Response.json({
-        session_id: session.id,
-        has_more: false,
-        oldest_id: 1,
-        count: 4,
-        messages: [
-          { id: 1, role: 'user', content_chinese: '第一问', content_japanese: '', created_at: '2024-06-01 00:00:00' },
-          { id: 2, role: 'assistant', content_chinese: '第一答', content_japanese: '', created_at: '2024-06-01 00:00:01' },
-          { id: 3, role: 'user', content_chinese: '第二问', content_japanese: '', created_at: '2024-06-01 00:00:02' },
-          { id: 4, role: 'assistant', content_chinese: '第二答', content_japanese: '', created_at: '2024-06-01 00:00:03' },
-        ],
-      });
-    }
-    if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
-    if (target.includes('/api/providers')) return Response.json({
-      providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
-      active_provider: 'p1',
-    });
-    if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-    if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
-    return Response.json({});
-  };
-  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
-
-  const app = initApp({
-    dom: { advRoot: root },
-    renderSessionList() {},
-  });
-
-  t.after(() => {
-    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
-    for (const toast of toasts.children) clearTimeout(toast._timer);
-    delete globalThis.document;
-    delete globalThis.window;
-    delete globalThis.localStorage;
-    delete globalThis.fetch;
-    delete globalThis.location;
-  });
-
-  await app.ready;
-  for (let i = 0; i < 5; i++) await tick();
-
-  const activeSession = storedActive();
-  // 1. 刷新后失败问题仍是最后一条、带 failed
-  assert.equal(activeSession.messages.length, 5, '会话应包含服务端4条加本地末尾失败的1条');
-  const lastMsg = activeSession.messages[4];
-  assert.equal(lastMsg.id, 'm_local_failed');
-  assert.equal(lastMsg.role, 'user');
-  assert.equal(lastMsg.content, '失败的问题');
-  assert.deepEqual(lastMsg.failed, { error: '网络连接失败', code: 'NETWORK_ERROR' });
-
-  // 2. 存下来的状态里也在
-  const storedJson = JSON.parse(storage.get('gal2voice.chat.v1'));
-  const storedSessionData = storedJson.sessions.find(s => s.id === session.id);
-  assert.equal(storedSessionData.messages.length, 5);
-  assert.equal(storedSessionData.messages[4].id, 'm_local_failed');
-  assert.deepEqual(storedSessionData.messages[4].failed, { error: '网络连接失败', code: 'NETWORK_ERROR' });
-
-  // 3. 重试入口可用
-  assert.equal(app.conversation.canRetry(lastMsg), true, '末尾失败问题的重试入口应可用');
 });
 
 test('startup sync pulls history and retains failed question at end when server adds message after retention', async t => {
@@ -2369,6 +2124,7 @@ test('startup sync marks unanswered user prompt as failed when pruned by server 
   assert.ok(remInState, '残留本地会话必须被保留在会话列表中');
   const lastRem = remInState.messages.at(-1);
   assert.deepEqual(lastRem.failed, { error: '对话已中断，未收到回复', code: 'cancelled' });
+  storedState.activeId = remSession.id; assert.equal(app.conversation.canRetry(lastRem), true); storedState.activeId = session.id;
 
   // 3. 断言 localStorage 已同步持久化补标的 failed
   const storedJson = JSON.parse(storage.get('gal2voice.chat.v1'));
@@ -2522,75 +2278,6 @@ test('startup sync does not mark user prompt failed when server count covers loc
   const activeSession = storedActive();
   const lastMsg = activeSession.messages.at(-1);
   assert.equal(lastMsg.failed, undefined, '服务端消息数不小于本地时不得误标 failed');
-});
-
-test('startup sync marks unanswered user prompt as failed when server returns empty sessions list', async t => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-  const root = doc.createElement('div');
-  root.id = 'advRoot';
-  doc.body.appendChild(root);
-  const toasts = doc.createElement('div');
-  toasts.id = 'toastRoot';
-  doc.body.appendChild(toasts);
-
-  const session = {
-    id: 's_empty_backend',
-    title: '服务端无记录本地会话',
-    createdAt: 1_700_000_000_000,
-    updatedAt: 1_700_000_100_000,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
-    messages: [
-      { id: 'm_unanswered_empty', role: 'user', content: '未上云且服务端无记录的提问', ts: 1_700_000_050_000 },
-    ],
-  };
-
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify(storedSessionSnapshot(session))]]);
-  globalThis.localStorage = {
-    getItem: key => storage.get(key) ?? null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: key => storage.delete(key),
-  };
-  globalThis.location = { origin: 'http://127.0.0.1:8000' };
-  globalThis.window = {
-    innerWidth: 1280,
-    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
-    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
-    prompt: () => null,
-    fetch: async (url) => {
-      const target = String(url);
-      if (target.includes('/api/chat/sessions')) {
-        return Response.json({ sessions: [], has_more: false, count: 0 });
-      }
-      if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
-      if (target.includes('/api/providers')) return Response.json({ providers: [], active_provider: null });
-      if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-      if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
-      return Response.json({});
-    },
-  };
-  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
-
-  const app = initApp({ dom: { advRoot: root }, renderSessionList() {} });
-  t.after(() => {
-    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
-    for (const toast of toasts.children) clearTimeout(toast._timer);
-    delete globalThis.document;
-    delete globalThis.window;
-    delete globalThis.localStorage;
-    delete globalThis.fetch;
-    delete globalThis.location;
-  });
-
-  await app.ready;
-  for (let i = 0; i < 5; i++) await tick();
-
-  const activeSession = storedActive();
-  const lastMsg = activeSession.messages.at(-1);
-  assert.equal(lastMsg.id, 'm_unanswered_empty');
-  assert.deepEqual(lastMsg.failed, { error: '对话已中断，未收到回复', code: 'cancelled' });
-  assert.equal(app.conversation.canRetry(lastMsg), true, '服务端返回空列表时本地中断提问亦可重试');
 });
 
 test('unbound session syncs active voice profile on turnstart and updates stage without cancelling the live turn', async t => {
