@@ -6,6 +6,8 @@ import { createTitleScreen, formatHomeTime } from '../frontend/src/adv/title.js'
 import { homeExcerpt, createTitleActions } from '../frontend/src/adv/actions.js';
 import { showTitle } from '../frontend/src/adv/title_hook.js';
 import { createPortraitCache } from '../frontend/src/adv/portrait_cache.js';
+import { tick } from './helpers/chat_stream.mjs';
+import { initApp } from '../frontend/src/main.js';
 
 const NOW = new Date(2026, 9, 24, 22, 30);
 const audio = { status: 'ready', chunks: [{ audio_url: '/fake.wav' }] };
@@ -789,3 +791,58 @@ test('onboarding preserves Japanese-only greeting in hidden home-greeting DOM', 
   assert.equal(h.q('.home-greeting').textContent, 'おかえりなさいませ。');
 });
 
+test('title holds 开始聊天 and checklist until /api/providers settles, then renders each state', async t => {
+  const doc = fakeDocument();
+  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
+  globalThis.document = doc;
+  const root = doc.body.appendChild(doc.createElement('div'));
+  root.id = 'advRoot';
+  const storage = new Map();
+  globalThis.localStorage = { getItem: k => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, v) };
+  const providerReplies = [];
+  const fetchMock = async url => {
+    const path = String(url);
+    if (path === '/api/providers') return new Promise(resolve => providerReplies.push(resolve));
+    if (path.startsWith('/api/chat/sessions')) return Response.json({ sessions: [], has_more: false });
+    if (path === '/api/system/engine-status') return Response.json({ state: 'unavailable' });
+    if (path === '/api/voice/profiles') return Response.json({ profiles: [], active_profile_id: null });
+    return Response.json({ backgrounds: [], settings: {} });
+  };
+  const loc = { search: '', hash: '', origin: 'http://home.test' };
+  globalThis.location = loc;
+  const sessionStorage = { getItem: () => '', setItem() {} };
+  globalThis.window = { innerWidth: 1280, location: loc, sessionStorage, fetch: fetchMock };
+  globalThis.fetch = fetchMock;
+  const app = initApp({ dom: { advRoot: root }, renderSessionList() {} });
+  let title;
+  t.after(() => {
+    while (providerReplies.length) providerReplies.shift()(Response.json({ providers: [] }));
+    title?.destroy();
+    app.conversation.stop();
+    app.adv?.unmount();
+    for (const key of ['document', 'window', 'localStorage', 'fetch', 'location']) delete globalThis[key];
+  });
+  title = await app.ready;
+  await tick();
+  const label = sel => title.element.querySelector(sel) ? textTree(title.element.querySelector(sel)) : null;
+  assert.equal(providerReplies.length, 1);
+  assert.equal(label('.home-continue'), null);
+  assert.equal(label('.home-first-title'), null);
+  assert.doesNotMatch(textTree(title.element), /开始聊天|先做三件小事/);
+  assert.match(textTree(title.element), /正在检查设置…/);
+  providerReplies.shift()(new Response('boom', { status: 500 }));
+  await tick();
+  assert.match(label('.home-pill'), /对话 状态未确认/);
+  assert.equal(label('.home-continue'), '开始聊天');
+  title.element.querySelector('.home-gear').click();
+  providerReplies.shift()(Response.json({ providers: [], presets: [] }));
+  await tick();
+  assert.equal(label('.home-first-title'), '先做三件小事，就能开始聊天');
+  assert.equal(label('.home-continue'), null);
+  title.element.querySelector('.home-step-button').click();
+  const active = { id: 'deepseek', name: 'DeepSeek', chat_model: 'deepseek-chat', api_key: 'sk-****', is_active: true };
+  providerReplies.shift()(Response.json({ providers: [active], presets: [] }));
+  await tick();
+  assert.equal(label('.home-first-title'), null);
+  assert.equal(label('.home-continue'), '开始聊天');
+});

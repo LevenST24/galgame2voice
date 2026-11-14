@@ -199,7 +199,9 @@ for (const reduced of [false, true]) test(`P8 title ${reduced ? 'reduced-motion 
   assert.deepEqual(calls, ['start']); assert.equal(title.isOpen, false);
   if (reduced) {
     assert.equal(animations.length, 0); assert.equal(title.element.hidden, true);
-    mql.rotate(false); title.open();
+    mql.rotate(false);
+    title.open();
+    await microtasks();
     title.element.querySelector('.home-continue').click();
     assert.equal(animations.length, 1, 'normal motion must fade');
   }

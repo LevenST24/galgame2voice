@@ -38,6 +38,7 @@
 .adv-title-screen .home-quote { padding-left: calc(28 * var(--u)); border-left: calc(3 * var(--u)) solid var(--home-accent); font-family: "Songti SC", "SimSun", serif; font-size: calc(54 * var(--u)); font-weight: 500; line-height: 1.45; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; text-shadow: 0 2px 18px #0008; }
 .adv-title-screen .home-ja { margin-top: calc(14 * var(--u)); padding-left: calc(32 * var(--u)); font-family: "Yu Mincho", "SimSun", serif; font-size: calc(30 * var(--u)); line-height: 1.5; color: #ffffffb8; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; }
 .adv-title-screen .home-actions { display: flex; align-items: center; flex-wrap: wrap; gap: calc(36 * var(--u)); margin-top: calc(48 * var(--u)); }
+.adv-title-screen .home-checking { margin: 0; color: #ffffffb8; font-size: calc(26 * var(--u)); }
 .adv-title-screen .home-primary { border: 0; border-radius: 999px; background: #fff; color: #12141f; font-size: calc(30 * var(--u)); font-weight: 700; padding: calc(19 * var(--u)) calc(46 * var(--u)); min-width: calc(240 * var(--u)); box-shadow: 0 calc(8 * var(--u)) calc(30 * var(--u)) #0005; }
 .adv-title-screen .home-primary:hover { background: #fff4f0; }
 .adv-title-screen .home-link { padding: calc(8 * var(--u)) 0; border: 0; background: transparent; font-size: calc(26 * var(--u)); color: #ffffffd9; }
