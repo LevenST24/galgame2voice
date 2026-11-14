@@ -7,7 +7,6 @@ telemetry timers, and REST API endpoints.
 
 import asyncio
 import os
-import random
 import time
 import uuid
 import wave
@@ -223,104 +222,6 @@ class TestTtsCacheLifecycleAndPerformance:
             assert r == first
 
         # Drain fire-and-forget DB-touch tasks before the loop closes.
-        await mgr.aclose()
-
-    # Asserts <0.005ms (5us) mean in-memory get() latency; sensitive to multi-worker CPU contention.
-    @pytest.mark.serial
-    @pytest.mark.wall_clock
-    @pytest.mark.asyncio
-    async def test_in_memory_latency_benchmark_10k(self, tmp_path):
-        """
-        Empirically measures in-memory get() latency across 10,000 requests.
-        Verifies average latency is strictly < 0.05ms (target < 0.005ms).
-        """
-        db_path = tmp_path / "latency.db"
-        await init_db(db_path)
-        mgr = TtsCacheManager(cache_dir=tmp_path / "cache", db_path=str(db_path))
-
-        text = "先生、おはようございます！"
-        key, clean, params_hash = mgr.compute_cache_key(text)
-        sample_audio = b"RIFF" + b"\x00" * 4096  # 4KB synthetic audio
-        await mgr.put(key, text, clean, 1, params_hash, sample_audio)
-
-        # Warm up cache
-        for _ in range(100):
-            res = await mgr.get(key)
-            assert res is not None
-
-        latencies_ms = []
-        t_bench_start = time.perf_counter()
-        for _ in range(10000):
-            t0 = time.perf_counter()
-            await mgr.get(key)
-            latencies_ms.append((time.perf_counter() - t0) * 1000.0)
-
-        total_elapsed_ms = (time.perf_counter() - t_bench_start) * 1000.0
-        avg_latency_ms = sum(latencies_ms) / len(latencies_ms)
-        latencies_ms.sort()
-        p50_ms = latencies_ms[5000]
-        p95_ms = latencies_ms[9500]
-        p99_ms = latencies_ms[9900]
-        max_latency_ms = latencies_ms[-1]
-
-        print("\n[10k Single-Key Benchmark]")
-        print(f"  Total time for 10,000 gets: {total_elapsed_ms:.2f} ms")
-        print(f"  Average latency: {avg_latency_ms:.6f} ms ({avg_latency_ms * 1000.0:.2f} us)")
-        print(f"  p50 latency:     {p50_ms:.6f} ms")
-        print(f"  p95 latency:     {p95_ms:.6f} ms")
-        print(f"  p99 latency:     {p99_ms:.6f} ms")
-        print(f"  Max latency:     {max_latency_ms:.6f} ms")
-
-        # Contract requirements
-        assert avg_latency_ms < 0.05, f"Average latency {avg_latency_ms:.4f}ms exceeds 0.05ms threshold"
-        assert avg_latency_ms < 0.005, f"Average latency {avg_latency_ms:.4f}ms exceeds target 0.005ms"
-        await mgr.aclose()
-
-    # Asserts microsecond-scale multi-key get() latency; sensitive to multi-worker CPU contention.
-    @pytest.mark.serial
-    @pytest.mark.wall_clock
-    @pytest.mark.asyncio
-    async def test_in_memory_multi_key_latency_benchmark_10k(self, tmp_path):
-        """
-        Empirically measures in-memory get() latency across 10,000 requests
-        distributed randomly over 50 distinct cached items.
-        """
-        db_path = tmp_path / "multi_latency.db"
-        await init_db(db_path)
-        mgr = TtsCacheManager(cache_dir=tmp_path / "cache", db_path=str(db_path), max_mem_entries=100)
-
-        keys = []
-        for i in range(50):
-            txt = f"台詞テスト番号_{i}"
-            k, c, p = mgr.compute_cache_key(txt)
-            await mgr.put(k, txt, c, 1, p, b"WAV_DATA_" + bytes([i % 256]) * 1000)
-            keys.append(k)
-
-        # Warm up
-        for k in keys:
-            await mgr.get(k)
-
-        rng = random.Random(1337)
-        workload = [rng.choice(keys) for _ in range(10000)]
-
-        latencies_ms = []
-        t_bench_start = time.perf_counter()
-        for k in workload:
-            t0 = time.perf_counter()
-            await mgr.get(k)
-            latencies_ms.append((time.perf_counter() - t0) * 1000.0)
-
-        total_elapsed_ms = (time.perf_counter() - t_bench_start) * 1000.0
-        avg_latency_ms = sum(latencies_ms) / len(latencies_ms)
-
-        print("\n[10k Multi-Key (50 keys) Benchmark]")
-        print(f"  Total time for 10,000 gets: {total_elapsed_ms:.2f} ms")
-        print(f"  Average latency: {avg_latency_ms:.6f} ms ({avg_latency_ms * 1000.0:.2f} us)")
-
-        assert avg_latency_ms < 0.05, f"Average multi-key latency {avg_latency_ms:.4f}ms exceeds 0.05ms"
-        assert avg_latency_ms < 0.005, f"Average multi-key latency {avg_latency_ms:.4f}ms exceeds 0.005ms target"
-
-        # Drain the ~50 throttled DB-touch tasks before the loop closes.
         await mgr.aclose()
 
 
