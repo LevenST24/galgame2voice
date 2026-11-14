@@ -846,3 +846,18 @@ test('title holds 开始聊天 and checklist until /api/providers settles, then 
   assert.equal(label('.home-first-title'), null);
   assert.equal(label('.home-continue'), '开始聊天');
 });
+
+test('first-use checklist hides text-only choice when voice engine is ready', async t => {
+  const unconfigured = { modelLoaded: true, hasModel: false, model: { state: 'error' } };
+  const h = await fixture(t, { status: { ...unconfigured, engine: { state: 'ready' } } });
+  assert.ok(h.q('.home-first-title'));
+  assert.ok(!h.q('.home-text-only'), 'unexpected .home-text-only when engine is ready');
+  h.setStatus({ ...unconfigured, engine: { state: 'unavailable' } });
+  await h.ui.refresh();
+  assert.ok(h.q('.home-text-only'));
+  h.q('.home-text-only').click();
+  assert.equal(textTree(h.q('.home-text-only')), '✓ 暂时只用文字');
+  h.setStatus({ ...unconfigured, engine: { state: 'ready' } });
+  await h.ui.refresh();
+  assert.ok(!h.q('.home-text-only'), 'unexpected .home-text-only after engine becomes ready');
+});
