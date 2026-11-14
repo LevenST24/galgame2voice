@@ -239,3 +239,24 @@ async def test_redeem_copies_when_hardlink_unsupported(
     assert second.json()["imported"][0]["name"] == "鲍勃"
     assert gets["n"] == 1
     assert list(root.glob("*.part")) == [] and list(root.glob("*.import")) == []
+
+
+def test_parse_redeem_code_strips_whitespace_and_zero_width() -> None:
+    clean = encode_code("https://example.com/_g2v", secrets.token_bytes(32))
+    _, addr, secret = clean.split(".")
+    dirty = f"G2\u200bV1.\n{addr[:6]}\u3000{addr[6:]}\u200c\u200d.\r\n {secret[:8]}\u2060\ufeff{secret[8:]}"
+    assert parse_redeem_code(dirty) == parse_redeem_code(clean)
+
+
+async def test_bad_redeem_code_returns_plain_message(api: AsyncClient, caplog: pytest.LogCaptureFixture) -> None:
+    expected = "兑换码不完整或有误。请把收到的整段兑换码原样粘贴进来（以 G2V1. 开头）。"
+    caplog.set_level(logging.INFO, logger="galgame2voice.services.package_redeem")
+    bad_code = "G2V1.not_base64!.my-secret-segment"
+    resp = await api.post("/api/characters/redeem/list", json={"code": bad_code})
+    detail = resp.json()["detail"]
+    assert resp.status_code == 400 and detail == expected
+    assert not any(term in detail for term in ("地址段", "密钥", "G2V1.<地址>"))
+    dl = await api.post("/api/characters/redeem/download", json={"code": "bad", "package_id": "a", "overwrite": False})
+    assert dl.status_code == 400 and dl.json()["detail"] == expected
+    assert "兑换码地址段编码无效" in caplog.text
+    assert bad_code not in caplog.text and "my-secret-segment" not in caplog.text
