@@ -172,6 +172,11 @@ PAGE = """<!doctype html><html lang="zh-CN"><meta charset="utf-8">
 import {createStage} from '/frontend/src/adv/stage.js';
 import {createTitleScreen} from '/frontend/src/adv/title.js';
 const input = __INPUT__;
+if (input.welcome) {
+  const {GREETING} = await import('/frontend/src/store.js');
+  input.zh = GREETING;
+  input.ja = '';
+}
 const stage = createStage(document.getElementById('root'));
 const sessions = [0,1,2,3].map(i => ({id: String(i), title: '测试会话',
   characterName: i ? '最近的角色' : '当前角色', settings: {voiceProfileId:i+1},
@@ -189,13 +194,21 @@ const rect = selector => {
   const r = document.querySelector(selector).getBoundingClientRect();
   return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height};
 };
-const lineCount = selector => rect(selector).height /
-  parseFloat(getComputedStyle(document.querySelector(selector)).lineHeight);
+const lineCount = selector => {
+  const el = document.querySelector(selector);
+  if (!el) return 0;
+  return rect(selector).height / parseFloat(getComputedStyle(el).lineHeight);
+};
+const quoteEl = document.querySelector('.home-quote');
+const quoteStyle = getComputedStyle(quoteEl);
 const result = {stage:rect('.adv-stage'),actions:rect('.home-actions'),
   recents:rect('.home-recents'),primary:rect('.home-primary'),
   quoteLines:lineCount('.home-quote'),jaLines:lineCount('.home-ja'),
-  quoteText:document.querySelector('.home-quote').textContent,
-  jaText:document.querySelector('.home-ja').textContent,
+  quoteText:quoteEl.textContent,
+  jaText:document.querySelector('.home-ja')?.textContent || '',
+  welcome:{scrollHeight:quoteEl.scrollHeight,clientHeight:quoteEl.clientHeight,
+    scrollWidth:quoteEl.scrollWidth,clientWidth:quoteEl.clientWidth,
+    textOverflow:quoteStyle.textOverflow,lineClamp:quoteStyle.webkitLineClamp},
   viewportWidth:innerWidth,documentWidth:document.documentElement.scrollWidth};
 document.getElementById('layout-result').textContent=JSON.stringify(result);
 document.documentElement.dataset.layoutReady='true';
@@ -462,19 +475,22 @@ def test_run_layout_browser_kills_process_tree_and_does_not_block_on_child_stdio
 
 
 @pytest.mark.requires_piped_subprocess
-@pytest.mark.parametrize("width,height,long_text,voice_ready", [
-    (1920,1080,False,False),
-    (2048,1152,True,True),
-    (1366,768,True,False),
+@pytest.mark.parametrize("width,height,long_text,voice_ready,welcome", [
+    (1920,1080,False,False,False),
+    (2048,1152,True,True,False),
+    (1366,768,True,False,False),
+    (1366,768,False,False,True),
+    (1280,720,False,False,True),
 ])
-def test_home_excerpt_leaves_space_for_actions_and_recents(tmp_path, width, height, long_text, voice_ready):
+def test_home_excerpt_leaves_space_for_actions_and_recents(tmp_path, width, height, long_text, voice_ready, welcome):
     executable = browser_path()
     if not executable:
         pytest.skip("home layout needs an installed Chrome/Chromium/Edge browser")
     zh = ("下午好。这个时间点来店里，想必是想在午后安静地喝杯咖啡吧。"
           "如果您还没决定好要点什么，我可以为您推荐。") if long_text else "先说好，这次你可不许偷吃我那份。"
     ja = ("こんにちは。この時間にいらっしゃるということは、午後のひとときを静かにコーヒーと一緒に過ごしたいということでしょうか。") if long_text else "先に言っとくけど、ぼくの分は食べちゃだめ！"
-    page = PAGE.replace("__INPUT__", json.dumps({"zh":zh,"ja":ja,"voiceReady":voice_ready}, ensure_ascii=False)).encode()
+    page = PAGE.replace("__INPUT__", json.dumps(
+        {"zh": zh, "ja": ja, "voiceReady": voice_ready, "welcome": welcome}, ensure_ascii=False)).encode()
     server = make_layout_server(partial(LayoutHandler, page=page))
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
@@ -499,6 +515,14 @@ def test_home_excerpt_leaves_space_for_actions_and_recents(tmp_path, width, heig
     assert run.returncode == 0 and match, run.stderr.decode("utf-8", errors="replace")[-2000:]
     result = json.loads(html.unescape(match[1]))
     (tmp_path / "layout.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+    if welcome:
+        fit = result["welcome"]
+        clipped = fit["scrollHeight"] > fit["clientHeight"] + 1
+        ellipsis = fit["textOverflow"] == "ellipsis" and (
+            fit["scrollWidth"] > fit["clientWidth"] + 1 or clipped)
+        assert not clipped and not ellipsis, fit
+        assert "设置中心" in result["quoteText"] and "返回首页" in result["quoteText"], result["quoteText"]
+        return
     assert result["quoteText"] == f"「{zh}」" and result["jaText"] == ja
     assert result["documentWidth"] <= result["viewportWidth"]
     unit = result["stage"]["width"] / 1920
