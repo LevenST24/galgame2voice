@@ -115,7 +115,7 @@ def save_sovits_directory(project_root: Path, value: str) -> dict:
         detail = "所选文件夹需包含 api_v2.py。请先完整解压 GPT-SoVITS，再选择引擎目录。"
         nested = _single_nested_engine_name(directory)
         if nested:
-            detail += f"请再进入「{nested}」。"
+            detail += f"请再进入“{nested}”。"
         raise ValueError(detail)
     if getattr(sys, "frozen", False) and find_engine_python(directory) is None:
         raise ValueError("所选引擎缺少 runtime/python.exe，请选择包含运行环境的完整集成包。")

@@ -89,7 +89,7 @@ async def test_nested_engine_directory_names_the_only_child(tmp_path, monkeypatc
     async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         result = await client.put("/api/system/sovits-directory", json={"directory": str(inner.parent)})
     detail = result.json()["detail"]
-    assert result.status_code == 400 and "请再进入「GPT-SoVITS」" in detail
+    assert result.status_code == 400 and "请再进入“GPT-SoVITS”" in detail
     assert installation.read_sovits_directory(root) is None
 
 
