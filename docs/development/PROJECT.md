@@ -112,7 +112,7 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 - `MemoryService.format_memory_prompt_block(memories: list[UserMemoryResponse])`: Formats memory facts in defensive quotes with clear non-executable context markers.
 
 ### TTS Cache Latency Contract
-- `TtsCacheManager.get(cache_key)`: Checks `self._mem_cache` first. If hit, returns immediately without disk I/O. Latency must measure `< 0.5ms` (average of 100 lookups, as asserted by `test_f5_02_in_memory_cache_hit_latency`).
+- `TtsCacheManager.get(cache_key)`: Checks `self._mem_cache` first. If hit, returns immediately without disk I/O.
 
 ### Universal Provider API Contract
 - `GET /api/providers`: Returns `{"providers": [...], "presets": [...]}`. Each entry contains `id`, `name`, `description`, `api_base_url`, `default_base_url`, `api_key` (masked `****` if present), `chat_model`, `preset_models`, `is_active`. If a preset is not yet in the DB, it is synthesized from `adapters/registry.py` presets.
