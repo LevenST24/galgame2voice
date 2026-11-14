@@ -232,7 +232,11 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
       const copy = el('div', 'home-step-copy');
       add(copy, el('b', '', label), el('p', '', descriptions[i]));
       add(row, el('span', 'home-step-mark', done[i] ? '✓' : ''), copy);
-      if (i === 1) row.appendChild(btn('home-link home-text-only', textOnly ? '✓ 暂时只用文字' : '暂时只用文字', () => { textOnly = true; renderPane(true); }));
+      if (i === 1 && status.engine?.state !== 'ready') row.appendChild(
+        btn('home-link home-text-only', textOnly ? '✓ 暂时只用文字' : '暂时只用文字', () => {
+          textOnly = true;
+          renderPane(true);
+        }));
       row.appendChild(btn(`home-step-button${done[i] ? '' : ' home-step-pending'}`, i === 2 ? '选择' : '去设置', () => {
         stopListen();
         if (i === 2) actions.openCharacters?.(); else actions.openSettings?.(i === 0 ? 'models' : 'inference');
