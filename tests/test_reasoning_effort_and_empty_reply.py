@@ -571,9 +571,9 @@ async def test_all_request_builders_forward_only_configured_effort(effort):
 def test_native_adapter_forwards_only_configured_effort(effort):
     adapter = AnthropicAdapter(api_key="synthetic", reasoning_effort=effort)
     payload = adapter._prepare_anthropic_payload([])
-    assert payload.get("reasoning_effort") == effort
-    assert ("reasoning_effort" in payload) == (effort is not None)
-    assert "reasoning_effort" not in adapter._prepare_anthropic_payload([], reasoning_effort=None)
+    assert "reasoning_effort" not in payload
+    assert payload.get("output_config") == ({"effort": effort} if effort else None)
+    assert "output_config" not in adapter._prepare_anthropic_payload([], reasoning_effort=None)
 
 
 @pytest.mark.asyncio

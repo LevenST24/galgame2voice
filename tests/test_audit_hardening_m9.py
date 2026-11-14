@@ -310,7 +310,7 @@ class TestAnthropicPayloadInvariance:
         assert payload["messages"][0]["content"] == "Hello"
 
     def test_prepare_payload_omits_top_p_when_temperature_present(self):
-        """When temperature is specified (including 0.0), top_p and unsupported penalties must not be in payload."""
+        """Sampling parameters and unsupported penalties must never be sent in Anthropic payload."""
         adapter = AnthropicAdapter(api_key="sk-ant-test")
         messages = [ChatMessage(role="user", content="Hello")]
 
@@ -322,7 +322,7 @@ class TestAnthropicPayloadInvariance:
             presence_penalty=0.0,
         )
 
-        assert payload["temperature"] == 0.7
+        assert "temperature" not in payload
         assert "top_p" not in payload
         assert "frequency_penalty" not in payload
         assert "presence_penalty" not in payload
@@ -332,12 +332,12 @@ class TestAnthropicPayloadInvariance:
             temperature=0.0,
             top_p=1.0,
         )
-        assert zero_temp_payload["temperature"] == 0.0
+        assert "temperature" not in zero_temp_payload
         assert "top_p" not in zero_temp_payload
 
     @pytest.mark.asyncio
     async def test_chat_omits_top_p_and_penalties_in_request_payload(self):
-        """chat() request payload must include temperature=0.7 and omit top_p, frequency_penalty, presence_penalty."""
+        """chat() request payload must omit temperature, top_p, frequency_penalty, presence_penalty."""
         adapter = AnthropicAdapter(api_key="sk-ant-test")
         messages = [ChatMessage(role="user", content="Hello")]
 
@@ -360,14 +360,14 @@ class TestAnthropicPayloadInvariance:
         assert res.content == "Hi"
         assert mock_client.post.called
         sent_payload = mock_client.post.call_args.kwargs["json"]
-        assert sent_payload["temperature"] == 0.7
+        assert "temperature" not in sent_payload
         assert "top_p" not in sent_payload
         assert "frequency_penalty" not in sent_payload
         assert "presence_penalty" not in sent_payload
 
     @pytest.mark.asyncio
     async def test_stream_chat_omits_top_p_and_penalties_in_request_payload(self):
-        """stream_chat() request payload must include temperature=0.7 and omit top_p, frequency_penalty, presence_penalty."""
+        """stream_chat() request payload must omit temperature, top_p, frequency_penalty, presence_penalty."""
         adapter = AnthropicAdapter(api_key="sk-ant-test")
         messages = [ChatMessage(role="user", content="Hello")]
 
@@ -399,20 +399,20 @@ class TestAnthropicPayloadInvariance:
         assert chunks == ["Hi"]
         assert mock_client.post.called
         sent_payload = mock_client.post.call_args.kwargs["json"]
-        assert sent_payload["temperature"] == 0.7
+        assert "temperature" not in sent_payload
         assert "top_p" not in sent_payload
         assert "frequency_penalty" not in sent_payload
         assert "presence_penalty" not in sent_payload
 
     @pytest.mark.asyncio
     async def test_allows_top_p_when_temperature_not_specified(self):
-        """When temperature is None or omitted and top_p is provided, payload retains top_p and omits temperature."""
+        """When temperature is None or omitted and top_p is provided, payload omits both temperature and top_p."""
         adapter = AnthropicAdapter(api_key="sk-ant-test")
         messages = [ChatMessage(role="user", content="Hello")]
 
         payload = adapter._prepare_anthropic_payload(messages, temperature=None, top_p=0.9)
         assert "temperature" not in payload
-        assert payload.get("top_p") == 0.9
+        assert "top_p" not in payload
 
         mock_client = AsyncMock()
         mock_resp = MagicMock()
@@ -424,7 +424,45 @@ class TestAnthropicPayloadInvariance:
         await adapter.chat(messages, top_p=0.85, client_override=mock_client)
         sent_payload = mock_client.post.call_args.kwargs["json"]
         assert "temperature" not in sent_payload
-        assert sent_payload.get("top_p") == 0.85
+        assert "top_p" not in sent_payload
+
+    @pytest.mark.asyncio
+    async def test_claude_5_5_payload_omits_sampling_and_maps_reasoning_effort(self):
+        adapter = AnthropicAdapter(api_key="sk-ant-test", reasoning_effort="high")
+        msgs = [ChatMessage(role="user", content="Hello")]
+        sonnet = adapter._prepare_anthropic_payload(
+            msgs, model="claude-sonnet-5-5", temperature=0.7, top_p=1.0, top_k=5,
+            frequency_penalty=0, presence_penalty=0, reasoning_effort="none",
+        )
+        for key in ("temperature", "top_p", "top_k", "frequency_penalty", "presence_penalty", "reasoning_effort"):
+            assert key not in sonnet
+        assert sonnet["thinking"] == {"type": "between_tools"}
+        assert sonnet["output_config"] == {"effort": "low"}
+
+        haiku = adapter._prepare_anthropic_payload(msgs, model="claude-haiku-5-5", reasoning_effort="none")
+        assert haiku["thinking"] == {"type": "disabled"}
+        assert haiku["output_config"] == {"effort": "low"}
+
+        opus = adapter._prepare_anthropic_payload(msgs, model="claude-opus-5-5", reasoning_effort="none")
+        assert "thinking" not in opus
+        assert opus["output_config"] == {"effort": "low"}
+
+        medium = adapter._prepare_anthropic_payload(msgs, model="claude-sonnet-5-5", reasoning_effort="medium")
+        assert medium["output_config"] == {"effort": "medium"}
+        assert "thinking" not in medium
+
+        unset = adapter._prepare_anthropic_payload(msgs, model="claude-sonnet-5-5", reasoning_effort=None)
+        assert "output_config" not in unset
+        assert "thinking" not in unset
+
+        mock_resp = MagicMock(status_code=200, text="{}")
+        mock_resp.json.return_value = {"content": [{"type": "thinking", "thinking": "."}], "stop_reason": "max_tokens"}
+        adapter.client_override = AsyncMock(post=AsyncMock(return_value=mock_resp))
+        probe = await adapter.test_connection(model="claude-opus-5-5")
+        sent = adapter.client_override.post.call_args.kwargs["json"]
+        assert probe.success is True
+        assert sent["max_tokens"] == 64
+        assert sent["output_config"] == {"effort": "low"}
 
 
 # ============================================================================

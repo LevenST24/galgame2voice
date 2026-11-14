@@ -32,6 +32,15 @@ logger = logging.getLogger("galgame2voice.adapters.llm.anthropic")
 _parse_retry_after = parse_retry_after
 _calculate_backoff_delay = calculate_backoff_delay
 
+_THINKING_OFF_BY_PREFIX = {
+    "claude-sonnet-5-5": "between_tools",
+    "claude-haiku-5-5": "disabled",
+}
+_SKIP_PAYLOAD_KEYS = (
+    "reasoning_effort", "top_p", "top_k", "frequency_penalty", "presence_penalty",
+    "client_override", "custom_headers", "timeout_s", "max_retries", "base_delay",
+)
+
 
 def _extract_content_text(data: dict[str, Any]) -> str:
     """Concatenates text blocks from an Anthropic messages response."""
@@ -48,7 +57,7 @@ class AnthropicAdapter(BaseLLMAdapter):
     """
 
     DEFAULT_BASE_URL = "https://api.anthropic.com/v1"
-    DEFAULT_MODEL = "claude-sonnet-4-20250514"
+    DEFAULT_MODEL = "claude-sonnet-5-5"
     ANTHROPIC_VERSION = "2023-06-01"
 
     def __init__(
@@ -177,32 +186,27 @@ class AnthropicAdapter(BaseLLMAdapter):
         elif merged_msgs[0]["role"] != "user":
             merged_msgs.insert(0, {"role": "user", "content": "Hello"})
 
-        if temperature is None and kwargs.get("top_p") is None:
-            temperature = 0.7
-
+        resolved_model = model or self.default_model
         payload: dict[str, Any] = {
-            "model": model or self.default_model,
+            "model": resolved_model,
             "messages": merged_msgs,
             "max_tokens": max_tokens,
             "stream": stream,
         }
-        if temperature is not None:
-            payload["temperature"] = temperature
         if system_content:
             payload["system"] = system_content
-        reasoning_effort = kwargs.get("reasoning_effort", self.reasoning_effort)
-        if reasoning_effort is not None:
-            payload["reasoning_effort"] = reasoning_effort
+        effort = kwargs.get("reasoning_effort", self.reasoning_effort)
+        if effort == "none":
+            payload["output_config"] = {"effort": "low"}
+            for prefix, mode in _THINKING_OFF_BY_PREFIX.items():
+                if resolved_model.startswith(prefix):
+                    payload["thinking"] = {"type": mode}
+                    break
+        elif effort in ("low", "medium", "high"):
+            payload["output_config"] = {"effort": effort}
 
-        # Anthropic API 不支持这些 OpenAI 风格参数，透传会导致 400；
-        # 且 temperature 与 top_p 互斥，已写入 temperature 时必须省略 top_p。
-        _UNSUPPORTED = ("frequency_penalty", "presence_penalty", "top_k")
         for k, v in kwargs.items():
-            if k == "reasoning_effort":
-                continue
-            if k == "top_p" and ("temperature" in payload or v is None):
-                continue
-            if k not in ("client_override", "custom_headers", "timeout_s", "max_retries", "base_delay") and k not in _UNSUPPORTED:
+            if k not in _SKIP_PAYLOAD_KEYS:
                 payload[k] = v
 
         return payload
@@ -423,12 +427,9 @@ class AnthropicAdapter(BaseLLMAdapter):
     async def list_models(self) -> list[str]:
         """Returns known Anthropic Claude models."""
         return [
-            "claude-opus-4-20250514",
-            "claude-sonnet-4-20250514",
-            "claude-haiku-4-20250414",
-            "claude-3-7-sonnet-20250224",
-            "claude-3-5-sonnet-20241022",
-            "claude-3-5-haiku-20241022",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+            "claude-opus-5-5",
         ]
 
     async def test_connection(self, model: str | None = None) -> TestResult:
@@ -456,7 +457,8 @@ class AnthropicAdapter(BaseLLMAdapter):
             resp = await self.chat(
                 messages=[ChatMessage(role="user", content="Hi")],
                 model=model or self.default_model,
-                max_tokens=10,
+                max_tokens=64,
+                reasoning_effort="none",
             )
             latency = (time.time() - t0) * 1000
             return TestResult(

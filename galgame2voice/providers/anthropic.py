@@ -9,7 +9,7 @@ from galgame2voice.adapters.llm.anthropic_adapter import AnthropicAdapter
 
 class AnthropicProvider(BaseLLMProvider, AnthropicAdapter):
     """
-    Anthropic Claude Provider supporting Claude 3.5 Sonnet, Claude 3.7 Sonnet, and Claude 3 Haiku.
+    Anthropic Claude Provider supporting claude-sonnet-5-5, claude-haiku-5-5, and claude-opus-5-5.
     """
 
     def __init__(
