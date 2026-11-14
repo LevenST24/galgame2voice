@@ -387,6 +387,51 @@ def make_valid_v3(tmp_path: Path) -> tuple[Path, dict]:
 # ===========================================================================
 
 
+def _v3_set(path, value):
+    def apply(data):
+        target = data
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+    return apply
+
+
+def _mismatch_look_key(data):
+    data["looks"]["mismatched/uniform"] = data["looks"].pop("a/uniform")
+
+
+def _look_layer_other_canvas(data):
+    data["canvases"]["B"] = {"width": 1000, "height": 1000}
+    data["layers"]["B/1"] = {"canvas": "B", "file": "layers/B/1.webp", "rect": {"x": 0, "y": 0, "width": 100, "height": 100}, "z": 0, "opacity": 1}
+    data["looks"]["a/uniform"]["body"].append("B/1")
+
+
+_V3_REJECTS = [
+    pytest.param(_v3_set(("version",), 2), "version must be 3", id="test_version_must_be_3"),
+    pytest.param(_v3_set(("canvases", "A", "width"), -100), "width and height must be positive integers", id="test_canvas_dimensions_must_be_positive_ints"),
+    pytest.param(_v3_set(("poses", "a", "canvas"), "UNKNOWN"), "unknown canvas", id="test_pose_references_unknown_canvas"),
+    pytest.param(_v3_set(("layers", "A/1278", "rect", "x"), 2000), "lies outside canvas", id="test_layer_rect_must_lie_inside_canvas"),
+    pytest.param(_v3_set(("layers", "A/1278", "file"), "layers/A/1278.jpg"), "must end in .webp or .png", id="test_layer_file_must_end_in_webp_or_png"),
+    pytest.param(_v3_set(("layers", "A/1278", "file"), "../secret.webp"), "is not a safe relative path", id="test_layer_file_rejects_path_traversal"),
+    pytest.param(_v3_set(("layers", "A/1278", "file"), r"layers\A\1278.webp"), "is not a safe relative path", id="test_layer_file_rejects_backslash"),
+    pytest.param(_v3_set(("looks", "a/uniform", "crop", "width"), 2500), "crop lies outside canvas", id="test_crop_must_lie_inside_canvas"),
+    pytest.param(_v3_set(("looks", "a/uniform", "faceRect", "width"), 1000), "faceRect lies outside crop", id="test_face_rect_must_lie_inside_crop"),
+    pytest.param(_v3_set(("looks", "a/uniform", "headAnchor", "x"), 900), "headAnchor lies outside crop", id="test_head_anchor_must_lie_inside_crop"),
+    pytest.param(_mismatch_look_key, "does not match pose/outfit", id="test_look_key_must_match_pose_and_outfit"),
+    pytest.param(_look_layer_other_canvas, "does not match pose canvas", id="test_look_layer_must_match_pose_canvas"),
+    pytest.param(_v3_set(("defaultPose",), "nonexistent"), "not found in poses", id="test_default_look_must_exist"),
+    pytest.param(_v3_set(("looks", "a/uniform", "defaultFace"), "99"), "defaultFace '99' not in look faces", id="test_look_default_face_must_be_in_faces"),
+    pytest.param(_v3_set(("outfits", "unused"), {"name": "未用"}), "outfit 'unused' is not used by any look", id="test_every_outfit_must_be_used"),
+    pytest.param(_v3_set(("poses", "unused"), {"name": "未用", "canvas": "A"}), "pose 'unused' is not used by any look", id="test_every_pose_must_be_used"),
+    pytest.param(_v3_set(("looks", "a/uniform", "faces", "14", "blink"), {"closed": "14"}), "has blink but eyesClosed is true", id="test_blink_requires_eyes_closed_false"),
+    pytest.param(_v3_set(("looks", "a/uniform", "faces", "01", "blink", "closed"), "02"), "closed partner '02' must have eyesClosed: true", id="test_blink_closed_partner_must_have_eyes_closed_true"),
+    pytest.param(_v3_set(("looks", "a/uniform", "faces", "01", "blink", "half"), "99"), "partner '99' not in look faces", id="test_blink_partner_must_be_in_look_faces"),
+    pytest.param(_v3_set(("looks", "a/uniform", "faces", "01", "mouth", "open"), "99"), "mouth open partner '99' not in look faces", id="test_mouth_partner_must_be_in_look_faces"),
+    pytest.param(_v3_set(("looks", "a/uniform", "faces", "01", "combinedFrames"), {"bad_key": "16"}), "combinedFrames key 'bad_key' malformed", id="test_combined_frames_key_must_be_valid"),
+    pytest.param(_v3_set(("looks", "a/uniform", "faces", "01", "combinedFrames"), {"half:open": "99"}), "target '99' not in look faces", id="test_combined_frames_target_must_be_in_look_faces"),
+]
+
+
 class TestV3Validation:
     def test_valid_manifest_passes(self, tmp_path):
         root, data = make_valid_v3(tmp_path)
@@ -394,163 +439,13 @@ class TestV3Validation:
         assert valid is True
         assert reason == ""
 
-    def test_version_must_be_3(self, tmp_path):
+    @pytest.mark.parametrize("mutate,fragment", _V3_REJECTS)
+    def test_v3_validation_rejects(self, tmp_path, mutate, fragment):
         root, data = make_valid_v3(tmp_path)
-        data["version"] = 2
+        mutate(data)
         valid, reason = _validate_v3(root, data)
         assert valid is False
-        assert "version must be 3" in reason
-
-    def test_canvas_dimensions_must_be_positive_ints(self, tmp_path):
-        root, data = make_valid_v3(tmp_path)
-        data["canvases"]["A"]["width"] = -100
-        valid, reason = _validate_v3(root, data)
-        assert valid is False
-        assert "width and height must be positive integers" in reason
-
-    def test_pose_references_unknown_canvas(self, tmp_path):
-        root, data = make_valid_v3(tmp_path)
-        data["poses"]["a"]["canvas"] = "UNKNOWN"
-        valid, reason = _validate_v3(root, data)
-        assert valid is False
-        assert "unknown canvas" in reason
-
-    def test_layer_rect_must_lie_inside_canvas(self, tmp_path):
-        root, data = make_valid_v3(tmp_path)
-        data["layers"]["A/1278"]["rect"]["x"] = 2000  # canvas width is 1875
-        valid, reason = _validate_v3(root, data)
-        assert valid is False
-        assert "lies outside canvas" in reason
-
-    def test_layer_file_must_end_in_webp_or_png(self, tmp_path):
-        root, data = make_valid_v3(tmp_path)
-        data["layers"]["A/1278"]["file"] = "layers/A/1278.jpg"
-        valid, reason = _validate_v3(root, data)
-        assert valid is False
-        assert "must end in .webp or .png" in reason
-
-    def test_layer_file_rejects_path_traversal(self, tmp_path):
-        root, data = make_valid_v3(tmp_path)
-        data["layers"]["A/1278"]["file"] = "../secret.webp"
-        valid, reason = _validate_v3(root, data)
-        assert valid is False
-        assert "is not a safe relative path" in reason
-
-    def test_layer_file_rejects_backslash(self, tmp_path):
-        root, data = make_valid_v3(tmp_path)
-        data["layers"]["A/1278"]["file"] = r"layers\A\1278.webp"
-        valid, reason = _validate_v3(root, data)
-        assert valid is False
-        assert "is not a safe relative path" in reason
-
-    def test_crop_must_lie_inside_canvas(self, tmp_path):
-        root, data = make_valid_v3(tmp_path)
-        data["looks"]["a/uniform"]["crop"]["width"] = 2500  # exceeds canvas 1875
-        valid, reason = _validate_v3(root, data)
-        assert valid is False
-        assert "crop lies outside canvas" in reason
-
-    def test_face_rect_must_lie_inside_crop(self, tmp_path):
-        root, data = make_valid_v3(tmp_path)
-        data["looks"]["a/uniform"]["faceRect"]["width"] = 1000  # crop width is 792
-        valid, reason = _validate_v3(root, data)
-        assert valid is False
-        assert "faceRect lies outside crop" in reason
-
-    def test_head_anchor_must_lie_inside_crop(self, tmp_path):
-        root, data = make_valid_v3(tmp_path)
-        data["looks"]["a/uniform"]["headAnchor"]["x"] = 900  # crop width is 792
-        valid, reason = _validate_v3(root, data)
-        assert valid is False
-        assert "headAnchor lies outside crop" in reason
-
-    def test_look_key_must_match_pose_and_outfit(self, tmp_path):
-        root, data = make_valid_v3(tmp_path)
-        data["looks"]["mismatched/uniform"] = data["looks"].pop("a/uniform")
-        valid, reason = _validate_v3(root, data)
-        assert valid is False
-        assert "does not match pose/outfit" in reason
-
-    def test_look_layer_must_match_pose_canvas(self, tmp_path):
-        root, data = make_valid_v3(tmp_path)
-        data["canvases"]["B"] = {"width": 1000, "height": 1000}
-        data["layers"]["B/1"] = {"canvas": "B", "file": "layers/B/1.webp", "rect": {"x": 0, "y": 0, "width": 100, "height": 100}, "z": 0, "opacity": 1}
-        data["looks"]["a/uniform"]["body"].append("B/1")
-        valid, reason = _validate_v3(root, data)
-        assert valid is False
-        assert "does not match pose canvas" in reason
-
-    def test_default_look_must_exist(self, tmp_path):
-        root, data = make_valid_v3(tmp_path)
-        data["defaultPose"] = "nonexistent"
-        valid, reason = _validate_v3(root, data)
-        assert valid is False
-        assert "not found in poses" in reason
-
-    def test_look_default_face_must_be_in_faces(self, tmp_path):
-        root, data = make_valid_v3(tmp_path)
-        data["looks"]["a/uniform"]["defaultFace"] = "99"
-        valid, reason = _validate_v3(root, data)
-        assert valid is False
-        assert "defaultFace '99' not in look faces" in reason
-
-    def test_every_outfit_must_be_used(self, tmp_path):
-        root, data = make_valid_v3(tmp_path)
-        data["outfits"]["unused"] = {"name": "未用"}
-        valid, reason = _validate_v3(root, data)
-        assert valid is False
-        assert "outfit 'unused' is not used by any look" in reason
-
-    def test_every_pose_must_be_used(self, tmp_path):
-        root, data = make_valid_v3(tmp_path)
-        data["poses"]["unused"] = {"name": "未用", "canvas": "A"}
-        valid, reason = _validate_v3(root, data)
-        assert valid is False
-        assert "pose 'unused' is not used by any look" in reason
-
-    def test_blink_requires_eyes_closed_false(self, tmp_path):
-        root, data = make_valid_v3(tmp_path)
-        # Face 14 has eyesClosed: True; give it blink
-        data["looks"]["a/uniform"]["faces"]["14"]["blink"] = {"closed": "14"}
-        valid, reason = _validate_v3(root, data)
-        assert valid is False
-        assert "has blink but eyesClosed is true" in reason
-
-    def test_blink_closed_partner_must_have_eyes_closed_true(self, tmp_path):
-        root, data = make_valid_v3(tmp_path)
-        # Point blink closed to face 02 which has eyesClosed: False
-        data["looks"]["a/uniform"]["faces"]["01"]["blink"]["closed"] = "02"
-        valid, reason = _validate_v3(root, data)
-        assert valid is False
-        assert "closed partner '02' must have eyesClosed: true" in reason
-
-    def test_blink_partner_must_be_in_look_faces(self, tmp_path):
-        root, data = make_valid_v3(tmp_path)
-        data["looks"]["a/uniform"]["faces"]["01"]["blink"]["half"] = "99"
-        valid, reason = _validate_v3(root, data)
-        assert valid is False
-        assert "partner '99' not in look faces" in reason
-
-    def test_mouth_partner_must_be_in_look_faces(self, tmp_path):
-        root, data = make_valid_v3(tmp_path)
-        data["looks"]["a/uniform"]["faces"]["01"]["mouth"]["open"] = "99"
-        valid, reason = _validate_v3(root, data)
-        assert valid is False
-        assert "mouth open partner '99' not in look faces" in reason
-
-    def test_combined_frames_key_must_be_valid(self, tmp_path):
-        root, data = make_valid_v3(tmp_path)
-        data["looks"]["a/uniform"]["faces"]["01"]["combinedFrames"] = {"bad_key": "16"}
-        valid, reason = _validate_v3(root, data)
-        assert valid is False
-        assert "combinedFrames key 'bad_key' malformed" in reason
-
-    def test_combined_frames_target_must_be_in_look_faces(self, tmp_path):
-        root, data = make_valid_v3(tmp_path)
-        data["looks"]["a/uniform"]["faces"]["01"]["combinedFrames"] = {"half:open": "99"}
-        valid, reason = _validate_v3(root, data)
-        assert valid is False
-        assert "target '99' not in look faces" in reason
+        assert fragment in reason
 
 
 # ===========================================================================
