@@ -422,6 +422,18 @@ class TestMetricsCollectorAndTelemetry:
         assert cost_usd == 0.0
         assert cost_cny == 0.0
 
+    def test_current_xai_and_gemini_model_pricing(self, tmp_path):
+        collector = MetricsCollector(db_path=str(tmp_path / "m.db"))
+        cases = [
+            ("gemini", "gemini-3.8-flash", 8.25),
+            ("gemini", "gemini-3.5-flash-lite", 5.30),
+            ("xai", "grok-4.7", 14.00),
+            ("xai", "grok-4.20-0309-non-reasoning", 6.25),
+        ]
+        for pid, model, expected_usd in cases:
+            cost_usd, _ = collector.calculate_cost(pid, model, 1_000_000, 2_000_000)
+            assert round(cost_usd, 4) == expected_usd
+
     def test_token_estimation_accuracy(self, tmp_path):
         collector = MetricsCollector(db_path=str(tmp_path / "m.db"))
 

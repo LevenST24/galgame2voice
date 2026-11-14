@@ -8,7 +8,7 @@ from galgame2voice.adapters.llm.openai_adapter import OpenAICompatibleLLMAdapter
 
 
 class GeminiLLMAdapter(OpenAICompatibleLLMAdapter):
-    """Gemini OpenAI-compatible API Adapter (gemini-2.0-flash, gemini-1.5-pro)."""
+    """Gemini OpenAI-compatible API Adapter (gemini-3.8-flash, gemini-3.5-flash-lite)."""
 
     def __init__(
         self,
@@ -23,3 +23,8 @@ class GeminiLLMAdapter(OpenAICompatibleLLMAdapter):
             client_override=client_override,
             **kwargs,
         )
+
+    def _reasoning_fields(self, effort: str | None, model: str) -> dict[str, Any]:
+        if effort == "none":
+            return {"reasoning_effort": "minimal"}
+        return super()._reasoning_fields(effort, model)

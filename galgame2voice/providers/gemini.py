@@ -9,7 +9,7 @@ from galgame2voice.adapters.llm.gemini_adapter import GeminiLLMAdapter
 
 class GeminiProvider(BaseLLMProvider, GeminiLLMAdapter):
     """
-    Google Gemini Provider supporting gemini-2.5-flash, gemini-2.0-flash, and gemini-1.5 series.
+    Google Gemini Provider supporting gemini-3.8-flash and gemini-3.5-flash-lite.
     """
 
     def __init__(

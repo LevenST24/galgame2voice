@@ -42,6 +42,8 @@ MODEL_PRICING_MAP: dict[str, dict[str, tuple[float, float]]] = {
     },
     "gemini": {
         DEFAULT_MODEL_KEY: (0.075, 0.30),
+        "gemini-3.8-flash": (0.75, 3.75),
+        "gemini-3.5-flash-lite": (0.30, 2.50),
         "gemini-2.5-flash": (0.15, 0.60),
         "gemini-2.5-pro": (1.25, 10.00),
         "gemini-2.0-flash": (0.10, 0.40),
@@ -67,6 +69,8 @@ MODEL_PRICING_MAP: dict[str, dict[str, tuple[float, float]]] = {
     },
     "xai": {
         DEFAULT_MODEL_KEY: (3.00, 15.00),
+        "grok-4.7": (2.00, 6.00),
+        "grok-4.20-0309-non-reasoning": (1.25, 2.50),
         "grok-3": (3.00, 15.00),
         "grok-3-mini": (0.30, 0.50),
     },

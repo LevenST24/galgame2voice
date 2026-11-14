@@ -560,8 +560,9 @@ async def test_all_request_builders_forward_only_configured_effort(effort):
         else:
             assert kwargs["reasoning_effort"] == effort
 
-    configured = get_llm_adapter(ProviderCreate(id="gemini", name="Gemini", reasoning_effort=effort,
-                                               api_base_url="https://generativelanguage.googleapis.com/v1beta/openai", chat_model="test"))
+    # Qwen forwards the configured effort unchanged; Gemini and xAI translate "none" (see their own tests).
+    configured = get_llm_adapter(ProviderCreate(id="qwen", name="Qwen", reasoning_effort=effort,
+                                               api_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1", chat_model="test"))
     payload = configured._build_payload([], "test")
     assert payload.get("reasoning_effort") == effort
     assert ("reasoning_effort" in payload) == (effort is not None)
@@ -896,3 +897,28 @@ async def test_openai_gpt6_payload_and_probe_rules():
         await custom._probe_chat_fallback(client, "qwen3:latest", {}, "custom", time.perf_counter())
     assert probed[0].get("max_completion_tokens") == 1 and "max_tokens" not in probed[0]
     assert probed[1].get("max_tokens") == 1 and "max_completion_tokens" not in probed[1]
+
+
+def test_xai_payload_reasoning_and_penalty_rules():
+    xai = get_llm_adapter("xai", api_key="xai-test")
+    msgs = [{"role": "user", "content": "hi"}]
+    r_extra = {"frequency_penalty": 0, "presence_penalty": 0, "stop": ["。"], "reasoning_effort": "none"}
+    r_payload = xai._build_payload(msgs, model="grok-4.7", extra=r_extra)
+    assert r_payload.get("reasoning_effort") == "low"
+    for forbidden in ("frequency_penalty", "presence_penalty", "stop"):
+        assert forbidden not in r_payload
+    assert xai._build_payload(msgs, model="grok-4.7", extra={"reasoning_effort": "high"})["reasoning_effort"] == "high"
+    nr_extra = {"frequency_penalty": 0, "presence_penalty": 0, "stop": ["。"], "reasoning_effort": "high"}
+    nr_payload = xai._build_payload(msgs, model="grok-4.20-0309-non-reasoning", extra=nr_extra)
+    assert (nr_payload["frequency_penalty"], nr_payload["presence_penalty"]) == (0, 0)
+    assert nr_payload["stop"] == ["。"]
+    assert "reasoning_effort" not in nr_payload
+
+
+def test_gemini_payload_translates_none_reasoning_effort_to_minimal():
+    gemini = get_llm_adapter("gemini", api_key="gm-test")
+    msgs = [{"role": "user", "content": "hi"}]
+    off_payload = gemini._build_payload(msgs, model="gemini-3.8-flash", extra={"reasoning_effort": "none"})
+    low_payload = gemini._build_payload(msgs, model="gemini-3.8-flash", extra={"reasoning_effort": "low"})
+    assert off_payload.get("reasoning_effort") == "minimal"
+    assert low_payload.get("reasoning_effort") == "low"
