@@ -81,17 +81,17 @@ PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
         "id": "anthropic",
         "name": "Anthropic Claude",
         "default_base_url": "https://api.anthropic.com/v1",
-        "default_chat_model": "claude-sonnet-4-20250514",
+        "default_chat_model": "claude-sonnet-5-5",
         "default_stt_model": "",
+        "default_reasoning_effort": "none",
         "adapter_class": AnthropicAdapter,
         "stt_adapter_class": None,
         "preset_models": [
-            "claude-sonnet-4-20250514",
-            "claude-haiku-4-20250414",
-            "claude-3-5-sonnet-20241022",
-            "claude-3-5-haiku-20241022",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+            "claude-opus-5-5",
         ],
-        "description": "Anthropic 官方 Claude 原生 Messages API (Claude Sonnet 4 / 3.5 系列)",
+        "description": "Anthropic Claude 官方 API（Sonnet 5.5 / Haiku 5.5 / Opus 5.5）",
     },
     "xai": {
         "id": "xai",
@@ -190,6 +190,12 @@ PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
 }
 
 RETIRED_CHAT_MODELS: dict[tuple[str, str], tuple[str, str | None]] = {
+    ("anthropic", "claude-sonnet-4-20250514"): ("claude-sonnet-5-5", "none"),
+    ("anthropic", "claude-3-7-sonnet-20250224"): ("claude-sonnet-5-5", "none"),
+    ("anthropic", "claude-3-5-sonnet-20241022"): ("claude-sonnet-5-5", "none"),
+    ("anthropic", "claude-haiku-4-20250414"): ("claude-haiku-5-5", "none"),
+    ("anthropic", "claude-3-5-haiku-20241022"): ("claude-haiku-5-5", "none"),
+    ("anthropic", "claude-opus-4-20250514"): ("claude-opus-5-5", "none"),
     ("deepseek", "deepseek-chat"): ("deepseek-flash", "none"),
     ("deepseek", "deepseek-reasoner"): ("deepseek-flash", None),
 }

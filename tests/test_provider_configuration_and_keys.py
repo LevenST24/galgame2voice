@@ -686,6 +686,28 @@ class TestProviderPresetSeedsAndFallback:
             assert updated_settings.active_provider_id == "siliconflow"
 
     @pytest.mark.asyncio
+    async def test_retired_anthropic_models_migrate_to_current_claude(self, tmp_path):
+        """Retired Anthropic models migrate to Claude 5.5 with reasoning_effort='none'."""
+        from galgame2voice.database.models import ProviderUpdate
+
+        cases = [
+            ("claude-sonnet-4-20250514", "claude-sonnet-5-5"),
+            ("claude-haiku-4-20250414", "claude-haiku-5-5"),
+            ("claude-opus-4-20250514", "claude-opus-5-5"),
+        ]
+        for idx, (old_model, expected_model) in enumerate(cases):
+            db_path = tmp_path / f"ant_migrate_{idx}.db"
+            await init_db(db_path)
+            async with get_db(db_path) as conn:
+                upd = ProviderUpdate(api_key="sk-ant-saved-1234", chat_model=old_model, reasoning_effort=None)
+                await crud.update_provider(conn, "anthropic", upd)
+            await init_db(db_path)
+            async with get_db(db_path) as conn:
+                raw = await crud.get_provider_raw(conn, "anthropic")
+                assert raw.api_key == "sk-ant-saved-1234"
+                assert (raw.chat_model, raw.reasoning_effort) == (expected_model, "none")
+
+    @pytest.mark.asyncio
     async def test_retired_deepseek_models_migrate_preserving_keys_and_custom_models(self, tmp_path):
         """Retired deepseek models migrate to deepseek-flash while preserving keys and custom names."""
         from galgame2voice.database.models import ProviderUpdate
