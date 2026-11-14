@@ -377,7 +377,7 @@ async function applySessionVoice(session, { silent = false }, want, isCurrent) {
     }
     if (_callbacks.isHomeOpen?.()) return;
     console.error('音色切换失败:', e);
-    showToast('音色切换失败：请打开「运行状态」确认语音引擎正常后重试', 'error', _callbacks.onOpenEngineStatus ? {
+    showToast('语音引擎还没准备好，现在只有文字、没有声音。可在「运行状态」查看引擎。', 'error', _callbacks.onOpenEngineStatus ? {
       actionLabel: '检查运行状态',
       onAction: () => _callbacks.onOpenEngineStatus(),
     } : null);
@@ -1051,6 +1051,7 @@ async function handleSaveSessionSettings() {
       ? Number(_dom.sVoice.value)
       : null;
     if (voiceListUnavailable) profileId = s.settings?.voiceProfileId ?? null;
+    const previousProfileId = s.settings?.voiceProfileId ?? null;
     const missingBinding = !voiceListUnavailable && profileId === s.settings?.voiceProfileId
       && profileId && !voiceProfiles.some(p => p.id === profileId)
       && _promptOwnerId === profileId && (_dom.sSystem?.value || '').trim() === _promptBaseline.trim();
@@ -1111,7 +1112,9 @@ async function handleSaveSessionSettings() {
     if (_callbacks.renderHeader) _callbacks.renderHeader();
           if (getActive() === s) await ensureSessionVoice(s);
     const draftNote = sameEditor() && editorSnapshot() !== submitted ? '；保存期间新增的修改已保留在面板中，请再次保存' : '';
-    showToast(`会话「${s.title}」参数已更新${promptNote}${syncNote}${draftNote}`, promptNote || syncNote || draftNote ? 'info' : 'success');
+    const nextName = voiceProfiles.find((p) => p.id === profileId)?.name;
+    const lead = nextName && profileId !== previousProfileId ? `已换上「${nextName}」。` : '设置已保存。';
+    showToast(`${lead}${promptNote}${syncNote}${draftNote}`, promptNote || syncNote || draftNote ? 'info' : 'success');
   } finally {
     if (_dom.sSave) _dom.sSave.disabled = false;
   }

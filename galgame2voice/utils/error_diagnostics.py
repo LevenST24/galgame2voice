@@ -313,7 +313,7 @@ def _diagnose_local_configuration(
         return DiagnosticResult(
             error_code="API_KEY_MISSING",
             message=f"尚未填写{f'「{name}」的' if name else ''} API Key",
-            guidance="请打开「设置中心 → 对话模型」填写密钥后重试；使用 Ollama、LM Studio 等本地模型时，请选择「自定义 / 本地模型」。",
+            guidance="在上面的 API 密钥里填入后再测试；使用 Ollama、LM Studio 等本地模型时，请选择「自定义 / 本地模型」。",
             raw_error=sanitized_raw,
         )
     return None
@@ -957,7 +957,7 @@ def _diagnose_generic_http(
     if status_code == 401 or "unauthorized" in raw_lower or "invalid key" in raw_lower:
         return DiagnosticResult(
             error_code="AUTH_FAILED",
-            message="API Key 身份验证失败 (401 Unauthorized)",
+            message="密钥不被接受。请到申请密钥的网站重新复制。",
             guidance="身份验证失败。请检查填写的 API Key 是否完整无误，或在提供商控制台重新生成有效密钥。",
             status_code=401,
             raw_error=sanitized_raw,

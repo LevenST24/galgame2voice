@@ -86,6 +86,23 @@ def write_sovits_directory_hint(project_root: Path, directory: Path | str) -> st
     return stored
 
 
+def _single_nested_engine_name(directory: Path) -> str:
+    if not directory.is_dir():
+        return ""
+    found = ""
+    try:
+        children = [child for child in directory.iterdir() if child.is_dir()]
+    except OSError:
+        return ""
+    for child in children:
+        if not (child / "api_v2.py").is_file():
+            continue
+        if found:
+            return ""
+        found = child.name
+    return found
+
+
 def save_sovits_directory(project_root: Path, value: str) -> dict:
     value = value.strip().strip("\"'")
     if not value or "\x00" in value:
@@ -95,7 +112,11 @@ def save_sovits_directory(project_root: Path, value: str) -> dict:
         directory = project_root / directory
     directory = directory.resolve()
     if not directory.is_dir() or not (directory / "api_v2.py").is_file():
-        raise ValueError("所选文件夹需包含 api_v2.py。请先完整解压 GPT-SoVITS，再选择引擎目录。")
+        detail = "所选文件夹需包含 api_v2.py。请先完整解压 GPT-SoVITS，再选择引擎目录。"
+        nested = _single_nested_engine_name(directory)
+        if nested:
+            detail += f"请再进入「{nested}」。"
+        raise ValueError(detail)
     if getattr(sys, "frozen", False) and find_engine_python(directory) is None:
         raise ValueError("所选引擎缺少 runtime/python.exe，请选择包含运行环境的完整集成包。")
     write_sovits_directory_hint(project_root, directory)

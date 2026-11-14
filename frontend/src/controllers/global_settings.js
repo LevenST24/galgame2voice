@@ -312,8 +312,8 @@ export async function savePrivateEndpointPreference() {
     if (revision !== privateEndpointRevision) return;
     privateEndpointSaved = allowed;
     if (dom.gPrivateEndpointsStatus) dom.gPrivateEndpointsStatus.textContent = allowed
-      ? '已保存：允许连接你填写的本机或局域网模型地址。仅填写你信任的服务地址。'
-      : '已保存：仅允许公网模型地址。本机或局域网模型需要先开启此选项。';
+      ? '已保存：允许连接本机或局域网的模型服务。仅填写你信任的服务地址。'
+      : '已保存：尚未允许连接本机或局域网的模型服务。';
   } catch (error) {
     if (revision !== privateEndpointRevision) return;
     dom.gAllowPrivateEndpoints.checked = privateEndpointSaved;
@@ -353,8 +353,8 @@ export async function loadGlobalConfig() {
       privateEndpointSaved = Boolean(s.allow_private_llm_endpoints);
       if (targetDom.gAllowPrivateEndpoints) targetDom.gAllowPrivateEndpoints.checked = privateEndpointSaved;
       if (targetDom.gPrivateEndpointsStatus) targetDom.gPrivateEndpointsStatus.textContent = privateEndpointSaved
-        ? '已允许本机或局域网模型。更改后自动保存；仅填写你信任的服务地址。'
-        : '使用 Ollama、LM Studio 或局域网模型时开启；更改后自动保存。仅填写你信任的服务地址。';
+        ? '允许连接本机或局域网的模型服务。更改后自动保存；仅填写你信任的服务地址。'
+        : '允许连接本机或局域网的模型服务。使用 Ollama、LM Studio 或局域网模型时开启；更改后自动保存。仅填写你信任的服务地址。';
     }
     const provider = cfg.active_provider;
     const voiceProfiles = _callbacks.getVoiceProfiles ? _callbacks.getVoiceProfiles() : [];

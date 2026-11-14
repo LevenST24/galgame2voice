@@ -9,6 +9,11 @@ import { saveConfirmedProvider, activateConfirmedProvider } from './provider_rec
 
 export const PROVIDER_FIELDS = ['gApiKey', 'gBaseUrl', 'gChatModel', 'gChatModelSelect', 'gReasoningEffort', 'gCustomName'];
 
+function activeServiceMark(isActive, requiresKey, hasKey) {
+  if (!isActive) return '';
+  return requiresKey && !hasKey ? '还不能用' : '当前生效';
+}
+
 function isLoopbackOrPrivateIpv4(host) {
   const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
   if (!m) return false;
@@ -166,7 +171,7 @@ export class ProviderSettingsController {
         '当前填写的是本机或局域网地址。请先勾选本页「允许连接本机或局域网的模型服务」开关，再测试连通性或保存。';
     }
     if (this.dom.gPrivateEndpointsStatus) {
-      this.dom.gPrivateEndpointsStatus.textContent = '请先勾选此项以连接本机或局域网模型服务';
+      this.dom.gPrivateEndpointsStatus.textContent = '请先勾选「允许连接本机或局域网的模型服务」';
     }
     this.dom.gAllowPrivateEndpoints.scrollIntoView({ block: 'nearest' });
     this.dom.gAllowPrivateEndpoints.focus();
@@ -249,10 +254,6 @@ export class ProviderSettingsController {
 
     // 2. 当前生效状态徽标与描述文本
     const isActive = Boolean(stored?.is_active);
-    if (this.dom.gProviderActiveBadge) {
-      this.dom.gProviderActiveBadge.className = `badge-status-pill ${isActive ? 'badge-pill-green' : 'badge-pill-gray'}`;
-      this.dom.gProviderActiveBadge.textContent = isActive ? '当前生效' : '未启用';
-    }
     if (this.dom.gProviderActive) {
       this.dom.gProviderActive.textContent = isActive ? `当前：${stored ? stored.name : realId} · ${stored?.chat_model || ''}` : '';
     }
@@ -276,6 +277,13 @@ export class ProviderSettingsController {
 
     const maskedKey = (stored?.api_key || '').trim();
     const hasKey = Boolean(maskedKey && maskedKey.length > 0);
+    const serviceMark = activeServiceMark(isActive, capabilities.requires_api_key, hasKey);
+    if (this.dom.gProviderActiveBadge) {
+      const unusable = serviceMark === '还不能用';
+      const tone = unusable ? 'badge-pill-yellow' : isActive ? 'badge-pill-green' : 'badge-pill-gray';
+      this.dom.gProviderActiveBadge.className = `badge-status-pill ${tone}`;
+      this.dom.gProviderActiveBadge.textContent = serviceMark || '未启用';
+    }
 
     if (hasKey) {
       if (this.dom.gApiKey) this.dom.gApiKey.placeholder = `已配置：${maskedKey}（留空保持原密钥，输入新密钥可覆盖）`;
@@ -445,7 +453,11 @@ export class ProviderSettingsController {
         sorted.forEach((p) => {
           const opt = document.createElement('option');
           opt.value = p.id;
-          opt.textContent = `${p.name} · ${p.chat_model || '未设定'}${p.is_active ? '（当前生效）' : ''}`;
+          const row = this.cachedProviders.find((item) => item.id === p.id);
+          const rowHasKey = Boolean((row?.api_key || '').trim());
+          const rowNeedsKey = this.presetCapabilities(p.id).requires_api_key;
+          const rowMark = activeServiceMark(p.is_active, rowNeedsKey, rowHasKey);
+          opt.textContent = `${p.name} · ${p.chat_model || '未设定'}${rowMark ? `（${rowMark}）` : ''}`;
           if (p.is_active) opt.selected = true;
           this.dom.gProvider.appendChild(opt);
         });

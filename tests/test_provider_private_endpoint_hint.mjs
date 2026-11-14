@@ -171,6 +171,20 @@ function fixture(t) {
   return { dom, toasts };
 }
 
+test('active cloud provider without a key is marked unusable', async t => {
+  globalThis.fetch = async (url) => response(url === '/api/providers' ? {
+    providers: [{ id: 'deepseek', name: 'DeepSeek', is_active: true, chat_model: 'deepseek-chat', api_key: '' }],
+    presets: [], builtin_presets: [],
+  } : { status: 'ok', settings: {} });
+  const { dom } = fixture(t);
+  openModal(dom.globalModal);
+  await loadProviders();
+  const selected = dom.gProvider.children.find((opt) => opt.value === 'deepseek');
+  assert.equal(dom.gProviderActiveBadge.textContent, '还不能用');
+  assert.match(selected.textContent, /还不能用/);
+  assert.doesNotMatch(selected.textContent, /当前生效/);
+});
+
 test('blocks handleProviderTest locally for custom provider with loopback or private URLs when gAllowPrivateEndpoints is unchecked', async t => {
   const testRequests = [];
   globalThis.fetch = async (url, options = {}) => {
@@ -217,7 +231,7 @@ test('blocks handleProviderTest locally for custom provider with loopback or pri
   assert.equal(dom.gTestResultTitle.textContent, '尚未开启本机 / 局域网连接权限');
   assert.equal(dom.gTestResultLatency.textContent, '未发送');
   assert.match(dom.gTestResultBody.textContent, /允许连接本机或局域网的模型服务/);
-  assert.match(dom.gPrivateEndpointsStatus.textContent, /请先勾选此项/);
+  assert.match(dom.gPrivateEndpointsStatus.textContent, /请先勾选「允许连接本机或局域网的模型服务」/);
   assert.ok(toasts.some(msg => msg.includes('允许连接本机或局域网的模型服务')));
 
   // 2. Also intercept 'custom' across localhost, .local, RFC1918, CGNAT, and IPv6 loopback/private/mapped URLs

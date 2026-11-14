@@ -77,6 +77,22 @@ def test_failed_atomic_write_preserves_previous_hint_and_cleans_temp(tmp_path, m
     assert list((tmp_path / "data").glob(".sovits-dir-*.tmp")) == []
 
 
+@pytest.mark.asyncio
+async def test_nested_engine_directory_names_the_only_child(tmp_path, monkeypatch):
+    root = tmp_path / "app"
+    root.mkdir()
+    monkeypatch.setattr(get_settings(), "project_root", root)
+    inner = tmp_path / "GPT-SoVITS" / "GPT-SoVITS"
+    inner.mkdir(parents=True)
+    (inner / "api_v2.py").write_text("# marker\n", encoding="utf-8")
+    transport = ASGITransport(app=create_app())
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+        result = await client.put("/api/system/sovits-directory", json={"directory": str(inner.parent)})
+    detail = result.json()["detail"]
+    assert result.status_code == 400 and "请再进入「GPT-SoVITS」" in detail
+    assert installation.read_sovits_directory(root) is None
+
+
 def test_valid_directory_message_names_the_tab_that_starts_the_engine(tmp_path):
     # The tab was renamed from 状态诊断 to 运行状态; this message kept the old name.
     make_engine(tmp_path / "engine")

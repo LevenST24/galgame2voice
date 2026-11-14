@@ -136,6 +136,7 @@ export class EngineSettingsController {
     this.restarting = true;
     this.engineStatusRevision += 1;
     let restartFailed = false;
+    let engineReady = false;
     this.coordinator.renderEngineStatus?.({
       state: 'starting',
       ready: false,
@@ -204,6 +205,7 @@ export class EngineSettingsController {
         },
       });
       if (this.disposed) return;
+      engineReady = result.ready === true;
       if (!acknowledged && result.ready) result = { ...result, message: UNCONFIRMED_RESTART_MESSAGE };
       this.coordinator.renderEngineStatus?.(result);
       this.coordinator.showToast?.(result.message, result.ready && acknowledged ? 'success' : 'info');
@@ -236,7 +238,8 @@ export class EngineSettingsController {
         this.restarting = false;
         if (this.dom.gBtnRestartSovits) {
           this.dom.gBtnRestartSovits.disabled = false;
-          this.dom.gBtnRestartSovits.innerHTML = '<svg class="icon"><use href="#i-play"></use></svg><span>重启 SoVITS 引擎</span>';
+          const label = engineReady ? '重启 SoVITS 引擎' : '启动 SoVITS 引擎';
+          this.dom.gBtnRestartSovits.innerHTML = `<svg class="icon"><use href="#i-play"></use></svg><span>${label}</span>`;
         }
         if (this.dom.gBtnTogglePrecision) this.dom.gBtnTogglePrecision.disabled = false;
         if (!restartFailed) {
