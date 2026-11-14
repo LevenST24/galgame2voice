@@ -12,6 +12,51 @@ export function formatProviderDiagnostic(data = {}) {
   return { title, guidance };
 }
 
+/**
+ * 对照填写的模型名和连通性测试返回的模型列表，决定这次要不要算通过。
+ * 某一项与名字相同（不分大小写），或以 /名字 结尾，都算列表里有这个名字。
+ *
+ * @param {string} chatModel 输入框里的模型名
+ * @param {string[] | null | undefined} models 测试响应里的模型列表
+ * @returns {{ ok: boolean, title: string, body: string }}
+ */
+export function describeProviderModelCheck(chatModel, models) {
+  const name = String(chatModel || '').trim();
+  const list = Array.isArray(models)
+    ? models.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim())
+    : [];
+  if (!name) {
+    const found = list.length > 0 ? ` (发现 ${list.length} 个可用模型)` : '';
+    return { ok: true, title: '连通性测试通过', body: `已成功连接至目标端点。${found}` };
+  }
+  const needle = name.toLowerCase();
+  const known = list.some((item) => {
+    const value = item.toLowerCase();
+    return value === needle || value.endsWith(`/${needle}`);
+  });
+  if (known) {
+    return {
+      ok: true,
+      title: '连通性测试通过',
+      body: `已成功连接至目标端点，模型 ${name} 就绪。 (发现 ${list.length} 个可用模型)`,
+    };
+  }
+  if (list.length === 0) {
+    return {
+      ok: false,
+      title: '地址和密钥可用',
+      body: `对方没有返回模型列表，还不能确认「${name}」这个名字。`,
+    };
+  }
+  const preview = list.slice(0, 3).join('、');
+  const more = list.length > 3 ? '…' : '';
+  return {
+    ok: false,
+    title: `模型列表里没有「${name}」`,
+    body: `地址和密钥可用，但对方返回的模型列表里没有这个名字，聊天时可能失败。列表里有：${preview}${more}`,
+  };
+}
+
 function firstText(...values) {
   for (const value of values) {
     if (typeof value === 'string' && value !== '') return value;
