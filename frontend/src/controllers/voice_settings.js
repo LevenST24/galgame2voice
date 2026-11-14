@@ -73,6 +73,7 @@ export function initVoiceSettings(dom, callbacks = {}) {
   _dom.sVoiceImport?.addEventListener('click', () => !isImporting && _dom.sVoiceImportZipInput?.click());
   _dom.sVoiceImportFolder?.addEventListener('click', () => !isImporting && _dom.sVoiceImportDirInput?.click());
   _dom.sVoiceRedeem?.addEventListener('click', () => _dom.sVoiceRedeemPanel?.classList.toggle('hidden'));
+  _dom.sVoiceRedeemCode?.addEventListener('keydown', handleRedeemCodeKeydown);
   _dom.sVoiceRedeemQuery?.addEventListener('click', queryRedeemCode);
   _dom.sVoiceImportZipInput?.addEventListener('change', handleZipInputChange);
   _dom.sVoiceImportDirInput?.addEventListener('change', handleFolderInputChange);
@@ -793,6 +794,14 @@ function renderRedeemList(packages) {
     row.appendChild(button);
     list.appendChild(row);
   }
+}
+
+function handleRedeemCodeKeydown(event) {
+  if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229) {
+    return;
+  }
+  event.preventDefault();
+  return queryRedeemCode();
 }
 
 async function queryRedeemCode() {

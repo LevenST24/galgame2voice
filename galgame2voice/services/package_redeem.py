@@ -31,6 +31,8 @@ from galgame2voice.utils.logger import sanitize_error_detail
 logger = logging.getLogger("galgame2voice.services.package_redeem")
 _B64_RE, _PKG_RE = re.compile(r"^[A-Za-z0-9_-]+$"), re.compile(r"^[a-z0-9_-]{1,64}$")
 _SHA_RE, _RANGE_RE = re.compile(r"^[0-9a-fA-F]{64}$"), re.compile(r"^bytes (\d+)-(\d+)/(\d+|\*)$")
+_STRIP_RE = re.compile(r"[\s\u200b\u200c\u200d\u2060\ufeff]+")
+_BAD_CODE_DETAIL = "兑换码不完整或有误。请把收到的整段兑换码原样粘贴进来（以 G2V1. 开头）。"
 ParsedCode = namedtuple("ParsedCode", ("server_url", "code_secret"))
 _PROGRESS: dict[str, Any] = {"phase": "idle", "done": 0, "total": 0, "name": ""}
 _KEPT: dict[str, str] = {}
@@ -75,8 +77,8 @@ def _norm_url(url: str) -> str:
 
 
 def parse_redeem_code(text: str) -> ParsedCode:
-    s = text.strip() if isinstance(text, str) else ""
-    parts = s.split(".") if s and not any(ch.isspace() for ch in s) else []
+    s = _STRIP_RE.sub("", text) if isinstance(text, str) else ""
+    parts = s.split(".")
     if len(parts) != 3 or parts[0] != "G2V1":
         raise RedeemCodeError("兑换码格式无效，应为 G2V1.<地址>.<密钥>")
     try:
@@ -159,7 +161,8 @@ async def redeem_list(code: str) -> dict[str, Any]:
     try:
         return {"packages": await _packages(parse_redeem_code(code))}
     except RedeemCodeError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        logger.warning("Redeem code rejected: %s", exc)
+        raise HTTPException(400, _BAD_CODE_DETAIL) from exc
 
 
 def _resume_total(header: str, got: int, expect: int) -> int:
@@ -244,7 +247,8 @@ async def redeem_download(request: Request, *, code: str, package_id: str, overw
     try:
         parsed = parse_redeem_code(code)
     except RedeemCodeError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        logger.warning("Redeem code rejected: %s", exc)
+        raise HTTPException(400, _BAD_CODE_DETAIL) from exc
     if not _PKG_RE.fullmatch(package_id or ""):
         raise HTTPException(400, "角色包 ID 格式无效")
     lock = _lock()

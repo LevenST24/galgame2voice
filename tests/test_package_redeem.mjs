@@ -29,7 +29,11 @@ const mkEl = (val = '') => {
     },
     set innerHTML(h) { this.children = h.includes('跟随后端当前音色') ? [{ value: '', textContent: '跟随后端当前音色' }] : []; },
     addEventListener(n, fn) { (ls[n] ||= []).push(fn); },
-    async fire(n) { for (const fn of [...(ls[n] || [])]) await fn(); },
+    async fire(n, ev) {
+      for (const fn of [...(ls[n] || [])]) {
+        await fn(ev);
+      }
+    },
     appendChild(c) { this.children.push(c); },
     querySelectorAll: () => [],
     remove() {},
@@ -118,5 +122,28 @@ dom.sVoiceRedeemCode.value = bad;
 await dom.sVoiceRedeemQuery.fire('click');
 assert.equal(dom.sVoiceRedeemCode.value, bad);
 assert.equal([...store.values()].some((v) => String(v).includes(bad)), false);
+
+let listCalls = 0;
+let prevented = false;
+globalThis.fetch = async (url) => {
+  if (String(url).includes('/redeem/list')) {
+    listCalls += 1;
+    return ok({ packages: [] });
+  }
+  return ok({});
+};
+const preventDefault = () => {
+  prevented = true;
+};
+const keyEvent = (extra) => ({ key: 'Enter', isComposing: false, preventDefault, ...extra });
+dom.sVoiceRedeemCode.value = 'G2V1.enter-query-code';
+await dom.sVoiceRedeemCode.fire('keydown', keyEvent({ isComposing: true }));
+await dom.sVoiceRedeemCode.fire('keydown', keyEvent({ keyCode: 229 }));
+assert.equal(listCalls, 0);
+assert.equal(prevented, false);
+await dom.sVoiceRedeemCode.fire('keydown', keyEvent());
+assert.equal(listCalls, 1);
+assert.equal(prevented, true);
+assert.equal(dom.sVoiceRedeemCode.value, '');
 toastRoot.children.forEach((c) => clearTimeout(c._timer));
 console.log('package redeem frontend tests: passed');
