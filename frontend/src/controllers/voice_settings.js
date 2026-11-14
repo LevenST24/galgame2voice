@@ -38,6 +38,7 @@ const VOICE_LIST_UNAVAILABLE = '__unavailable__';
 let profilesRevision = 0;
 let lastShownCatalogWarning = '';
 let isImporting = false;
+let isDeletingVoice = false;
 let redeemCode = '';
 let dragEnterDepth = 0;
 let cleanupDragListeners = null;
@@ -52,11 +53,13 @@ export function initVoiceSettings(dom, callbacks = {}) {
   cleanupDragListeners?.();
   cleanupDragListeners = null;
   isImporting = false;
+  isDeletingVoice = false;
   redeemCode = '';
   dragEnterDepth = 0;
 
   _dom = dom;
   _callbacks = callbacks;
+  syncVoiceDeleteButton();
   _promptBaseline = '';
   _promptOwnerId = null;
   _promptSelection = '';
@@ -368,7 +371,8 @@ async function applySessionVoice(session, { silent = false }, want, isCurrent) {
         if (!voiceProfiles.some(profile => profile.id === want)
           && session?.settings?.voiceProfileId === want) {
           _callbacks.renderHeader?.();
-          showToast('这个会话绑定的音色已被删除，原选择已保留。请在「角色与会话」选择新音色，或明确选择“跟随后端当前音色”。', 'info', _callbacks.onOpenSessionSettings ? {
+          const msg = '这个会话绑定的音色已被删除，原选择已保留。请在「角色与会话」选择新音色，或明确选择“不指定（沿用语音服务当前的声音）”。';
+          showToast(msg, 'info', _callbacks.onOpenSessionSettings ? {
             actionLabel: '选择音色',
             onAction: () => _callbacks.onOpenSessionSettings(),
           } : null);
@@ -402,7 +406,7 @@ export async function loadSessionVoiceSelect(session, { preserveDraft = false, s
     let draftSelection = keepDraft ? String(_dom.sVoice.value || '') : null;
     // A placeholder left by an earlier failed load is not a user choice.
     if (draftSelection === VOICE_LIST_UNAVAILABLE) draftSelection = String(session?.settings?.voiceProfileId || '');
-    _dom.sVoice.innerHTML = '<option value="">跟随后端当前音色</option>';
+    _dom.sVoice.innerHTML = '<option value="">不指定（沿用语音服务当前的声音）</option>';
     const active = updateVoiceActiveHint(session);
     const sortedProfiles = active ? [active, ...voiceProfiles.filter((p) => p !== active)] : voiceProfiles;
     for (const p of sortedProfiles) {
@@ -497,7 +501,13 @@ function applyProfilePromptToField(profileId, { isCustomNew = false } = {}) {
   }
 }
 
+function syncVoiceDeleteButton() {
+  const id = Number(_dom.sVoice?.value);
+  if (_dom.sVoiceDelete) _dom.sVoiceDelete.disabled = isDeletingVoice || !id || !voiceProfiles.some((p) => p.id === id);
+}
+
 export function syncCustomVoiceBox() {
+  syncVoiceDeleteButton();
   if (!_dom.sVoice || !_dom.sCustomVoiceBox) return;
   const show = _dom.sVoice.value === '__custom__';
   _dom.sCustomVoiceBox.classList.toggle('hidden', !show);
@@ -977,7 +987,8 @@ export async function deleteVoiceProfile() {
   }
   const p = voiceProfiles.find((x) => x.id === id);
   if (!window.confirm(`确定删除音色「${p ? p.name : id}」？此操作不可恢复。`)) return;
-  _dom.sVoiceDelete.disabled = true;
+  isDeletingVoice = true;
+  syncVoiceDeleteButton();
   try {
     await requestJson(`/api/voice/profiles/${id}`, { method: 'DELETE' });
     if (id === activeProfileId) activeProfileId = null;
@@ -1022,7 +1033,8 @@ export async function deleteVoiceProfile() {
     console.error('音色删除失败:', e);
     showToast(serverMessage(e) || '音色删除失败：该音色已被保留，请稍后重试；若仍失败，请打开「运行状态」检查服务', 'error');
   } finally {
-    _dom.sVoiceDelete.disabled = false;
+    isDeletingVoice = false;
+    syncVoiceDeleteButton();
   }
 }
 

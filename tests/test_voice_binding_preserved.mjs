@@ -63,3 +63,32 @@ for (const profiles of [[{ id: 1, name: '其他角色' }], []]) {
     assert.equal(writes.at(-1).voice_profile_id, null);
   });
 }
+
+test('delete button follows real voice selection and recomputes after failed delete', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  globalThis.document = { getElementById: () => null, createElement: () => element() };
+  globalThis.window = { confirm: () => true };
+  const s = { id: 'd', title: 'D', settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: 99 }, messages: [] };
+  Object.assign(state, { sessions: [s], activeId: s.id });
+  const dom = { sVoice: select(), sVoiceDelete: element(), sSystem: element(), sCustomVoiceBox: element() };
+  const list = { profiles: [{ id: 1, name: 'A' }, { id: 2, name: 'B' }], active_profile_id: 1 };
+  let failDelete = null;
+  globalThis.fetch = (url, opts = {}) => (opts.method === 'DELETE'
+    ? new Promise((resolve) => { failDelete = () => resolve({ ok: false, status: 500, json: async () => ({}) }); })
+    : Promise.resolve({ ok: true, status: 200, json: async () => (url === '/api/voice/profiles' ? list : {}) }));
+  initVoiceSettings(dom, {});
+  await loadSessionVoiceSelect(s);
+  for (const val of ['99', '', '__custom__', '2']) {
+    if (val !== '99') dom.sVoice.value = val;
+    if (val !== '99') await dom.sVoice.fire('change');
+    assert.equal(dom.sVoiceDelete.disabled, val !== '2');
+  }
+  for (const next of ['2', '__custom__']) {
+    const attempt = dom.sVoiceDelete.click();
+    dom.sVoice.value = next;
+    await dom.sVoice.fire('change');
+    failDelete();
+    await attempt;
+    assert.equal(dom.sVoiceDelete.disabled, next !== '2');
+  }
+});

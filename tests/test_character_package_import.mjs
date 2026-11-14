@@ -52,7 +52,7 @@ const mkEl = (val = '', classes = []) => {
     value: val, files: [], disabled: false, hidden: false, textContent: '', children: [], dataset: {}, style: { setProperty() {} },
     classList: { contains: (n) => set.has(n), add: (...a) => a.forEach((n) => set.add(n)), remove: (...a) => a.forEach((n) => set.delete(n)), toggle: (n, f) => (f === undefined ? !set.has(n) : f) ? (set.add(n), true) : (set.delete(n), false) },
     get options() { return this.children; },
-    set innerHTML(h) { this.children = h.includes('跟随后端当前音色') ? [{ value: '', textContent: '跟随后端当前音色' }] : []; },
+    set innerHTML(h) { this.children = h.includes('不指定（沿用语音服务当前的声音）') ? [{ value: '' }] : []; },
     addEventListener(n, fn) { (ls[n] ||= []).push(fn); },
     removeEventListener(n, fn) { ls[n] = (ls[n] || []).filter((h) => h !== fn); },
     async fire(n, ev = {}) { for (const fn of [...(ls[n] || [])]) await fn(ev); },

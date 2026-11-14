@@ -211,3 +211,31 @@ output.textContent=JSON.stringify(state);parent.document.body.append(output);
     data = render_engine_case(tmp_path, 1280, 900, script, 5000)
     assert "error" not in data, data
     assert data["ok"] is True
+
+
+@pytest.mark.requires_piped_subprocess
+@pytest.mark.parametrize("width,height", [(1366, 768)])
+def test_voice_select_occupies_full_row_width_at_1366x768(tmp_path, width, height):
+    script = NAVIGATION_SCRIPT.split("const state={};")[0] + """
+const state = { left: 0, right: innerWidth, viewport: innerWidth, overflow: 0 };
+try {
+  await new Promise(resolve => setTimeout(resolve, 300));
+  click('.home-gear');
+  await wait();
+  click('#gOpenCharacterSettings');
+  await wait();
+  state.rowWidth = document.querySelector('#sessionModal .voice-select-row').getBoundingClientRect().width;
+  const select = document.getElementById('sVoice');
+  state.selectWidth = select.getBoundingClientRect().width;
+  state.firstOption = select.options[0].textContent;
+  state.overflow = document.documentElement.scrollWidth - innerWidth;
+} catch (error) {
+  state.error = error.stack;
+}
+const output = Object.assign(document.createElement('pre'), { id: 'engine-result', hidden: true });
+output.textContent = JSON.stringify(state);
+parent.document.body.append(output);
+"""
+    data = render_engine_case(tmp_path, width, height, script, 5000)
+    assert "error" not in data and data["selectWidth"] >= data["rowWidth"] * 0.9 > 0, data
+    assert data["firstOption"] == "不指定（沿用语音服务当前的声音）"

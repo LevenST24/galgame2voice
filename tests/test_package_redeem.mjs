@@ -27,7 +27,7 @@ const mkEl = (val = '') => {
       remove: (...a) => a.forEach((n) => set.delete(n)),
       toggle: (n, f) => ((f === undefined ? !set.has(n) : f) ? set.add(n) : set.delete(n), set.has(n)),
     },
-    set innerHTML(h) { this.children = h.includes('跟随后端当前音色') ? [{ value: '', textContent: '跟随后端当前音色' }] : []; },
+    set innerHTML(h) { this.children = h.includes('不指定（沿用语音服务当前的声音）') ? [{ value: '' }] : []; },
     addEventListener(n, fn) { (ls[n] ||= []).push(fn); },
     async fire(n, ev) {
       for (const fn of [...(ls[n] || [])]) {
