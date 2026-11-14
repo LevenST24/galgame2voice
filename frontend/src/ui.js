@@ -12,6 +12,17 @@ export function timeLabel(ts) {
   return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())}`;
 }
 
+const TOAST_BATCH_MS = 1000;
+
+// 新提示出现时撤掉已显示超过 1 秒的其他提示。1 秒内连着出现的几条留在同一批。
+function dropToastsOlderThanBatch(root, now) {
+  for (const toast of [...root.querySelectorAll('.toast')]) {
+    if (!(now - toast._shownAt > TOAST_BATCH_MS)) continue;
+    clearTimeout(toast._timer);
+    toast.remove();
+  }
+}
+
 export function showToast(message, type = 'info', options = null) {
   const root = document.getElementById('toastRoot');
   if (!root) return;
@@ -29,9 +40,12 @@ export function showToast(message, type = 'info', options = null) {
     }, duration);
     return;
   }
+  const now = Date.now();
+  dropToastsOlderThanBatch(root, now);
   const el = document.createElement('div');
   el.className = `toast toast-${type}${action ? ' toast-with-action' : ''}`;
   el.dataset.msg = message;
+  el._shownAt = now;
   if (action) {
     const span = document.createElement('span');
     span.className = 'toast-text';
