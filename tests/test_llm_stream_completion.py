@@ -9,19 +9,48 @@ from galgame2voice.database.session import get_db
 
 pytest_plugins = ["tests.test_stream_reply_lines"]
 
+_OPENAI_CLIENT_PATCH = "galgame2voice.adapters.llm.openai_adapter.create_async_client"
 
-def _create_mock_adapter(responses_sse: list[str], requests_log: list, clients_log: list):
-    idx = 0
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal idx
-        requests_log.append(request)
-        if idx < len(responses_sse):
-            content = responses_sse[idx]
-            idx += 1
-        else:
-            content = ""
-        return httpx.Response(200, text=content, headers={"Content-Type": "text/event-stream"})
+async def drive_stream_completion(
+    coordinator_factory,
+    monkeypatch,
+    *,
+    adapter_cls,
+    client_patch: str,
+    sse_body: str | None = None,
+    response_factory=None,
+    cancel_on_text: bool = False,
+):
+    """Install one mocked adapter, read ``coordinator.stream()`` until ``aclose``, and check the client.
+
+    ``sse_body`` is one HTTP 200 ``text/event-stream`` payload and must be the only upstream call.
+    ``response_factory`` replaces that payload for a non-SSE transport such as HTTP 500. A 500 is
+    retried by the adapter, so that path checks only that every client was closed.
+    ``cancel_on_text`` sets the coordinator cancel event when the first ``text`` event arrives.
+    """
+    if (sse_body is None) == (response_factory is None):
+        raise ValueError("pass exactly one of sse_body or response_factory")
+
+    requests_log = []
+    clients_log = []
+    if response_factory is None:
+        responses_sse = [sse_body]
+        idx = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal idx
+            requests_log.append(request)
+            if idx < len(responses_sse):
+                content = responses_sse[idx]
+                idx += 1
+            else:
+                content = ""
+            return httpx.Response(200, text=content, headers={"Content-Type": "text/event-stream"})
+    else:
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests_log.append(request)
+            return response_factory(request)
 
     def create_client(**kwargs):
         transport = httpx.MockTransport(handler)
@@ -29,12 +58,35 @@ def _create_mock_adapter(responses_sse: list[str], requests_log: list, clients_l
         clients_log.append(client)
         return client
 
-    adapter = OpenAICompatibleLLMAdapter(
+    monkeypatch.setattr(client_patch, create_client)
+    factory_kwargs = {}
+    cancel = None
+    if cancel_on_text:
+        cancel = asyncio.Event()
+        factory_kwargs["cancel_event"] = cancel
+    coordinator, _, database = coordinator_factory(**factory_kwargs)
+    coordinator.adapter = adapter_cls(
         api_key="synthetic-key",
         base_url="https://synthetic.invalid/v1",
         allow_private=True,
     )
-    return adapter, create_client
+    coordinator.messages = [ChatMessage(role="user", content="问题")]
+
+    events = []
+    stream = coordinator.stream()
+    try:
+        async for event in stream:
+            events.append(event)
+            if cancel is not None and event.get("event") == "text":
+                cancel.set()
+    finally:
+        await stream.aclose()
+
+    # A non-SSE transport such as HTTP 500 is retried, so only SSE drives are one request.
+    if sse_body is not None:
+        assert len(requests_log) == 1, "Must never automatically retry after partial tokens yielded"
+    assert all(client.is_closed for client in clients_log), "All HTTP clients must be closed"
+    return coordinator, database, events
 
 
 @pytest.mark.asyncio
@@ -48,28 +100,12 @@ async def test_openai_stream_early_eof_without_terminal_signals(coordinator_fact
       - Emit Chinese incomplete/retry guidance error and final done with truncated=True.
       - Never award favorability (affection_calls == 0).
     """
-    requests_log = []
-    clients_log = []
     sse_body = 'data: {"choices":[{"delta":{"content":"{\\"chinese\\":\\"已经收到但未结束"}}]}\n\n'
-
-    adapter, client_factory = _create_mock_adapter([sse_body], requests_log, clients_log)
-    monkeypatch.setattr("galgame2voice.adapters.llm.openai_adapter.create_async_client", client_factory)
-
-    coordinator, _, database = coordinator_factory()
-    coordinator.adapter = adapter
-    messages = [ChatMessage(role="user", content="问题")]
-    coordinator.messages = messages
-
-    events = []
-    stream = coordinator.stream()
-    try:
-        async for event in stream:
-            events.append(event)
-    finally:
-        await stream.aclose()
-
-    assert len(requests_log) == 1, "Must never automatically retry after partial tokens yielded"
-    assert all(c.is_closed for c in clients_log), "All HTTP clients must be closed"
+    coordinator, database, events = await drive_stream_completion(
+        coordinator_factory, monkeypatch,
+        adapter_cls=OpenAICompatibleLLMAdapter, client_patch=_OPENAI_CLIENT_PATCH,
+        sse_body=sse_body,
+    )
 
     errors = [e for e in events if e.get("event") == "error"]
     dones = [e for e in events if e.get("event") == "done"]
@@ -99,30 +135,15 @@ async def test_openai_stream_nonempty_length_truncation(coordinator_factory, mon
       - Final done has truncated=True.
       - Never award favorability (affection_calls == 0).
     """
-    requests_log = []
-    clients_log = []
     sse_body = (
         'data: {"choices":[{"delta":{"content":"{\\"chinese\\":\\"已经收到但未结束"}}]}\n\n'
         'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'
     )
-
-    adapter, client_factory = _create_mock_adapter([sse_body], requests_log, clients_log)
-    monkeypatch.setattr("galgame2voice.adapters.llm.openai_adapter.create_async_client", client_factory)
-
-    coordinator, _, database = coordinator_factory()
-    coordinator.adapter = adapter
-    coordinator.messages = [ChatMessage(role="user", content="问题")]
-
-    events = []
-    stream = coordinator.stream()
-    try:
-        async for event in stream:
-            events.append(event)
-    finally:
-        await stream.aclose()
-
-    assert len(requests_log) == 1
-    assert all(c.is_closed for c in clients_log)
+    coordinator, _, events = await drive_stream_completion(
+        coordinator_factory, monkeypatch,
+        adapter_cls=OpenAICompatibleLLMAdapter, client_patch=_OPENAI_CLIENT_PATCH,
+        sse_body=sse_body,
+    )
 
     errors = [e for e in events if e.get("event") == "error"]
     dones = [e for e in events if e.get("event") == "done"]
@@ -143,30 +164,15 @@ async def test_openai_stream_stop_without_done_compatibility_control(coordinator
       - Final done has truncated=False.
       - Settle favorability once.
     """
-    requests_log = []
-    clients_log = []
     sse_body = (
         'data: {"choices":[{"delta":{"content":"{\\"chinese\\":\\"完整回答\\",\\"japanese\\":\\"完全な回答\\"}"}}]}\n\n'
         'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
     )
-
-    adapter, client_factory = _create_mock_adapter([sse_body], requests_log, clients_log)
-    monkeypatch.setattr("galgame2voice.adapters.llm.openai_adapter.create_async_client", client_factory)
-
-    coordinator, _, _ = coordinator_factory()
-    coordinator.adapter = adapter
-    coordinator.messages = [ChatMessage(role="user", content="问题")]
-
-    events = []
-    stream = coordinator.stream()
-    try:
-        async for event in stream:
-            events.append(event)
-    finally:
-        await stream.aclose()
-
-    assert len(requests_log) == 1
-    assert all(c.is_closed for c in clients_log)
+    coordinator, _, events = await drive_stream_completion(
+        coordinator_factory, monkeypatch,
+        adapter_cls=OpenAICompatibleLLMAdapter, client_patch=_OPENAI_CLIENT_PATCH,
+        sse_body=sse_body,
+    )
 
     errors = [e for e in events if e.get("event") == "error"]
     dones = [e for e in events if e.get("event") == "done"]
@@ -183,21 +189,15 @@ async def test_openai_stream_done_succeeds(coordinator_factory, monkeypatch):
     """
     Normal stream terminating with [DONE] succeeds.
     """
-    requests_log = []
-    clients_log = []
     sse_body = (
         'data: {"choices":[{"delta":{"content":"{\\"chinese\\":\\"正常完成\\",\\"japanese\\":\\"完了\\"}"}}]}\n\n'
         'data: [DONE]\n\n'
     )
-
-    adapter, client_factory = _create_mock_adapter([sse_body], requests_log, clients_log)
-    monkeypatch.setattr("galgame2voice.adapters.llm.openai_adapter.create_async_client", client_factory)
-
-    coordinator, _, _ = coordinator_factory()
-    coordinator.adapter = adapter
-    coordinator.messages = [ChatMessage(role="user", content="问题")]
-
-    events = [event async for event in coordinator.stream()]
+    coordinator, _, events = await drive_stream_completion(
+        coordinator_factory, monkeypatch,
+        adapter_cls=OpenAICompatibleLLMAdapter, client_patch=_OPENAI_CLIENT_PATCH,
+        sse_body=sse_body,
+    )
     errors = [e for e in events if e.get("event") == "error"]
     dones = [e for e in events if e.get("event") == "done"]
 
@@ -212,18 +212,12 @@ async def test_openai_stream_empty_length_keeps_original_diagnosis(coordinator_f
     """
     Empty content + finish_reason='length' retains original EmptyReplyError diagnosis.
     """
-    requests_log = []
-    clients_log = []
     sse_body = 'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'
-
-    adapter, client_factory = _create_mock_adapter([sse_body], requests_log, clients_log)
-    monkeypatch.setattr("galgame2voice.adapters.llm.openai_adapter.create_async_client", client_factory)
-
-    coordinator, _, _ = coordinator_factory()
-    coordinator.adapter = adapter
-    coordinator.messages = [ChatMessage(role="user", content="问题")]
-
-    events = [event async for event in coordinator.stream()]
+    coordinator, _, events = await drive_stream_completion(
+        coordinator_factory, monkeypatch,
+        adapter_cls=OpenAICompatibleLLMAdapter, client_patch=_OPENAI_CLIENT_PATCH,
+        sse_body=sse_body,
+    )
     errors = [e for e in events if e.get("event") == "error"]
     dones = [e for e in events if e.get("event") == "done"]
 
@@ -239,36 +233,16 @@ async def test_openai_stream_explicit_provider_error_terminal_without_done(coord
     """
     Explicit provider error (500) before content raises error, emits error event and NO done event.
     """
-    requests_log = []
-    clients_log = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests_log.append(request)
-        return httpx.Response(500, text="Internal Server Error")
-
-    def create_client(**kwargs):
-        client = httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False)
-        clients_log.append(client)
-        return client
-
-    monkeypatch.setattr("galgame2voice.adapters.llm.openai_adapter.create_async_client", create_client)
-
-    adapter = OpenAICompatibleLLMAdapter(
-        api_key="synthetic-key",
-        base_url="https://synthetic.invalid/v1",
-        allow_private=True,
+    coordinator, _, events = await drive_stream_completion(
+        coordinator_factory, monkeypatch,
+        adapter_cls=OpenAICompatibleLLMAdapter, client_patch=_OPENAI_CLIENT_PATCH,
+        response_factory=lambda _request: httpx.Response(500, text="Internal Server Error"),
     )
-    coordinator, _, _ = coordinator_factory()
-    coordinator.adapter = adapter
-    coordinator.messages = [ChatMessage(role="user", content="问题")]
-
-    events = [event async for event in coordinator.stream()]
     errors = [e for e in events if e.get("event") == "error"]
     dones = [e for e in events if e.get("event") == "done"]
 
     assert len(errors) == 1
     assert len(dones) == 0
-    assert all(c.is_closed for c in clients_log)
     coordinator.affection_service.handle_turn_affection.assert_not_called()
 
 
@@ -277,27 +251,12 @@ async def test_openai_stream_client_cancellation_exits(coordinator_factory, monk
     """
     Cancellation while streaming exits with truncated=True.
     """
-    requests_log = []
-    clients_log = []
-    cancel = asyncio.Event()
-
     sse_body = 'data: {"choices":[{"delta":{"content":"{\\"chinese\\":\\"句一。句二。"}}]}\n\n'
-    adapter, client_factory = _create_mock_adapter([sse_body], requests_log, clients_log)
-    monkeypatch.setattr("galgame2voice.adapters.llm.openai_adapter.create_async_client", client_factory)
-
-    coordinator, _, _ = coordinator_factory(cancel_event=cancel)
-    coordinator.adapter = adapter
-    coordinator.messages = [ChatMessage(role="user", content="问题")]
-
-    events = []
-    stream = coordinator.stream()
-    try:
-        async for event in stream:
-            events.append(event)
-            if event.get("event") == "text":
-                cancel.set()
-    finally:
-        await stream.aclose()
+    coordinator, _, events = await drive_stream_completion(
+        coordinator_factory, monkeypatch,
+        adapter_cls=OpenAICompatibleLLMAdapter, client_patch=_OPENAI_CLIENT_PATCH,
+        sse_body=sse_body, cancel_on_text=True,
+    )
 
     dones = [e for e in events if e.get("event") == "done"]
     assert len(dones) == 1
