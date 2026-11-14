@@ -573,11 +573,20 @@
             <select id="sVoice"></select>
             <button type="button" class="btn primary" id="sVoiceImport" title="选择角色包 .zip 压缩包导入（也可直接拖进窗口）">导入角色包</button>
             <button type="button" class="btn ghost" id="sVoiceImportFolder" title="选择已解压的角色包文件夹导入">选择文件夹</button>
+            <button type="button" class="btn ghost" id="sVoiceRedeem" title="粘贴兑换码，下载角色包并导入">兑换码</button>
             <button type="button" class="btn ghost" id="sVoiceRescan" title="扫描 characters/ 目录中新解压的角色包与模型">扫描</button>
             <button type="button" class="btn ghost danger" id="sVoiceDelete">删除</button>
           </div>
           <input type="file" id="sVoiceImportZipInput" accept=".zip,application/zip" hidden />
           <input type="file" id="sVoiceImportDirInput" webkitdirectory directory multiple hidden />
+          <div id="sVoiceRedeemPanel" class="redeem-panel hidden">
+            <div class="redeem-query">
+              <input id="sVoiceRedeemCode" type="text" autocomplete="off" spellcheck="false" placeholder="粘贴兑换码（G2V1. 开头）" />
+              <button type="button" class="btn ghost" id="sVoiceRedeemQuery">查询</button>
+            </div>
+            <div id="sVoiceRedeemList"></div>
+            <p id="sVoiceRedeemStatus" class="redeem-status"></p>
+          </div>
         </div>
         <div id="sCustomVoiceBox" class="custom-provider-box hidden">
           <div class="field">

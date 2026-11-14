@@ -25,6 +25,7 @@ from galgame2voice.security.media_urls import (
 from galgame2voice.services.character_manager import get_character_manager, get_character_work
 from galgame2voice.services.character_package_import import import_character_archive
 from galgame2voice.services.character_voice_catalog import get_character_voice_catalog
+from galgame2voice.services.package_redeem import get_redeem_progress, redeem_download, redeem_list
 from galgame2voice.schemas.character_manifest import clean_character_work
 from galgame2voice.services.portrait_manifest import (
     CANVAS_ID_RE,
@@ -251,6 +252,27 @@ async def import_character_packages(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"导入角色包失败: {safe_err}",
         ) from exc
+
+
+class RedeemCodeRequest(BaseModel):
+    code: str = Field(default="", max_length=2048)
+    package_id: str = Field(default="", max_length=128)
+    overwrite: bool = False
+
+
+@router.post("/redeem/list")
+async def list_redeem_packages(req: RedeemCodeRequest) -> dict[str, Any]:
+    return await redeem_list(req.code)
+
+
+@router.post("/redeem/download", response_model=None)
+async def download_redeem_package(request: Request, req: RedeemCodeRequest) -> Any:
+    return await redeem_download(request, code=req.code, package_id=req.package_id, overwrite=req.overwrite)
+
+
+@router.get("/redeem/progress")
+async def get_redeem_download_progress() -> dict[str, Any]:
+    return get_redeem_progress()
 
 
 @router.get(
