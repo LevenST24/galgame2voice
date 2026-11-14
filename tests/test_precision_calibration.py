@@ -6,6 +6,7 @@ Evidence-based precision calibration tests:
 """
 
 import asyncio
+from contextlib import closing, contextmanager
 import json
 import threading
 from types import SimpleNamespace
@@ -535,7 +536,7 @@ class TestSilenceCalibrationRestart:
         assert status["state"] == "unavailable", status
         assert "退出" not in status["message"]
 
-    def test_fp32_restart_waits_for_port_and_settle_before_probing(self, tmp_path, monkeypatch):
+    def _run_fp32_restart_harness(self, tmp_path, monkeypatch, *, on_port_check, probe_peak):
         monkeypatch.setattr(health, "_engine_restart_lock", threading.Lock())
         monkeypatch.setattr(health, "_engine_restart_target", None)
         monkeypatch.setattr(get_settings(), "project_root", tmp_path)
@@ -561,6 +562,13 @@ class TestSilenceCalibrationRestart:
         active_state = None
         states_by_pid = {}
         probe_snapshots = []
+        calibration_results = []
+        real_calibrate = run_server.calibrate_engine_precision
+
+        def spy_calibrate(*args, **kwargs):
+            res = real_calibrate(*args, **kwargs)
+            calibration_results.append(res)
+            return res
 
         def fake_spawn(sovits_dir, host, port, is_half, device="cuda"):
             nonlocal active_state
@@ -595,9 +603,7 @@ class TestSilenceCalibrationRestart:
             if active_state is None or not active_state["alive"]:
                 return False
             active_state["port_checks"] += 1
-            if active_state["port_checks"] >= active_state["ready_threshold"]:
-                active_state["listening"] = True
-            return active_state["listening"]
+            return on_port_check(active_state)
 
         def fake_sleep(seconds):
             if active_state is not None and active_state["listening"]:
@@ -612,7 +618,7 @@ class TestSilenceCalibrationRestart:
             })
             if active_state is None or not active_state["alive"] or not active_state["listening"]:
                 return None
-            return 0.0 if active_state["is_half"] else 0.42
+            return probe_peak(active_state)
 
         created = []
         real_thread = threading.Thread
@@ -622,6 +628,7 @@ class TestSilenceCalibrationRestart:
             created.append(t)
             return t
 
+        monkeypatch.setattr(run_server, "calibrate_engine_precision", spy_calibrate)
         monkeypatch.setattr(run_server, "_spawn_sovits_process", fake_spawn)
         monkeypatch.setattr(run_server, "terminate_process_tree", fake_terminate)
         monkeypatch.setattr(run_server, "is_port_in_use", fake_is_port_in_use)
@@ -633,6 +640,20 @@ class TestSilenceCalibrationRestart:
         assert len(created) == 1
         created[0].join(timeout=5)
         assert not created[0].is_alive()
+        return probe_snapshots, calibration_results
+
+    def test_fp32_restart_waits_for_port_and_settle_before_probing(self, tmp_path, monkeypatch):
+        def on_port_check(state):
+            if state["port_checks"] >= state["ready_threshold"]:
+                state["listening"] = True
+            return state["listening"]
+
+        probe_snapshots, _ = self._run_fp32_restart_harness(
+            tmp_path,
+            monkeypatch,
+            on_port_check=on_port_check,
+            probe_peak=lambda state: 0.0 if state["is_half"] else 0.42,
+        )
 
         assert len(probe_snapshots) == 2
         assert probe_snapshots[0]["is_half"] is True
@@ -651,117 +672,36 @@ class TestSilenceCalibrationRestart:
     def test_fp32_restart_exiting_before_port_ready_reports_restart_failure(
         self, tmp_path, monkeypatch, capsys
     ):
-        monkeypatch.setattr(health, "_engine_restart_lock", threading.Lock())
-        monkeypatch.setattr(health, "_engine_restart_target", None)
-        monkeypatch.setattr(get_settings(), "project_root", tmp_path)
-        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
-        monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", None)
-        monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", None)
-        monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", None)
-
-        endpoint = parse_sovits_endpoint(f"http://{self.HOST}:{self.PORT}", source="db")
-        monkeypatch.setattr(
-            "galgame2voice.services.sovits_endpoint.resolve_effective_sovits_endpoint_sync",
-            lambda: endpoint,
-        )
-        engine = tmp_path / "engine"
-        engine.mkdir()
-        monkeypatch.setattr(run_server, "find_gpt_sovits_directory", lambda: engine)
-        monkeypatch.setattr(
-            run_server,
-            "resolve_initial_device_and_half",
-            lambda *_a, **_k: ("cuda", True, "default"),
-        )
-
-        active_state = None
-        states_by_pid = {}
-        probe_calls = []
-        calibration_results = []
-        real_calibrate = run_server.calibrate_engine_precision
-
-        def spy_calibrate(*args, **kwargs):
-            res = real_calibrate(*args, **kwargs)
-            calibration_results.append(res)
-            return res
-
-        def fake_spawn(sovits_dir, host, port, is_half, device="cuda"):
-            nonlocal active_state
-            pid = 6001 if is_half else 6002
-            proc = MagicMock(pid=pid)
-            state = {
-                "proc": proc,
-                "is_half": is_half,
-                "alive": True,
-                "port_checks": 0,
-                "listening": False,
-            }
-            proc.returncode = None
-            proc.poll.side_effect = lambda: None if state["alive"] else 1
-            states_by_pid[pid] = state
-            active_state = state
-            run_server._SPAWNED_SOVITS_PROC = proc
-            run_server._SPAWNED_SOVITS_LAUNCH = EngineLaunch(
-                proc, host, port, device, is_half, started_at=float(len(states_by_pid))
-            )
-            return proc
-
-        def fake_terminate(pid, timeout=2.0):
-            state = states_by_pid[pid]
-            state["alive"] = False
-            state["listening"] = False
-            state["proc"].returncode = 1
-
-        def fake_is_port_in_use(port, host):
-            if active_state is None or not active_state["alive"]:
-                return False
-            active_state["port_checks"] += 1
-            if active_state["is_half"]:
-                active_state["listening"] = True
+        def on_port_check(state):
+            if state["is_half"]:
+                state["listening"] = True
                 return True
-            if active_state["port_checks"] >= 2:
-                active_state["alive"] = False
-                active_state["proc"].returncode = 1
+            if state["port_checks"] >= 2:
+                state["alive"] = False
+                state["proc"].returncode = 1
             return False
 
-        def fake_probe(host, port, timeout=90.0):
-            probe_calls.append(active_state["is_half"])
-            if active_state is None or not active_state["alive"] or not active_state["listening"]:
-                return None
-            return 0.0
-
-        created = []
-        real_thread = threading.Thread
-
-        def capture_thread(*args, **kwargs):
-            t = real_thread(*args, **kwargs)
-            created.append(t)
-            return t
-
-        monkeypatch.setattr(run_server, "calibrate_engine_precision", spy_calibrate)
-        monkeypatch.setattr(run_server, "_spawn_sovits_process", fake_spawn)
-        monkeypatch.setattr(run_server, "terminate_process_tree", fake_terminate)
-        monkeypatch.setattr(run_server, "is_port_in_use", fake_is_port_in_use)
-        monkeypatch.setattr(run_server.time, "sleep", lambda *_a, **_k: None)
-        monkeypatch.setattr(run_server, "_probe_synth_peak", fake_probe)
-        monkeypatch.setattr(run_server.threading, "Thread", capture_thread)
-
-        run_server.ensure_gpt_sovits_running()
-        assert len(created) == 1
-        created[0].join(timeout=5)
-        assert not created[0].is_alive()
+        probe_snapshots, calibration_results = self._run_fp32_restart_harness(
+            tmp_path,
+            monkeypatch,
+            on_port_check=on_port_check,
+            probe_peak=lambda _state: 0.0,
+        )
 
         captured = capsys.readouterr()
         assert calibration_results == [(False, False)]
-        assert probe_calls == [True]
+        assert [s["is_half"] for s in probe_snapshots] == [True]
         assert "FP32 引擎重启失败" in captured.out
         assert "FP32 探针仍为静音或未完成" not in captured.out
         assert read_precision_cache(tmp_path) is None
 
 
 class TestReadinessMonitorCalibration:
-    def test_port_opening_after_120s_triggers_calibration(self, tmp_path, monkeypatch):
+    @staticmethod
+    def _run_readiness_monitor(tmp_path, monkeypatch, proc, is_port_in_use_fn, sleep_fn=None):
         monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
-        monkeypatch.setattr(run_server.time, "sleep", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", None)
+        monkeypatch.setattr(run_server.time, "sleep", sleep_fn or (lambda *_args, **_kwargs: None))
         endpoint = parse_sovits_endpoint("http://127.0.0.1:19231", source="db")
         monkeypatch.setattr(
             "galgame2voice.services.sovits_endpoint.resolve_effective_sovits_endpoint_sync",
@@ -775,195 +715,40 @@ class TestReadinessMonitorCalibration:
             "resolve_initial_device_and_half",
             lambda *_a, **_k: ("cuda", True, "default"),
         )
+
+        def fake_spawn(*_a, **_k):
+            run_server._SPAWNED_SOVITS_PROC = proc
+            return proc
+
+        monkeypatch.setattr(run_server, "_spawn_sovits_process", fake_spawn)
+        monkeypatch.setattr(run_server, "is_port_in_use", is_port_in_use_fn)
+
+        calibrate_calls = []
+        monkeypatch.setattr(
+            run_server,
+            "_calibrate_precision_after_ready",
+            lambda *args, **kwargs: calibrate_calls.append((args, kwargs)),
+        )
+
+        created = []
+        real_thread = threading.Thread
+
+        def capture(*args, **kwargs):
+            thread = real_thread(*args, **kwargs)
+            created.append(thread)
+            return thread
+
+        monkeypatch.setattr(run_server.threading, "Thread", capture)
+
+        run_server.ensure_gpt_sovits_running()
+        assert len(created) == 1
+        created[0].join(timeout=5)
+        assert not created[0].is_alive()
+        return engine, calibrate_calls
+
+    def test_port_opening_after_120s_triggers_calibration(self, tmp_path, monkeypatch, capsys):
         proc = MagicMock()
         proc.poll.return_value = None
-        monkeypatch.setattr(run_server, "_spawn_sovits_process", lambda *_a, **_k: proc)
-
-        # First call before spawn is tick 0 (returns False).
-        # Ticks 1..240 return False; tick 241+ (i.e. > 240 iterations = 120s) returns True.
-        ticks = 0
-
-        def fake_is_port_in_use(port, host):
-            nonlocal ticks
-            if ticks == 0:
-                ticks += 1
-                return False
-            current = ticks
-            ticks += 1
-            return current >= 250
-
-        monkeypatch.setattr(run_server, "is_port_in_use", fake_is_port_in_use)
-
-        calibrated = []
-        monkeypatch.setattr(
-            run_server,
-            "_calibrate_precision_after_ready",
-            lambda *args, **kwargs: calibrated.append((args, kwargs)),
-        )
-
-        created = []
-        real_thread = threading.Thread
-
-        def capture(*args, **kwargs):
-            thread = real_thread(*args, **kwargs)
-            created.append(thread)
-            return thread
-
-        monkeypatch.setattr(run_server.threading, "Thread", capture)
-
-        run_server.ensure_gpt_sovits_running()
-        assert len(created) == 1
-        created[0].join(timeout=5)
-        assert not created[0].is_alive()
-        assert len(calibrated) == 1, "readiness watcher gave up without calibrating"
-        assert calibrated[0][0][0] == engine
-        assert calibrated[0][0][1] == "127.0.0.1"
-        assert calibrated[0][0][2] == 19231
-        assert calibrated[0][0][3] is True
-        assert calibrated[0][0][4] == "default"
-
-    def test_child_process_exit_stops_monitor_without_calibration(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
-        monkeypatch.setattr(run_server.time, "sleep", lambda *_args, **_kwargs: None)
-        endpoint = parse_sovits_endpoint("http://127.0.0.1:19231", source="db")
-        monkeypatch.setattr(
-            "galgame2voice.services.sovits_endpoint.resolve_effective_sovits_endpoint_sync",
-            lambda: endpoint,
-        )
-        engine = tmp_path / "engine"
-        engine.mkdir()
-        monkeypatch.setattr(run_server, "find_gpt_sovits_directory", lambda: engine)
-        monkeypatch.setattr(
-            run_server,
-            "resolve_initial_device_and_half",
-            lambda *_a, **_k: ("cuda", True, "default"),
-        )
-
-        ticks = 0
-        proc = MagicMock()
-        proc.returncode = 1
-
-        def fake_poll():
-            nonlocal ticks
-            return 1 if ticks >= 10 else None
-
-        proc.poll.side_effect = fake_poll
-        monkeypatch.setattr(run_server, "_spawn_sovits_process", lambda *_a, **_k: proc)
-
-        def fake_is_port_in_use(port, host):
-            nonlocal ticks
-            ticks += 1
-            return False
-
-        monkeypatch.setattr(run_server, "is_port_in_use", fake_is_port_in_use)
-
-        calibrated = []
-        monkeypatch.setattr(
-            run_server,
-            "_calibrate_precision_after_ready",
-            lambda *args, **kwargs: calibrated.append((args, kwargs)),
-        )
-
-        created = []
-        real_thread = threading.Thread
-
-        def capture(*args, **kwargs):
-            thread = real_thread(*args, **kwargs)
-            created.append(thread)
-            return thread
-
-        monkeypatch.setattr(run_server.threading, "Thread", capture)
-
-        run_server.ensure_gpt_sovits_running()
-        assert len(created) == 1
-        created[0].join(timeout=5)
-        assert not created[0].is_alive()
-        assert calibrated == [], "calibration should not trigger if child process exited"
-
-    def test_child_process_exit_with_port_busy_does_not_calibrate(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
-        monkeypatch.setattr(run_server.time, "sleep", lambda *_args, **_kwargs: None)
-        endpoint = parse_sovits_endpoint("http://127.0.0.1:19231", source="db")
-        monkeypatch.setattr(
-            "galgame2voice.services.sovits_endpoint.resolve_effective_sovits_endpoint_sync",
-            lambda: endpoint,
-        )
-        engine = tmp_path / "engine"
-        engine.mkdir()
-        monkeypatch.setattr(run_server, "find_gpt_sovits_directory", lambda: engine)
-        monkeypatch.setattr(
-            run_server,
-            "resolve_initial_device_and_half",
-            lambda *_a, **_k: ("cuda", True, "default"),
-        )
-
-        step = 0
-
-        def fake_sleep(*args, **kwargs):
-            nonlocal step
-            step += 1
-
-        monkeypatch.setattr(run_server.time, "sleep", fake_sleep)
-
-        proc = MagicMock()
-        proc.returncode = 1
-
-        def fake_poll():
-            return 1 if step >= 5 else None
-
-        proc.poll.side_effect = fake_poll
-        monkeypatch.setattr(run_server, "_spawn_sovits_process", lambda *_a, **_k: proc)
-
-        # Port is occupied at step >= 5 (when child process has already crashed).
-        # Readiness monitor must check proc.poll() first and abort without calibrating.
-        def fake_is_port_in_use(port, host):
-            return step >= 5
-
-        monkeypatch.setattr(run_server, "is_port_in_use", fake_is_port_in_use)
-
-        calibrated = []
-        monkeypatch.setattr(
-            run_server,
-            "_calibrate_precision_after_ready",
-            lambda *args, **kwargs: calibrated.append((args, kwargs)),
-        )
-
-        created = []
-        real_thread = threading.Thread
-
-        def capture(*args, **kwargs):
-            thread = real_thread(*args, **kwargs)
-            created.append(thread)
-            return thread
-
-        monkeypatch.setattr(run_server.threading, "Thread", capture)
-
-        run_server.ensure_gpt_sovits_running()
-        assert len(created) == 1
-        created[0].join(timeout=5)
-        assert not created[0].is_alive()
-        assert calibrated == [], "calibration must not trigger if child process died even if port is busy"
-
-    def test_slow_loading_hint_printed_once_past_120s(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
-        monkeypatch.setattr(run_server.time, "sleep", lambda *_args, **_kwargs: None)
-        endpoint = parse_sovits_endpoint("http://127.0.0.1:19231", source="db")
-        monkeypatch.setattr(
-            "galgame2voice.services.sovits_endpoint.resolve_effective_sovits_endpoint_sync",
-            lambda: endpoint,
-        )
-        engine = tmp_path / "engine"
-        engine.mkdir()
-        monkeypatch.setattr(run_server, "find_gpt_sovits_directory", lambda: engine)
-        monkeypatch.setattr(
-            run_server,
-            "resolve_initial_device_and_half",
-            lambda *_a, **_k: ("cuda", True, "default"),
-        )
-        proc = MagicMock()
-        proc.poll.return_value = None
-        monkeypatch.setattr(run_server, "_spawn_sovits_process", lambda *_a, **_k: proc)
-
         ticks = 0
 
         def fake_is_port_in_use(port, host):
@@ -975,30 +760,36 @@ class TestReadinessMonitorCalibration:
             ticks += 1
             return current >= 260
 
-        monkeypatch.setattr(run_server, "is_port_in_use", fake_is_port_in_use)
-        monkeypatch.setattr(
-            run_server,
-            "_calibrate_precision_after_ready",
-            lambda *args, **kwargs: None,
+        engine, calibrate_calls = self._run_readiness_monitor(
+            tmp_path, monkeypatch, proc, fake_is_port_in_use
         )
+        assert len(calibrate_calls) == 1, "readiness watcher gave up without calibrating"
+        assert calibrate_calls[0][0] == (engine, "127.0.0.1", 19231, True, "default")
+        assert run_server._SPAWNED_SOVITS_PROC is proc
+        assert capsys.readouterr().out.count("GPT-SoVITS 模型仍在后台加载中") == 1
 
-        created = []
-        real_thread = threading.Thread
+    @pytest.mark.parametrize("port_busy_at_exit", [False, True])
+    def test_child_process_exit_stops_monitor_without_calibration(
+        self, tmp_path, monkeypatch, port_busy_at_exit
+    ):
+        step = 0
 
-        def capture(*args, **kwargs):
-            thread = real_thread(*args, **kwargs)
-            created.append(thread)
-            return thread
+        def fake_sleep(*_args, **_kwargs):
+            nonlocal step
+            step += 1
 
-        monkeypatch.setattr(run_server.threading, "Thread", capture)
+        proc = MagicMock()
+        proc.returncode = 1
+        proc.poll.side_effect = lambda: 1 if step >= 5 else None
 
-        run_server.ensure_gpt_sovits_running()
-        assert len(created) == 1
-        created[0].join(timeout=5)
-        assert not created[0].is_alive()
-
-        captured = capsys.readouterr()
-        assert captured.out.count("GPT-SoVITS 模型仍在后台加载中") == 1
+        _, calibrate_calls = self._run_readiness_monitor(
+            tmp_path,
+            monkeypatch,
+            proc,
+            lambda _port, _host: port_busy_at_exit and step >= 5,
+            sleep_fn=fake_sleep,
+        )
+        assert calibrate_calls == []
 
 
 class TestProbeSynthCustomVoiceFallback:
@@ -1023,82 +814,66 @@ class TestProbeSynthCustomVoiceFallback:
             chunk += b"\x00"
         return b"RIFF" + struct.pack("<I", 4 + len(chunk)) + b"WAVE" + chunk
 
-    def test_custom_voice_fallback_probes_and_calibrates_fp32(self, tmp_path, monkeypatch):
-        import http.server
+    @classmethod
+    def _write_ref_wav(cls, path, seconds: int = 1):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(cls._build_test_wav(b"\x00\x10" * 32000 * seconds))
+        return path
+
+    @staticmethod
+    def _setup_probe_env(tmp_path, monkeypatch, profiles=(), active_id=None):
         import sqlite3
-        import urllib.parse
-        import wave
         from galgame2voice.services.character_manager import get_character_manager
 
-        # 1. Setup isolated directories: empty characters/
         char_dir = tmp_path / "characters"
         char_dir.mkdir(parents=True, exist_ok=True)
         mgr = get_character_manager(char_dir)
         monkeypatch.setattr("galgame2voice.services.character_manager.get_character_manager", lambda: mgr)
-
-        # 2. Setup custom reference audio
-        ref_file = tmp_path / "custom_refs" / "user_sample.wav"
-        ref_file.parent.mkdir(parents=True, exist_ok=True)
-        with wave.open(str(ref_file), "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(32000)
-            wf.writeframes(b"\x00\x10" * 32000)
-
         monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
         settings = get_settings()
         monkeypatch.setattr(settings, "project_root", tmp_path)
 
-        # 3. Setup SQLite DB with active voice profile
         db_file = settings.db_path
         db_file.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(db_file))
-        try:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS settings (
-                    id INTEGER PRIMARY KEY CHECK (id = 1),
-                    active_voice_profile_id INTEGER DEFAULT NULL
-                );
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS voice_profiles (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL UNIQUE,
-                    ref_audio_path TEXT NOT NULL,
-                    prompt_text TEXT NOT NULL,
-                    prompt_lang TEXT NOT NULL DEFAULT 'ja',
-                    is_default INTEGER NOT NULL DEFAULT 0
-                );
-            """)
-            conn.execute("DELETE FROM voice_profiles;")
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             conn.execute(
-                "INSERT INTO voice_profiles (id, name, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text, prompt_lang, is_default) "
-                "VALUES (1, 'custom_char', 'gpt.ckpt', 'sovits.pth', ?, 'カスタムボイスです。', 'ja', 1);",
-                (str(ref_file),),
+                "CREATE TABLE IF NOT EXISTS settings ("
+                "id INTEGER PRIMARY KEY CHECK (id = 1), "
+                "active_voice_profile_id INTEGER DEFAULT NULL);"
             )
-            conn.execute("INSERT OR REPLACE INTO settings (id, active_voice_profile_id) VALUES (1, 1);")
-            conn.commit()
-        finally:
-            conn.close()
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS voice_profiles ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, "
+                "gpt_weights_path TEXT NOT NULL DEFAULT '', sovits_weights_path TEXT NOT NULL DEFAULT '', "
+                "ref_audio_path TEXT NOT NULL, prompt_text TEXT NOT NULL, "
+                "prompt_lang TEXT NOT NULL DEFAULT 'ja', is_default INTEGER NOT NULL DEFAULT 0);"
+            )
+            conn.execute("DELETE FROM voice_profiles;")
+            for row in profiles:
+                conn.execute(
+                    "INSERT INTO voice_profiles "
+                    "(id, name, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text, prompt_lang, is_default) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+                    row,
+                )
+            conn.execute("INSERT OR REPLACE INTO settings (id, active_voice_profile_id) VALUES (1, ?);", (active_id,))
+        return db_file
 
-        # 4. Mock HTTP /tts server:
-        # - call 1 (_probe_synth_peak directly): silent WAV
-        # - call 2 (calibrate_engine_precision FP16 probe): silent WAV -> triggers restart
-        # - call 3 (calibrate_engine_precision FP32 probe): audible WAV -> verified + cached
+    @staticmethod
+    @contextmanager
+    def _serve_tts(responses):
+        import http.server
+        import urllib.parse
+
         requests_received = []
-        response_queue = [
-            self._build_test_wav(b"\x00\x00" * 1600),
-            self._build_test_wav(b"\x00\x00" * 1600),
-            self._build_test_wav(b"\x00\x7f" * 1600),
-        ]
+        queue = list(responses)
 
         class MockTtsHandler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
                 parsed = urllib.parse.urlparse(self.path)
                 if parsed.path == "/tts":
-                    qs = urllib.parse.parse_qs(parsed.query)
-                    requests_received.append(qs)
-                    payload = response_queue.pop(0) if response_queue else b""
+                    requests_received.append(urllib.parse.parse_qs(parsed.query))
+                    payload = queue.pop(0) if queue else b""
                     self.send_response(200)
                     self.send_header("Content-Type", "audio/wav")
                     self.send_header("Content-Length", str(len(payload)))
@@ -1113,11 +888,27 @@ class TestProbeSynthCustomVoiceFallback:
 
         server = http.server.HTTPServer(("127.0.0.1", 0), MockTtsHandler)
         host, port = server.server_address
-        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-        server_thread.start()
-
+        threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
-            # First verify _probe_synth_peak directly
+            yield host, port, requests_received
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_custom_voice_fallback_probes_and_calibrates_fp32(self, tmp_path, monkeypatch):
+        ref_file = self._write_ref_wav(tmp_path / "custom_refs" / "user_sample.wav")
+        self._setup_probe_env(
+            tmp_path,
+            monkeypatch,
+            profiles=[(1, "custom_char", "gpt.ckpt", "sovits.pth", str(ref_file), "カスタムボイスです。", "ja", 1)],
+            active_id=1,
+        )
+        responses = [
+            self._build_test_wav(b"\x00\x00" * 1600),
+            self._build_test_wav(b"\x00\x00" * 1600),
+            self._build_test_wav(b"\x00\x7f" * 1600),
+        ]
+        with self._serve_tts(responses) as (host, port, requests_received):
             first_peak = run_server._probe_synth_peak(host, port)
             assert first_peak == 0.0, f"Expected 0.0 (silent), got {first_peak}"
             assert len(requests_received) == 1
@@ -1125,21 +916,14 @@ class TestProbeSynthCustomVoiceFallback:
             assert requests_received[0]["prompt_text"] == ["カスタムボイスです。"]
             assert requests_received[0]["prompt_lang"] == ["ja"]
 
-            # Now test precision calibration loop
             restarts = []
-
-            def fake_restart(is_half):
-                restarts.append(is_half)
-                return object()
-
             engine_dir = tmp_path / "engine"
             engine_dir.mkdir(parents=True, exist_ok=True)
-
             final_is_half, calibrated = run_server.calibrate_engine_precision(
                 engine_dir,
                 is_half=True,
                 probe_fn=lambda: run_server._probe_synth_peak(host, port),
-                restart_fn=fake_restart,
+                restart_fn=lambda is_half: restarts.append(is_half) or object(),
             )
 
             assert restarts == [False]
@@ -1149,317 +933,69 @@ class TestProbeSynthCustomVoiceFallback:
             assert cached is not None
             assert cached["is_half"] is False
             assert len(requests_received) == 3
-        finally:
-            server.shutdown()
-            server.server_close()
 
     def test_custom_voice_fallback_no_active_uses_is_default_order(self, tmp_path, monkeypatch):
-        import http.server
-        import sqlite3
-        import urllib.parse
-        import wave
-        from galgame2voice.services.character_manager import get_character_manager
-
-        char_dir = tmp_path / "characters"
-        char_dir.mkdir(parents=True, exist_ok=True)
-        mgr = get_character_manager(char_dir)
-        monkeypatch.setattr("galgame2voice.services.character_manager.get_character_manager", lambda: mgr)
-
-        ref_dir = tmp_path / "custom_refs"
-        ref_dir.mkdir(parents=True, exist_ok=True)
-        ref1 = ref_dir / "profile1.wav"
-        ref2 = ref_dir / "profile2.wav"
-        for p in (ref1, ref2):
-            with wave.open(str(p), "wb") as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)
-                wf.setframerate(32000)
-                wf.writeframes(b"\x00\x10" * 32000)
-
-        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
-        settings = get_settings()
-        monkeypatch.setattr(settings, "project_root", tmp_path)
-
-        db_file = settings.db_path
-        db_file.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(db_file))
-        try:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS settings (
-                    id INTEGER PRIMARY KEY CHECK (id = 1),
-                    active_voice_profile_id INTEGER DEFAULT NULL
-                );
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS voice_profiles (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL UNIQUE,
-                    ref_audio_path TEXT NOT NULL,
-                    prompt_text TEXT NOT NULL,
-                    prompt_lang TEXT NOT NULL DEFAULT 'ja',
-                    is_default INTEGER NOT NULL DEFAULT 0
-                );
-            """)
-            conn.execute("DELETE FROM voice_profiles;")
-            # Profile 1 is NOT default, Profile 2 IS default. Active is None.
-            conn.execute(
-                "INSERT INTO voice_profiles (id, name, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text, prompt_lang, is_default) "
-                "VALUES (1, 'p1', 'gpt1.ckpt', 'sovits1.pth', ?, 'テキスト1', 'ja', 0);",
-                (str(ref1),),
-            )
-            conn.execute(
-                "INSERT INTO voice_profiles (id, name, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text, prompt_lang, is_default) "
-                "VALUES (2, 'p2', 'gpt2.ckpt', 'sovits2.pth', ?, 'テキスト2', 'zh', 1);",
-                (str(ref2),),
-            )
-            conn.execute("INSERT OR REPLACE INTO settings (id, active_voice_profile_id) VALUES (1, NULL);")
-            conn.commit()
-        finally:
-            conn.close()
-
-        requests_received = []
-
-        class MockTtsHandler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):
-                if self.path.startswith("/tts"):
-                    qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-                    requests_received.append(qs)
-                    payload = TestProbeSynthCustomVoiceFallback._build_test_wav(b"\x00\x7f" * 1600)
-                    self.send_response(200)
-                    self.send_header("Content-Type", "audio/wav")
-                    self.send_header("Content-Length", str(len(payload)))
-                    self.end_headers()
-                    self.wfile.write(payload)
-                else:
-                    self.send_response(404)
-                    self.end_headers()
-
-            def log_message(self, *args):
-                pass
-
-        server = http.server.HTTPServer(("127.0.0.1", 0), MockTtsHandler)
-        host, port = server.server_address
-        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-        server_thread.start()
-
-        try:
+        ref1 = self._write_ref_wav(tmp_path / "custom_refs" / "profile1.wav")
+        ref2 = self._write_ref_wav(tmp_path / "custom_refs" / "profile2.wav")
+        self._setup_probe_env(
+            tmp_path,
+            monkeypatch,
+            profiles=[
+                (1, "p1", "gpt1.ckpt", "sovits1.pth", str(ref1), "テキスト1", "ja", 0),
+                (2, "p2", "gpt2.ckpt", "sovits2.pth", str(ref2), "テキスト2", "zh", 1),
+            ],
+            active_id=None,
+        )
+        with self._serve_tts([self._build_test_wav(b"\x00\x7f" * 1600)]) as (host, port, requests_received):
             peak = run_server._probe_synth_peak(host, port)
             assert peak is not None and peak > 0.0
             assert len(requests_received) == 1
-            # Profile 2 (is_default=1) should have been preferred over Profile 1
             assert requests_received[0]["ref_audio_path"] == [str(ref2)]
             assert requests_received[0]["prompt_text"] == ["テキスト2"]
             assert requests_received[0]["prompt_lang"] == ["zh"]
-        finally:
-            server.shutdown()
-            server.server_close()
 
     def test_custom_voice_fallback_non_default_character_preferred_over_db(self, tmp_path, monkeypatch):
-        import http.server
-        import json
-        import sqlite3
-        import urllib.parse
-        import wave
-        from galgame2voice.services.character_manager import get_character_manager
-
-        # 1. Setup a valid character package named 'alice' (NOT 'default')
-        char_dir = tmp_path / "characters"
-        alice_dir = char_dir / "alice"
-        alice_dir.mkdir(parents=True, exist_ok=True)
-        char_audio = alice_dir / "alice_voice.wav"
-        with wave.open(str(char_audio), "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(32000)
-            wf.writeframes(b"\x00\x10" * 32000 * 4)  # 4 seconds
-
+        alice_dir = tmp_path / "characters" / "alice"
+        char_audio = self._write_ref_wav(alice_dir / "alice_voice.wav", seconds=4)
         manifest = {
             "id": "alice",
             "name": "Alice",
-            "emotions": {
-                "gentle": {
-                    "audio": "alice_voice.wav",
-                    "text": "アリスです。",
-                    "lang": "ja",
-                }
-            },
+            "emotions": {"gentle": {"audio": "alice_voice.wav", "text": "アリスです。", "lang": "ja"}},
         }
         (alice_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
-        mgr = get_character_manager(char_dir)
-        monkeypatch.setattr("galgame2voice.services.character_manager.get_character_manager", lambda: mgr)
-
-        # 2. Setup a custom voice profile in SQLite as well
-        ref_file = tmp_path / "custom_refs" / "db_sample.wav"
-        ref_file.parent.mkdir(parents=True, exist_ok=True)
-        with wave.open(str(ref_file), "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(32000)
-            wf.writeframes(b"\x00\x10" * 32000)
-
-        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
-        settings = get_settings()
-        monkeypatch.setattr(settings, "project_root", tmp_path)
-
-        db_file = settings.db_path
-        db_file.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(db_file))
-        try:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS settings (
-                    id INTEGER PRIMARY KEY CHECK (id = 1),
-                    active_voice_profile_id INTEGER DEFAULT NULL
-                );
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS voice_profiles (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL UNIQUE,
-                    ref_audio_path TEXT NOT NULL,
-                    prompt_text TEXT NOT NULL,
-                    prompt_lang TEXT NOT NULL DEFAULT 'ja',
-                    is_default INTEGER NOT NULL DEFAULT 0
-                );
-            """)
-            conn.execute("DELETE FROM voice_profiles;")
-            conn.execute(
-                "INSERT INTO voice_profiles (id, name, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text, prompt_lang, is_default) "
-                "VALUES (1, 'custom_char', 'gpt.ckpt', 'sovits.pth', ?, 'DB音色です。', 'ja', 1);",
-                (str(ref_file),),
-            )
-            conn.execute("INSERT OR REPLACE INTO settings (id, active_voice_profile_id) VALUES (1, 1);")
-            conn.commit()
-        finally:
-            conn.close()
-
-        requests_received = []
-
-        class MockTtsHandler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):
-                if self.path.startswith("/tts"):
-                    qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-                    requests_received.append(qs)
-                    payload = TestProbeSynthCustomVoiceFallback._build_test_wav(b"\x00\x7f" * 1600)
-                    self.send_response(200)
-                    self.send_header("Content-Type", "audio/wav")
-                    self.send_header("Content-Length", str(len(payload)))
-                    self.end_headers()
-                    self.wfile.write(payload)
-                else:
-                    self.send_response(404)
-                    self.end_headers()
-
-            def log_message(self, *args):
-                pass
-
-        server = http.server.HTTPServer(("127.0.0.1", 0), MockTtsHandler)
-        host, port = server.server_address
-        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-        server_thread.start()
-
-        try:
+        ref_file = self._write_ref_wav(tmp_path / "custom_refs" / "db_sample.wav")
+        self._setup_probe_env(
+            tmp_path,
+            monkeypatch,
+            profiles=[(1, "custom_char", "gpt.ckpt", "sovits.pth", str(ref_file), "DB音色です。", "ja", 1)],
+            active_id=1,
+        )
+        with self._serve_tts([self._build_test_wav(b"\x00\x7f" * 1600)]) as (host, port, requests_received):
             peak = run_server._probe_synth_peak(host, port)
             assert peak is not None and peak > 0.0
             assert len(requests_received) == 1
-            # Character package (alice) should be preferred over SQLite voice profile
             assert requests_received[0]["ref_audio_path"] == [str(char_audio.resolve())]
             assert requests_received[0]["prompt_text"] == ["アリスです。"]
             assert requests_received[0]["prompt_lang"] == ["ja"]
-        finally:
-            server.shutdown()
-            server.server_close()
 
     def test_custom_voice_fallback_nonexistent_audio_returns_none(self, tmp_path, monkeypatch):
-        import sqlite3
-        from galgame2voice.services.character_manager import get_character_manager
-
-        char_dir = tmp_path / "characters"
-        char_dir.mkdir(parents=True, exist_ok=True)
-        mgr = get_character_manager(char_dir)
-        monkeypatch.setattr("galgame2voice.services.character_manager.get_character_manager", lambda: mgr)
-
-        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
-        settings = get_settings()
-        monkeypatch.setattr(settings, "project_root", tmp_path)
-
-        db_file = settings.db_path
-        db_file.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(db_file))
-        try:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS settings (
-                    id INTEGER PRIMARY KEY CHECK (id = 1),
-                    active_voice_profile_id INTEGER DEFAULT NULL
-                );
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS voice_profiles (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL UNIQUE,
-                    ref_audio_path TEXT NOT NULL,
-                    prompt_text TEXT NOT NULL,
-                    prompt_lang TEXT NOT NULL DEFAULT 'ja',
-                    is_default INTEGER NOT NULL DEFAULT 0
-                );
-            """)
-            conn.execute("DELETE FROM voice_profiles;")
-            conn.execute(
-                "INSERT INTO voice_profiles (id, name, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text, prompt_lang, is_default) "
-                "VALUES (1, 'p1', 'gpt.ckpt', 'sovits.pth', 'nonexistent/path/sample.wav', 'テキスト1', 'ja', 1);",
-            )
-            conn.execute("INSERT OR REPLACE INTO settings (id, active_voice_profile_id) VALUES (1, 1);")
-            conn.commit()
-        finally:
-            conn.close()
-
-        # When ref_audio_path points to non-existent file, probe safely returns None
-        peak = run_server._probe_synth_peak("127.0.0.1", 9999)
-        assert peak is None
+        self._setup_probe_env(
+            tmp_path,
+            monkeypatch,
+            profiles=[(1, "p1", "gpt.ckpt", "sovits.pth", "nonexistent/path/sample.wav", "テキスト1", "ja", 1)],
+            active_id=1,
+        )
+        assert run_server._probe_synth_peak("127.0.0.1", 9999) is None
 
     def test_custom_voice_fallback_locked_db_returns_none(self, tmp_path, monkeypatch):
         import sqlite3
-        from galgame2voice.services.character_manager import get_character_manager
 
-        char_dir = tmp_path / "characters"
-        char_dir.mkdir(parents=True, exist_ok=True)
-        mgr = get_character_manager(char_dir)
-        monkeypatch.setattr("galgame2voice.services.character_manager.get_character_manager", lambda: mgr)
-
-        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
-        settings = get_settings()
-        monkeypatch.setattr(settings, "project_root", tmp_path)
-
-        db_file = settings.db_path
-        db_file.parent.mkdir(parents=True, exist_ok=True)
+        db_file = self._setup_probe_env(tmp_path, monkeypatch)
         conn = sqlite3.connect(str(db_file))
         try:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS settings (
-                    id INTEGER PRIMARY KEY CHECK (id = 1),
-                    active_voice_profile_id INTEGER DEFAULT NULL
-                );
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS voice_profiles (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL UNIQUE,
-                    ref_audio_path TEXT NOT NULL,
-                    prompt_text TEXT NOT NULL,
-                    prompt_lang TEXT NOT NULL DEFAULT 'ja',
-                    is_default INTEGER NOT NULL DEFAULT 0
-                );
-            """)
-            conn.commit()
-            # Lock the database exclusively
             conn.execute("BEGIN EXCLUSIVE;")
-
-            # When database is locked exclusively, probe should gracefully catch and return None
-            peak = run_server._probe_synth_peak("127.0.0.1", 9999)
-            assert peak is None
+            assert run_server._probe_synth_peak("127.0.0.1", 9999) is None
         finally:
             conn.close()
-
-
-
 
