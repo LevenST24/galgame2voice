@@ -669,7 +669,7 @@ def _diagnose_model_not_found(
     return DiagnosticResult(
         error_code="MODEL_NOT_FOUND",
         message=f"指定的模型名称不存在 ({status_code or 404} Model Not Found)",
-        guidance="提供商无法识别填写的模型名称。请从官方推荐预设列表下拉选择（如 xAI 选 grok-3 / grok-3-mini，DeepSeek 选 deepseek-chat），或核对自定义模型拼写无误。",
+        guidance="提供商无法识别填写的模型名称。请从官方推荐预设列表下拉选择，或核对自定义模型拼写无误。",
         status_code=status_code or 404,
         raw_error=sanitized_raw,
     )

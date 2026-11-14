@@ -62,7 +62,7 @@
         "legacy_error_code": "MODEL_NOT_FOUND",
         "retryable": false,
         "summary_zh": "指定的模型名称不存在 (404 Model Not Found)",
-        "action_zh": "提供商无法识别填写的模型名称。请从官方推荐预设列表下拉选择（如 xAI 选 grok-3 / grok-3-mini，DeepSeek 选 deepseek-chat），或核对自定义模型拼写无误。"
+        "action_zh": "提供商无法识别填写的模型名称。请从官方推荐预设列表下拉选择，或核对自定义模型拼写无误。"
       }
     },
     {

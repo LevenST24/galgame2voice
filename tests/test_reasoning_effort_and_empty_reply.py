@@ -813,3 +813,40 @@ def test_stream_length_truncation_text_matches_constant(finish_reason):
     assert STREAM_TRUNCATED_ON_LENGTH == (
         "模型输出达到最大长度限制，回复未能完整生成。建议调大「最大生成长度」或降低「思考强度」。"
     )
+
+
+def test_deepseek_payload_translates_reasoning_effort():
+    deepseek = get_llm_adapter("deepseek", api_key="sk-test")
+    msgs = [{"role": "user", "content": "hi"}]
+    off_payload = deepseek._build_payload(msgs, model="deepseek-flash", extra={"reasoning_effort": "none"})
+    assert off_payload.get("thinking") == {"type": "disabled"}
+    assert "reasoning_effort" not in off_payload
+    low_payload = deepseek._build_payload(msgs, model="deepseek-flash", extra={"reasoning_effort": "low"})
+    assert low_payload.get("reasoning_effort") == "low"
+    assert "thinking" not in low_payload
+    openai = OpenAICompatibleLLMAdapter(api_key="sk-test", base_url="https://api.openai.com/v1")
+    openai_off = openai._build_payload(msgs, model="gpt-4o", extra={"reasoning_effort": "none"})
+    assert openai_off.get("reasoning_effort") == "none"
+    assert "thinking" not in openai_off
+
+
+@pytest.mark.asyncio
+async def test_deepseek_connectivity_probe_translates_reasoning_effort():
+    import httpx
+
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        ds_off = get_llm_adapter("deepseek", api_key="sk-test", reasoning_effort="none")
+        await ds_off._probe_chat_fallback(client, "deepseek-flash", {}, "deepseek", time.perf_counter())
+        ds_low = get_llm_adapter("deepseek", api_key="sk-test", reasoning_effort="low")
+        await ds_low._probe_chat_fallback(client, "deepseek-flash", {}, "deepseek", time.perf_counter())
+        oa_off = OpenAICompatibleLLMAdapter(api_key="sk-test", reasoning_effort="none")
+        await oa_off._probe_chat_fallback(client, "gpt-4o", {}, "openai", time.perf_counter())
+    assert sent[0].get("thinking") == {"type": "disabled"} and "reasoning_effort" not in sent[0]
+    assert sent[1].get("reasoning_effort") == "low" and "thinking" not in sent[1]
+    assert sent[2].get("reasoning_effort") == "none" and "thinking" not in sent[2]

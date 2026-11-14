@@ -686,6 +686,32 @@ class TestProviderPresetSeedsAndFallback:
             assert updated_settings.active_provider_id == "siliconflow"
 
     @pytest.mark.asyncio
+    async def test_retired_deepseek_models_migrate_preserving_keys_and_custom_models(self, tmp_path):
+        """Retired deepseek models migrate to deepseek-flash while preserving keys and custom names."""
+        from galgame2voice.database.models import ProviderUpdate
+
+        cases = [
+            ("deepseek-chat", None, "deepseek-flash", "none"),
+            ("deepseek-reasoner", "low", "deepseek-flash", "low"),
+            ("my-proxy-model", "high", "my-proxy-model", "high"),
+        ]
+        sql = "SELECT api_key FROM providers WHERE id = 'deepseek';"
+        for idx, (old_model, old_effort, expected_model, expected_effort) in enumerate(cases):
+            db_path = tmp_path / f"migrate_{idx}.db"
+            await init_db(db_path)
+            async with get_db(db_path) as conn:
+                upd = ProviderUpdate(api_key="sk-ds-saved-9876", chat_model=old_model, reasoning_effort=old_effort)
+                await crud.update_provider(conn, "deepseek", upd)
+                row_before = await (await conn.execute(sql)).fetchone()
+            await init_db(db_path)
+            async with get_db(db_path) as conn:
+                row_after = await (await conn.execute(sql)).fetchone()
+                raw = await crud.get_provider_raw(conn, "deepseek")
+                assert row_after[0] == row_before[0]
+                assert raw.api_key == "sk-ds-saved-9876" and raw.is_active is True
+                assert (raw.chat_model, raw.reasoning_effort) == (expected_model, expected_effort)
+
+    @pytest.mark.asyncio
     async def test_empty_chat_model_falls_back_to_preset_default_not_gpt4omini(self, tmp_path):
         """When provider chat_model is empty/blank in DB, ChatService uses preset default_chat_model, not gpt-4o-mini."""
         db_path = tmp_path / "empty_model.db"
@@ -693,7 +719,7 @@ class TestProviderPresetSeedsAndFallback:
         service = ChatService(db_path=db_path)
 
         for pid, blank, expected in [
-            ("deepseek", "", "deepseek-chat"),
+            ("deepseek", "", "deepseek-flash"),
             ("xai", "   ", "grok-3"),
             ("moonshot", "", "moonshot-v1-32k"),
         ]:

@@ -128,6 +128,11 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         skip = _INTERNAL | (_GEMINI_UNSUPPORTED_PARAMS if self._is_gemini else frozenset())
         return {k: v for k, v in kwargs.items() if k not in skip}
 
+    def _reasoning_fields(self, effort: str | None, model: str) -> dict[str, Any]:
+        if effort is None:
+            return {}
+        return {"reasoning_effort": effort}
+
     def _build_payload(
         self,
         messages: list[ChatMessage],
@@ -151,8 +156,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         if stream:
             payload["stream"] = True
         reasoning_effort = (extra or {}).get("reasoning_effort", self.reasoning_effort)
-        if reasoning_effort is not None:
-            payload["reasoning_effort"] = reasoning_effort
+        payload.update(self._reasoning_fields(reasoning_effort, model))
         if extra:
             for k, v in self._filter_payload_kwargs(extra).items():
                 if k != "reasoning_effort":
@@ -373,8 +377,10 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         chat_url = f"{self.base_url}/chat/completions"
         chat_resp = await client.post(
             chat_url,
-            json={"model": test_model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1,
-                  **({"reasoning_effort": self.reasoning_effort} if self.reasoning_effort is not None else {})},
+            json={
+                "model": test_model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1,
+                **self._reasoning_fields(self.reasoning_effort, test_model),
+            },
             headers=headers,
         )
         latency_ms = round((time.perf_counter() - t0) * 1000, 2)
