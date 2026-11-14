@@ -9,9 +9,21 @@ import { saveConfirmedProvider, activateConfirmedProvider } from './provider_rec
 
 export const PROVIDER_FIELDS = ['gApiKey', 'gBaseUrl', 'gChatModel', 'gChatModelSelect', 'gReasoningEffort', 'gCustomName'];
 
+const API_KEY_PAGES = Object.freeze({
+  deepseek: 'https://platform.deepseek.com/api_keys',
+  gemini: 'https://aistudio.google.com/api-keys',
+  openai: 'https://platform.openai.com/api-keys',
+  anthropic: 'https://platform.claude.com/settings/keys',
+  xai: 'https://console.x.ai/team/default/api-keys',
+  glm: 'https://bigmodel.cn/usercenter/proj-mgmt/apikeys',
+  qwen: 'https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key',
+  siliconflow: 'https://cloud.siliconflow.cn/account/ak',
+  moonshot: 'https://platform.kimi.com/console/api-keys',
+});
+
 function activeServiceMark(isActive, requiresKey, hasKey) {
   if (!isActive) return '';
-  return requiresKey && !hasKey ? '还不能用' : '当前生效';
+  return requiresKey && !hasKey ? '未填密钥' : '当前生效';
 }
 
 function isLoopbackOrPrivateIpv4(host) {
@@ -279,7 +291,7 @@ export class ProviderSettingsController {
     const hasKey = Boolean(maskedKey && maskedKey.length > 0);
     const serviceMark = activeServiceMark(isActive, capabilities.requires_api_key, hasKey);
     if (this.dom.gProviderActiveBadge) {
-      const unusable = serviceMark === '还不能用';
+      const unusable = serviceMark === '未填密钥';
       const tone = unusable ? 'badge-pill-yellow' : isActive ? 'badge-pill-green' : 'badge-pill-gray';
       this.dom.gProviderActiveBadge.className = `badge-status-pill ${tone}`;
       this.dom.gProviderActiveBadge.textContent = serviceMark || '未启用';
@@ -299,7 +311,18 @@ export class ProviderSettingsController {
       if (this.dom.gApiKey) this.dom.gApiKey.placeholder = `请输入 ${capabilities.name || pid} 的有效 API Key (必填)`;
       if (this.dom.gProviderKeyTag) this.dom.gProviderKeyTag.className = 'provider-status-tag tag-unconfigured';
       if (this.dom.gKeyStatusText) this.dom.gKeyStatusText.textContent = '未配置 API Key · 无法调用';
-      if (this.dom.gApiKeyTip) this.dom.gApiKeyTip.textContent = '该提供商尚未配置密钥。请前往官方控制台申领并在此填入。';
+      if (this.dom.gApiKeyTip) {
+        const keyUrl = API_KEY_PAGES[realId];
+        this.dom.gApiKeyTip.textContent = '还没有填写密钥。';
+        if (keyUrl) {
+          const link = document.createElement('a');
+          link.href = keyUrl;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          link.textContent = `去 ${capabilities.name} 官网申请 API 密钥`;
+          this.dom.gApiKeyTip.appendChild(link);
+        }
+      }
     }
 
     // 4. Base URL 填充与一键恢复默认
