@@ -39,33 +39,6 @@ test('LOG replays legacy assistant audio and failed player recordings through th
   log.renderAll(); assert.equal(log.element.querySelector('.adv-log-replay-btn').disabled, true);
 });
 
-test('LOG provides explicit repair action for legacy assistant message when audio is expired or missing', t => {
-  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
-  const now = Date.now();
-  const session = { id: 'legacy_repair', settings: { voiceProfileId: 1 }, messages: [
-    { id: 'm_legacy', role: 'assistant', content: '旧格式中文', japanese: '日本語。', ts: now - 8 * 86400000, audioUrls: ['/audio/cache/old.wav'] },
-  ] };
-  const log = createBacklog(root, {
-    getSession: () => session,
-    getSettings: () => DEFAULT_SESSION_SETTINGS,
-    getCharacter: () => ({ name: '角色' }),
-    voiceEnabled: () => true,
-    wallNow: () => now,
-    getRecoveryVoice: () => ({ id: 1, name: '当前音色' }),
-    regenerateLineAudio: async () => {},
-  });
-  t.after(() => log.destroy());
-  const entry = log.element.querySelector('.adv-log-entry.is-legacy');
-  assert.ok(entry, 'legacy entry should be rendered');
-  const replayBtn = entry.querySelector('.adv-log-replay-btn');
-  assert.equal(replayBtn.disabled, true, 'replay button should be disabled when expired');
-  const regenerateBtn = entry.querySelector('.adv-log-regenerate-btn');
-  assert.ok(regenerateBtn, 'regenerate button should exist for legacy entry');
-  assert.equal(regenerateBtn.hidden, false, 'regenerate button should not be hidden');
-  assert.equal(regenerateBtn.textContent, '用当前音色重新生成');
-});
-
-
 function setupApp(t, options = {}) {
   const doc = fakeDocument();
   globalThis.document = doc;
@@ -1149,109 +1122,94 @@ test('LOG re-render during line regeneration keeps cancel and shows the result o
   assert.equal(entry(1).querySelector('.adv-log-replay-btn').disabled, false);
 });
 
-class LineRegenAudioContext {
-  state = 'running';
-  currentTime = 0;
-  destination = {};
-  createGain() {
-    return {
-      gain: { value: 1, setValueAtTime() {}, cancelScheduledValues() {}, linearRampToValueAtTime() {} },
-      connect() {}, disconnect() {},
-    };
-  }
-  createBufferSource() {
-    return { connect() {}, disconnect() {}, start() {}, stop() {} };
-  }
-  async decodeAudioData() { return { duration: 1 }; }
-  async resume() { this.state = 'running'; }
-  async close() { this.state = 'closed'; }
-}
-
 test('double-clicking 用当前音色重新生成 does not cancel, and 取消生成 says the old audio was kept', async t => {
-  const realFetch = globalThis.fetch;
-  const realWindow = globalThis.window;
-  const posts = [];
-  let repair = null;
-  globalThis.window = { AudioContext: LineRegenAudioContext };
-  globalThis.fetch = (url, options = {}) => {
-    const path = String(url);
-    if (path.includes('/api/voice/regenerate-line')) {
-      posts.push(path);
-      return new Promise((resolve, reject) => {
-        const fail = () => reject(new DOMException('操作已取消', 'AbortError'));
-        if (options.signal?.aborted) fail();
-        else options.signal?.addEventListener('abort', fail, { once: true });
-        repair = { resolve, signal: options.signal };
-      });
+  for (const mode of ['line', 'legacy']) {
+    const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
+    let now = 8 * 86400000 + 1000;
+    const originalAudio = { status: 'failed', chunks: [] };
+    const session = {
+      id: `s_double_${mode}`,
+      settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: 7 },
+      messages: [mode === 'line' ? {
+        id: 'm_double',
+        serverMessageId: 42,
+        role: 'assistant',
+        ts: now,
+        lines: [{ index: 0, zh: '早上好', ja: 'おはよう。', emotion: 'neutral', act: {}, audio: originalAudio }],
+      } : {
+        id: 'm_cancel',
+        serverMessageId: 42,
+        role: 'assistant',
+        content: '旧版中文',
+        japanese: '旧版日本語。',
+        ts: 1000,
+        audioUrls: ['/audio/cache/old.wav'],
+      }],
+    };
+    const posts = [];
+    let repairSignal = null;
+    const recover = createLineAudioRecovery({
+      getSession: () => session,
+      getVoiceProfiles: () => [{ id: 7, name: '角色A' }],
+      saveState: () => true,
+      request: (url, options) => {
+        posts.push(String(url));
+        repairSignal = options.signal;
+        return new Promise((_resolve, reject) => {
+          const fail = () => reject(new DOMException('操作已取消', 'AbortError'));
+          if (options.signal.aborted) fail();
+          else options.signal.addEventListener('abort', fail, { once: true });
+        });
+      },
+    });
+    const log = createBacklog(root, {
+      getSession: () => session,
+      getSettings: () => session.settings,
+      getCharacter: () => ({ id: 7, name: '角色A' }),
+      getRecoveryVoice: () => ({ id: 7, name: '角色A' }),
+      voiceEnabled: () => true,
+      regenerateLineAudio: recover,
+      wallNow: () => now,
+    });
+    t.after(() => log.destroy());
+
+    const button = () => log.element.querySelector('.adv-log-regenerate-btn');
+    const status = () => log.element.querySelector('.adv-log-audio-status');
+    assert.equal(button().textContent, '用当前音色重新生成');
+
+    const sameButton = button();
+    sameButton.click();
+    sameButton.click();
+    now += 200;
+    sameButton.click();
+    await microtasks();
+    assert.equal(posts.length, 1);
+    assert.equal(posts[0].includes('/api/voice/regenerate-line'), true);
+    assert.equal(repairSignal.aborted, false,
+      `second click aborted the repair (${mode}); status="${status().textContent}" button="${button().textContent}"`);
+    assert.equal(button().textContent, '取消生成');
+    assert.equal(status().textContent, '正在生成这句语音…');
+    if (mode === 'line') assert.equal(session.messages[0].lines[0].audio, originalAudio);
+    else assert.equal(session.messages[0].lines, undefined);
+
+    now += 350;
+    button().click();
+    await microtasks();
+    assert.equal(repairSignal.aborted, true);
+    assert.equal(posts.length, 1, 'cancel must not post a second repair');
+    assert.equal(button().textContent, '用当前音色重新生成');
+    assert.equal(status().textContent, '已取消本次生成，原音频已保留。');
+    assert.equal(status().hidden, false);
+    if (mode === 'line') {
+      assert.equal(session.messages[0].lines[0].audio, originalAudio);
+      assert.equal(session.messages[0].lines[0].audio.status, 'failed');
+    } else {
+      assert.equal(session.messages[0].lines, undefined);
     }
-    if (path.includes('/api/backgrounds')) {
-      return Promise.resolve(Response.json({ backgrounds: [], works: [] }));
-    }
-    return Promise.reject(new TypeError(`unexpected ${path}`));
-  };
-  const player = new StreamAudioController();
-  let session = null;
-  const recover = createLineAudioRecovery({
-    getSession: () => session,
-    getVoiceProfiles: () => [{ id: 7, name: '角色A' }],
-    saveState: () => true,
-  });
-  const h = setupApp(t, {
-    audio: player,
-    regenerateLineAudio: recover,
-    getRecoveryVoice: () => ({ id: 7, name: '角色A' }),
-  });
-  t.after(async () => {
-    globalThis.fetch = realFetch;
-    if (realWindow === undefined) delete globalThis.window;
-    else globalThis.window = realWindow;
-    await player.close();
-  });
-
-  session = h.active();
-  session.settings.voiceProfileId = 7;
-  const originalAudio = { status: 'failed', chunks: [] };
-  session.messages = [{
-    id: 'm_double',
-    serverMessageId: 42,
-    role: 'assistant',
-    ts: h.getWallTime(),
-    lines: [{
-      index: 0, zh: '早上好', ja: 'おはよう。', emotion: 'neutral', act: {},
-      audio: originalAudio,
-    }],
-  }];
-  h.app.action('log');
-  const button = () => h.app.backlog.element.querySelector('.adv-log-regenerate-btn');
-  const status = () => h.app.backlog.element.querySelector('.adv-log-audio-status');
-  assert.equal(button().textContent, '用当前音色重新生成');
-  assert.equal(h.audio, player);
-
-  const sameButton = button();
-  sameButton.click();
-  sameButton.click();
-  await microtasks();
-  assert.equal(posts.length, 1);
-  assert.equal(posts[0].includes('/api/voice/regenerate-line'), true);
-  assert.equal(repair.signal.aborted, false,
-    `second click aborted the repair; status="${status().textContent}" button="${button().textContent}"`);
-  assert.equal(button().textContent, '取消生成');
-  assert.equal(status().textContent, '正在生成这句语音…');
-  assert.equal(session.messages[0].lines[0].audio, originalAudio);
-
-  h.setWallTime(h.getWallTime() + 500);
-  button().click();
-  await microtasks();
-  assert.equal(repair.signal.aborted, true);
-  assert.equal(posts.length, 1, 'cancel must not post a second repair');
-  assert.equal(button().textContent, '用当前音色重新生成');
-  assert.equal(status().textContent, '已取消本次生成，原音频已保留。');
-  assert.equal(status().hidden, false);
-  assert.equal(session.messages[0].lines[0].audio, originalAudio);
-  assert.equal(session.messages[0].lines[0].audio.status, 'failed');
-  h.app.backlog.renderAll();
-  assert.equal(status().textContent, '已取消本次生成，原音频已保留。');
-  assert.equal(button().textContent, '用当前音色重新生成');
+    log.renderAll();
+    assert.equal(status().textContent, '已取消本次生成，原音频已保留。');
+    assert.equal(button().textContent, '用当前音色重新生成');
+  }
 });
 
 test('a fresh LOG line stays replayable when loading fails and disables only confirmed loss', async (t) => {
@@ -1402,110 +1360,6 @@ test('a fresh LOG line stays replayable when loading fails and disables only con
     assert.equal(gone.querySelector('.adv-log-regenerate-btn').hidden, false);
     assert.equal(gone.querySelector('.adv-log-regenerate-btn').textContent, '用当前音色重新生成');
   }
-});
-
-test('LOG legacy repair lifecycle: repair success enables replay button, updates status, and plays canonical audio', async t => {
-  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
-  const now = Date.now();
-  const session = { id: 'legacy_flow', settings: { voiceProfileId: 1 }, messages: [
-    { id: 'm_leg', serverMessageId: 99, role: 'assistant', content: '旧版中文', japanese: '旧版日本語。', ts: now - 8 * 86400000, audioUrls: ['/audio/cache/old.wav'] },
-  ] };
-  const played = [];
-  const repairResult = {
-    persisted: true,
-    saved: true,
-    audio: { status: 'ready', generated_at: now, voice_profile_id: 1, voice_name: '测试音色',
-      chunks: [{ index: 0, line: 0, audio_url: '/audio/repair_leg.wav', sentence: '旧版日本語。' }] },
-    line: { index: 0, zh: '旧版中文', ja: '旧版日本語。', emotion: 'neutral', act: {},
-      audio: { status: 'ready', generated_at: now, voice_profile_id: 1, voice_name: '测试音色',
-        chunks: [{ index: 0, line: 0, audio_url: '/audio/repair_leg.wav', sentence: '旧版日本語。' }] } },
-  };
-  const log = createBacklog(root, {
-    getSession: () => session,
-    getSettings: () => DEFAULT_SESSION_SETTINGS,
-    getCharacter: () => ({ name: '角色' }),
-    voiceEnabled: () => true,
-    wallNow: () => now,
-    getRecoveryVoice: () => ({ id: 1, name: '测试音色' }),
-    regenerateLineAudio: async () => {
-      session.messages[0].lines = [repairResult.line];
-      return repairResult;
-    },
-    audio: {
-      stopLine() {},
-      async playLine(index, chunks) {
-        played.push({ index, chunks });
-        return 'ended';
-      },
-    },
-  });
-  t.after(() => log.destroy());
-
-  const entry = log.element.querySelector('.adv-log-entry.is-legacy');
-  assert.ok(entry);
-  const replayBtn = entry.querySelector('.adv-log-replay-btn');
-  const regenBtn = entry.querySelector('.adv-log-regenerate-btn');
-  const statusSpan = entry.querySelector('.adv-log-audio-status');
-
-  assert.equal(replayBtn.disabled, true);
-  assert.equal(regenBtn.hidden, false);
-  assert.equal(regenBtn.textContent, '用当前音色重新生成');
-
-  await regenBtn.onclick({ stopPropagation() {} });
-  assert.equal(replayBtn.disabled, false);
-  assert.equal(regenBtn.hidden, true);
-  assert.equal(statusSpan.textContent, '语音已生成，点语音播放。');
-
-  await replayBtn.onclick({ stopPropagation() {} });
-  assert.equal(played.length, 1);
-  assert.equal(played[0].index, 0);
-  assert.equal(played[0].chunks[0].audio_url, '/audio/repair_leg.wav');
-});
-
-test('LOG legacy repair double-click grace ignores rapid click, and delayed second click cancels with notice', async t => {
-  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
-  let now = 8 * 86400000 + 1000;
-  const session = { id: 'legacy_cancel', settings: { voiceProfileId: 1 }, messages: [
-    { id: 'm_cancel', role: 'assistant', content: '旧版中文', japanese: '旧版日本語。', ts: 1000, audioUrls: ['/audio/cache/old.wav'] },
-  ] };
-  let signalRef;
-  let resolveGate;
-  const gatePromise = new Promise(r => { resolveGate = r; });
-  const log = createBacklog(root, {
-    getSession: () => session,
-    getSettings: () => DEFAULT_SESSION_SETTINGS,
-    getCharacter: () => ({ name: '角色' }),
-    voiceEnabled: () => true,
-    wallNow: () => now,
-    getRecoveryVoice: () => ({ id: 1, name: '测试音色' }),
-    regenerateLineAudio: async ({ signal }) => {
-      signalRef = signal;
-      return gatePromise;
-    },
-  });
-  t.after(() => log.destroy());
-
-  const entry = log.element.querySelector('.adv-log-entry.is-legacy');
-  const regenBtn = entry.querySelector('.adv-log-regenerate-btn');
-  const statusSpan = entry.querySelector('.adv-log-audio-status');
-
-  const pending = regenBtn.onclick({ stopPropagation() {} });
-  await microtasks();
-  assert.equal(regenBtn.textContent, '取消生成');
-  assert.equal(statusSpan.textContent, '正在生成这句语音…');
-
-  // Rapid second click (<500ms) is ignored
-  now += 200;
-  await regenBtn.onclick({ stopPropagation() {} });
-  assert.equal(signalRef.aborted, false);
-  assert.equal(regenBtn.textContent, '取消生成');
-
-  // Second click after grace window (>=500ms) cancels
-  now += 350;
-  await regenBtn.onclick({ stopPropagation() {} });
-  assert.equal(signalRef.aborted, true);
-  assert.equal(statusSpan.textContent, '已取消本次生成，原音频已保留。');
-  assert.equal(session.messages[0].lines, undefined);
 });
 
 test('LOG legacy repair validation and guidance: missing voice, missing japanese, overlong japanese', t => {
@@ -1659,11 +1513,11 @@ test('LOG assistant message with explicit empty lines array preserves text and a
   assert.equal(regenBtn.hidden, true, 'repair button must be hidden for explicit empty lines array');
 });
 
-test('a line with noVoice flag does not render 语音 or 重新生成 buttons in LOG', () => {
+test('a line or welcome message with noVoice flag does not render 语音 or 重新生成 buttons in LOG', () => {
   const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
   const now = Date.now();
   const session = {
-    id: 's_lines',
+    id: 's_no_voice',
     settings: { ...DEFAULT_SESSION_SETTINGS },
     messages: [
       {
@@ -1684,6 +1538,8 @@ test('a line with noVoice flag does not render 语音 or 重新生成 buttons in
           { index: 0, zh: '整条消息无语音', ja: '声なしメッセージ', audio: { status: 'skipped' } },
         ],
       },
+      { id: 'greet', role: 'assistant', content: GREETING, noVoice: true, ts: now },
+      { id: 'old_reply', role: 'assistant', content: '旧版回复', japanese: '古い返事', ts: now },
     ],
   };
 
@@ -1693,58 +1549,36 @@ test('a line with noVoice flag does not render 语音 or 重新生成 buttons in
     getCharacter: () => ({ name: '角色' }),
     voiceEnabled: () => true,
     wallNow: () => now,
+    getRecoveryVoice: () => ({ id: 1, name: '当前音色' }),
     regenerateLineAudio: async () => ({ persisted: true }),
   });
 
   const findEntry = (msgId, lineIndex) => [...log.element.querySelectorAll('.adv-log-entry')].find(el =>
-    el.dataset.msgId === String(msgId) && el.dataset.lineIndex === String(lineIndex)
+    el.dataset.msgId === String(msgId) && (lineIndex === undefined || el.dataset.lineIndex === String(lineIndex))
   );
 
   const entry0 = findEntry('m_split', 0);
   const entry1 = findEntry('m_split', 1);
   const entryEntire = findEntry('m_entire_no_voice', 0);
+  const welcome = findEntry('greet');
+  const reply = findEntry('old_reply');
 
   assert.ok(entry0.querySelector('.adv-log-replay-btn'), 'line 0 has replay button');
   assert.ok(entry0.querySelector('.adv-log-regenerate-btn'), 'line 0 has regenerate button');
-
   assert.equal(entry1.querySelector('.adv-log-replay-btn'), null, 'noVoice line 1 has no replay button');
   assert.equal(entry1.querySelector('.adv-log-regenerate-btn'), null, 'noVoice line 1 has no regenerate button');
-
   assert.equal(entryEntire.querySelector('.adv-log-replay-btn'), null, 'noVoice msg has no replay button');
   assert.equal(entryEntire.querySelector('.adv-log-regenerate-btn'), null, 'noVoice msg has no regenerate button');
 
-  log.destroy();
-});
-
-test('the welcome line, stored without split lines, shows no 语音 or 重新生成 button in LOG', () => {
-  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
-  const now = Date.now();
-  const session = {
-    id: 's_welcome',
-    settings: { ...DEFAULT_SESSION_SETTINGS },
-    messages: [
-      { id: 'greet', role: 'assistant', content: GREETING, noVoice: true, ts: now },
-      { id: 'old_reply', role: 'assistant', content: '旧版回复', japanese: '古い返事', ts: now },
-    ],
-  };
-  const log = createBacklog(root, {
-    getSession: () => session,
-    getSettings: () => DEFAULT_SESSION_SETTINGS,
-    getCharacter: () => ({ name: '角色' }),
-    voiceEnabled: () => true,
-    wallNow: () => now,
-    regenerateLineAudio: async () => ({ persisted: true }),
-  });
-  const entryOf = msgId => [...log.element.querySelectorAll('.adv-log-entry')].find(el => el.dataset.msgId === msgId);
-
-  const welcome = entryOf('greet');
   assert.ok(welcome, 'the welcome line is listed');
   assert.equal(welcome.querySelector('.adv-log-replay-btn'), null, 'welcome line has no 语音 button');
   assert.equal(welcome.querySelector('.adv-log-regenerate-btn'), null, 'welcome line has no 重新生成 button');
 
-  const reply = entryOf('old_reply');
+  assert.ok(reply.classList.contains('is-legacy'), 'old_reply is rendered as legacy entry');
   assert.ok(reply.querySelector('.adv-log-replay-btn'), 'an old reply keeps its 语音 button');
+  assert.equal(reply.querySelector('.adv-log-replay-btn').disabled, true, 'old reply without audio disables replay');
   assert.equal(reply.querySelector('.adv-log-regenerate-btn').hidden, false, 'an old reply without audio still offers regeneration');
+  assert.equal(reply.querySelector('.adv-log-regenerate-btn').textContent, '用当前音色重新生成');
 
   log.destroy();
 });
@@ -2241,278 +2075,146 @@ test('LOG partial failed voice exposes playable audio, partial failure note and 
   ], 'repaired audio should play the complete chunks');
 });
 
-test('LOG replay clears regeneration feedback for lines entry after ended or interrupted, but restores on blocked', async t => {
-  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
-  const now = Date.now();
-  const session = {
-    id: 's_replay_clear',
-    settings: { voiceProfileId: 1 },
-    messages: [
-      {
+test('LOG replay clears regeneration feedback for lines and legacy entries after ended or interrupted, but restores on blocked', async t => {
+  for (const mode of ['lines', 'legacy']) {
+    const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
+    const now = Date.now();
+    const session = {
+      id: `s_replay_clear_${mode}`,
+      settings: { voiceProfileId: 1 },
+      messages: mode === 'lines' ? [{
         id: 'msg1',
         role: 'assistant',
         lines: [
-          {
-            index: 0,
-            zh: '第一句',
-            ja: '一番目。',
-            emotion: 'neutral',
-            act: {},
-            audio: { status: 'failed', chunks: [] },
-          },
-          {
-            index: 1,
-            zh: '第二句',
-            ja: '二番目。',
-            emotion: 'neutral',
-            act: {},
-            audio: { status: 'ready', chunks: [{ index: 0, line: 1, audio_url: '/audio/2.wav', sentence: '二番目。' }] },
-          },
+          { index: 0, zh: '第一句', ja: '一番目。', emotion: 'neutral', act: {}, audio: { status: 'failed', chunks: [] } },
+          { index: 1, zh: '第二句', ja: '二番目。', emotion: 'neutral', act: {},
+            audio: { status: 'ready', chunks: [{ index: 0, line: 1, audio_url: '/audio/2.wav', sentence: '二番目。' }] } },
         ],
-      },
-    ],
-  };
+      }] : [
+        { id: 'msg_leg_1', role: 'assistant', content: '旧中文1', japanese: '旧日本語1。', ts: now - 8 * 86400000, audioUrls: ['/audio/old1.wav'] },
+        { id: 'msg_leg_2', role: 'assistant', content: '旧中文2', japanese: '旧日本語2。', ts: now - 8 * 86400000, audioUrls: ['/audio/old2.wav'] },
+      ],
+    };
 
-  let playLineResult = 'ended';
-  let onStopLine = null;
-  const log = createBacklog(root, {
-    getSession: () => session,
-    getSettings: () => DEFAULT_SESSION_SETTINGS,
-    getCharacter: () => ({ name: '角色' }),
-    voiceEnabled: () => true,
-    wallNow: () => now,
-    getRecoveryVoice: () => ({ id: 1, name: '当前音色' }),
-    regenerateLineAudio: async ({ lineIndex }) => {
-      const line = session.messages[0].lines[lineIndex];
-      line.audio = {
-        status: 'ready',
-        chunks: [{ index: 0, line: lineIndex, audio_url: `/audio/repaired_${lineIndex}.wav`, sentence: line.ja }],
-      };
-      return { line, audio: line.audio, remoteUpdated: false, persisted: true, saved: true };
-    },
-    audio: {
-      stopLine() {
-        onStopLine?.();
-      },
-      async playLine(index, chunks) {
-        if (typeof playLineResult === 'function') {
-          return playLineResult(index, chunks);
+    let playLineResult = 'ended';
+    let onStopLine = null;
+    const played = [];
+    const log = createBacklog(root, {
+      getSession: () => session,
+      getSettings: () => DEFAULT_SESSION_SETTINGS,
+      getCharacter: () => ({ name: '角色' }),
+      voiceEnabled: () => true,
+      wallNow: () => now,
+      getRecoveryVoice: () => ({ id: 1, name: '当前音色' }),
+      regenerateLineAudio: async ({ messageId, lineIndex }) => {
+        if (mode === 'lines') {
+          const line = session.messages[0].lines[lineIndex];
+          line.audio = {
+            status: 'ready',
+            chunks: [{ index: 0, line: lineIndex, audio_url: `/audio/repaired_${lineIndex}.wav`, sentence: line.ja }],
+          };
+          return { line, audio: line.audio, remoteUpdated: false, persisted: true, saved: true };
         }
-        return playLineResult;
-      },
-    },
-  });
-  t.after(() => log.destroy());
-
-  const getEntry = lineIdx => [...log.element.querySelectorAll('.adv-log-entry.is-assistant')]
-    .find(el => el.dataset.lineIndex === String(lineIdx));
-
-  // Case 1: single line regeneration succeeds -> replay returns 'ended' -> renderAll -> feedback is cleared
-  const entry0 = getEntry(0);
-  const regenBtn0 = entry0.querySelector('.adv-log-regenerate-btn');
-  const replayBtn0 = entry0.querySelector('.adv-log-replay-btn');
-  const statusSpan0 = entry0.querySelector('.adv-log-audio-status');
-
-  await regenBtn0.onclick({ stopPropagation() {} });
-  assert.equal(statusSpan0.hidden, false);
-  assert.equal(statusSpan0.textContent, '语音已生成，点语音播放。');
-
-  playLineResult = 'ended';
-  await replayBtn0.onclick({ stopPropagation() {} });
-  assert.equal(statusSpan0.hidden, true);
-
-  // Trigger renderAll: must NOT resurrect feedback
-  log.renderAll();
-  const refreshedEntry0 = getEntry(0);
-  const refreshedStatus0 = refreshedEntry0.querySelector('.adv-log-audio-status');
-  assert.equal(refreshedStatus0.hidden, true, 'statusSpan should stay hidden after ended replay and renderAll');
-  assert.notEqual(refreshedStatus0.textContent, '语音已生成，点语音播放。');
-
-  // Case 2: blocked playback retains feedback and restores display
-  // Reset line 0 to failed, regenerate again
-  session.messages[0].lines[0].audio = { status: 'failed', chunks: [] };
-  log.renderAll();
-  const entry0Blocked = getEntry(0);
-  const regenBtn0Blocked = entry0Blocked.querySelector('.adv-log-regenerate-btn');
-  const replayBtn0Blocked = entry0Blocked.querySelector('.adv-log-replay-btn');
-  const statusSpan0Blocked = entry0Blocked.querySelector('.adv-log-audio-status');
-
-  await regenBtn0Blocked.onclick({ stopPropagation() {} });
-  assert.equal(statusSpan0Blocked.hidden, false);
-  assert.equal(statusSpan0Blocked.textContent, '语音已生成，点语音播放。');
-
-  playLineResult = 'blocked';
-  await replayBtn0Blocked.onclick({ stopPropagation() {} });
-  assert.equal(statusSpan0Blocked.hidden, false, 'statusSpan should restore on blocked replay');
-  assert.equal(statusSpan0Blocked.textContent, '语音已生成，点语音播放。');
-
-  // Case 3: interrupted playback clears feedback
-  playLineResult = index => {
-    if (index === 0) {
-      return new Promise(resolve => {
-        onStopLine = () => {
-          onStopLine = null;
-          resolve('interrupted');
+        const msg = session.messages.find(m => m.id === messageId);
+        const url = messageId === 'msg_leg_1' ? '/api/tts/audio/repaired_leg_1.wav' : `/audio/repaired_${messageId}.wav`;
+        const repaired = {
+          index: 0, zh: msg.content, ja: msg.japanese, emotion: 'neutral', act: {},
+          audio: { status: 'ready', generated_at: now, chunks: [{ index: 0, line: 0, audio_url: url, sentence: msg.japanese }] },
         };
-      });
-    }
-    return 'ended';
-  };
-
-  const playPromise0 = replayBtn0Blocked.onclick({ stopPropagation() {} });
-  await microtasks();
-
-  // Click line 1 replay to interrupt line 0 via stopReplay() -> audio.stopLine()
-  const entry1 = getEntry(1);
-  const replayBtn1 = entry1.querySelector('.adv-log-replay-btn');
-  await replayBtn1.onclick({ stopPropagation() {} });
-  await playPromise0;
-
-  // After interruption, renderAll must NOT resurrect feedback on line 0
-  log.renderAll();
-  const entry0AfterInterrupt = getEntry(0);
-  const status0AfterInterrupt = entry0AfterInterrupt.querySelector('.adv-log-audio-status');
-  assert.equal(status0AfterInterrupt.hidden, true, 'statusSpan should be cleared after interrupted replay and renderAll');
-  assert.notEqual(status0AfterInterrupt.textContent, '语音已生成，点语音播放。');
-});
-
-test('LOG replay clears regeneration feedback for legacy entry after ended or interrupted, but restores on blocked', async t => {
-  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
-  const now = Date.now();
-  const session = {
-    id: 's_legacy_replay_clear',
-    settings: { voiceProfileId: 1 },
-    messages: [
-      {
-        id: 'msg_leg_1',
-        role: 'assistant',
-        content: '旧中文1',
-        japanese: '旧日本語1。',
-        ts: now - 8 * 86400000,
-        audioUrls: ['/audio/old1.wav'],
+        if (messageId === 'msg_leg_1') msg.lines = [repaired];
+        return { line: repaired, audio: repaired.audio, remoteUpdated: false, persisted: true, saved: true };
       },
-      {
-        id: 'msg_leg_2',
-        role: 'assistant',
-        content: '旧中文2',
-        japanese: '旧日本語2。',
-        ts: now - 8 * 86400000,
-        audioUrls: ['/audio/old2.wav'],
-      },
-    ],
-  };
-
-  let playLineResult = 'ended';
-  let onStopLine = null;
-  const log = createBacklog(root, {
-    getSession: () => session,
-    getSettings: () => DEFAULT_SESSION_SETTINGS,
-    getCharacter: () => ({ name: '角色' }),
-    voiceEnabled: () => true,
-    wallNow: () => now,
-    getRecoveryVoice: () => ({ id: 1, name: '当前音色' }),
-    regenerateLineAudio: async ({ messageId }) => {
-      const msg = session.messages.find(m => m.id === messageId);
-      const repaired = {
-        index: 0,
-        zh: msg.content,
-        ja: msg.japanese,
-        emotion: 'neutral',
-        act: {},
-        audio: {
-          status: 'ready',
-          generated_at: now,
-          chunks: [{ index: 0, line: 0, audio_url: `/audio/repaired_${messageId}.wav`, sentence: msg.japanese }],
+      audio: {
+        stopLine() { onStopLine?.(); },
+        async playLine(index, chunks) {
+          played.push({ index, url: chunks[0].audio_url });
+          return typeof playLineResult === 'function' ? playLineResult(index, chunks) : playLineResult;
         },
-      };
-      if (messageId === 'msg_leg_1') {
-        msg.lines = [repaired];
-      }
-      return { line: repaired, audio: repaired.audio, remoteUpdated: false, persisted: true, saved: true };
-    },
-    audio: {
-      stopLine() {
-        onStopLine?.();
       },
-      async playLine(index, chunks) {
-        if (typeof playLineResult === 'function') {
-          return playLineResult(index, chunks);
-        }
-        return playLineResult;
-      },
-    },
-  });
-  t.after(() => log.destroy());
+    });
+    t.after(() => log.destroy());
 
-  const getEntryByMsg = msgId => [...log.element.querySelectorAll('.adv-log-entry')]
-    .find(el => el.dataset.msgId === msgId);
+    const getEntry = key => [...log.element.querySelectorAll('.adv-log-entry.is-assistant')]
+      .find(el => (mode === 'lines' ? el.dataset.lineIndex === String(key) : el.dataset.msgId === String(key)));
+    const firstKey = mode === 'lines' ? 0 : 'msg_leg_1';
+    const secondKey = mode === 'lines' ? 1 : 'msg_leg_2';
 
-  // Case 1: single legacy regeneration succeeds -> replay returns 'ended' -> renderAll -> feedback is cleared
-  const entry1 = getEntryByMsg('msg_leg_1');
-  assert.ok(entry1.classList.contains('is-legacy'), 'entry1 should initially be legacy');
-  const regenBtn1 = entry1.querySelector('.adv-log-regenerate-btn');
-  const replayBtn1 = entry1.querySelector('.adv-log-replay-btn');
-  const statusSpan1 = entry1.querySelector('.adv-log-audio-status');
+    // Case 1: regeneration succeeds -> replay returns 'ended' -> renderAll -> feedback is cleared
+    const entry1 = getEntry(firstKey);
+    if (mode === 'legacy') assert.ok(entry1.classList.contains('is-legacy'), 'entry1 should initially be legacy');
+    const regenBtn1 = entry1.querySelector('.adv-log-regenerate-btn');
+    const replayBtn1 = entry1.querySelector('.adv-log-replay-btn');
+    const statusSpan1 = entry1.querySelector('.adv-log-audio-status');
+    assert.equal(replayBtn1.disabled, true);
+    assert.equal(regenBtn1.hidden, false);
+    assert.equal(regenBtn1.textContent, '用当前音色重新生成');
 
-  await regenBtn1.onclick({ stopPropagation() {} });
-  assert.equal(statusSpan1.hidden, false);
-  assert.equal(statusSpan1.textContent, '语音已生成，点语音播放。');
+    const regenPromise1 = regenBtn1.onclick({ stopPropagation() {} });
+    assert.equal(regenBtn1.textContent, '取消生成');
+    await regenPromise1;
+    assert.equal(replayBtn1.disabled, false);
+    assert.equal(regenBtn1.hidden, true);
+    assert.equal(statusSpan1.hidden, false);
+    assert.equal(statusSpan1.textContent, '语音已生成，点语音播放。');
 
-  playLineResult = 'ended';
-  await replayBtn1.onclick({ stopPropagation() {} });
-  assert.equal(statusSpan1.hidden, true);
-
-  // Trigger renderAll: feedback must NOT resurrect (transitions to line entry since msg.lines is set)
-  log.renderAll();
-  const refreshedEntry1 = getEntryByMsg('msg_leg_1');
-  const refreshedStatus1 = refreshedEntry1.querySelector('.adv-log-audio-status');
-  assert.equal(refreshedStatus1.hidden, true, 'statusSpan should stay hidden after ended replay and renderAll');
-  assert.notEqual(refreshedStatus1.textContent, '语音已生成，点语音播放。');
-
-  // Case 2: blocked playback retains feedback and restores display
-  const entry2 = getEntryByMsg('msg_leg_2');
-  assert.ok(entry2.classList.contains('is-legacy'), 'entry2 should be legacy');
-  const regenBtn2 = entry2.querySelector('.adv-log-regenerate-btn');
-  const replayBtn2 = entry2.querySelector('.adv-log-replay-btn');
-  const statusSpan2 = entry2.querySelector('.adv-log-audio-status');
-
-  await regenBtn2.onclick({ stopPropagation() {} });
-  assert.equal(statusSpan2.hidden, false);
-  assert.equal(statusSpan2.textContent, '语音已生成，点语音播放。');
-
-  playLineResult = 'blocked';
-  await replayBtn2.onclick({ stopPropagation() {} });
-  assert.equal(statusSpan2.hidden, false, 'legacy statusSpan should restore on blocked replay');
-  assert.equal(statusSpan2.textContent, '语音已生成，点语音播放。');
-
-  // Case 3: interrupted playback clears feedback
-  playLineResult = (index, chunks) => {
-    if (chunks[0].audio_url.includes('msg_leg_2')) {
-      return new Promise(resolve => {
-        onStopLine = () => {
-          onStopLine = null;
-          resolve('interrupted');
-        };
-      });
+    playLineResult = 'ended';
+    await replayBtn1.onclick({ stopPropagation() {} });
+    if (mode === 'legacy') {
+      assert.equal(played.at(-1).index, 0);
+      assert.equal(played.at(-1).url, '/api/tts/audio/repaired_leg_1.wav');
     }
-    return 'ended';
-  };
+    assert.equal(statusSpan1.hidden, true);
 
-  const playPromise2 = replayBtn2.onclick({ stopPropagation() {} });
-  await microtasks();
+    log.renderAll();
+    const refreshedEntry1 = getEntry(firstKey);
+    const refreshedStatus1 = refreshedEntry1.querySelector('.adv-log-audio-status');
+    assert.equal(refreshedStatus1.hidden, true, 'statusSpan should stay hidden after ended replay and renderAll');
+    assert.notEqual(refreshedStatus1.textContent, '语音已生成，点语音播放。');
 
-  // Click msg_leg_1 replay to interrupt msg_leg_2 via stopReplay() -> audio.stopLine()
-  const refreshedReplay1 = refreshedEntry1.querySelector('.adv-log-replay-btn');
-  await refreshedReplay1.onclick({ stopPropagation() {} });
-  await playPromise2;
+    // Case 2: blocked playback retains feedback and restores display
+    if (mode === 'lines') {
+      session.messages[0].lines[0].audio = { status: 'failed', chunks: [] };
+      log.renderAll();
+    }
+    const blockedKey = mode === 'lines' ? firstKey : secondKey;
+    const interruptorKey = mode === 'lines' ? secondKey : firstKey;
+    const entryBlocked = getEntry(blockedKey);
+    if (mode === 'legacy') assert.ok(entryBlocked.classList.contains('is-legacy'), 'entry2 should be legacy');
+    const regenBtnBlocked = entryBlocked.querySelector('.adv-log-regenerate-btn');
+    const replayBtnBlocked = entryBlocked.querySelector('.adv-log-replay-btn');
+    const statusSpanBlocked = entryBlocked.querySelector('.adv-log-audio-status');
 
-  // After interruption, renderAll must NOT resurrect feedback on msg_leg_2 (which remains legacy)
-  log.renderAll();
-  const entry2AfterInterrupt = getEntryByMsg('msg_leg_2');
-  assert.ok(entry2AfterInterrupt.classList.contains('is-legacy'), 'entry2 should still be legacy');
-  const status2AfterInterrupt = entry2AfterInterrupt.querySelector('.adv-log-audio-status');
-  assert.equal(status2AfterInterrupt.hidden, true, 'legacy statusSpan should be cleared after interrupted replay and renderAll');
-  assert.notEqual(status2AfterInterrupt.textContent, '语音已生成，点语音播放。');
+    await regenBtnBlocked.onclick({ stopPropagation() {} });
+    assert.equal(statusSpanBlocked.hidden, false);
+    assert.equal(statusSpanBlocked.textContent, '语音已生成，点语音播放。');
+
+    playLineResult = 'blocked';
+    await replayBtnBlocked.onclick({ stopPropagation() {} });
+    assert.equal(statusSpanBlocked.hidden, false, 'statusSpan should restore on blocked replay');
+    assert.equal(statusSpanBlocked.textContent, '语音已生成，点语音播放。');
+
+    // Case 3: interrupted playback clears feedback
+    playLineResult = (index, chunks) => {
+      if (mode === 'lines' ? index === 0 : chunks[0].audio_url.includes('msg_leg_2')) {
+        return new Promise(resolve => {
+          onStopLine = () => { onStopLine = null; resolve('interrupted'); };
+        });
+      }
+      return 'ended';
+    };
+
+    const playPromiseBlocked = replayBtnBlocked.onclick({ stopPropagation() {} });
+    await microtasks();
+    await getEntry(interruptorKey).querySelector('.adv-log-replay-btn').onclick({ stopPropagation() {} });
+    await playPromiseBlocked;
+
+    log.renderAll();
+    const entryAfterInterrupt = getEntry(blockedKey);
+    if (mode === 'legacy') assert.ok(entryAfterInterrupt.classList.contains('is-legacy'), 'entry2 should still be legacy');
+    const statusAfterInterrupt = entryAfterInterrupt.querySelector('.adv-log-audio-status');
+    assert.equal(statusAfterInterrupt.hidden, true, 'statusSpan should be cleared after interrupted replay and renderAll');
+    assert.notEqual(statusAfterInterrupt.textContent, '语音已生成，点语音播放。');
+  }
 });
 
 test('LOG replay ending while the same line is actively regenerating does not clear the regeneration progress note', async t => {
@@ -2612,99 +2314,175 @@ test('LOG replay ending while the same line is actively regenerating does not cl
   assert.equal(refreshedStatus.textContent, '语音已生成，点语音播放。');
 });
 
-test('LOG: replaying line voice, legacy voice, or user recording preserves .is-playing across renderAll() and cleans up on completion', async t => {
-  const h = setupApp(t);
-  const now = h.getWallTime();
+test('LOG: replaying line voice, legacy voice (before and after repair), or user recording preserves and switches .is-playing across renderAll()', async t => {
+  let now = 0;
+  const legacyMsg = {
+    id: 901,
+    role: 'assistant',
+    content: '你好',
+    japanese: 'こんにちは',
+    audio_url: '',
+    ts: 0,
+  };
+  const h = setupApp(t, {
+    getRecoveryVoice: () => ({ id: 1, name: '当前音色' }),
+    regenerateLineAudio: async () => {
+      const repairedAudio = {
+        status: 'ready',
+        generated_at: now,
+        voice_profile_id: 1,
+        chunks: [{ index: 0, line: 0, audio_url: '/audio/repair_901.wav', sentence: legacyMsg.japanese }],
+      };
+      const canonicalLine = {
+        index: 0, zh: legacyMsg.content, ja: legacyMsg.japanese, emotion: 'neutral', act: {}, audio: repairedAudio,
+      };
+      legacyMsg.lines = [canonicalLine];
+      return { line: canonicalLine, audio: repairedAudio, persisted: true, saved: true };
+    },
+  });
+  now = h.getWallTime();
+  legacyMsg.ts = now - 8 * 86400000;
   const session = h.active();
+  session.settings.voiceProfileId = 1;
 
   session.messages = [
     { id: 'm_u', role: 'user', content: '用户录音', voiceKey: 'rec_u', ts: now - 3000 },
-    {
-      id: 'm_legacy',
-      role: 'assistant',
-      ts: now - 2000,
-      content: '旧版消息',
-      japanese: '旧版日本語。',
-      audioUrls: ['/audio/legacy.wav'],
-    },
+    { id: 'm_legacy', role: 'assistant', ts: now - 2000, content: '旧版消息', japanese: '旧版日本語。', audioUrls: ['/audio/legacy.wav'] },
     {
       id: 'm_a',
       role: 'assistant',
       ts: now - 1000,
       lines: [
-        {
-          index: 0,
-          zh: '分句台词',
-          ja: '台詞。',
-          emotion: 'neutral',
-          act: {},
-          audio: { status: 'ready', chunks: [{ index: 0, line: 0, audio_url: '/audio/line0.wav' }] },
-        },
+        { index: 0, zh: '台词0', ja: '台詞0。', emotion: 'neutral', act: {}, audio: { status: 'ready', chunks: [{ index: 0, line: 0, audio_url: '/audio/line0.wav' }] } },
+        { index: 1, zh: '台词1', ja: '台詞1。', emotion: 'neutral', act: {}, audio: { status: 'ready', chunks: [{ index: 0, line: 1, audio_url: '/audio/line1.wav' }] } },
       ],
     },
+    legacyMsg,
   ];
 
   h.app.action('log');
   const log = h.app.backlog;
+  const getMsgEntry = msgId => [...log.listElement.querySelectorAll('.adv-log-entry')].find(e => e.dataset.msgId === String(msgId));
+  const getLineEntry = lineIdx => [...log.listElement.querySelectorAll('.adv-log-entry.is-assistant')]
+    .find(e => e.dataset.msgId === 'm_a' && e.dataset.lineIndex === String(lineIdx));
 
-  // 1. Assistant line replay across renderAll()
-  const lineEntry = [...log.listElement.querySelectorAll('.adv-log-entry.is-assistant')].find(e => !e.classList.contains('is-legacy'));
-  const lineReplayBtn = lineEntry.querySelector('.adv-log-replay-btn');
-  lineReplayBtn.click();
+  // 1. Assistant line replay across renderAll() (via h.done()) and cleanup on playback end
+  const line0Btn = getLineEntry(0).querySelector('.adv-log-replay-btn');
+  line0Btn.click();
   await microtasks();
-  assert.equal(lineReplayBtn.classList.contains('is-playing'), true, 'line replay button should have .is-playing before renderAll');
+  assert.equal(line0Btn.classList.contains('is-playing'), true, 'line replay button should have .is-playing before renderAll');
 
-  // Trigger renderAll() (e.g. background chat completion)
   h.done();
   await microtasks();
+  const newLine0Btn = getLineEntry(0).querySelector('.adv-log-replay-btn');
+  assert.notEqual(newLine0Btn, line0Btn, 'entry should have been reconstructed in DOM');
+  assert.equal(newLine0Btn.classList.contains('is-playing'), true, 'reconstructed line replay button should preserve .is-playing');
 
-  const newLineEntry = [...log.listElement.querySelectorAll('.adv-log-entry.is-assistant')].find(e => !e.classList.contains('is-legacy'));
-  const newLineReplayBtn = newLineEntry.querySelector('.adv-log-replay-btn');
-  assert.notEqual(newLineReplayBtn, lineReplayBtn, 'entry should have been reconstructed in DOM');
-  assert.equal(newLineReplayBtn.classList.contains('is-playing'), true, 'reconstructed line replay button should preserve .is-playing');
-
-  // Finish audio playback
   h.endVoice('ended');
   await microtasks();
-  assert.equal(newLineReplayBtn.classList.contains('is-playing'), false, 'reconstructed line replay button should clear .is-playing on playback end');
+  assert.equal(newLine0Btn.classList.contains('is-playing'), false, 'reconstructed line replay button should clear .is-playing on playback end');
 
-  // 2. Legacy assistant replay across renderAll()
-  const legacyEntry = log.listElement.querySelector('.adv-log-entry.is-legacy');
-  const legacyReplayBtn = legacyEntry.querySelector('.adv-log-replay-btn');
+  // 2. Rapid switching between line 0 -> line 1 -> user recording across multiple renderAll() cycles
+  newLine0Btn.click();
+  await microtasks();
+  log.renderAll();
+  let [reconstructedLine0, reconstructedLine1] = [0, 1].map(i => getLineEntry(i).querySelector('.adv-log-replay-btn'));
+  assert.equal(reconstructedLine0.classList.contains('is-playing'), true);
+  assert.equal(reconstructedLine1.classList.contains('is-playing'), false);
+
+  reconstructedLine1.click();
+  await microtasks();
+  assert.equal(reconstructedLine0.classList.contains('is-playing'), false, 'line 0 button should lose is-playing when line 1 is clicked');
+  assert.equal(reconstructedLine1.classList.contains('is-playing'), true, 'line 1 button should gain is-playing');
+
+  log.renderAll();
+  [reconstructedLine0, reconstructedLine1] = [0, 1].map(i => getLineEntry(i).querySelector('.adv-log-replay-btn'));
+  assert.equal(reconstructedLine0.classList.contains('is-playing'), false);
+  assert.equal(reconstructedLine1.classList.contains('is-playing'), true);
+
+  const userRecBtn = log.listElement.querySelector('.adv-log-user-recording-btn');
+  userRecBtn.click();
+  const userCtl = h.calls.playUserVoice.at(-1).ctl;
+  userCtl.setPlaying(true);
+  assert.equal(reconstructedLine1.classList.contains('is-playing'), false, 'line 1 should lose is-playing when user voice is clicked');
+  assert.equal(userRecBtn.classList.contains('is-playing'), true, 'user recording button should have .is-playing');
+
+  log.renderAll();
+  const newUserRecBtn = log.listElement.querySelector('.adv-log-user-recording-btn');
+  assert.notEqual(newUserRecBtn, userRecBtn, 'user entry should have been reconstructed in DOM');
+  assert.equal(newUserRecBtn.classList.contains('is-playing'), true, 'reconstructed user recording button should preserve .is-playing');
+
+  userCtl.setPlaying(false);
+  assert.equal(newUserRecBtn.classList.contains('is-playing'), false, 'reconstructed user recording button should clear .is-playing on setPlaying(false)');
+
+  // 3. Unrepaired legacy assistant replay across renderAll() and stopReplay()
+  const legacyReplayBtn = getMsgEntry('m_legacy').querySelector('.adv-log-replay-btn');
   legacyReplayBtn.click();
   await microtasks();
   assert.equal(legacyReplayBtn.classList.contains('is-playing'), true, 'legacy replay button should have .is-playing before renderAll');
 
-  // Re-render
   log.renderAll();
-  const newLegacyEntry = log.listElement.querySelector('.adv-log-entry.is-legacy');
-  const newLegacyReplayBtn = newLegacyEntry.querySelector('.adv-log-replay-btn');
+  const newLegacyReplayBtn = getMsgEntry('m_legacy').querySelector('.adv-log-replay-btn');
   assert.notEqual(newLegacyReplayBtn, legacyReplayBtn, 'legacy entry should have been reconstructed in DOM');
   assert.equal(newLegacyReplayBtn.classList.contains('is-playing'), true, 'reconstructed legacy replay button should preserve .is-playing');
 
-  // Stop replay via stopReplay
   log.stopReplay();
   assert.equal(newLegacyReplayBtn.classList.contains('is-playing'), false, 'reconstructed legacy replay button should clear .is-playing on stopReplay');
 
-  // 3. User recording replay across renderAll()
-  const userEntry = log.listElement.querySelector('.adv-log-entry.is-user');
-  const userRecBtn = userEntry.querySelector('.adv-log-user-recording-btn');
-  userRecBtn.click();
-  assert.equal(h.calls.playUserVoice.length, 1);
-  const userCtl = h.calls.playUserVoice[0].ctl;
-  userCtl.setPlaying(true);
-  assert.equal(userRecBtn.classList.contains('is-playing'), true, 'user recording button should have .is-playing');
+  // 4. Repaired legacy reply preserves .is-playing across renderAll() when upgrading to line entry
+  const repairEntry = getMsgEntry(901);
+  assert.ok(repairEntry.classList.contains('is-legacy'), 'entry should initially be legacy');
+  const repairReplayBtn = repairEntry.querySelector('.adv-log-replay-btn');
+  const repairRegenBtn = repairEntry.querySelector('.adv-log-regenerate-btn');
+  assert.equal(repairReplayBtn.disabled, true, 'unrepaired legacy entry replay button should be disabled');
 
-  // Re-render
+  await repairRegenBtn.onclick({ stopPropagation() {} });
+  assert.ok(legacyMsg.lines, 'legacyMsg now has lines');
+  assert.equal(repairReplayBtn.disabled, false, 'replay button should be enabled after repair');
+
+  const playPromise = repairReplayBtn.onclick({ stopPropagation() {} });
+  await microtasks();
+  assert.equal(repairReplayBtn.classList.contains('is-playing'), true, 'replay button should have .is-playing before renderAll');
+
   log.renderAll();
-  const newUserEntry = log.listElement.querySelector('.adv-log-entry.is-user');
-  const newUserRecBtn = newUserEntry.querySelector('.adv-log-user-recording-btn');
-  assert.notEqual(newUserRecBtn, userRecBtn, 'user entry should have been reconstructed in DOM');
-  assert.equal(newUserRecBtn.classList.contains('is-playing'), true, 'reconstructed user recording button should preserve .is-playing');
+  const refreshedEntry = getMsgEntry(901);
+  assert.equal(refreshedEntry.classList.contains('is-legacy'), false, 're-rendered entry should now be line entry');
+  const refreshedReplayBtn = refreshedEntry.querySelector('.adv-log-replay-btn');
+  assert.notEqual(refreshedReplayBtn, repairReplayBtn, 'entry should have been reconstructed in DOM');
+  assert.equal(refreshedReplayBtn.classList.contains('is-playing'), true, 'refreshed replay button MUST preserve is-playing state across renderAll()');
 
-  // Finish user playback
-  userCtl.setPlaying(false);
-  assert.equal(newUserRecBtn.classList.contains('is-playing'), false, 'reconstructed user recording button should clear .is-playing on setPlaying(false)');
+  h.endVoice('ended');
+  await playPromise;
+  await microtasks();
+  assert.equal(refreshedReplayBtn.classList.contains('is-playing'), false, 'refreshed replay button should clear .is-playing on playback end');
+
+  // 5. Legacy reply starts playing BEFORE msg.lines exists, then msg.lines is added and renderAll() upgrades key
+  const legacyMsg2 = { id: 902, role: 'assistant', content: '旧消息2', japanese: '古いメッセージ2', audioUrls: ['/audio/legacy_902.wav'], ts: now };
+  session.messages.push(legacyMsg2);
+  log.renderAll();
+
+  const legacyEntry2 = getMsgEntry(902);
+  assert.ok(legacyEntry2.classList.contains('is-legacy'));
+  const legacyReplayBtn2 = legacyEntry2.querySelector('.adv-log-replay-btn');
+  const playPromise3 = legacyReplayBtn2.onclick({ stopPropagation() {} });
+  await microtasks();
+  assert.equal(legacyReplayBtn2.classList.contains('is-playing'), true);
+
+  legacyMsg2.lines = [{
+    index: 0, zh: legacyMsg2.content, ja: legacyMsg2.japanese, emotion: 'neutral', act: {},
+    audio: { status: 'ready', chunks: [{ index: 0, line: 0, audio_url: '/audio/legacy_902.wav', sentence: legacyMsg2.japanese }] },
+  }];
+  log.renderAll();
+
+  const refreshedLineEntry2 = getMsgEntry(902);
+  assert.equal(refreshedLineEntry2.classList.contains('is-legacy'), false);
+  const refreshedLineReplayBtn2 = refreshedLineEntry2.querySelector('.adv-log-replay-btn');
+  assert.equal(refreshedLineReplayBtn2.classList.contains('is-playing'), true, 'line entry upgrades legacy replay key and preserves is-playing');
+
+  h.endVoice('ended');
+  await playPromise3;
+  await microtasks();
+  assert.equal(refreshedLineReplayBtn2.classList.contains('is-playing'), false, 'upgraded replay button clears is-playing on playback end');
 });
 
 test('LOG: user recording re-render before setPlaying(true), and line audio failure after re-render', async t => {
@@ -2773,78 +2551,6 @@ test('LOG: user recording re-render before setPlaying(true), and line audio fail
   assert.equal(reconstructedLineBtn.title, '语音已过期或不可用');
 });
 
-test('LOG: rapid switching between lines and user recording across multiple renderAll() cycles', async t => {
-  const h = setupApp(t);
-  const now = h.getWallTime();
-  const session = h.active();
-
-  session.messages = [
-    { id: 'm_u', role: 'user', content: '用户录音', voiceKey: 'rec_u', ts: now - 3000 },
-    {
-      id: 'm_a',
-      role: 'assistant',
-      ts: now - 1000,
-      lines: [
-        {
-          index: 0,
-          zh: '台词0',
-          ja: '台詞0。',
-          audio: { status: 'ready', chunks: [{ index: 0, line: 0, audio_url: '/audio/line0.wav' }] },
-        },
-        {
-          index: 1,
-          zh: '台词1',
-          ja: '台詞1。',
-          audio: { status: 'ready', chunks: [{ index: 0, line: 1, audio_url: '/audio/line1.wav' }] },
-        },
-      ],
-    },
-  ];
-
-  h.app.action('log');
-  const log = h.app.backlog;
-
-  // Click line 0 replay
-  const line0Btn = log.listElement.querySelectorAll('.adv-log-replay-btn')[0];
-  line0Btn.click();
-  await microtasks();
-  assert.equal(line0Btn.classList.contains('is-playing'), true);
-
-  // Re-render
-  log.renderAll();
-  let [reconstructedLine0, reconstructedLine1] = log.listElement.querySelectorAll('.adv-log-replay-btn');
-  assert.equal(reconstructedLine0.classList.contains('is-playing'), true);
-  assert.equal(reconstructedLine1.classList.contains('is-playing'), false);
-
-  // Click line 1 while line 0 is playing across renderAll()
-  reconstructedLine1.click();
-  await microtasks();
-  assert.equal(reconstructedLine0.classList.contains('is-playing'), false, 'line 0 button should lose is-playing when line 1 is clicked');
-  assert.equal(reconstructedLine1.classList.contains('is-playing'), true, 'line 1 button should gain is-playing');
-
-  // Re-render again
-  log.renderAll();
-  [reconstructedLine0, reconstructedLine1] = log.listElement.querySelectorAll('.adv-log-replay-btn');
-  assert.equal(reconstructedLine0.classList.contains('is-playing'), false);
-  assert.equal(reconstructedLine1.classList.contains('is-playing'), true);
-
-  // Now switch from line 1 to user recording across re-render
-  const userBtn = log.listElement.querySelector('.adv-log-user-recording-btn');
-  userBtn.click();
-  assert.equal(reconstructedLine1.classList.contains('is-playing'), false, 'line 1 should lose is-playing when user voice is clicked');
-  assert.equal(userBtn.classList.contains('is-playing'), true, 'user button should gain is-playing');
-
-  // Re-render while user voice is active
-  log.renderAll();
-  const reconstructedUserBtn = log.listElement.querySelector('.adv-log-user-recording-btn');
-  assert.equal(reconstructedUserBtn.classList.contains('is-playing'), true, 'reconstructed user button preserves is-playing');
-
-  // End user voice
-  const userCtl = h.calls.playUserVoice.at(-1).ctl;
-  userCtl.setPlaying(false);
-  assert.equal(reconstructedUserBtn.classList.contains('is-playing'), false, 'reconstructed user button clears is-playing');
-});
-
 test('LOG: user recording whose audio cache was evicted or missing resets .is-playing immediately and across renderAll()', async t => {
   const h = setupApp(t, {
     playUserVoice: (msg, ctl) => playUserVoice(msg, ctl),
@@ -2891,156 +2597,4 @@ test('LOG: user recording whose audio cache was evicted or missing resets .is-pl
   const newUserEntry = log.listElement.querySelector('.adv-log-entry.is-user');
   const newUserRecBtn = newUserEntry.querySelector('.adv-log-user-recording-btn');
   assert.equal(newUserRecBtn.classList.contains('is-playing'), false, 'reconstructed user recording button should not have .is-playing after renderAll()');
-});
-
-test('LOG: repaired legacy reply preserves .is-playing across renderAll() and cleans up on playback end', async t => {
-  const doc = fakeDocument();
-  const root = doc.createElement('div');
-  doc.body.appendChild(root);
-  const now = Date.now();
-
-  const legacyMsg = {
-    id: 901,
-    role: 'assistant',
-    content: '你好',
-    japanese: 'こんにちは',
-    audio_url: '',
-    ts: now - 8 * 86400000,
-  };
-
-  const session = {
-    id: 's_repaired_legacy_replay',
-    settings: { voiceProfileId: 1 },
-    messages: [legacyMsg],
-  };
-
-  let resolvePlay;
-  const log = createBacklog(root, {
-    getSession: () => session,
-    getSettings: () => DEFAULT_SESSION_SETTINGS,
-    getCharacter: () => ({ name: '角色' }),
-    voiceEnabled: () => true,
-    wallNow: () => now,
-    getRecoveryVoice: () => ({ id: 1, name: '当前音色' }),
-    audio: {
-      stopLine() {},
-      async playLine() {
-        return new Promise(r => { resolvePlay = r; });
-      },
-    },
-    regenerateLineAudio: async ({ messageId, lineIndex }) => {
-      const repairedAudio = {
-        status: 'ready',
-        generated_at: now,
-        voice_profile_id: 1,
-        chunks: [{ index: 0, line: 0, audio_url: '/audio/repair_901.wav', sentence: legacyMsg.japanese }],
-      };
-      const canonicalLine = {
-        index: 0,
-        zh: legacyMsg.content,
-        ja: legacyMsg.japanese,
-        emotion: 'neutral',
-        act: {},
-        audio: repairedAudio,
-      };
-      legacyMsg.lines = [canonicalLine];
-      return { line: canonicalLine, audio: repairedAudio, persisted: true, saved: true };
-    },
-  });
-  t.after(() => log.destroy());
-
-  let entry = root.querySelector('.adv-log-entry.is-assistant');
-  assert.ok(entry.classList.contains('is-legacy'), 'entry should initially be legacy');
-  let replayBtn = entry.querySelector('.adv-log-replay-btn');
-  let regenBtn = entry.querySelector('.adv-log-regenerate-btn');
-  assert.equal(replayBtn.disabled, true, 'unrepaired legacy entry replay button should be disabled');
-
-  // 1. Click regenerate button to repair
-  await regenBtn.onclick({ stopPropagation() {} });
-  assert.ok(legacyMsg.lines, 'legacyMsg now has lines');
-  assert.equal(replayBtn.disabled, false, 'replay button should be enabled after repair');
-
-  // 2. Click replay button to start playing
-  const playPromise = replayBtn.onclick({ stopPropagation() {} });
-  await microtasks();
-  assert.equal(replayBtn.classList.contains('is-playing'), true, 'replay button should have .is-playing before renderAll');
-
-  // 3. Trigger renderAll() while playback is in flight (message now renders via renderAssistantLineEntry)
-  log.renderAll();
-
-  const refreshedEntry = root.querySelector('.adv-log-entry.is-assistant');
-  assert.equal(refreshedEntry.classList.contains('is-legacy'), false, 're-rendered entry should now be line entry');
-  const refreshedReplayBtn = refreshedEntry.querySelector('.adv-log-replay-btn');
-  assert.notEqual(refreshedReplayBtn, replayBtn, 'entry should have been reconstructed in DOM');
-
-  // 4. Assert that reconstructed button preserves .is-playing class
-  assert.equal(
-    refreshedReplayBtn.classList.contains('is-playing'),
-    true,
-    'refreshed replay button MUST preserve is-playing state across renderAll()'
-  );
-
-  // 5. Complete audio playback and assert .is-playing is removed
-  resolvePlay('ended');
-  await playPromise;
-  await microtasks();
-  assert.equal(
-    refreshedReplayBtn.classList.contains('is-playing'),
-    false,
-    'refreshed replay button should clear .is-playing on playback end'
-  );
-
-  // Sub-case B: Replaying again, but stopped via stopReplay() after renderAll()
-  const playPromise2 = refreshedReplayBtn.onclick({ stopPropagation() {} });
-  await microtasks();
-  assert.equal(refreshedReplayBtn.classList.contains('is-playing'), true);
-
-  log.renderAll();
-  const refreshedEntry2 = root.querySelector('.adv-log-entry.is-assistant');
-  const refreshedReplayBtn2 = refreshedEntry2.querySelector('.adv-log-replay-btn');
-  assert.equal(refreshedReplayBtn2.classList.contains('is-playing'), true);
-
-  log.stopReplay();
-  assert.equal(refreshedReplayBtn2.classList.contains('is-playing'), false, 'stopReplay() clears .is-playing on re-rendered button');
-
-  // Sub-case C: Legacy reply starts playing BEFORE msg.lines exists, then msg.lines is added and renderAll() is triggered
-  const legacyMsg2 = {
-    id: 902,
-    role: 'assistant',
-    content: '旧消息2',
-    japanese: '古いメッセージ2',
-    audioUrls: ['/audio/legacy_902.wav'],
-    ts: now,
-  };
-  session.messages.push(legacyMsg2);
-  log.renderAll();
-
-  const legacyEntry2 = [...root.querySelectorAll('.adv-log-entry.is-assistant')].find(e => e.dataset.msgId === '902');
-  assert.ok(legacyEntry2.classList.contains('is-legacy'));
-  const legacyReplayBtn2 = legacyEntry2.querySelector('.adv-log-replay-btn');
-
-  const playPromise3 = legacyReplayBtn2.onclick({ stopPropagation() {} });
-  await microtasks();
-  assert.equal(legacyReplayBtn2.classList.contains('is-playing'), true);
-
-  // During playback, message is upgraded with msg.lines and renderAll() is triggered
-  legacyMsg2.lines = [{
-    index: 0,
-    zh: legacyMsg2.content,
-    ja: legacyMsg2.japanese,
-    emotion: 'neutral',
-    act: {},
-    audio: { status: 'ready', chunks: [{ index: 0, line: 0, audio_url: '/audio/legacy_902.wav', sentence: legacyMsg2.japanese }] },
-  }];
-  log.renderAll();
-
-  const refreshedLineEntry2 = [...root.querySelectorAll('.adv-log-entry.is-assistant')].find(e => e.dataset.msgId === '902');
-  assert.equal(refreshedLineEntry2.classList.contains('is-legacy'), false);
-  const refreshedLineReplayBtn2 = refreshedLineEntry2.querySelector('.adv-log-replay-btn');
-  assert.equal(refreshedLineReplayBtn2.classList.contains('is-playing'), true, 'line entry upgrades legacy replay key and preserves is-playing');
-
-  resolvePlay('ended');
-  await playPromise3;
-  await microtasks();
-  assert.equal(refreshedLineReplayBtn2.classList.contains('is-playing'), false, 'upgraded replay button clears is-playing on playback end');
 });
