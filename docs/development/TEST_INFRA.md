@@ -258,9 +258,6 @@ Tier 4 simulates realistic, end-to-end user workflows and real production worklo
 # Run the entire automated test suite
 python -m pytest
 
-# Run industrial hardening and E2E regression tests specifically
-python -m pytest tests/test_e2e_industrial_hardening.py -v
-
 # Run with coverage report
 python -m pytest --cov=galgame2voice --cov-report=term-missing
 ```
