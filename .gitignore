@@ -134,3 +134,7 @@ scripts/*.json
 !scripts/dev_standins_replies.json
 scripts/*.txt
 
+
+# Profile folders of headless browser runs that Windows could not delete while the browser still held them
+g2v-browser-*/
+g2v-sprite-*/
