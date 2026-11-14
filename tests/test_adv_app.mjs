@@ -117,15 +117,6 @@ test('the audio start notification reaches the sentence player before revealing'
   assert.equal(h.app.player.state, 'revealing');
 });
 
-test('the audio start notification reaches the sentence player before revealing', t => {
-  const h = setup(t, { startNotification: true }); h.start(); h.line(); h.audioEvent();
-  assert.equal(h.app.player.state, 'waiting_audio');
-  h.clock.tick(2000);
-  assert.equal(h.app.player.state, 'waiting_audio');
-  h.audio.played[0].opts.onStart();
-  assert.equal(h.app.player.state, 'revealing');
-});
-
 test('timeout accepts late audio only on the current line and rejects old turn events', async t => {
   const h = setup(t, { settings: { advTextIntervalMs: 0, advAutoMode: 'normal' } }); h.start(); h.line(); h.line(1);
   h.clock.tick(1500); assert.equal(h.app.player.state, 'waiting_advance');
@@ -193,6 +184,32 @@ test('live reduced motion finishes reveal and never re-announces/replays the lin
   assert.equal(live.textWrites.length, count); assert.equal(h.audio.played.length, 1);
   h.app.action('swap_languages'); assert.equal(live.textWrites.length, count);
   assert.equal(h.app.textbox.currentPrimaryText, 'こんにちは。'); h.motion(false);
+});
+
+test('swap_languages repaginates a multi-page target language in place without replaying voice', t => {
+  const h = setup(t, { settings: { advTextIntervalMs: 0 } });
+  const stage = h.app.stage.stage;
+  stage.querySelector('.adv-text-column').clientWidth = 17;
+  stage.querySelector('.adv-subtitle-measurer').clientWidth = 10;
+  const measurer = stage.querySelector('.adv-text-measurer');
+  measurer.getBoundingClientRect = () => ({ width: measurer.textContent.length, height: 100 });
+  const primary = stage.querySelector('.adv-primary-text');
+  const sub = stage.querySelector('.adv-subtitle-text');
+  h.start();
+  h.line(0, { zh: '短中文第一句。第二句。', ja: 'とても長い日本語の文章です。分割が必要です。' });
+  h.audioEvent(0);
+  assert.equal(primary.textContent, '「短中文第一句。第二句。」');
+  assert.equal(h.audio.played.length, 1);
+  h.app.action('swap_languages');
+  assert.equal(h.app.player.settings.primary, 'ja');
+  assert.equal(h.app.player.page, 0);
+  assert.equal(primary.textContent, '「とても長い日本語の文章です。」');
+  assert.equal(sub.textContent, '「短中文第一句。」');
+  assert.equal(h.audio.played.length, 1);
+  h.app.action('advance');
+  assert.equal(h.app.player.page, 1);
+  assert.equal(primary.textContent, '「分割が必要です。」');
+  assert.equal(sub.textContent, '「第二句。」');
 });
 
 test('stale sprite decode after character/session switch cannot repaint stage or crop', async t => {
@@ -347,40 +364,23 @@ test('hidden window does not activate incoming lines, and stops an active SKIP t
   assert.equal(h.app.player.currentIndex, 0); assert.equal(h.app.player.skip, false);
 });
 
-test('one live announcement per activated line; viewport reflow never replays or announces', t => {
+test('live region announces once per active line, ignores relayout, and clears across session switches', t => {
   const h = setup(t, { settings: { advTextIntervalMs: 0 } }); h.start();
   const live = h.app.stage.stage.querySelector('.adv-live-region'); const before = live.textWrites.length;
-  h.line(); h.audioEvent(); h.line(1); assert.equal(live.textWrites.length, before + 1);
+  h.line(0, { zh: '电车已经开走了。' }); h.audioEvent(0); h.line(1, { zh: '我们等下一班吧。' });
+  assert.equal(live.textContent, '测试角色：电车已经开走了。');
+  assert.equal(live.textWrites.length, before + 1);
   h.viewport.dispatchEvent({ type: 'resize' }); assert.equal(live.textWrites.length, before + 1);
-  assert.equal(h.audio.played.length, 1); h.app.action('advance');
-  assert.equal(live.textWrites.length, before + 2);
-});
-
-test('switching sessions clears the previous live announcement', t => {
-  const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0 } }); h.start();
-  const live = h.app.stage.stage.querySelector('.adv-live-region');
-  h.line(0, { zh: '电车已经开走了。' });
-  assert.equal(live.textContent, '测试角色：电车已经开走了。');
-  h.switchSession(1);
-  assert.equal(live.textContent, '');
-  h.switchSession(0);
-  assert.equal(live.textContent, '', 'returning to a session does not restore an old announcement');
-});
-
-test('advancing within a session replaces the live announcement with the next line', t => {
-  const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0 } }); h.start();
-  const live = h.app.stage.stage.querySelector('.adv-live-region');
-  h.line(0, { zh: '电车已经开走了。' });
-  h.line(1, { zh: '我们等下一班吧。' });
-  assert.equal(live.textContent, '测试角色：电车已经开走了。');
-  const before = live.textWrites.length;
+  assert.equal(h.audio.played.length, 1);
+  const beforeAdvance = live.textWrites.length;
   h.app.action('advance');
   assert.equal(live.textContent, '测试角色：我们等下一班吧。');
-  assert.deepEqual(live.textWrites.slice(before), ['测试角色：我们等下一班吧。']);
-  h.app.update();
-  h.viewport.dispatchEvent({ type: 'resize' });
+  assert.deepEqual(live.textWrites.slice(beforeAdvance), ['测试角色：我们等下一班吧。']);
+  h.app.update(); h.viewport.dispatchEvent({ type: 'resize' });
   assert.equal(live.textContent, '测试角色：我们等下一班吧。');
-  assert.equal(live.textWrites.length, before + 1);
+  assert.equal(live.textWrites.length, beforeAdvance + 1);
+  h.switchSession(1); assert.equal(live.textContent, '');
+  h.switchSession(0); assert.equal(live.textContent, '', 'returning to a session does not restore an old announcement');
 });
 
 test('mic, model and configuration controls are reachable without advancing the dialogue', t => {
@@ -786,52 +786,81 @@ test('temporary hold-skip is cleared when playback stops skip or player toggles 
   assert.equal(h.app.player.skip, true);
 });
 
+function mountConversationAdv(t, options = {}) {
+  const doc = fakeDocument(); globalThis.document = doc;
+  const clock = fakeClock(), requests = [], voiceEnabled = options.voiceEnabled ?? true;
+  let seq = 0, setOverlay = () => {};
+  const session = { id: options.sessionId || 's_replay', title: '对话',
+    settings: { ...DEFAULT_SESSION_SETTINGS, advEnabled: true, voiceProfileId: 1, ...options.settings },
+    messages: [...(options.messages || [])] };
+  const audio = { played: [], stopped: [],
+    playLine(index, chunks, opts) {
+      this.played.push({ index, urls: (chunks || []).map(chunk => chunk?.audio_url || chunk), opts });
+      return Promise.resolve('ended');
+    },
+    stopLine(opts) { this.stopped.push(opts || {}); } };
+  const controller = createConversation({
+    state: { global: { voiceMode: voiceEnabled, voiceOut: voiceEnabled } },
+    getActive: () => session, getSession: id => (id === session.id ? session : null),
+    addMessage: (role, content) => {
+      const message = { id: `m_${++seq}`, role, content, ts: Date.now() };
+      session.messages.push(message); return message;
+    },
+    uid: prefix => `${prefix}_${++seq}`, saveState: () => true, persistSession: async () => {},
+    isSessionDeleting: () => false, audioStore: new Map(), putCachedAudioBlob: () => {},
+    fetchAndCacheAudio: async () => {}, audioPlayer: { isPlaying: false },
+    getCurrentVoice: () => null, stopCurrentVoice: () => {}, fetch: options.fetch,
+  });
+  const regenerateLineAudio = createLineAudioRecovery({
+    getSession: () => session, getVoiceProfiles: () => [{ id: 1, name: '角色A' }], saveState: () => true,
+    request: async (url, reqOpts) => {
+      const body = JSON.parse(reqOpts.body); requests.push({ url, body });
+      const repairUrl = body.message_id === 7 ? '/audio/repair_old_abcdef12.wav' : `/audio/repair_line${body.line_index}_abcdef12.wav`;
+      return { session_id: session.id, message_id: body.message_id, line_index: body.line_index,
+        voice_profile_id: 1, persisted: body.message_id !== null,
+        audio: { status: 'ready', generated_at: Date.now(), voice_profile_id: 1,
+          chunks: [{ index: 0, line: body.line_index, audio_url: repairUrl, sentence: body.text }] } };
+    },
+  });
+  const dom = Object.fromEntries(['root', 'sidebar', 'messages', 'input', 'micBtn']
+    .map(key => [key, doc.createElement(key === 'input' ? 'textarea' : 'div')]));
+  for (const el of Object.values(dom)) doc.body.appendChild(el);
+  class Image extends Element { constructor() { super('img', doc); } decode() { return Promise.resolve(); } }
+  const openSettings = () => setOverlay(true);
+  const app = mountAdv(dom, {
+    controller, audio, clock, getSession: () => session, voiceEnabled: () => voiceEnabled,
+    getCharacter: () => ({ id: 1, name: '角色A' }), getRecoveryVoice: () => ({ id: 1, name: '角色A' }),
+    ImageClass: Image, loadPortrait: async () => null, fetchBackgrounds: async () => ({ backgrounds: [] }),
+    raf: () => 1, cancelRaf: () => {},
+    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+    viewport: doc.createElement('div'), onSettings: openSettings, onModelSettings: openSettings,
+    subscribeOverlay: fn => { setOverlay = fn; return () => {}; }, regenerateLineAudio,
+  });
+  t.after(() => { controller.stop(); app.unmount(); delete globalThis.document; });
+  return { app, controller, audio, clock, session, requests, setOverlay: open => setOverlay(open) };
+}
+
 // One delivered line, then the real chat stream stalls or closes. The stage
 // must not offer an in-place resend, and it must not stay locked on the error.
 for (const failure of ['idle_timeout', 'dropped_stream']) {
   test(`partial reply after ${failure} returns to input from the error, including after settings`, async (t) => {
-    const doc = fakeDocument();
-    globalThis.document = doc;
     const realSetTimeout = globalThis.setTimeout;
     if (failure === 'idle_timeout') {
       globalThis.setTimeout = (fn, ms, ...args) => realSetTimeout(fn, ms >= 100000 ? 20 : ms, ...args);
     }
-    const clock = fakeClock();
-    let seq = 0;
-    let setOverlay = () => {};
-    const requests = [];
-    const session = {
-      id: 's_partial',
-      title: '对话',
-      settings: { ...DEFAULT_SESSION_SETTINGS, advEnabled: true, advTextIntervalMs: 0 },
-      messages: [],
-    };
+    t.after(() => { globalThis.setTimeout = realSetTimeout; });
+    const chatRequests = [];
     const linePayload = `event: line\ndata: ${JSON.stringify({
       index: 0, zh: '先收到的半截回复。', ja: '最初の文。', emotion: 'gentle', act: {},
     })}\n\n`;
     const lineBytes = new TextEncoder().encode(linePayload);
-    const controller = createConversation({
-      state: { global: { voiceOut: false } },
-      getActive: () => session,
-      getSession: id => (id === session.id ? session : null),
-      addMessage: (role, content) => {
-        const msg = { id: `m_${++seq}`, role, content, ts: Date.now() };
-        session.messages.push(msg);
-        return msg;
-      },
-      uid: prefix => `${prefix}_${++seq}`,
-      saveState: () => true,
-      persistSession: async () => {},
-      isSessionDeleting: () => false,
-      audioStore: new Map(),
-      putCachedAudioBlob: () => {},
-      fetchAndCacheAudio: async () => {},
-      audioPlayer: { isPlaying: false },
-      getCurrentVoice: () => null,
-      stopCurrentVoice: () => {},
+    const { app, controller, session, setOverlay } = mountConversationAdv(t, {
+      sessionId: 's_partial',
+      voiceEnabled: false,
+      settings: { advTextIntervalMs: 0 },
       fetch: async (url, opts) => {
-        requests.push({ url, body: opts?.body });
-        const first = requests.length === 1;
+        chatRequests.push({ url, body: opts?.body });
+        const first = chatRequests.length === 1;
         return new Response(new ReadableStream({
           start(ctrl) {
             if (first) ctrl.enqueue(lineBytes);
@@ -842,35 +871,6 @@ for (const failure of ['idle_timeout', 'dropped_stream']) {
           },
         }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
       },
-    });
-    const dom = Object.fromEntries(['root', 'sidebar', 'messages', 'input', 'micBtn']
-      .map(key => [key, doc.createElement(key === 'input' ? 'textarea' : 'div')]));
-    for (const el of Object.values(dom)) doc.body.appendChild(el);
-    class Image extends Element { constructor() { super('img', doc); } decode() { return Promise.resolve(); } }
-    const openSettings = () => setOverlay(true);
-    const app = mountAdv(dom, {
-      controller,
-      audio: { playLine: async () => 'ended', stopLine() {} },
-      clock,
-      getSession: () => session,
-      voiceEnabled: () => false,
-      getCharacter: () => ({ id: 1, name: '角色A' }),
-      ImageClass: Image,
-      loadPortrait: async () => null,
-      fetchBackgrounds: async () => ({ backgrounds: [] }),
-      raf: () => 1,
-      cancelRaf: () => {},
-      matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
-      viewport: doc.createElement('div'),
-      onSettings: openSettings,
-      onModelSettings: openSettings,
-      subscribeOverlay: fn => { setOverlay = fn; return () => {}; },
-    });
-    t.after(() => {
-      globalThis.setTimeout = realSetTimeout;
-      controller.stop();
-      app.unmount();
-      delete globalThis.document;
     });
 
     assert.equal(controller.send('你好'), true);
@@ -921,8 +921,8 @@ for (const failure of ['idle_timeout', 'dropped_stream']) {
     input.dispatchEvent({ type: 'keydown', key: 'Enter' });
     assert.deepEqual(session.messages.filter(item => item.role === 'user').map(item => item.content), ['你好', '接着说']);
     await microtasks();
-    assert.equal(requests.at(-1).url, '/api/chat/stream');
-    assert.equal(JSON.parse(requests.at(-1).body).prompt, '接着说');
+    assert.equal(chatRequests.at(-1).url, '/api/chat/stream');
+    assert.equal(JSON.parse(chatRequests.at(-1).body).prompt, '接着说');
     controller.stop();
     await microtasks();
     assert.equal(session.messages.filter(item => item.role === 'assistant').length, 1);
@@ -941,90 +941,19 @@ function sseResponse(events) {
 // A finished reply stores new line objects. LOG repair must be driven through that
 // stored message and the real stage, the same way the voice button does.
 async function mountReplyWithFailedAudio(t) {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  const clock = fakeClock();
-  let seq = 0;
-  const session = {
-    id: 's_replay',
-    title: '对话',
-    settings: { ...DEFAULT_SESSION_SETTINGS, advEnabled: true, voiceProfileId: 1 },
-    messages: [{
-      id: 'm_old', serverMessageId: 7, role: 'assistant', content: '旧台词', japanese: '古い台詞。', ts: 1,
-      lines: [{ index: 0, zh: '旧台词', ja: '古い台詞。', emotion: 'gentle', act: {}, audio: { status: 'failed', chunks: [] } }],
-    }],
-  };
-  const requests = [];
-  const audio = {
-    played: [], stopped: [],
-    playLine(index, chunks, opts) {
-      this.played.push({ index, urls: (chunks || []).map(chunk => chunk?.audio_url || chunk), opts });
-      return Promise.resolve('ended');
-    },
-    stopLine(opts) { this.stopped.push(opts || {}); },
-  };
   const spoken = index => ({ index, zh: `第${index}句`, ja: `文${index}。`, emotion: 'gentle', act: {}, audio: { status: 'failed', chunks: [] } });
   const events = [0, 1].flatMap(index => [
     { event: 'line', data: { index, zh: spoken(index).zh, ja: spoken(index).ja, emotion: 'gentle', act: {} } },
     { event: 'line_audio', data: { line: index, status: 'failed', chunks: [] } },
   ]);
   events.push({ event: 'done', data: { message_id: 101, full_chinese: '第0句第1句', full_japanese: '文0。文1。', lines: [spoken(0), spoken(1)] } });
-  const controller = createConversation({
-    state: { global: { voiceMode: true } },
-    getActive: () => session,
-    getSession: id => (id === session.id ? session : null),
-    addMessage: (role, content) => {
-      const message = { id: `m_${++seq}`, role, content, ts: Date.now() };
-      session.messages.push(message);
-      return message;
-    },
-    uid: prefix => `${prefix}_${++seq}`,
-    saveState: () => true,
-    persistSession: async () => {},
-    isSessionDeleting: () => false,
-    audioStore: new Map(),
-    putCachedAudioBlob: () => {},
-    fetchAndCacheAudio: async () => {},
-    audioPlayer: { isPlaying: false },
-    getCurrentVoice: () => null,
-    stopCurrentVoice: () => {},
+  const { app, controller, audio, requests, session } = mountConversationAdv(t, {
+    messages: [{
+      id: 'm_old', serverMessageId: 7, role: 'assistant', content: '旧台词', japanese: '古い台詞。', ts: 1,
+      lines: [{ index: 0, zh: '旧台词', ja: '古い台詞。', emotion: 'gentle', act: {}, audio: { status: 'failed', chunks: [] } }],
+    }],
     fetch: async () => sseResponse(events),
   });
-  const regenerateLineAudio = createLineAudioRecovery({
-    getSession: () => session,
-    getVoiceProfiles: () => [{ id: 1, name: '角色A' }],
-    saveState: () => true,
-    request: async (url, options) => {
-      requests.push({ url, body: JSON.parse(options.body) });
-      const body = requests.at(-1).body;
-      const repairUrl = body.message_id === 7
-        ? '/audio/repair_old_abcdef12.wav'
-        : `/audio/repair_line${body.line_index}_abcdef12.wav`;
-      return {
-        session_id: session.id, message_id: body.message_id, line_index: body.line_index,
-        voice_profile_id: 1, persisted: body.message_id !== null,
-        audio: {
-          status: 'ready', generated_at: Date.now(), voice_profile_id: 1,
-          chunks: [{ index: 0, line: body.line_index, audio_url: repairUrl, sentence: body.text }],
-        },
-      };
-    },
-  });
-  const dom = Object.fromEntries(['root', 'sidebar', 'messages', 'input', 'micBtn']
-    .map(key => [key, doc.createElement(key === 'input' ? 'textarea' : 'div')]));
-  for (const el of Object.values(dom)) doc.body.appendChild(el);
-  class Image extends Element { constructor() { super('img', doc); } decode() { return Promise.resolve(); } }
-  const app = mountAdv(dom, {
-    controller, audio, clock, getSession: () => session, voiceEnabled: () => true,
-    getCharacter: () => ({ id: 1, name: '角色A' }),
-    getRecoveryVoice: () => ({ id: 1, name: '角色A' }),
-    ImageClass: Image, loadPortrait: async () => null,
-    raf: () => 1, cancelRaf: () => {},
-    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
-    viewport: doc.createElement('div'),
-    regenerateLineAudio,
-  });
-  t.after(() => { app.unmount(); delete globalThis.document; });
   assert.equal(controller.send('你好'), true);
   for (let i = 0; i < 50 && controller.busy; i++) await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(controller.busy, false);
@@ -1069,82 +998,15 @@ test('stage replay plays the voice regenerated in LOG for the current line', asy
 });
 
 test('line 1 repaired in LOG plays when the stage reaches it', async t => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  const clock = fakeClock();
   const stream = fakeChatStream();
-  let seq = 0;
-  const session = {
-    id: 's_replay', title: '对话',
-    settings: { ...DEFAULT_SESSION_SETTINGS, advEnabled: true, voiceProfileId: 1, advTextIntervalMs: 0 },
-    messages: [],
-  };
-  const requests = [];
-  const audio = {
-    played: [], stopped: [],
-    playLine(index, chunks) {
-      this.played.push({ index, urls: (chunks || []).map(chunk => chunk?.audio_url || chunk) });
-      return Promise.resolve('ended');
-    },
-    stopLine(opts) { this.stopped.push(opts || {}); },
-  };
   const spoken = index => ({
     index, zh: `第${index}句`, ja: `文${index}。`, emotion: 'gentle', act: {},
     audio: { status: index === 1 ? 'pending' : 'failed', chunks: [] },
   });
-  const controller = createConversation({
-    state: { global: { voiceMode: true } },
-    getActive: () => session,
-    getSession: id => (id === session.id ? session : null),
-    addMessage: (role, content) => {
-      const message = { id: `m_${++seq}`, role, content, ts: Date.now() };
-      session.messages.push(message);
-      return message;
-    },
-    uid: prefix => `${prefix}_${++seq}`,
-    saveState: () => true,
-    persistSession: async () => {},
-    isSessionDeleting: () => false,
-    audioStore: new Map(),
-    putCachedAudioBlob: () => {},
-    fetchAndCacheAudio: async () => {},
-    audioPlayer: { isPlaying: false },
-    getCurrentVoice: () => null,
-    stopCurrentVoice: () => {},
+  const { app, controller, audio, requests, session } = mountConversationAdv(t, {
+    settings: { advTextIntervalMs: 0 },
     fetch: stream.fetch,
   });
-  const regenerateLineAudio = createLineAudioRecovery({
-    getSession: () => session,
-    getVoiceProfiles: () => [{ id: 1, name: '角色A' }],
-    saveState: () => true,
-    request: async (url, options) => {
-      const body = JSON.parse(options.body);
-      requests.push({ url, body });
-      return {
-        session_id: session.id, message_id: body.message_id, line_index: body.line_index,
-        voice_profile_id: 1, persisted: body.message_id !== null,
-        audio: {
-          status: 'ready', generated_at: Date.now(), voice_profile_id: 1,
-          chunks: [{ index: 0, line: body.line_index, audio_url: `/audio/repair_line${body.line_index}_abcdef12.wav`, sentence: body.text }],
-        },
-      };
-    },
-  });
-  const dom = Object.fromEntries(['root', 'sidebar', 'messages', 'input', 'micBtn']
-    .map(key => [key, doc.createElement(key === 'input' ? 'textarea' : 'div')]));
-  for (const el of Object.values(dom)) doc.body.appendChild(el);
-  class Image extends Element { constructor() { super('img', doc); } decode() { return Promise.resolve(); } }
-  const app = mountAdv(dom, {
-    controller, audio, clock, getSession: () => session, voiceEnabled: () => true,
-    getCharacter: () => ({ id: 1, name: '角色A' }),
-    getRecoveryVoice: () => ({ id: 1, name: '角色A' }),
-    ImageClass: Image, loadPortrait: async () => null,
-    raf: () => 1, cancelRaf: () => {},
-    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
-    viewport: doc.createElement('div'),
-    regenerateLineAudio,
-  });
-  t.after(() => { controller.stop(); app.unmount(); delete globalThis.document; });
   assert.equal(controller.send('你好'), true);
   await tick();
   const reply = stream.requests[0];
