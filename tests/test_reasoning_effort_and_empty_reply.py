@@ -850,3 +850,49 @@ async def test_deepseek_connectivity_probe_translates_reasoning_effort():
     assert sent[0].get("thinking") == {"type": "disabled"} and "reasoning_effort" not in sent[0]
     assert sent[1].get("reasoning_effort") == "low" and "thinking" not in sent[1]
     assert sent[2].get("reasoning_effort") == "none" and "thinking" not in sent[2]
+
+
+@pytest.mark.asyncio
+async def test_openai_gpt6_payload_and_probe_rules():
+    import httpx
+    from galgame2voice.adapters.llm import OpenAILLMAdapter
+
+    oa = get_llm_adapter("openai", api_key="sk-test")
+    assert isinstance(oa, OpenAILLMAdapter)
+    msgs = [{"role": "user", "content": "hi"}]
+    extra = {"top_p": 1.0, "max_tokens": 1024, "logprobs": True, "top_logprobs": 2}
+
+    luna_none = oa._build_payload(msgs, "gpt-6-luna", temperature=0.7, extra={**extra, "reasoning_effort": "none"})
+    assert (luna_none["temperature"], luna_none["top_p"], luna_none["reasoning_effort"]) == (0.7, 1.0, "none")
+    assert luna_none["max_completion_tokens"] == 1024 and "max_tokens" not in luna_none
+
+    luna_low = oa._build_payload(msgs, "gpt-6-luna", temperature=0.7, extra={**extra, "reasoning_effort": "low"})
+    for dropped in ("temperature", "top_p", "logprobs", "top_logprobs", "max_tokens"):
+        assert dropped not in luna_low
+    assert luna_low["max_completion_tokens"] == 1024
+
+    luna_default = oa._build_payload(msgs, "gpt-6-luna", temperature=0.7, extra=extra)
+    assert "temperature" not in luna_default and "top_p" not in luna_default
+
+    sol_none = oa._build_payload(msgs, "gpt-6.1-sol", temperature=0.7, extra={**extra, "reasoning_effort": "none"})
+    assert sol_none["reasoning_effort"] == "low" and "temperature" not in sol_none
+
+    gpt4o = oa._build_payload(msgs, "gpt-4o", temperature=0.7, extra=extra)
+    assert gpt4o["temperature"] == 0.7 and gpt4o["max_completion_tokens"] == 1024 and "max_tokens" not in gpt4o
+
+    custom = get_llm_adapter("custom", api_key="sk-test")
+    custom_payload = custom._build_payload(msgs, "gpt-6-luna", temperature=0.7, extra={"max_tokens": 1024})
+    assert custom_payload["max_tokens"] == 1024 and "max_completion_tokens" not in custom_payload
+    assert custom_payload["temperature"] == 0.7
+
+    probed: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        probed.append(json.loads(req.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await oa._probe_chat_fallback(client, "gpt-6.1-sol", {}, "openai", time.perf_counter())
+        await custom._probe_chat_fallback(client, "qwen3:latest", {}, "custom", time.perf_counter())
+    assert probed[0].get("max_completion_tokens") == 1 and "max_tokens" not in probed[0]
+    assert probed[1].get("max_tokens") == 1 and "max_completion_tokens" not in probed[1]

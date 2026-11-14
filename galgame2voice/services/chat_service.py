@@ -25,7 +25,7 @@ import aiosqlite
 from anyio import CancelScope
 
 from galgame2voice.adapters.base import ChatMessage, BaseLLMAdapter, configured_reasoning_effort
-from galgame2voice.adapters.registry import get_llm_adapter, get_provider_preset
+from galgame2voice.adapters.registry import PROVIDER_PRESETS, get_llm_adapter, get_provider_preset
 from galgame2voice.database import crud
 from galgame2voice.database.models import MessageCreate
 from galgame2voice.database.session import get_database_path, get_db, immediate_transaction
@@ -196,6 +196,7 @@ class ChatService:
             else:
                 provider = await crud.get_active_provider_raw(active_conn)
 
+            openai_default = PROVIDER_PRESETS["openai"]["default_chat_model"]
             if provider:
                 adapter = get_llm_adapter(provider, allow_private=allow_private)
                 chat_model = (provider.chat_model or "").strip()
@@ -204,12 +205,12 @@ class ChatService:
                     chat_model = (
                         (preset.get("default_chat_model") if preset else None)
                         or getattr(adapter, "default_model", None)
-                        or "gpt-4o-mini"
+                        or openai_default
                     )
                 return adapter, chat_model, provider.id
 
             adapter = get_llm_adapter("openai", allow_private=allow_private)
-            return adapter, "gpt-4o-mini", "openai"
+            return adapter, openai_default, "openai"
 
         if conn is not None:
             return await _fetch(conn)

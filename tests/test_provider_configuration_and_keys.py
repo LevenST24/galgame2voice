@@ -754,9 +754,9 @@ class TestProviderPresetSeedsAndFallback:
             adapter, model_name, provider_id = await service._get_active_llm_adapter()
             assert provider_id == pid
             assert model_name == expected
-            assert model_name != "gpt-4o-mini"
+            assert model_name != "gpt-6-luna"
 
-        # Test custom non-preset provider with empty chat_model gracefully falls back to gpt-4o-mini
+        # Test custom non-preset provider with empty chat_model falls back to OpenAI preset default
         async with get_db(db_path) as conn:
             await conn.execute(
                 "INSERT INTO providers (id, name, api_base_url, api_key, chat_model, is_active) "
@@ -768,4 +768,28 @@ class TestProviderPresetSeedsAndFallback:
 
         adapter, model_name, provider_id = await service._get_active_llm_adapter()
         assert provider_id == "custom_unknown"
-        assert model_name == "gpt-4o-mini"
+        assert model_name == "gpt-6-luna"
+
+    @pytest.mark.asyncio
+    async def test_retired_openai_models_migrate_to_gpt6(self, tmp_path):
+        """Retired OpenAI models migrate to gpt-6-luna/none or gpt-6.1-sol preserving effort."""
+        from galgame2voice.database.models import ProviderUpdate
+
+        cases = [
+            ("gpt-4o", None, "gpt-6-luna", "none"),
+            ("gpt-4o-mini", None, "gpt-6-luna", "none"),
+            ("gpt-4-turbo", None, "gpt-6-luna", "none"),
+            ("gpt-3.5-turbo", None, "gpt-6-luna", "none"),
+            ("o3-mini", "high", "gpt-6.1-sol", "high"),
+        ]
+        for idx, (old_model, old_effort, expected_model, expected_effort) in enumerate(cases):
+            db_path = tmp_path / f"oa_migrate_{idx}.db"
+            await init_db(db_path)
+            async with get_db(db_path) as conn:
+                upd = ProviderUpdate(api_key="sk-oa-saved-1234", chat_model=old_model, reasoning_effort=old_effort)
+                await crud.update_provider(conn, "openai", upd)
+            await init_db(db_path)
+            async with get_db(db_path) as conn:
+                raw = await crud.get_provider_raw(conn, "openai")
+                assert raw.api_key == "sk-oa-saved-1234"
+                assert (raw.chat_model, raw.reasoning_effort) == (expected_model, expected_effort)

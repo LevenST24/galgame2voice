@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 from galgame2voice.adapters.base import BaseLLMAdapter, BaseSTTAdapter
 from galgame2voice.adapters.llm import (
     OpenAICompatibleLLMAdapter,
+    OpenAILLMAdapter,
     DeepSeekLLMAdapter,
     QwenLLMAdapter,
     GLMLLMAdapter,
@@ -49,18 +50,13 @@ PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
         "id": "openai",
         "name": "OpenAI",
         "default_base_url": "https://api.openai.com/v1",
-        "default_chat_model": "gpt-4o",
+        "default_chat_model": "gpt-6-luna",
         "default_stt_model": "whisper-1",
-        "adapter_class": OpenAICompatibleLLMAdapter,
+        "default_reasoning_effort": "none",
+        "adapter_class": OpenAILLMAdapter,
         "stt_adapter_class": OpenAICompatibleSTTAdapter,
-        "preset_models": [
-            "gpt-4o",
-            "gpt-4o-mini",
-            "o3-mini",
-            "gpt-4-turbo",
-            "gpt-3.5-turbo",
-        ],
-        "description": "OpenAI 官方 API (GPT-4o 系列, o3-mini, Whisper)",
+        "preset_models": ["gpt-6-luna", "gpt-6.1-sol"],
+        "description": "OpenAI 官方 API（GPT-6 Luna / GPT-6.1 Sol，Whisper 语音识别）",
     },
     "deepseek": {
         "id": "deepseek",
@@ -198,6 +194,11 @@ RETIRED_CHAT_MODELS: dict[tuple[str, str], tuple[str, str | None]] = {
     ("anthropic", "claude-opus-4-20250514"): ("claude-opus-5-5", "none"),
     ("deepseek", "deepseek-chat"): ("deepseek-flash", "none"),
     ("deepseek", "deepseek-reasoner"): ("deepseek-flash", None),
+    ("openai", "gpt-4o"): ("gpt-6-luna", "none"),
+    ("openai", "gpt-4o-mini"): ("gpt-6-luna", "none"),
+    ("openai", "gpt-4-turbo"): ("gpt-6-luna", "none"),
+    ("openai", "gpt-3.5-turbo"): ("gpt-6-luna", "none"),
+    ("openai", "o3-mini"): ("gpt-6.1-sol", None),
 }
 
 

@@ -211,7 +211,7 @@ async def _create_new_provider(
     chat_model = (
         provider_data.get("chat_model")
         or provider_data.get("model")
-        or (preset["default_chat_model"] if preset else "gpt-4o-mini")
+        or (preset or get_provider_preset("openai"))["default_chat_model"]
     )
     stt_model = (
         provider_data.get("stt_model")

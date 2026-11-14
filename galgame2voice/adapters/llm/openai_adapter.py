@@ -80,11 +80,13 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
             self.last_finish_reason = choices[0]["finish_reason"]
 
     def _resolve_test_model(self, model: str | None = None) -> str:
-        """Resolves the test model: arg, then configured default, then provider preset/domain map, then gpt-4o-mini."""
+        """Resolves the test model: arg, then configured default, then preset/domain map, then OpenAI default."""
         if model and str(model).strip():
             return str(model).strip()
+        from galgame2voice.adapters.registry import get_provider_preset, resolve_preset_default_model_by_url
+        openai_default = get_provider_preset("openai")["default_chat_model"]
         default_model = str(getattr(self, "default_model", "") or "").strip()
-        if default_model and default_model != "gpt-4o-mini":
+        if default_model and default_model != openai_default:
             return default_model
         chat_model = self.extra_config.get("chat_model") or self.extra_config.get("model")
         if chat_model and str(chat_model).strip():
@@ -92,14 +94,12 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         pid = self.extra_config.get("provider_id") or self.extra_config.get("provider_type") or getattr(self, "provider_id", None)
         if pid:
             try:
-                from galgame2voice.adapters.registry import get_provider_preset
                 preset = get_provider_preset(str(pid))
                 if preset and preset.get("default_chat_model"):
                     return str(preset["default_chat_model"]).strip()
             except Exception as exc:
                 logger.debug("Failed getting provider preset for default model: %s", exc)
-        from galgame2voice.adapters.registry import resolve_preset_default_model_by_url
-        return resolve_preset_default_model_by_url(self.base_url) or "gpt-4o-mini"
+        return resolve_preset_default_model_by_url(self.base_url) or openai_default
 
     def _get_headers(self) -> dict[str, str]:
         """Constructs request headers including bearer auth and custom extra headers."""
@@ -365,6 +365,8 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         )
         return diag, diag.get("diagnostic", "")
 
+    _MAX_TOKENS_KEY = "max_tokens"
+
     async def _probe_chat_fallback(
         self,
         client: httpx.AsyncClient,
@@ -378,7 +380,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         chat_resp = await client.post(
             chat_url,
             json={
-                "model": test_model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1,
+                "model": test_model, "messages": [{"role": "user", "content": "ping"}], self._MAX_TOKENS_KEY: 1,
                 **self._reasoning_fields(self.reasoning_effort, test_model),
             },
             headers=headers,
@@ -552,3 +554,31 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
 
         # Provider does not support the model listing endpoint
         return []
+
+
+_OPENAI_REASONING_PREFIXES = ("gpt-5", "gpt-6", "o1", "o3", "o4")
+_OPENAI_NO_NONE_EFFORT_PREFIXES = ("gpt-6.1-sol", "gpt-6-astra")
+_OPENAI_REASONING_REJECTED_PARAMS = ("temperature", "top_p", "logprobs", "top_logprobs")
+
+
+class OpenAILLMAdapter(OpenAICompatibleLLMAdapter):
+    """Official OpenAI API Adapter (GPT-6 Luna, GPT-6.1 Sol)."""
+
+    _MAX_TOKENS_KEY = "max_completion_tokens"
+
+    def _reasoning_fields(self, effort: str | None, model: str) -> dict[str, Any]:
+        if effort == "none" and model.strip().lower().startswith(_OPENAI_NO_NONE_EFFORT_PREFIXES):
+            return {"reasoning_effort": "low"}
+        return super()._reasoning_fields(effort, model)
+
+    def _build_payload(
+        self, messages: list[ChatMessage], model: str, temperature: float = 1.0,
+        stream: bool = False, extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload = super()._build_payload(messages, model, temperature=temperature, stream=stream, extra=extra)
+        if model.strip().lower().startswith(_OPENAI_REASONING_PREFIXES) and payload.get("reasoning_effort") != "none":
+            for key in _OPENAI_REASONING_REJECTED_PARAMS:
+                payload.pop(key, None)
+        if "max_tokens" in payload:
+            payload["max_completion_tokens"] = payload.pop("max_tokens")
+        return payload
