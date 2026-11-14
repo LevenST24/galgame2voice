@@ -67,6 +67,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
   let popup = null, popupButton = null, dropdown = null, dropdownButton = null;
   let timer = null, unsubscribe = null, revision = 0, previewRevision = 0, polling = null;
   let playing = false, playRevision = 0, listenButton = null, rendered = '';
+  let pendingFocus = null;
   const failedAudio = new Set();
   const disposers = [];
   const stageControls = new Map();
@@ -159,7 +160,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
   function renderPane(force = false) {
     const session = main();
     const firstUse = status.modelLoaded && !status.model?.readFailed && !chatOK();
-    const signature = JSON.stringify([mode, session, firstUse, status.engine?.state, textOnly,
+    const signature = JSON.stringify([mode, session, status.modelLoaded, firstUse, status.engine?.state, textOnly,
       canReplayLine(session?.excerpt?.line, session?.excerpt, actions.voiceEnabled?.() ?? true, now().getTime())]);
     if (!force && rendered === signature) return;
     rendered = signature;
@@ -187,16 +188,30 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
       pane.appendChild(el('blockquote', 'home-quote', `「${String(quote).replace(/^「|」$/g, '')}」`));
       if (excerpt.zh && excerpt.ja && excerpt.zh !== excerpt.ja) pane.appendChild(el('p', 'home-ja', excerpt.ja));
       const row = el('div', 'home-actions');
-      row.appendChild(btn('home-primary home-continue', session?.hasUserMessages ? '接着聊 →' : '开始聊天', () => enter()));
-      if (canReplayLine(excerpt.line, excerpt, actions.voiceEnabled?.() ?? true, now().getTime()) && !failedAudio.has(JSON.stringify(excerpt))) {
-        listenButton = btn('home-link home-listen', '▶ 试听这句', () => toggleListen(excerpt));
-        listenButton.setAttribute('aria-pressed', 'false'); row.appendChild(listenButton);
+      if (!status.modelLoaded) row.appendChild(el('p', 'home-checking', '正在检查设置…'));
+      else {
+        const primaryLabel = session?.hasUserMessages ? '接着聊 →' : '开始聊天';
+        row.appendChild(btn('home-primary home-continue', primaryLabel, () => enter()));
+        const canPlay = canReplayLine(excerpt.line, excerpt, actions.voiceEnabled?.() ?? true, now().getTime());
+        if (canPlay && !failedAudio.has(JSON.stringify(excerpt))) {
+          listenButton = btn('home-link home-listen', '▶ 试听这句', () => toggleListen(excerpt));
+          listenButton.setAttribute('aria-pressed', 'false');
+          row.appendChild(listenButton);
+        }
+        row.appendChild(btn('home-link home-new', '另开一段对话', openNew));
       }
-      row.appendChild(btn('home-link home-new', '另开一段对话', openNew)); pane.appendChild(row);
+      pane.appendChild(row);
     }
-    if (hadFocus) focusPrimary();
+    const idleFocus = !doc.activeElement || doc.activeElement === doc.body || doc.activeElement === pendingFocus;
+    if (hadFocus || (pendingFocus && idleFocus)) focusPrimary();
+    else if (status.modelLoaded) pendingFocus = null;
   }
-  function focusPrimary() { focus(pane.querySelector('.home-continue') || pane.querySelector('.home-step-pending') || pane.querySelector('button')); }
+  function focusPrimary() {
+    const target = pane.querySelector('.home-continue')
+      || pane.querySelector('.home-step-pending') || pane.querySelector('button');
+    pendingFocus = !target && mode === 'home' && !status.modelLoaded ? (doc.activeElement || true) : null;
+    focus(target);
+  }
   function renderFirst() {
     // Keep the actual session's greeting available in the DOM while onboarding
     // replaces its visual excerpt (also used by portable initialization smoke).
@@ -368,8 +383,15 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     if (!opened || polling?.revision === revision) return;
     const token = revision, request = { revision: token };
     polling = request;
+    const apply = next => {
+      if (!opened || token !== revision) return;
+      status = { ...status, ...next };
+      readSessions();
+      renderStatus();
+      renderPane();
+    };
     try {
-      const result = await actions.getStatus?.();
+      const result = await actions.getStatus?.(apply);
       if (!opened || token !== revision) return;
       status = result || status; readSessions(); renderStatus(); renderPane();
       if (mode === 'all') {
@@ -426,6 +448,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     if (!opened) return;
     opened = false; ++revision; ++previewRevision; closePopup(); closeDropdown(); stopListen();
     clock.clearTimeout(timer); timer = null; unsubscribe?.(); unsubscribe = null;
+    pendingFocus = null;
     screen.hidden = true; setStageHome(false);
   }
   function keydown(event) {

@@ -715,6 +715,12 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     return s;
   }
 
+  let onModelStatus = null;
+  const sampleModel = () => ({
+    model: getModelStatus({ getCurrentActiveProvider, getActive,
+      getVoiceProfiles, haveProvidersLoaded, hasProviderReadError }),
+    modelLoaded: haveProvidersLoaded(), hasModel: Boolean(getCurrentActiveProvider()),
+  });
   const actions = createTitleActions({
     getSessions: () => state.sessions, getProfiles: getVoiceProfiles,
     getActiveId: () => state.activeId,
@@ -726,15 +732,18 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     getBackgroundUrl: (id, time, work) => advApp?.backgroundUrl(id, time, work) || '',
     getBackgrounds: () => advApp?.listBackgrounds() || [],
     getAvatar: session => portraits.avatar(session),
-    getStatus: async () => {
+    getStatus: async onModel => {
+      if (onModel) {
+        onModelStatus = onModel;
+        if (haveProvidersLoaded()) onModel(sampleModel());
+      }
       let engine;
       try { engine = await requestJson('/api/system/engine-status', {}, { timeoutMs: 10000 }); }
       catch (error) { engine = { state: 'unavailable', message: error.message }; }
-      // Sample all model fields together after the engine request. Providers may
-      // finish loading while it is pending; never mix that flag with an old model.
       syncAdv();
-      const model = getModelStatus({ getCurrentActiveProvider, getActive, getVoiceProfiles, haveProvidersLoaded, hasProviderReadError });
-      return { model, modelLoaded: haveProvidersLoaded(), hasModel: Boolean(getCurrentActiveProvider()), engine };
+      // Read the model fields together. Providers may finish during the engine
+      // request; do not pair that flag with a snapshot taken earlier.
+      return { ...sampleModel(), engine };
     },
     voiceEnabled: () => state.global.voiceMode,
     playExcerpt: excerpt => {
@@ -787,7 +796,10 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     fetchVoiceProfiles,
     getVoiceProfiles,
     getActiveProfileId,
-    updateBadge,
+    updateBadge: () => {
+      updateBadge();
+      onModelStatus?.(sampleModel());
+    },
     revokeAllCachedAudioUrls,
   });
   initAudioPlayerUi(dom, {
