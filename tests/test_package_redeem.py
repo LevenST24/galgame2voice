@@ -201,3 +201,41 @@ async def test_overwrite_reuses_verified_download(
     assert count == 1
     assert (get_settings().characters_dir / "alice" / "manifest.json").is_file()
     _no_parts()
+
+
+async def test_redeem_copies_when_hardlink_unsupported(
+    api: AsyncClient, dist_env: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def no_hardlink(self, target):
+        raise OSError("operation not supported")
+
+    monkeypatch.setattr(Path, "hardlink_to", no_hardlink)
+    code = _publish(dist_env, "alice", "爱丽丝", "alice")
+    saved = await api.post(
+        "/api/characters/redeem/download", json={"code": code, "package_id": "alice", "overwrite": False}
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["imported"][0]["name"] == "爱丽丝"
+    root = get_settings().data_dir / "character_import"
+    assert list(root.glob("*.part")) == [] and list(root.glob("*.import")) == []
+    once = _publish(dist_env, "bob", "鲍勃", "once", downloads=1)
+    payload = (dist_env["state"] / "packages" / "once.zip").read_bytes()
+    installed = await api.post("/api/characters/import", params={"filename": "once.zip"}, content=payload)
+    assert installed.status_code == 200, installed.text
+    gets = {"n": 0}
+    original = DistRequestHandler.do_GET
+
+    def counting_get(self):
+        if "/v1/packages/" in (self.path or ""):
+            gets["n"] += 1
+        return original(self)
+
+    monkeypatch.setattr(DistRequestHandler, "do_GET", counting_get)
+    body = {"code": once, "package_id": "once", "overwrite": False}
+    first = await api.post("/api/characters/redeem/download", json=body)
+    assert first.status_code == 409 and first.json()["code"] == "package_exists"
+    second = await api.post("/api/characters/redeem/download", json={**body, "overwrite": True})
+    assert second.status_code == 200, second.text
+    assert second.json()["imported"][0]["name"] == "鲍勃"
+    assert gets["n"] == 1
+    assert list(root.glob("*.part")) == [] and list(root.glob("*.import")) == []

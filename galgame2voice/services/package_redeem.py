@@ -12,6 +12,7 @@ import json
 import logging
 from pathlib import Path
 import re
+import shutil
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -267,12 +268,15 @@ async def redeem_download(request: Request, *, code: str, package_id: str, overw
                 await _save_package(parsed, host, pkg, part)
             logger.info("Redeem %s host=%s package_id=%s", action, host, package_id)
             _PROGRESS.update(phase="import", done=int(pkg["size"]), total=int(pkg["size"]), name=str(pkg["name"]))
-            # 导入会删掉传入的路径。硬链接被删后，已校验的压缩包还在，确认覆盖不用再下载。
+            # 导入会删掉传入的路径。硬链接（不支持时复制）被删后，已校验的压缩包还在，确认覆盖不用再下载。
             link = root / f"dl-{package_id}.zip.import"
 
             def _link_download() -> None:
                 link.unlink(missing_ok=True)
-                link.hardlink_to(part)
+                try:
+                    link.hardlink_to(part)
+                except OSError:
+                    shutil.copyfile(part, link)
 
             try:
                 await asyncio.to_thread(_link_download)
