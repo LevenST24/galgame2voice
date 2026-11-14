@@ -168,16 +168,13 @@ PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
         "id": "moonshot",
         "name": "Moonshot 月之暗面 (Kimi)",
         "default_base_url": "https://api.moonshot.cn/v1",
-        "default_chat_model": "moonshot-v1-32k",
+        "default_chat_model": "kimi-k3.1-pro",
         "default_stt_model": "",
+        "default_reasoning_effort": "low",
         "adapter_class": MoonshotLLMAdapter,
         "stt_adapter_class": None,
-        "preset_models": [
-            "moonshot-v1-8k",
-            "moonshot-v1-32k",
-            "moonshot-v1-128k",
-        ],
-        "description": "月之暗面 Kimi 官方 API (moonshot-v1 长上下文系列)",
+        "preset_models": ["kimi-k3.1-pro", "kimi-k3.1-pro-highspeed", "kimi-k3"],
+        "description": "月之暗面 Kimi 官方 API（Kimi K3.1 Pro / 高速版 / K3）",
     },
 }
 
@@ -204,6 +201,17 @@ RETIRED_CHAT_MODELS: dict[tuple[str, str], tuple[str, str | None]] = {
     ("xai", "grok-3-mini"): ("grok-4.7", None),
     ("xai", "grok-2"): ("grok-4.7", "low"),
     ("xai", "grok-2-1212"): ("grok-4.7", "low"),
+    ("moonshot", "moonshot-v1-8k"): ("kimi-k3.1-pro", "low"),
+    ("moonshot", "moonshot-v1-32k"): ("kimi-k3.1-pro", "low"),
+    ("moonshot", "moonshot-v1-128k"): ("kimi-k3.1-pro", "low"),
+    ("moonshot", "moonshot-v1-auto"): ("kimi-k3.1-pro", "low"),
+    ("moonshot", "kimi-latest"): ("kimi-k3.1-pro", "low"),
+    ("moonshot", "kimi-k2.5"): ("kimi-k3.1-pro", "low"),
+    ("moonshot", "kimi-k2-0905-preview"): ("kimi-k3.1-pro", "low"),
+    ("moonshot", "kimi-k2-0711-preview"): ("kimi-k3.1-pro", "low"),
+    ("moonshot", "kimi-k2-turbo-preview"): ("kimi-k3.1-pro", "low"),
+    ("moonshot", "kimi-k2-thinking"): ("kimi-k3.1-pro", "low"),
+    ("moonshot", "kimi-k2-thinking-turbo"): ("kimi-k3.1-pro", "low"),
 }
 
 
