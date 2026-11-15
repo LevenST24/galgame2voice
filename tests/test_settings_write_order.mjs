@@ -134,69 +134,37 @@ test('a committed config write with an HTTP 500 response is checked once without
   assert.deepEqual(methods, ['POST', 'GET']);
 });
 
-test('footer save reserves its config order while the model saves, preserving newer drafts', async t => {
-  let finishProvider;
-  let submittedModel;
+test('footer save reserves its config order before a later autosave without saving model drafts', async t => {
+  let finishFooterConfig;
+  const submittedPrecisions = [];
+  let providerPosts = 0;
   const state = fixture(t, (url, payload, persist) => {
     if (url === '/api/providers') {
-      submittedModel = payload.chat_model;
+      providerPosts += 1;
+      return response({ provider: { ...payload, is_active: true } });
+    }
+    submittedPrecisions.push(payload.inference_precision);
+    if (submittedPrecisions.length === 1) {
       return new Promise(resolve => {
-        finishProvider = () => resolve(response({ provider: { ...payload, is_active: true } }));
+        finishFooterConfig = () => { persist(payload.inference_precision); resolve(response({})); };
       });
     }
     persist(payload.inference_precision);
     return response({});
   }, { gProvider: element('custom'), gProviderActivate: element(),
-    gBaseUrl: element('https://synthetic.invalid/v1'), gChatModel: element('model-at-click'), gApiKey: element() });
+    gBaseUrl: element('https://synthetic.invalid/v1'), gChatModel: element('unsaved-model-draft'), gApiKey: element() });
   await loadGlobalConfig();
   await state.dom.gChatModel.dispatch('input');
   const footer = saveGlobalConfig(); await tick();
-  state.dom.gChatModel.value = 'newer-unsaved-model';
-  await state.dom.gChatModel.dispatch('input');
   state.dom.gPrecision.value = 'cpu';
   const autosave = state.dom.gPrecision.dispatch(); await tick();
-  finishProvider();
+  finishFooterConfig();
   await Promise.all([footer, autosave]);
-  assert.equal(submittedModel, 'model-at-click');
+  assert.equal(providerPosts, 0);
+  assert.deepEqual(submittedPrecisions, ['fp16', 'cpu']);
   assert.equal(state.stored(), 'cpu');
   assert.equal(state.dom.gPrecision.value, 'cpu');
-  assert.equal(state.dom.gChatModel.value, 'newer-unsaved-model');
-});
-
-test('a skipped global save still reports an already started model save accurately', async t => {
-  let failFirst, finishProvider;
-  const toasts = [];
-  const state = fixture(t, (url, payload) => {
-    if (url === '/api/providers') return new Promise(resolve => {
-      finishProvider = () => resolve(response({ provider: { ...payload, is_active: true } }));
-    });
-    return new Promise((_, reject) => { failFirst = () => reject(new TypeError('Failed to fetch')); });
-  }, { gProvider: element('custom'), gProviderActivate: element(),
-    gBaseUrl: element('https://synthetic.invalid/v1'), gChatModel: element('synthetic-model'), gApiKey: element() });
-  const root = { querySelectorAll: () => [], appendChild(el) {
-    toasts.push(el.textContent);
-    // Observe real toast text without leaving expiry timers running after the test.
-    queueMicrotask(() => clearTimeout(el._timer));
-  } };
-  globalThis.document.getElementById = id => id === 'toastRoot' ? root : null;
-  globalThis.document.createElement = () => ({ ...element(), dataset: {} });
-  t.after(() => {
-    globalThis.document.getElementById = () => null;
-    globalThis.document.createElement = () => element();
-  });
-  await loadGlobalConfig();
-  state.dom.gPrecision.value = 'cpu';
-  const autosave = state.dom.gPrecision.dispatch(); await tick();
-  await state.dom.gChatModel.dispatch('input');
-  const footer = saveGlobalConfig(); await tick();
-  state.dom.gChatModel.value = 'newer-unsaved-draft';
-  await state.dom.gChatModel.dispatch('input');
-  failFirst(); await autosave; await tick();
-  assert.equal(state.dom.gProviderActivate.disabled, true, 'wait for the model outcome before declaring completion');
-  finishProvider(); await footer;
-  assert.equal(state.calls.filter(call => call.url === '/api/config').length, 1);
-  assert.ok(toasts.some(message => /模型设置已保存并启用；全局配置保存失败/.test(message)), toasts.join('\n'));
-  assert.equal(state.dom.gChatModel.value, 'newer-unsaved-draft');
+  assert.equal(state.dom.gChatModel.value, 'unsaved-model-draft');
 });
 
 test('an autosaved precision follows a later change made elsewhere', async t => {

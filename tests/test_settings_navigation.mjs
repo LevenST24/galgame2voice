@@ -2,7 +2,15 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import { setup } from './helpers/adv_main.mjs';
-import { initGlobalSettings, openGlobalSettings, loadGlobalConfig, saveGlobalConfig } from '../frontend/src/controllers/global_settings.js';
+import {
+  initGlobalSettings,
+  openGlobalSettings,
+  loadGlobalConfig,
+  saveGlobalConfig,
+  loadProviders,
+  getCurrentActiveProvider,
+} from '../frontend/src/controllers/global_settings.js';
+import { BUILTIN_PRESETS } from '../frontend/src/settings.js';
 import { createSettingsCenter } from '../frontend/src/controllers/settings_center.js';
 import { fakeDocument } from './helpers/adv_dom.mjs';
 import * as settingsUi from '../frontend/src/settings_ui.js';
@@ -479,4 +487,190 @@ test('telegram settings tab is removed from index.html while preserving gTgSave 
   const merged = mergeChatBackup(legacyBackup, { sessions: [], activeId: null, global: {} });
   assert.equal(merged.count, 1);
   assert.equal(JSON.parse(merged.content).sessions[0].id, 'tg_99');
+});
+
+function bindSelectSemantics(el) {
+  if (!el || el.tagName !== 'SELECT') return;
+  let raw = el.value || '';
+  Object.defineProperty(el, 'value', {
+    get() {
+      const selected = el.children.find(c => c.selected);
+      if (selected) return selected.value;
+      return el.children[0]?.value ?? raw;
+    },
+    set(v) {
+      raw = String(v);
+      for (const c of el.children) c.selected = (c.value === raw);
+    },
+    configurable: true,
+  });
+}
+
+async function setupVoiceFooterSaveFixture(t, { secondProvider }) {
+  const origDocument = globalThis.document;
+  const origFetch = globalThis.fetch;
+  const origLocalStorage = globalThis.localStorage;
+  const { doc, dom } = mountRealIndexDom();
+  for (const el of Object.values(dom)) {
+    if (!el) continue;
+    if (el.tagName === 'SELECT') bindSelectSemantics(el);
+    el.select ??= () => {};
+  }
+  globalThis.document = doc;
+  globalThis.localStorage = { getItem: () => null, setItem: () => {} };
+
+  const toastRoot = doc.getElementById('toastRoot');
+  let providers = [
+    {
+      id: 'deepseek',
+      name: 'DeepSeek',
+      api_key: 'sk-****1234',
+      api_base_url: 'https://api.deepseek.com',
+      chat_model: 'deepseek-flash',
+      is_active: true,
+    },
+    secondProvider,
+  ];
+  let savedConfig = {
+    gpt_sovits_url: 'http://127.0.0.1:9880',
+    inference_precision: 'auto',
+    audio_retention_minutes: 30,
+    allow_private_llm_endpoints: false,
+  };
+  const requests = [];
+
+  globalThis.fetch = async (url, options = {}) => {
+    const method = options.method || 'GET';
+    const body = options.body ? JSON.parse(options.body) : undefined;
+    requests.push({ url, method, body });
+    if (url === '/api/providers' && method === 'POST') {
+      providers = providers.map(p => (
+        p.id === body.id ? { ...p, ...body, api_key: body.api_key ? 'sk-****new' : p.api_key, is_active: true } : { ...p, is_active: false }
+      ));
+      const updated = providers.find(p => p.id === body.id) || { ...body, is_active: true };
+      return { ok: true, status: 200, json: async () => ({ provider: updated }) };
+    }
+    if (url.startsWith('/api/providers/') && url.endsWith('/activate') && method === 'POST') {
+      const targetId = url.split('/')[3];
+      providers = providers.map(p => ({ ...p, is_active: p.id === targetId }));
+      return { ok: true, status: 200, json: async () => ({ active_provider: providers.find(p => p.is_active) }) };
+    }
+    if (url === '/api/providers') {
+      return { ok: true, status: 200, json: async () => ({ providers, presets: BUILTIN_PRESETS }) };
+    }
+    if (url === '/api/config' && method === 'POST') {
+      savedConfig = { ...savedConfig, ...body };
+      return { ok: true, status: 200, json: async () => ({ status: 'ok', settings: savedConfig }) };
+    }
+    if (url === '/api/config') {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: 'ok',
+          settings: savedConfig,
+          active_provider: providers.find(p => p.is_active) || null,
+        }),
+      };
+    }
+    if (String(url).includes('/api/system/sovits-directory')) {
+      return { ok: true, status: 200, json: async () => ({ directory: '', valid: false, message: '' }) };
+    }
+    if (String(url).includes('/api/system/engine-status')) {
+      return { ok: true, status: 200, json: async () => ({ state: 'ready', ready: true, message: '已就绪' }) };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+
+  t.after(async () => {
+    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
+    settingsUi.closeAllModals();
+    closeModal(dom.globalModal);
+    initGlobalSettings({});
+    await new Promise(resolve => setImmediate(resolve));
+    if (origDocument !== undefined) globalThis.document = origDocument; else delete globalThis.document;
+    if (origFetch !== undefined) globalThis.fetch = origFetch; else delete globalThis.fetch;
+    if (origLocalStorage !== undefined) globalThis.localStorage = origLocalStorage; else delete globalThis.localStorage;
+  });
+
+  initGlobalSettings(dom, { openModal, closeModal });
+  openGlobalSettings('models');
+  await loadProviders();
+  await loadGlobalConfig();
+  requests.length = 0;
+
+  return { dom, toastRoot, requests };
+}
+
+test('footer saveGlobalConfig saves only voice service page when user inspected unconfigured OpenAI in models tab', async t => {
+  const { dom, toastRoot, requests } = await setupVoiceFooterSaveFixture(t, {
+    secondProvider: {
+      id: 'openai',
+      name: 'OpenAI',
+      api_key: '',
+      api_base_url: 'https://api.openai.com/v1',
+      chat_model: 'gpt-6-luna',
+      is_active: false,
+    },
+  });
+
+  assert.equal(dom.gProvider.value, 'deepseek');
+  dom.gProvider.value = 'openai';
+  dom.gProvider.dispatchEvent({ type: 'change' });
+
+  dom.gTabs.querySelector('[data-gtab="inference"]').click();
+  dom.gAudioRetention.value = '60';
+  dom.gAudioRetention.dispatchEvent({ type: 'input' });
+
+  await saveGlobalConfig();
+
+  const configPosts = requests.filter(r => r.url === '/api/config' && r.method === 'POST');
+  const providerWrites = requests.filter(r => r.method !== 'GET' && r.url.startsWith('/api/providers'));
+  const toasts = [...toastRoot.children].map(el => ({
+    msg: el.dataset.msg || el.textContent,
+    isError: el.classList.contains('toast-error'),
+  }));
+
+  assert.equal(configPosts.length, 1, `expected exactly 1 POST /api/config, got ${configPosts.length}`);
+  assert.equal(configPosts[0].body.audio_retention_minutes, 60);
+  assert.equal(providerWrites.length, 0, `expected no provider write requests, got ${JSON.stringify(providerWrites)}`);
+  assert.equal(toasts.some(toast => toast.isError), false, `unexpected error toast: ${JSON.stringify(toasts)}`);
+  assert.equal(dom.gProvider.value, 'openai', 'unactivated provider draft must remain in dropdown');
+});
+
+test('footer saveGlobalConfig saves only voice service page when user inspected another configured provider in models tab', async t => {
+  const { dom, toastRoot, requests } = await setupVoiceFooterSaveFixture(t, {
+    secondProvider: {
+      id: 'openai',
+      name: 'OpenAI',
+      api_key: 'sk-****5678',
+      api_base_url: 'https://api.openai.com/v1',
+      chat_model: 'gpt-6-luna',
+      is_active: false,
+    },
+  });
+
+  assert.equal(dom.gProvider.value, 'deepseek');
+  dom.gProvider.value = 'openai';
+  dom.gProvider.dispatchEvent({ type: 'change' });
+
+  dom.gTabs.querySelector('[data-gtab="inference"]').click();
+  dom.gAudioRetention.value = '60';
+  dom.gAudioRetention.dispatchEvent({ type: 'input' });
+
+  await saveGlobalConfig();
+
+  const configPosts = requests.filter(r => r.url === '/api/config' && r.method === 'POST');
+  const providerWrites = requests.filter(r => r.method !== 'GET' && r.url.startsWith('/api/providers'));
+  const toasts = [...toastRoot.children].map(el => ({
+    msg: el.dataset.msg || el.textContent,
+    isError: el.classList.contains('toast-error'),
+  }));
+
+  assert.equal(configPosts.length, 1, `expected exactly 1 POST /api/config, got ${configPosts.length}`);
+  assert.equal(configPosts[0].body.audio_retention_minutes, 60);
+  assert.equal(providerWrites.length, 0, `expected no provider write requests, got ${JSON.stringify(providerWrites)}`);
+  assert.equal(toasts.some(toast => toast.isError), false, `unexpected error toast: ${JSON.stringify(toasts)}`);
+  assert.equal(getCurrentActiveProvider().id, 'deepseek', 'active provider must remain deepseek');
+  assert.equal(dom.gProvider.value, 'openai', 'unactivated provider draft must remain in dropdown');
 });

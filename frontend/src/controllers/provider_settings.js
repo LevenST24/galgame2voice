@@ -639,11 +639,10 @@ export class ProviderSettingsController {
     return this.saveAndActivateProvider();
   }
 
-  // The footer save reuses this; it reports success itself and must say the rest was not saved either.
-  async saveAndActivateProvider({ fromFooter = false } = {}) {
+  async saveAndActivateProvider() {
     if (this.disposed || !this.dom.gProviderActivate || !this.dom.gProvider) return false;
     const configSaving = this.coordinator.isConfigSaving ? this.coordinator.isConfigSaving() : false;
-    if (this.providerSaving || (configSaving && !fromFooter)) return false;
+    if (this.providerSaving || configSaving) return false;
     if (this.coordinator.isConnectionPreferencePending && this.coordinator.isConnectionPreferencePending()) return false;
     const savedRevision = this.providerRevision;
     this.providerSaving = true;
@@ -676,7 +675,7 @@ export class ProviderSettingsController {
         isLoopbackOrPrivateBaseUrl(baseUrl)
       ) {
         this._promptEnablePrivateEndpoints();
-        showToast(`请先勾选「允许连接本机或局域网的模型服务」后再保存启用${fromFooter ? '；其他设置也还没有保存' : ''}`, 'warning');
+        showToast('请先勾选「允许连接本机或局域网的模型服务」后再保存启用', 'warning');
         return false;
       }
 
@@ -729,13 +728,13 @@ export class ProviderSettingsController {
       await this.loadProviders({ formRevision: savedRevision });
       if (this.disposed) return true;
 
-      if (!fromFooter) showToast(`已成功保存并启用：${payload.name} · ${chatModel}${this.providerDirty ? '；当前修改尚未保存。' : ''}`, 'success');
+      showToast(`已成功保存并启用：${payload.name} · ${chatModel}${this.providerDirty ? '；当前修改尚未保存。' : ''}`, 'success');
       return true;
     } catch (e) {
       if (this.disposed) return false;
       console.error('Failed to activate provider:', e);
       const message = e.code === 'PROVIDER_UNCONFIRMED' ? e.message : `模型设置未保存或启用失败：${e.message || e}`;
-      showToast(`${message}${fromFooter ? '；其他设置也还没有保存' : ''}`, 'error');
+      showToast(message, 'error');
       return false;
     } finally {
       this.providerSaving = false;
