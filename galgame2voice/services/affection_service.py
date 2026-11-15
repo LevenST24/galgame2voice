@@ -17,12 +17,13 @@ from galgame2voice.services.emotion_references import EMOTION_SYNONYMS
 logger = logging.getLogger("galgame2voice.services.affection_service")
 
 _CLAUSE_SPLIT_RE = re.compile(r"[\s,，。！!?？~、；;：:…]+")
-# A keyword right after one of these in the same clause is negated ("不喜欢你", "真不可爱", "谈不上好看");
-# a negated negation ("不是不可爱", "不得不喜欢你") is not.
+# A keyword right after one of these in the same clause is negated ("不喜欢你", "真不可爱", "谈不上好看",
+# "并不是很可爱", "不是特别喜欢"); a negated negation ("不是不可爱", "不得不喜欢你") is not, and neither is
+# "特别" ("especially"), whose 别 is not "don't".
 _NEGATED_PREFIX_RE = re.compile(
     r"(?:(?<!不)(?<!并非)(?<!不是)(?<!不得)(?<!不能)"
-    r"(?:不|没|没有|别|莫|勿|未|甭)"
-    r"(?:是|算|觉得|喜欢|爱|太|很|真|挺|怎么|会|能|想|肯|配|要|许|准)?"
+    r"(?:不|没|没有|(?<!特)别|莫|勿|未|甭)"
+    r"(?:是|算|觉得|喜欢|爱|太|很|真|挺|怎么|会|能|想|肯|配|要|许|准|特别){0,3}"
     r"|算不上|谈不上|称不上|谁说(?:你|她|他|我)?|讨厌|最烦|恨透(?:了)?)$"
 )
 
