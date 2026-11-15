@@ -8,8 +8,6 @@ const post = (body) => ({
 export const fetchProviders = () => requestJson('/api/providers');
 export const saveProvider = (payload) => requestJson('/api/providers', post(payload));
 export const activateProvider = (id) => requestJson(`/api/providers/${encodeURIComponent(id)}/activate`, { method: 'POST' });
-export const fetchConfig = () => requestJson('/api/config');
-export const saveConfig = (payload) => requestJson('/api/config', post(payload));
 export const fetchSystemVersion = (checkRemote = true) => requestJson(`/api/system/version?check_remote=${checkRemote ? 'true' : 'false'}`, {}, { timeoutMs: 60000 });
 
 /** 把连通性测试的 HTTP 错误还原成界面用的结果，并保留服务端诊断字段。没有 HTTP 状态时原样抛出。 */

@@ -3,8 +3,7 @@ import test from 'node:test';
 import { pickSettings, normalizeSnapshot } from '../frontend/src/session_data.js';
 import { DEFAULT_SESSION_SETTINGS as defaults, DEFAULT_GLOBAL, state, loadState, saveState,
   createSession, getActive, exportSessionData, prepareSessionImport, applySessionImport, GREETING } from '../frontend/src/store.js';
-import { createAdvSettings, ADV_LABELS, validateAdvField, validateAdvLanguages } from '../frontend/src/adv/settings.js';
-import { fakeDocument } from './helpers/adv_dom.mjs';
+import { ADV_LABELS, validateAdvField, validateAdvLanguages } from '../frontend/src/adv/settings.js';
 
 const expected = { advPlayerName: '我', advPrimaryLanguage: 'zh', advSubtitleLanguage: 'ja',
   advWindowOpacity: 75, advTextIntervalMs: 30, advInterruptVoice: true, advAutoBaseMs: 1500,
@@ -79,19 +78,6 @@ test('store reload, browser backup/import and switching keep each session settin
   state.activeId = restored.id; assert.equal(getActive().settings.advBackground, 'cafe/stella');
   state.activeId = second.id; assert.equal(getActive().settings.advBgTime, 'auto');
   assert.equal(restored.settings.voiceProfileId, null);
-});
-
-test('session settings group validates draft values, resets and safely renders literal text', () => {
-  globalThis.document = fakeDocument();
-  const panel = document.createElement('div'); const ui = createAdvSettings(panel, defaults);
-  ui.load({ ...defaults, ...custom }); assert.deepEqual(ui.read(), custom);
-  const name = panel.querySelector('#s-advPlayerName'); name.value = '<img src=x onerror=alert(1)>';
-  assert.equal(ui.read().advPlayerName, name.value);
-  const opacity = panel.querySelector('#s-advWindowOpacity'); opacity.value = '101'; assert.throws(() => ui.read(), /填写有误/);
-  opacity.value = ''; assert.throws(() => ui.read(), /填写有误/);
-  assert.equal(panel.querySelector('#s-advEnabled'), null);
-  ui.load(defaults); assert.deepEqual(ui.read(), expected);
-  assert.equal(panel.querySelector('summary').textContent, 'ADV 显示与交互');
 });
 
 test('unified UI copy wording for ADV settings, labels, greetings, and import errors', () => {

@@ -740,7 +740,7 @@ test(`Part 3 #1: real controller/player, audio ${status}, done ${fullyRevealed ?
       return msg;
     },
     audioStore: new Map(), putCachedAudioBlob() {}, fetchAndCacheAudio: async () => {},
-    audioPlayer, getCurrentVoice: () => null, stopCurrentVoice() {}, setCurrentVoice() {},
+    audioPlayer, getCurrentVoice: () => null, stopCurrentVoice() {},
     clearMicTimers() {}, beforeSend() {}, onBlocked() {}, getAudioControl: () => null,
     fetch: stream.fetch,
   });

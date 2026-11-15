@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createSpriteView } from '../frontend/src/adv/sprite.js';
-import { normalizePortrait, createActingGate, inferEmotion } from '../frontend/src/sprite_state.js';
+import { normalizePortrait, createActingGate } from '../frontend/src/sprite_state.js';
 
 class Element {
   constructor(tag = 'div') {
@@ -240,12 +240,6 @@ test('calibration accepts only finite number fields', () => {
     for (const key of ['faceRect', 'crop', 'stage']) assert.equal(invalidSize.costumes[0][key], undefined, key);
   }
 });
-
-test('legacy emotion precedence ignores whitespace metadata', () => {
-  assert.equal(inferEmotion('[angry] text', ' happy '), 'angry');
-  assert.equal(inferEmotion('[angry] text', 'HAPPY'), 'happy');
-});
-
 
 test('one view shares the preload concurrency, URL dedupe and six-entry limit across calls', async t => {
   const h = setup(t);

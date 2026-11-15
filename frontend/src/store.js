@@ -408,15 +408,6 @@ export function getSession(id) {
 }
 
 /**
- * @param {Partial<GlobalSettings>} patch
- * @returns {void}
- */
-export function saveGlobal(patch) {
-  state.global = { ...state.global, ...patch };
-  saveState();
-}
-
-/**
  * @param {ChatSession | null | undefined} session
  * @returns {boolean}
  */

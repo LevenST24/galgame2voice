@@ -46,13 +46,6 @@ export function getCurrentVoice() {
   return currentVoice;
 }
 
-export function setCurrentVoice(v) {
-  ++voiceRevision;
-  pendingPreparation?.abort();
-  pendingPreparation = null;
-  currentVoice = v;
-}
-
 export function initAudioPlayerUi(dom, callbacks = {}) {
   _dom = dom;
   _callbacks = callbacks;

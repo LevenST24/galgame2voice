@@ -32,7 +32,7 @@ function setupController({ voiceMode = false } = {}) {
     persistSession: async s => persisted.push(s.id), isSessionDeleting: () => false,
     audioStore: new Map(), putCachedAudioBlob: () => {},
     fetchAndCacheAudio: async url => cached.push(url), audioPlayer,
-    getCurrentVoice: () => currentVoice, setCurrentVoice: voice => { currentVoice = voice; },
+    getCurrentVoice: () => currentVoice,
     stopCurrentVoice: () => { currentVoice = null; audioPlayer.interrupt(40); },
     getAudioControl: () => control, onBlocked: () => {},
     fetch: stream.fetch,

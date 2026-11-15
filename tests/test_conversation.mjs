@@ -136,7 +136,7 @@ function setup({ voiceMode = false } = {}) {
     persistSession: async s => persisted.push(s.id), isSessionDeleting: () => deleting,
     audioStore: new Map(), putCachedAudioBlob: (...args) => recordings.push(args),
     fetchAndCacheAudio: async url => cached.push(url), audioPlayer,
-    getCurrentVoice: () => currentVoice, setCurrentVoice: voice => { currentVoice = voice; },
+    getCurrentVoice: () => currentVoice,
     stopCurrentVoice: () => { currentVoice = null; audioPlayer.interrupt(40); },
     getAudioControl: () => control, onBlocked: reason => blocked.push(reason),
     fetch: stream.fetch,
