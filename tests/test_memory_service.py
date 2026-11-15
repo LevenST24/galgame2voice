@@ -461,3 +461,44 @@ class TestSessionManagerPromptInjection:
         assert "四季夏目" in msgs[0]["content"]
         assert msgs[1]["role"] == "user"
         assert msgs[1]["content"] == "你好夏目"
+    def test_multi_turn_history_keeps_static_prefix_invariant_across_memory_updates(self, isolate_test_database):
+        from galgame2voice.adapters.base import ChatMessage
+        from galgame2voice.adapters.llm.anthropic_adapter import AnthropicAdapter
+        from galgame2voice.services.session_manager import SessionTurn
+
+        sm = SessionManager(db_path=isolate_test_database)
+        history = [
+            SessionTurn(role="user", content_chinese="早上好"),
+            SessionTurn(role="assistant", content_chinese="早安呀", content_japanese="おはよう", emotion="happy"),
+        ]
+        mem_turn_2 = "【当前关系与好感度】\n- 当前情绪状态：happy"
+        mem_turn_3 = "【角色长程记忆】\n- 玩家喜好：拿铁\n\n【当前关系与好感度】\n- 当前情绪状态：shy"
+
+        msgs_a = sm.format_llm_messages(
+            character_name="四季夏目",
+            history=history,
+            new_user_prompt="今天去哪里？",
+            memory_prompt_block=mem_turn_2,
+        )
+        msgs_b = sm.format_llm_messages(
+            character_name="四季夏目",
+            history=history,
+            new_user_prompt="那喝咖啡吧？",
+            memory_prompt_block=mem_turn_3,
+        )
+
+        # System + all historical dialogue turns stay 100% byte-identical for KV prefix cache
+        assert msgs_a[:3] == msgs_b[:3]
+        assert msgs_a[0]["role"] == "system"
+        assert "【当前关系与好感度】" not in msgs_a[0]["content"]
+        assert msgs_b[3] == {"role": "system", "content": mem_turn_3}
+        assert msgs_b[4] == {"role": "user", "content": "那喝咖啡吧？"}
+
+        # Verify AnthropicAdapter also preserves top-level system and prior history turns
+        anth = AnthropicAdapter(api_key="sk-ant-test")
+        pa = anth._prepare_anthropic_payload([ChatMessage(**m) for m in msgs_a])
+        pb = anth._prepare_anthropic_payload([ChatMessage(**m) for m in msgs_b])
+        assert pa["system"] == pb["system"]
+        assert pa["messages"][:2] == pb["messages"][:2]
+        assert mem_turn_3 in pb["messages"][2]["content"]
+        assert "那喝咖啡吧？" in pb["messages"][2]["content"]
