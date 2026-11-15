@@ -296,12 +296,9 @@ class SessionManager:
         """
         tpl = system_template or self.system_template
         system_content = _render_system_template(tpl, character_name)
-
-        if memory_prompt_block and memory_prompt_block.strip():
-            system_content = f"{system_content}\n\n{memory_prompt_block.strip()}"
-
-        messages = [{"role": "system", "content": system_content}]
-
+        clean_memory = memory_prompt_block.strip() if memory_prompt_block and memory_prompt_block.strip() else ""
+      
+        dialogue_msgs: list[dict[str, str]] = []
         for turn in history:
             # Only user/assistant turns are dialogue. A "system" row can only
             # come from an imported backup file; replaying it would promote
@@ -318,13 +315,24 @@ class SessionManager:
                 )
             else:
                 content = turn.content_chinese or turn.raw_content or ""
-            messages.append({"role": turn.role, "content": content})
+            dialogue_msgs.append({"role": turn.role, "content": content})
 
-        # Append new_user_prompt only if it is not already the last message in history
-        if new_user_prompt:
-            last_msg = messages[-1] if len(messages) > 1 else None
-            if not _is_duplicate_user_prompt(last_msg, new_user_prompt):
-                messages.append({"role": "user", "content": new_user_prompt})
+        # On first turn (no dialogue history), merge memory into the single system message.
+        # On multi-turn chats, keep messages[0] + dialogue_msgs strictly invariant across turns
+        # and place the per-turn recalled memory/affection block after history so upstream LLM
+        # prefix caches (OpenAI, DeepSeek, Gemini, Anthropic) stay warm across the whole session.
+        if clean_memory and not dialogue_msgs:
+            system_content = f"{system_content}\n\n{clean_memory}"
+
+        messages = [{"role": "system", "content": system_content}, *dialogue_msgs]
+        last_dialogue_msg = dialogue_msgs[-1] if dialogue_msgs else None
+
+        if clean_memory and dialogue_msgs:
+            messages.append({"role": "system", "content": clean_memory})
+
+        # Append new_user_prompt only if it is not already the last dialogue message in history
+        if new_user_prompt and not _is_duplicate_user_prompt(last_dialogue_msg, new_user_prompt):
+            messages.append({"role": "user", "content": new_user_prompt})
 
         return messages
 
