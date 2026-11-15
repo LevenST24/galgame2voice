@@ -61,6 +61,21 @@ class TestAffectionLevelAndScoring:
         assert "compliment" in reasons_both
         assert "character_preference" in reasons_both
 
+    @pytest.mark.parametrize(
+        "text",
+        ["我一点都不喜欢你，真讨厌", "你真不可爱", "并不觉得漂亮", "别夸你了", "我讨厌女仆装，也不喜欢咖啡加糖"],
+    )
+    def test_negated_compliments_and_preferences_earn_only_the_base_point(self, affection_service, text):
+        assert affection_service.calculate_turn_points(user_text=text) == (1, ["base_turn", "base_interaction (+1)"])
+
+    @pytest.mark.parametrize(
+        "text", ["你也不是不可爱啦", "不得不喜欢你", "我从来没这么喜欢你", "虽然今天心情不好，但夏目真可爱"]
+    )
+    def test_double_negatives_and_positive_clauses_still_count_as_compliments(self, affection_service, text):
+        points, reasons = affection_service.calculate_turn_points(user_text=text)
+        assert points == 1 + 2
+        assert "compliment" in reasons
+
 
 class TestEmotionClassification:
     def test_classify_all_emotions(self, affection_service):

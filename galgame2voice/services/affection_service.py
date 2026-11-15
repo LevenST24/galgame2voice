@@ -5,6 +5,7 @@ emotional state transitions, and interactive easter egg voicelines.
 """
 
 import logging
+import re
 from typing import Any
 from pathlib import Path
 
@@ -14,6 +15,29 @@ from galgame2voice.services.emotion_classifier import VALID_EMOTIONS, EMOTION_NA
 from galgame2voice.services.emotion_references import EMOTION_SYNONYMS
 
 logger = logging.getLogger("galgame2voice.services.affection_service")
+
+_CLAUSE_SPLIT_RE = re.compile(r"[\s,，。！!?？~、；;：:…]+")
+# A keyword right after one of these in the same clause is negated ("不喜欢你", "真不可爱", "谈不上好看");
+# a negated negation ("不是不可爱", "不得不喜欢你") is not.
+_NEGATED_PREFIX_RE = re.compile(
+    r"(?:(?<!不)(?<!并非)(?<!不是)(?<!不得)(?<!不能)"
+    r"(?:不|没|没有|别|莫|勿|未|甭)"
+    r"(?:是|算|觉得|喜欢|爱|太|很|真|挺|怎么|会|能|想|肯|配|要|许|准)?"
+    r"|算不上|谈不上|称不上|谁说(?:你|她|他|我)?|讨厌|最烦|恨透(?:了)?)$"
+)
+
+
+def _has_unnegated_keyword(text: str, keywords: list[str]) -> bool:
+    """Whether a keyword appears in ``text`` without a negation right before it in the same clause."""
+    for clause in _CLAUSE_SPLIT_RE.split(text):
+        for keyword in keywords:
+            keyword = keyword.lower()
+            pos = clause.find(keyword)
+            while pos != -1:
+                if not _NEGATED_PREFIX_RE.search(clause[max(0, pos - 10) : pos]):
+                    return True
+                pos = clause.find(keyword, pos + len(keyword))
+    return False
 
 
 class AffectionService:
@@ -163,13 +187,13 @@ class AffectionService:
         combined = user_text[:4000].lower()
 
         # Check compliments
-        has_compliment = any(kw.lower() in combined for kw in self.COMPLIMENT_KEYWORDS)
+        has_compliment = _has_unnegated_keyword(combined, self.COMPLIMENT_KEYWORDS)
         if has_compliment:
             points += 2
             reasons.extend(["compliment", "warm_compliment (+2)"])
 
         # Check character preferences
-        has_preference = any(kw.lower() in combined for kw in self.CHARACTER_PREFERENCE_KEYWORDS)
+        has_preference = _has_unnegated_keyword(combined, self.CHARACTER_PREFERENCE_KEYWORDS)
         if has_preference:
             points += 3
             reasons.extend(["character_preference", "character_preference (+3)"])
