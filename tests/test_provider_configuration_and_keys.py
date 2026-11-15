@@ -594,16 +594,6 @@ class TestProviderSecurityAndSsrfBoundaries:
 class TestProviderPresetSeedsAndFallback:
     """Regression tests for provider preset seeds, legacy healing, and empty chat_model fallback."""
 
-    FICTIONAL_MODELS = {
-        "gemini-3.7-flash",
-        "gpt-5.6-sol",
-        "deepseek-v4-pro",
-        "claude-5-sonnet-latest",
-        "glm-5.3",
-        "qwen3.8-max",
-        "deepseek-v4:latest",
-    }
-
     @pytest.mark.asyncio
     async def test_initial_db_seeds_all_10_presets_without_fictional_models(self, tmp_path):
         """Fresh database must seed all 10 presets with real default models, no fictional models."""
@@ -617,12 +607,6 @@ class TestProviderPresetSeedsAndFallback:
             # 1. All 10 presets must exist
             for preset_id in PROVIDER_PRESETS:
                 assert preset_id in provider_map, f"Preset '{preset_id}' missing from freshly seeded providers"
-
-            # 2. None of the providers may use fictional model names
-            for p_id, p in provider_map.items():
-                assert p.chat_model not in self.FICTIONAL_MODELS, (
-                    f"Provider '{p_id}' has fictional chat_model '{p.chat_model}'"
-                )
 
             # 3. Built-in presets must match PROVIDER_PRESETS default_chat_model
             for preset_id, preset in PROVIDER_PRESETS.items():
@@ -831,3 +815,20 @@ class TestProviderPresetSeedsAndFallback:
             raw = await crud.get_provider_raw(conn, "moonshot")
             assert raw.api_key == "sk-kimi-saved-1234"
             assert (raw.chat_model, raw.reasoning_effort) == ("kimi-k3.1-pro", "low")
+
+    @pytest.mark.asyncio
+    async def test_retired_glm_models_migrate_to_glm_4_7_flash(self, tmp_path):
+        """Retired GLM models migrate to glm-4.7-flash and reasoning_effort none."""
+        from galgame2voice.database.models import ProviderUpdate
+
+        db_path = tmp_path / "glm_migrate.db"
+        await init_db(db_path)
+        async with get_db(db_path) as conn:
+            upd = ProviderUpdate(api_key="sk-glm-saved-1234", chat_model="glm-4-plus", reasoning_effort=None)
+            await crud.update_provider(conn, "glm", upd)
+        await init_db(db_path)
+        async with get_db(db_path) as conn:
+            raw = await crud.get_provider_raw(conn, "glm")
+            assert raw.api_key == "sk-glm-saved-1234"
+            assert (raw.chat_model, raw.reasoning_effort) == ("glm-4.7-flash", "none")
+

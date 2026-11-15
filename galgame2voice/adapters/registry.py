@@ -105,17 +105,18 @@ PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
         "id": "glm",
         "name": "智谱 GLM",
         "default_base_url": "https://open.bigmodel.cn/api/paas/v4",
-        "default_chat_model": "glm-4-plus",
+        "default_chat_model": "glm-4.7-flash",
         "default_stt_model": "",
+        "default_reasoning_effort": "none",
         "adapter_class": GLMLLMAdapter,
         "stt_adapter_class": None,
         "preset_models": [
-            "glm-4-plus",
-            "glm-4-flash",
-            "glm-4-long",
-            "glm-4-air",
+            "glm-4.7-flash",
+            "glm-4.7-flashx",
+            "glm-5.3-flash",
+            "glm-5.3",
         ],
-        "description": "智谱 BigModel 开放平台 GLM-4 系列旗舰模型",
+        "description": "智谱 BigModel 官方 API（免费的 GLM-4.7-Flash / 高速版 FlashX / GLM-5.3 系列）",
     },
     "qwen": {
         "id": "qwen",
@@ -212,6 +213,9 @@ RETIRED_CHAT_MODELS: dict[tuple[str, str], tuple[str, str | None]] = {
     ("moonshot", "kimi-k2-turbo-preview"): ("kimi-k3.1-pro", "low"),
     ("moonshot", "kimi-k2-thinking"): ("kimi-k3.1-pro", "low"),
     ("moonshot", "kimi-k2-thinking-turbo"): ("kimi-k3.1-pro", "low"),
+    ("glm", "glm-4-plus"): ("glm-4.7-flash", "none"),
+    ("glm", "glm-4-flash"): ("glm-4.7-flash", "none"),
+    ("glm", "glm-4-air"): ("glm-4.7-flash", "none"),
 }
 
 

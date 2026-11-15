@@ -959,3 +959,26 @@ async def test_moonshot_k3_payload_and_probe_rules():
         await kimi._probe_chat_fallback(client, "kimi-k3.1-pro", {}, "moonshot", time.perf_counter())
     assert (probed[0].get("max_completion_tokens"), probed[0].get("reasoning_effort")) == (1, "low")
     assert "max_tokens" not in probed[0]
+
+
+def test_glm_payload_reasoning_and_temperature_rules():
+    glm = get_llm_adapter("glm", api_key="sk-test")
+    msgs = [{"role": "user", "content": "hi"}]
+
+    p_47 = glm._build_payload(msgs, "glm-4.7-flash", temperature=1.5, extra={"reasoning_effort": "none"})
+    assert p_47.get("thinking") == {"type": "disabled"}
+    assert "reasoning_effort" not in p_47
+    assert p_47["temperature"] == 1.0
+
+    p_53_none = glm._build_payload(msgs, "glm-5.3", temperature=0.7, extra={"reasoning_effort": "none"})
+    p_53_med = glm._build_payload(msgs, "glm-5.3", temperature=0.7, extra={"reasoning_effort": "medium"})
+    assert (p_53_none.get("reasoning_effort"), p_53_med.get("reasoning_effort")) == ("low", "high")
+    assert "thinking" not in p_53_none and "thinking" not in p_53_med
+    assert p_53_none["temperature"] == 0.7
+
+    p_52 = glm._build_payload(msgs, "glm-5.2", extra={"reasoning_effort": "none"})
+    assert p_52.get("reasoning_effort") == "none" and "thinking" not in p_52
+
+    p_4l = glm._build_payload(msgs, "glm-4-long", extra={"reasoning_effort": "low"})
+    assert "reasoning_effort" not in p_4l and "thinking" not in p_4l
+

@@ -64,6 +64,10 @@ MODEL_PRICING_MAP: dict[str, dict[str, tuple[float, float]]] = {
     },
     "glm": {
         DEFAULT_MODEL_KEY: (0.05, 0.05),
+        "glm-4.7-flash": (0.0, 0.0),
+        "glm-4.7-flashx": (0.07, 0.42),
+        "glm-5.3-flash": (0.11, 0.39),
+        "glm-5.3": (1.11, 3.89),
         "glm-4-plus": (0.05, 0.05),
         "glm-4-flash": (0.01, 0.01),
     },
