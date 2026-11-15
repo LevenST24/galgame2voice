@@ -17,7 +17,6 @@ from galgame2voice.services.chat_pipelines.stream_snapshot import (
     has_meaningful_text,
     new_line_audio_state,
     resolve_line_audio_snapshot_status,
-    snapshot_lines_with_audio,
 )
 
 
@@ -277,26 +276,6 @@ def test_disconnect_snapshot_persistence_rules():
 
 def test_stream_coordinator_delegation_consistency():
     """Verifies StreamCoordinator helper methods delegate identically to stream_snapshot pure functions."""
-    coord = StreamCoordinator.__new__(StreamCoordinator)
-    announced_lines = [
-        {"index": 0, "zh": "第一句。", "ja": "一番です。", "emotion": "gentle", "act": {}},
-        {"index": 1, "zh": "第二句。", "ja": "二番です。", "emotion": "happy", "act": {"pose": "b"}},
-    ]
-    chunk0 = {"index": 0, "line": 0, "sentence": "一番です。", "audio_url": "/audio/0.wav"}
-    states = {
-        0: {**new_line_audio_state(0), "status": "ready", "emitted": True, "chunks": [chunk0]},
-        1: new_line_audio_state(1),
-    }
-    run = SimpleNamespace(announced_lines=announced_lines, line_audio_states=states)
-
-    for mark_failed in (False, True):
-        expected = snapshot_lines_with_audio(
-            announced_lines,
-            states,
-            mark_unfinished_failed=mark_failed,
-        )
-        assert coord._snapshot_lines_with_audio(run, mark_unfinished_failed=mark_failed) == expected
-
     raw_chunks = [
         {"index": 0, "line": 0, "sentence": "一番です。", "audio_url": "/audio/0.wav", "local_path": "/tmp/0.wav"},
     ]

@@ -22,7 +22,6 @@ from galgame2voice.utils.text_splitter import is_short_salutation
 from galgame2voice.services.streaming_parser import StreamingBilingualParser
 from galgame2voice.services.tts_service import (
     TtsService,
-    clear_tts_profile_cache,
 )
 from galgame2voice.providers import (
     LLMProvider,
@@ -79,7 +78,6 @@ def test_streaming_parser_early_first_chunk():
 
 @pytest.mark.asyncio
 async def test_tts_service_bypasses_sqlite_when_pre_resolved():
-    clear_tts_profile_cache()
     svc = TtsService()
     opts = {
         "_pre_resolved": True,
@@ -98,7 +96,6 @@ async def test_tts_service_bypasses_sqlite_when_pre_resolved():
 
 @pytest.mark.asyncio
 async def test_tts_service_memoizes_db_lookups():
-    clear_tts_profile_cache()
     svc = TtsService()
     fake_profile = MagicMock(
         id=42,

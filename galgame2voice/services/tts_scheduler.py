@@ -249,10 +249,6 @@ class TtsScheduler:
         return self._cancelled_streams
 
     @property
-    def queue_wait_time(self) -> float:
-        return self._last_queue_wait_time
-
-    @property
     def last_queue_wait_time(self) -> float:
         return self._last_queue_wait_time
 
@@ -477,17 +473,6 @@ class TtsScheduler:
         if cancelled_count > 0:
             logger.info("TtsScheduler: Cancelled %d pending tasks for stale generation %s", cancelled_count, generation_id)
         return cancelled_count
-
-    def cancel_task(self, task_id: str) -> bool:
-        """Cancels a specific task by task_id."""
-        if not task_id:
-            return False
-        with self._sync_lock:
-            task = self._tasks_by_id.pop(task_id, None)
-            if task and not task.future.done():
-                self._cancel_scheduled_task(task)
-                return True
-        return False
 
     def get_queue_depth(self) -> int:
         return self._queue.qsize() if self._queue is not None else 0

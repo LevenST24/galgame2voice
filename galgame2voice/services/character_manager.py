@@ -564,20 +564,6 @@ class CharacterManager:
         return not path.is_file()
 
     @staticmethod
-    def _is_cross_character_audio(current_ref: str, pkg: CharacterPackage) -> bool:
-        """Determines if the referenced audio path belongs to a different character package."""
-        if not current_ref:
-            return False
-        path = Path(current_ref.replace("\\", "/"))
-        if not path.is_absolute():
-            path = get_settings().project_root / path
-        try:
-            relative = path.resolve().relative_to(pkg.folder.parent)
-        except (OSError, ValueError):
-            return False
-        return bool(relative.parts and Path(relative.parts[0]) != Path(pkg.folder.name))
-
-    @staticmethod
     async def _find_existing_profile_row(
         conn: aiosqlite.Connection,
         char_name: str,

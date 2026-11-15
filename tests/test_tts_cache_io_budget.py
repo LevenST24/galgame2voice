@@ -107,7 +107,7 @@ async def test_stream_hit_counts_one_playback(stack, warm):
     assert all(0 < len(chunk) <= 2048 for chunk in chunks)
     client.synthesize.assert_not_awaited()
     assert cache._hits == 1, "one cached playback was counted more than once"
-    await cache.flush_dirty_touches()
+    await cache._flush_dirty_touches()
     async with get_db(cache.db_path) as conn:
         assert (await crud.get_tts_cache_entry(conn, key)).hit_count == 1
 

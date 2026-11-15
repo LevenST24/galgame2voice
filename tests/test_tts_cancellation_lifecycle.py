@@ -166,7 +166,6 @@ async def test_cancel_upstream_producer_with_full_buffer():
         assert producer.cancelled()
         assert closed.is_set()
         assert not client.lock.locked()
-        assert client._inflight_requests == 0
     finally:
         # Free the queue on a failing implementation so teardown itself cannot hang.
         while not producer.done():

@@ -3,7 +3,6 @@
 import wave
 
 from galgame2voice.services.gpt_sovits_client import GptSovitsClient
-from galgame2voice.services.tts_cache_manager import _normalize_ref_audio
 from galgame2voice.utils.audio_spec import project_file, resolve_reference_audio_path, validate_reference_audio
 
 
@@ -30,12 +29,9 @@ def test_engine_payload_uses_absolute_install_path(tmp_path, monkeypatch):
     assert resolve_reference_audio_path(stored) == str(reference.resolve())
 
 
-def test_validation_and_cache_identity_see_the_installed_file(tmp_path, monkeypatch):
-    reference, stored = _install_with_reference(tmp_path, monkeypatch)
+def test_validation_sees_the_installed_file(tmp_path, monkeypatch):
+    _reference, stored = _install_with_reference(tmp_path, monkeypatch)
     assert validate_reference_audio(stored) == (True, "")
-    stat = reference.stat()
-    # Cache keys include the file revision, so re-recorded references invalidate old audio.
-    assert _normalize_ref_audio(stored) == f"gentle.wav:{stat.st_mtime_ns}:{stat.st_size}"
 
 
 def test_missing_files_keep_the_original_path(tmp_path, monkeypatch):

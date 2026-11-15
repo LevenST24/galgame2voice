@@ -46,14 +46,6 @@ logger = logging.getLogger("galgame2voice.services.voice_manager")
 WARMUP_PROBE_TEXT = "はい。"
 
 
-def _get_switch_min_free_memory_gb() -> float:
-    return VoiceResourceGuard(memory_status=get_system_memory_status).minimum_memory_gb()
-
-
-def _get_switch_min_free_vram_gb() -> float:
-    return VoiceResourceGuard.minimum_vram_gb()
-
-
 class VoiceManager:
     """
     Coordinates character voice profile management and atomic model switching with GPT-SoVITS.
@@ -273,10 +265,6 @@ class VoiceManager:
     ) -> bool:
         """Alias for switch_profile to preserve backwards compatibility."""
         return await self.switch_profile(target, persist=persist, force=force)
-
-    def _check_vram_guard(self, min_free_vram_gb: float | None = None) -> None:
-        """Apply the shared VRAM policy with this manager's hardware probes."""
-        VoiceResourceGuard(gpu_status=get_gpu_vram_status, release=release_system_memory).check_vram(min_free_vram_gb)
 
     async def warmup_current_profile(self, profile_id: int | None = None) -> bool:
         """Warm the current selection in the low-priority worker, after engine ACK."""
