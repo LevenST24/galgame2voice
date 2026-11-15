@@ -52,7 +52,6 @@ from .stream_snapshot import (
     build_line_audio_event,
     clean_audio_chunks,
     new_line_audio_state,
-    snapshot_lines_with_audio,
 )
 from .text_pipeline import TextSegmentationPipeline
 from .tts_pipeline import TtsStreamPipeline
@@ -67,25 +66,6 @@ _CANCEL_SENTINEL = object()
 # Reasoning deltas can arrive many times a second. One frame per few seconds
 # renews the client's 120s idle budget. The thinking text is not included.
 REPLY_PROGRESS_MIN_INTERVAL_SECONDS = 5.0
-
-
-def _consume_background_failure(task: asyncio.Task) -> None:
-    """Logs a fire-and-forget task's failure instead of deferring it to GC.
-
-    A task whose exception is never retrieved makes the interpreter print a bare
-    "Task exception was never retrieved" when it is collected, losing both the
-    context and the timing of the original failure.
-    """
-    if task.cancelled():
-        return
-    exc = task.exception()
-    if exc is not None:
-        logger.warning(
-            "Background streaming task failed: %s: %s",
-            type(exc).__name__,
-            exc,
-            exc_info=exc,
-        )
 
 
 class SseKeepAlive(dict):
@@ -185,7 +165,6 @@ class StreamCoordinator:
         db_path: str,
         metrics_collector: MetricsCollector,
         affection_service: AffectionService,
-        spawn_background: Callable[[Any], None] | None = None,
         concat_wav_fn: Callable[..., bool] | None = None,
         cancel_event: asyncio.Event | None = None,
         tts_options: dict[str, Any] | None = None,
@@ -216,7 +195,6 @@ class StreamCoordinator:
         self.db_path = db_path
         self.metrics_collector = metrics_collector
         self.affection_service = affection_service
-        self.spawn_background = spawn_background
         self.concat_wav_fn = concat_wav_fn
         self.cancel_event = cancel_event
         self.tts_options = tts_options
@@ -239,14 +217,6 @@ class StreamCoordinator:
             or getattr(self.active_prof, "name", None)
             or "Character"
         )
-
-    def _spawn_bg(self, coro: Any) -> None:
-        """Spawns background coroutine using callback or asyncio.create_task."""
-        if self.spawn_background is not None:
-            self.spawn_background(coro)
-            return
-        task = asyncio.create_task(coro)
-        task.add_done_callback(_consume_background_failure)
 
     def _concat_wav(
         self,
@@ -570,18 +540,6 @@ class StreamCoordinator:
             run.chunk_results[c_idx] = {"settled": False, "chunk": None, "error": None}
             if not await self._put_with_cancel(run.tts_queue, chunk, run.cancel_event, run.shutdown_event):
                 return
-
-    def _snapshot_lines_with_audio(
-        self,
-        run: _StreamRun,
-        *,
-        mark_unfinished_failed: bool = False,
-    ) -> list[dict[str, Any]]:
-        return snapshot_lines_with_audio(
-            run.announced_lines,
-            run.line_audio_states,
-            mark_unfinished_failed=mark_unfinished_failed,
-        )
 
     def _note_reply_progress(self, run: _StreamRun, stage: str) -> None:
         """Queues one generic in-progress frame, at most once per few seconds."""

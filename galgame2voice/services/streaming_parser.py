@@ -40,7 +40,6 @@ CLAUSE_PUNCT_WITH_CLOSING = re.compile(r'[、，,][」』"\'”’\)）\]】]*$'
 TRAILING_PUNCT_AND_CLOSING = re.compile(r'[、，,\s…\.〜~ー\-」』"\'”’\)）\]】]+$')
 
 _RE_CHINESE_FIELD = re.compile(r'"chinese"\s*:\s*"((?:[^"\\]|\\.)*)')
-_RE_CHINESE_CLOSED = re.compile(r'"chinese"\s*:\s*"(?:[^"\\]|\\.)*"')
 _RE_CHINESE_FALLBACK = re.compile(r'(?:中文|Chinese)[:：]\s*(.*?)(?:(?:日文|Japanese)[:：]|$)', flags=re.DOTALL | re.IGNORECASE)
 _RE_JAPANESE_FIELD = re.compile(r'"japanese"\s*:\s*"((?:[^"\\]|\\.)*)')
 _RE_JAPANESE_CLOSED = re.compile(r'"japanese"\s*:\s*"(?:[^"\\]|\\.)*"')
@@ -310,23 +309,6 @@ class StreamingBilingualParser:
     def get_emotion(self) -> str:
         """Returns the classified emotion for current extracted content."""
         return classify_emotion(self.chinese_extracted, self.japanese_extracted, self.emotion_extracted)
-
-    @property
-    def chinese_complete(self) -> bool:
-        """Whether the legacy JSON Chinese string has closed (even before EOF)."""
-        effective_buf, _ = _strip_and_check_think_buffer(self.buffer)
-        clean = self.clean_markdown_delimiters(effective_buf)
-        if bool(_RE_CHINESE_CLOSED.search(clean)):
-            return True
-        if bool(re.search(r'(?:中文|Chinese)[:：].*?(?:日文|Japanese)[:：]', clean, flags=re.DOTALL | re.IGNORECASE)):
-            return True
-        return False
-
-    @property
-    def japanese_complete(self) -> bool:
-        """Whether the legacy JSON Japanese string has closed (even before EOF)."""
-        effective_buf, _ = _strip_and_check_think_buffer(self.buffer)
-        return bool(_RE_JAPANESE_CLOSED.search(self.clean_markdown_delimiters(effective_buf)))
 
     def get_dynamic_tts_options(
         self,

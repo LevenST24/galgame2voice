@@ -35,7 +35,7 @@ async def retiring(scheduler):
     caller = asyncio.create_task(scheduler.schedule(old_job, task_id="shared", generation_id="old"))
     try:
         await asyncio.wait_for(started.wait(), 1)
-        assert scheduler.cancel_task("shared")
+        assert scheduler.cancel_generation("old") == 1
         await asyncio.wait_for(cleaning.wait(), 1)
         with pytest.raises(asyncio.CancelledError):
             await caller
@@ -80,8 +80,7 @@ async def test_live_duplicate_id_is_rejected_without_replacing_the_original(sche
 
 
 @pytest.mark.parametrize("same_generation", [False, True])
-@pytest.mark.parametrize("cancel_by", ["task", "generation"])
-async def test_cancelled_owner_cleanup_cannot_remove_a_reused_id(scheduler, retiring, same_generation, cancel_by):
+async def test_cancelled_owner_cleanup_cannot_remove_a_reused_id(scheduler, retiring, same_generation):
     entered = asyncio.Event()
     generation = "old" if same_generation else "new"
 
@@ -94,10 +93,7 @@ async def test_cancelled_owner_cleanup_cannot_remove_a_reused_id(scheduler, reti
         await asyncio.sleep(0)
         retiring.set()
         await asyncio.wait_for(entered.wait(), 1)
-        if cancel_by == "task":
-            assert scheduler.cancel_task("shared") is True
-        else:
-            assert scheduler.cancel_generation(generation) == 1
+        assert scheduler.cancel_generation(generation) == 1
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(caller, 1)
     finally:

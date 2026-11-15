@@ -47,7 +47,6 @@ from galgame2voice.services.dynamic_batcher import (
     DynamicBatchScheduler,
     SynthesisSpeedTracker,
     get_speed_tracker,
-    reset_speed_tracker,
     get_batch_scheduler,
 )
 from galgame2voice.services.character_manager import (
@@ -93,7 +92,6 @@ __all__ = [
     "DynamicBatchScheduler",
     "SynthesisSpeedTracker",
     "get_speed_tracker",
-    "reset_speed_tracker",
     "get_batch_scheduler",
     "CharacterManager",
     "get_character_manager",

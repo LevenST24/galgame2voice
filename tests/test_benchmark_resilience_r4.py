@@ -13,7 +13,7 @@ Verifies:
 4. R3 50+ Turn Conversation Memory Stability:
    - 50 continuous turns bilingual dialogue memory stability (RSS drift < 35MB).
 5. R3 SSE Keep-Alive Heartbeat:
-   - stream_chat() and stream_chat_events() W3C keep-alive comment (: keep-alive\\n\\n)
+   - stream_chat() W3C keep-alive comment (: keep-alive\\n\\n)
      emission on >= 5.0s queue silence.
 """
 
@@ -442,7 +442,7 @@ class TestR3SseKeepAlive:
 
     @pytest.mark.asyncio
     async def test_r3_sse_keep_alive_on_queue_silence(self, temp_db_path, mock_gpt_sovits, monkeypatch):
-        """Verifies stream_chat and stream_chat_events emit ': keep-alive\\n\\n' on silence."""
+        """Verifies stream_chat emits SseKeepAlive with ': keep-alive\\n\\n' on silence."""
         client = GptSovitsClient(server=mock_gpt_sovits)
         tts_service = TtsService(client=client, db_path=temp_db_path)
         chat_service = ChatService(tts_service=tts_service, db_path=temp_db_path)
@@ -480,17 +480,4 @@ class TestR3SseKeepAlive:
         keep_alive_events = [ev for ev in events if isinstance(ev, SseKeepAlive) or ev == ": keep-alive\n\n"]
         assert len(keep_alive_events) >= 1, "stream_chat must yield SseKeepAlive frame during silence"
         assert keep_alive_events[0].get("comment") == ": keep-alive\n\n"
-
-        # 2. Test stream_chat_events formats keep-alive as W3C comment string
-        time_offset = 0.0
-        adapter.paused_event.clear()
-        asyncio.create_task(_shift_clock())
-
-        raw_events = []
-        async for ev_str in chat_service.stream_chat_events(prompt="测试保活心跳格式", session_id="ka_sess_2"):
-            raw_events.append(ev_str)
-
-        assert any(e == ": keep-alive\n\n" for e in raw_events), (
-            "stream_chat_events must yield verbatim ': keep-alive\\n\\n' string"
-        )
 

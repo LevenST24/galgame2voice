@@ -28,7 +28,7 @@ from galgame2voice.database.session import get_db, init_db
 from galgame2voice.main import create_app
 from galgame2voice.services.affection_service import AffectionService
 from galgame2voice.services.memory_service import MemoryService
-from galgame2voice.services.metrics_collector import MetricsCollector, get_metrics_collector, reset_metrics_collector
+from galgame2voice.services.metrics_collector import MetricsCollector, get_metrics_collector
 from galgame2voice.services.tts_cache_manager import TtsCacheManager, get_tts_cache_manager, reset_tts_cache_manager
 from galgame2voice.utils.audio_converter import (
     convert_ogg_to_wav,
@@ -39,7 +39,6 @@ from galgame2voice.utils.audio_converter import (
 
 @pytest.fixture
 def app(isolate_test_database, tmp_path):
-    reset_metrics_collector()
     reset_tts_cache_manager()
     import sqlite3
     conn = sqlite3.connect(isolate_test_database)
@@ -63,7 +62,7 @@ def app(isolate_test_database, tmp_path):
     application = create_app()
     yield application
 
-    reset_metrics_collector()
+    mc_mod._metrics_collector_instance = None
     reset_tts_cache_manager()
 
 
@@ -198,14 +197,6 @@ class TestAffectionServiceHardening:
 
         egg = svc.check_easter_eggs(None, current_level=-1)
         assert egg is None
-
-        # Level calculation boundaries
-        lvl, name = svc.calculate_level(-100)
-        assert lvl == 1
-        lvl, name = svc.calculate_level(1000)
-        assert lvl == 5
-        lvl, name = svc.calculate_level("invalid")
-        assert lvl == 1
 
     async def test_increment_affection_atomic_score_and_level_sync(self, isolate_test_database):
         async with get_db(isolate_test_database) as conn:

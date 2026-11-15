@@ -102,24 +102,6 @@ class SynthesisSpeedTracker:
     def is_high_throughput(self) -> bool:
         return bool(self.get_metrics()["is_high_throughput"])
 
-    def get_telemetry(self) -> dict[str, Any]:
-        """Returns comprehensive telemetry dictionary for API endpoints."""
-        metrics = self.get_metrics()
-        scheduler = get_batch_scheduler()
-        rec_batch_size = scheduler.compute_batch_size(
-            "测试一段话。第二句话。第三句话。第四句话。",
-            split_method="cut2",
-        )
-        return {
-            "status": "ready" if metrics["sample_count"] > 0 else "cold_start",
-            "sample_count": metrics["sample_count"],
-            "avg_rtf": metrics["avg_rtf"],
-            "chars_per_sec": metrics["avg_chars_per_sec"],
-            "is_resource_constrained": metrics["is_resource_constrained"],
-            "is_high_throughput": metrics["is_high_throughput"],
-            "dynamic_batch_size": rec_batch_size,
-        }
-
     def clear(self) -> None:
         with self._lock:
             self._history.clear()
@@ -240,18 +222,6 @@ def get_speed_tracker() -> SynthesisSpeedTracker:
     return _GLOBAL_TRACKER
 
 
-def reset_speed_tracker() -> None:
-    """Resets the process-wide SynthesisSpeedTracker singleton.
-
-    The scheduler singleton holds its own reference to the tracker, so it is
-    dropped too and rebuilt on the fresh tracker by the next get_batch_scheduler().
-    """
-    global _GLOBAL_TRACKER, _GLOBAL_SCHEDULER
-    with _INIT_LOCK:
-        _GLOBAL_TRACKER = SynthesisSpeedTracker()
-        _GLOBAL_SCHEDULER = None
-
-
 def get_batch_scheduler() -> DynamicBatchScheduler:
     """Returns the process-wide DynamicBatchScheduler singleton."""
     global _GLOBAL_SCHEDULER
@@ -267,6 +237,5 @@ __all__ = [
     "SynthesisSpeedTracker",
     "DynamicBatchScheduler",
     "get_speed_tracker",
-    "reset_speed_tracker",
     "get_batch_scheduler",
 ]

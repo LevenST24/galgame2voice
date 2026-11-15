@@ -81,14 +81,8 @@ def _require_voice_models(opts: dict[str, Any]) -> None:
             )
 
 
-# Backward compatibility aliases pointing to the thread-safe AudioSpecCache singleton.
+# Backward compatibility alias pointing to the thread-safe AudioSpecCache singleton.
 _AUDIO_STAT_DURATION_CACHE = _AUDIO_SPEC_CACHE._cache
-_AUDIO_DURATION_CACHE = _AUDIO_STAT_DURATION_CACHE
-
-
-def clear_tts_profile_cache() -> None:
-    """Clears in-memory caches for reference audio durations."""
-    _AUDIO_SPEC_CACHE.clear()
 
 
 async def async_get_audio_duration(path: str | Path | None) -> float | None:
@@ -677,7 +671,6 @@ __all__ = [
     "GptSovitsClient",
     "TtsService",
     "async_get_audio_duration",
-    "clear_tts_profile_cache",
     "clean_japanese_parentheses",
     "resolve_tts_options",
     "SLICING_METHODS",

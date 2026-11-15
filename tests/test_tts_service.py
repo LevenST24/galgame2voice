@@ -3,9 +3,8 @@ Unit and Integration Tests for TtsService.
 Verifies:
 1. get_audio_duration stat-based caching and cache invalidation on file modification.
 2. async_get_audio_duration non-blocking thread delegation and fast-path hit.
-3. clear_tts_profile_cache clearing all in-memory caches.
-4. _populate_voice_profile_opts using async duration checks and fallback logic.
-5. synthesize / stream basic contract handling.
+3. _populate_voice_profile_opts using async duration checks and fallback logic.
+4. synthesize / stream basic contract handling.
 """
 
 import asyncio
@@ -25,10 +24,8 @@ from galgame2voice.services.chat_pipelines.tts_pipeline import TtsStreamPipeline
 from galgame2voice.services.tts_cache_manager import TtsCacheManager
 from galgame2voice.services.tts_service import (
     TtsService,
-    _AUDIO_DURATION_CACHE,
     _AUDIO_STAT_DURATION_CACHE,
     async_get_audio_duration,
-    clear_tts_profile_cache,
 )
 from galgame2voice.utils.audio_spec import AudioSpecCache, _AUDIO_SPEC_CACHE
 
@@ -51,7 +48,7 @@ def _make_test_wav(file_path: Path, duration_sec: float = 4.0, sample_rate: int 
 
 
 def setup_function():
-    clear_tts_profile_cache()
+    _AUDIO_SPEC_CACHE.clear()
 
 
 def test_get_audio_duration_stat_cache(tmp_path):
@@ -114,22 +111,6 @@ async def test_async_get_audio_duration(tmp_path):
     assert await async_get_audio_duration(None) is None
     assert await async_get_audio_duration("") is None
     assert await async_get_audio_duration(tmp_path / "ghost.wav") is None
-
-
-def test_clear_tts_profile_cache(tmp_path):
-    """Verifies clear_tts_profile_cache clears both duration and stat caches."""
-    wav_path = _make_test_wav(tmp_path / "cache_clear.wav", duration_sec=3.5)
-    TtsService.get_audio_duration(wav_path)
-
-    assert len(_AUDIO_SPEC_CACHE._cache) > 0
-    assert len(_AUDIO_DURATION_CACHE) > 0
-    assert len(_AUDIO_STAT_DURATION_CACHE) > 0
-
-    clear_tts_profile_cache()
-
-    assert len(_AUDIO_SPEC_CACHE._cache) == 0
-    assert len(_AUDIO_DURATION_CACHE) == 0
-    assert len(_AUDIO_STAT_DURATION_CACHE) == 0
 
 
 @pytest.mark.asyncio

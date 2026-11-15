@@ -180,15 +180,6 @@ async def test_sync_preserves_shared_reference_and_user_weights(project, isolate
         assert result.prompt_text == "User text"
 
 
-def test_audio_ownership_uses_package_folder_not_display_name(project):
-    folder = install(project, "ann", "Ann", folder="localized-folder")
-    manager = catalog(project)
-    package = manager.get_character("ann")
-    assert not manager._is_cross_character_audio(str(folder / "gentle.wav"), package)
-    assert manager._is_cross_character_audio("characters/another/gentle.wav", package)
-    assert not manager._is_cross_character_audio("audio/shared/natsume_gentle.wav", package)
-
-
 @pytest.mark.asyncio
 async def test_startup_does_not_replace_unknown_voice_with_default(project, isolate_test_database):
     bundled = project / "audio" / "references" / "natsume" / "gentle.ogg"

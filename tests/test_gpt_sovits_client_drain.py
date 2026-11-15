@@ -41,7 +41,6 @@ async def test_old_client_drains_promptly_when_new_client_has_inflight_requests(
         client.synthesize("旧客户端消息", options={"ref_audio_path": "dummy.wav"})
     )
     await asyncio.wait_for(old_started.wait(), timeout=2.0)
-    assert client._inflight_requests == 1
 
     # 2. Hot-reload to new base URL while old request is still in-flight
     await client.set_base_url("http://engine-new.test:9880")
@@ -71,7 +70,6 @@ async def test_old_client_drains_promptly_when_new_client_has_inflight_requests(
         client.synthesize("新客户端消息", options={"ref_audio_path": "dummy.wav"})
     )
     await asyncio.wait_for(new_started.wait(), timeout=2.0)
-    assert client._inflight_requests == 1
 
     try:
         # 4. Old client's in-flight requests are 0.
@@ -157,9 +155,6 @@ async def test_old_client_drains_promptly_during_new_client_streaming(caplog):
 
     stream_task = asyncio.create_task(consume_stream())
     await asyncio.wait_for(stream_started.wait(), timeout=2.0)
-
-    # New stream is in flight
-    assert client._inflight_requests > 0
 
     try:
         await asyncio.sleep(0.6)

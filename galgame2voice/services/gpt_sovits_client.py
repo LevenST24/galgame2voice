@@ -147,10 +147,6 @@ class GptSovitsClient:
         self._inflight_by_client: dict[Any, int] = {}
         self._close_task: asyncio.Task | None = None
 
-    @property
-    def _inflight_requests(self) -> int:
-        return sum(self._inflight_by_client.values())
-
     def _inc_inflight(self, client: Any) -> None:
         if client is not None:
             self._inflight_by_client[client] = self._inflight_by_client.get(client, 0) + 1
@@ -1026,12 +1022,6 @@ async def reload_gpt_sovits_client_base_url(new_url: str) -> None:
     await client.set_base_url(new_url)
 
 
-def set_gpt_sovits_client(client: GptSovitsClient | None) -> None:
-    """Replaces or resets the singleton (used by tests)."""
-    global _global_gpt_sovits_client
-    _global_gpt_sovits_client = client
-
-
 async def close_gpt_sovits_client() -> None:
     """Closes the singleton's connection pool (called during app shutdown)."""
     global _global_gpt_sovits_client
@@ -1043,7 +1033,6 @@ async def close_gpt_sovits_client() -> None:
 __all__ = [
     "GptSovitsClient",
     "get_gpt_sovits_client",
-    "set_gpt_sovits_client",
     "reload_gpt_sovits_client_base_url",
     "close_gpt_sovits_client",
     "clean_japanese_parentheses",

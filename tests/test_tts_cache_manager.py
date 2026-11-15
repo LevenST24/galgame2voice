@@ -210,7 +210,7 @@ async def test_dirty_touches_buffering_and_batch_flushing(temp_db_and_cache_dir)
         assert e_a_before.hit_count == 0
 
     # Explicit flush
-    await mgr.flush_dirty_touches()
+    await mgr._flush_dirty_touches()
 
     # Verify buffer is cleared
     async with mgr._lock:

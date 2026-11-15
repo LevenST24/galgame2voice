@@ -19,18 +19,6 @@ def affection_service(isolate_test_database):
 
 
 class TestAffectionLevelAndScoring:
-    def test_level_calculation(self, affection_service):
-        assert affection_service.calculate_level(0) == (1, "初识/生疏")
-        assert affection_service.calculate_level(19) == (1, "初识/生疏")
-        assert affection_service.calculate_level(20) == (2, "熟悉/同伴")
-        assert affection_service.calculate_level(39) == (2, "熟悉/同伴")
-        assert affection_service.calculate_level(40) == (3, "友好/信任")
-        assert affection_service.calculate_level(59) == (3, "友好/信任")
-        assert affection_service.calculate_level(60) == (4, "亲密/依赖")
-        assert affection_service.calculate_level(79) == (4, "亲密/依赖")
-        assert affection_service.calculate_level(80) == (5, "恋慕/誓约")
-        assert affection_service.calculate_level(100) == (5, "恋慕/誓约")
-
     def test_calculate_turn_points(self, affection_service):
         # Base point
         pts, reasons = affection_service.calculate_turn_points(
@@ -122,41 +110,6 @@ class TestEmotionClassification:
             explicit_emotion="傲娇 ",
         )
         assert res2["emotion"] == "tsundere"
-
-
-class TestEasterEggTriggers:
-    def test_match_easter_egg_triggers(self, affection_service):
-        # 1. 枣子姐
-        egg1 = affection_service.check_easter_egg("枣子姐天下第一！")
-        assert egg1 is not None
-        assert egg1["id"] == "easter_egg_zaozi"
-        assert "枣子姐" in egg1["triggers"]
-        assert egg1["emotion"] == "tsundere"
-
-        # 2. 无情发卡姬 (min_level 2)
-        egg2 = affection_service.check_easter_egg("你真是无情发卡姬啊", current_level=2)
-        assert egg2 is not None
-        assert egg2["id"] == "easter_egg_faka"
-        assert egg2["emotion"] == "shy"
-
-        # 3. 女仆装 (min_level 1)
-        egg3 = affection_service.check_easter_egg("夏目穿女仆装肯定很好看", current_level=1)
-        assert egg3 is not None
-        assert egg3["id"] == "easter_egg_maid"
-        assert egg3["emotion"] == "shy"
-
-        # 4. 喝醉了 (min_level 3)
-        egg4 = affection_service.check_easter_egg("我今天喝醉了，头好晕", current_level=3)
-        assert egg4 is not None
-        assert egg4["id"] == "easter_egg_drunk"
-        assert egg4["emotion"] == "gentle"
-
-        # Normal text -> None
-        assert affection_service.check_easter_egg("早安，吃早餐了吗？") is None
-
-        # Level gates: 发卡姬 needs Lv.2, 喝醉 needs Lv.3.
-        assert affection_service.check_easter_egg("你以前是被叫做发卡姬吗？", current_level=1) is None
-        assert affection_service.check_easter_egg("你是不是喝醉了？", current_level=2) is None
 
 
 class TestAffectionTurnHandlingAndDailyCap:

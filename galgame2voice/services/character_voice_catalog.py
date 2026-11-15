@@ -278,15 +278,6 @@ class CharacterVoiceCatalog:
             "manifest_path": str(manifest_path) if manifest_path is not None else None,
         }
 
-    async def list_profiles(
-        self,
-        *,
-        db_factory: Callable[[], Any] | None = None,
-    ) -> list[VoiceProfileResponse]:
-        open_db = self._resolve_db_factory(db_factory)
-        async with open_db() as conn:
-            return await crud.list_voice_profiles(conn)
-
     async def get_profile(
         self,
         profile_id: int,

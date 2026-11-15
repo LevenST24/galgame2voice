@@ -24,7 +24,6 @@ from galgame2voice.services.gpt_sovits_client import (
 )
 from galgame2voice.services.tts_options import resolve_default_text_split_method, resolve_tts_options
 from galgame2voice.utils.async_tasks import drain_background_tasks
-from galgame2voice.utils.audio_spec import project_file
 from galgame2voice.services.audio_identity import AudioIdentity, database_scope
 
 logger = logging.getLogger("galgame2voice.services.tts_cache_manager")
@@ -89,20 +88,6 @@ def _extract_voice_profile_cache_fields(
         "prompt_lang": prompt_lang,
         "text_lang": text_lang,
     }
-
-
-def _normalize_ref_audio(ref_audio: str) -> str:
-    """Normalizes reference audio path to name:mtime_ns:size if file exists, falling back to name."""
-    if not ref_audio:
-        return ""
-    p = project_file(ref_audio) or Path(ref_audio)
-    if p.is_file():
-        try:
-            st = p.stat()
-            return f"{p.name}:{st.st_mtime_ns}:{st.st_size}"
-        except OSError:
-            return p.name
-    return p.name
 
 
 def _build_canonical_params_dict(
@@ -372,10 +357,6 @@ class TtsCacheManager:
             async with self._lock:
                 for k, v in touches.items():
                     self._dirty_touches[k] = self._dirty_touches.get(k, 0) + v
-
-    async def flush_dirty_touches(self) -> None:
-        """Public method to flush accumulated dirty touches immediately."""
-        await self._flush_dirty_touches()
 
     async def aclose(self) -> None:
         """Waits for pending background tasks (DB touches, pruning) to finish.

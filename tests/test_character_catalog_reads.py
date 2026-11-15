@@ -41,7 +41,7 @@ async def test_catalog_reads_profiles_from_the_given_database(tmp_path):
 
     catalog = get_character_voice_catalog()
     missing = [
-        name for name in ("list_profiles", "get_profile", "get_active_profile")
+        name for name in ("get_profile", "get_active_profile")
         if not hasattr(catalog, name)
     ]
     assert not missing, f"catalog is missing {missing}"
@@ -49,11 +49,9 @@ async def test_catalog_reads_profiles_from_the_given_database(tmp_path):
     def open_db():
         return get_db(database)
 
-    listed = await catalog.list_profiles(db_factory=open_db)
     fetched = await catalog.get_profile(kept.id, db_factory=open_db)
     current = await catalog.get_active_profile(db_factory=open_db)
 
-    assert {item.id for item in listed} == {kept.id, active.id}
     assert fetched is not None and fetched.id == kept.id and fetched.name == "保留音色"
     assert current is not None and current.id == active.id and current.name == "当前音色"
 

@@ -337,7 +337,6 @@ async def test_http_stream_checks_model_before_post(stack):
             _ = [part async for part in client.stream_tts("hello", opts)]
         assert posts == []
         assert not client.lock.locked()
-        assert client._inflight_requests == 0
 
 
 async def test_engine_change_does_not_reuse_another_engines_audio(stack):

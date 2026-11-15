@@ -47,15 +47,6 @@ class AffectionService:
     and milestone / easter egg dialogue unlocks.
     """
 
-    # 5 Intimacy Tiers Definition
-    LEVEL_TIERS = {
-        1: {"min_score": 0, "max_score": 19, "name": "初识/生疏", "desc": "保持礼貌距离，略显生硬与客套"},
-        2: {"min_score": 20, "max_score": 39, "name": "熟悉/同伴", "desc": "咖啡厅日常同伴，日常吐槽与调侃"},
-        3: {"min_score": 40, "max_score": 59, "name": "友好/信任", "desc": "建立深厚信任，主动倾听心事，温柔关心"},
-        4: {"min_score": 60, "max_score": 79, "name": "亲密/依赖", "desc": "害羞傲娇、依赖撒娇，偶现脸红与占有欲"},
-        5: {"min_score": 80, "max_score": 100, "name": "恋慕/誓约", "desc": "专属心意与誓约羁绊，解锁全部隐藏告白台词"},
-    }
-
     @staticmethod
     def get_fallback_payload(emotion: str) -> dict[str, Any]:
         """Returns standard neutral affection payload used when an affection update fails."""
@@ -165,18 +156,6 @@ class AffectionService:
     def __init__(self, db_path: str | Path | None = None) -> None:
         self.db_path = str(db_path) if db_path is not None else get_database_path()
 
-    def calculate_level(self, score: int) -> tuple[int, str]:
-        """Calculates intimacy level and tier name based on total affection score."""
-        try:
-            score = int(score)
-        except (TypeError, ValueError):
-            score = 0
-        score = max(0, min(100, score))
-        for level, tier in sorted(self.LEVEL_TIERS.items(), key=lambda x: x[0], reverse=True):
-            if score >= tier["min_score"]:
-                return level, tier["name"]
-        return 1, self.LEVEL_TIERS[1]["name"]
-
     def calculate_turn_points(self, user_text: str, assistant_text: str = "") -> tuple[int, list[str]]:
         """Calculates turn affection points and reason tags."""
         if not user_text or not isinstance(user_text, str):
@@ -204,10 +183,6 @@ class AffectionService:
     def calculate_interaction_points(self, user_text: str, assistant_text: str = "") -> tuple[int, list[str]]:
         """Calculates affection points earned for a turn based on content analysis."""
         return self.calculate_turn_points(user_text, assistant_text)
-
-    def check_easter_egg(self, user_text: str, current_level: int = 1) -> dict[str, Any] | None:
-        """Alias to check_easter_eggs."""
-        return self.check_easter_eggs(user_text, current_level)
 
     def classify_emotion(
         self,
@@ -409,9 +384,6 @@ class AffectionService:
         }
 
 
-# Module-level aliases for convenience and backwards-compatibility
-EASTER_EGG_TRIGGERS = AffectionService.EASTER_EGGS
-MILESTONE_VOICELINES = AffectionService.MILESTONES
 EMOTION_KEYWORDS = {
     "tsundere": ["笨蛋", "才不是", "谁管你", "不要自作多情", "哼", "才没有", "别自以为是", "バカ"],
     "shy": ["脸红", "害羞", "唔……", "那个……", "别盯着我看", "秘密", "不好意思", "恥ずかしい"],
@@ -423,7 +395,5 @@ EMOTION_KEYWORDS = {
 
 __all__ = [
     "AffectionService",
-    "EASTER_EGG_TRIGGERS",
-    "MILESTONE_VOICELINES",
     "EMOTION_KEYWORDS",
 ]

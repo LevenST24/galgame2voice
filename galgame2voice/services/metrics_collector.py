@@ -303,9 +303,3 @@ def get_metrics_collector(db_path: str | Path | None = None) -> MetricsCollector
     if _metrics_collector_instance is None:
         _metrics_collector_instance = MetricsCollector(db_path=db_path)
     return _metrics_collector_instance
-
-
-def reset_metrics_collector() -> None:
-    """Resets the singleton for test isolation."""
-    global _metrics_collector_instance
-    _metrics_collector_instance = None

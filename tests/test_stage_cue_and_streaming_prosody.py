@@ -19,7 +19,6 @@ from galgame2voice.services.emotion_classifier import (
 )
 from galgame2voice.services.streaming_parser import StreamingBilingualParser
 from galgame2voice.services.gpt_sovits_client import extract_wav_duration
-from galgame2voice.services.dynamic_batcher import get_speed_tracker, reset_speed_tracker
 
 
 # ============================================================================
@@ -235,22 +234,3 @@ def test_extract_wav_duration_invalid_payload_fallback():
     dur = extract_wav_duration(fake_payload)
     assert dur is not None
     assert pytest.approx(dur, 0.05) == 1.0
-
-
-# ============================================================================
-# 4. TTS Speed Tracker Telemetry Tests
-# ============================================================================
-
-def test_tts_speed_tracker_telemetry():
-    """Validates TtsSpeedTracker returns real-time RTF and batch telemetry."""
-    reset_speed_tracker()
-    tracker = get_speed_tracker()
-    tracker.record(char_count=20, elapsed_s=0.5, audio_dur_s=2.0)
-
-    data = tracker.get_telemetry()
-    assert "status" in data
-    assert "avg_rtf" in data
-    assert "chars_per_sec" in data
-    assert "dynamic_batch_size" in data
-    assert data["sample_count"] >= 1
-    assert data["avg_rtf"] == 0.25  # 0.5s / 2.0s = 0.25 RTF

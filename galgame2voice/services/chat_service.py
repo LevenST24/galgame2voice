@@ -38,7 +38,6 @@ from galgame2voice.services.character_identity import AmbiguousProfileName
 from galgame2voice.services.voice_selection import select_voice_profile
 from galgame2voice.utils.async_tasks import drain_background_tasks
 from galgame2voice.utils.logger import sanitize_error_detail
-from galgame2voice.utils.sse import format_sse_frame
 from galgame2voice.utils.text_splitter import split_japanese_sentences
 from galgame2voice.utils.error_diagnostics import (
     ConfigurationSelectionError,
@@ -444,7 +443,6 @@ class ChatService:
                 db_path=self.db_path,
                 metrics_collector=self.metrics_collector,
                 affection_service=self.affection_service,
-                spawn_background=self._spawn_background,
                 concat_wav_fn=self._concat_wav_files,
                 cancel_event=cancel_event,
                 tts_options=tts_options,
@@ -489,56 +487,6 @@ class ChatService:
                 # The request scope may be cancelled; the prune still has to land.
                 with CancelScope(shield=True):
                     await self._prune_orphaned_user_message(getattr(user_msg, "id", None))
-
-
-    async def stream_chat_events(
-        self,
-        prompt: str,
-        session_id: str = "default",
-        character_name: str | None = None,
-        provider_id: str | None = None,
-        tts_options: dict[str, Any] | None = None,
-        cancel_event: asyncio.Event | None = None,
-        system_prompt: str | None = None,
-        temperature: float | None = None,
-        max_context: int | None = None,
-        top_p: float | None = None,
-        max_tokens: int | None = None,
-        frequency_penalty: float | None = None,
-        presence_penalty: float | None = None,
-        reasoning_effort: str | None = None,
-        ai_adaptive_voice: bool | None = None,
-        voice_profile_id: int | None = None,
-        reply_format: str = "lines",
-        outfit: str | None = None,
-    ) -> AsyncGenerator[str | dict[str, Any], None]:
-        """
-        Asynchronously streams bilingual SSE formatted event strings.
-        Yields standard W3C SSE frames (event: <name>\ndata: <json>\n\n) and emits
-        W3C SSE comment frames ': keep-alive\n\n' every 5.0 seconds of queue silence.
-        """
-        async for event in self.stream_chat(
-            prompt=prompt,
-            session_id=session_id,
-            character_name=character_name,
-            provider_id=provider_id,
-            tts_options=tts_options,
-            cancel_event=cancel_event,
-            system_prompt=system_prompt,
-            temperature=temperature,
-            max_context=max_context,
-            top_p=top_p,
-            max_tokens=max_tokens,
-            frequency_penalty=frequency_penalty,
-            presence_penalty=presence_penalty,
-            reasoning_effort=reasoning_effort,
-            ai_adaptive_voice=ai_adaptive_voice,
-            voice_profile_id=voice_profile_id,
-            outfit=outfit,
-            reply_format="lines",
-        ):
-            yield format_sse_frame(event)
-
 
 
 __all__ = [
