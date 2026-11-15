@@ -105,10 +105,6 @@ export class EngineSettingsController {
     return this.engineRestartUnconfirmed;
   }
 
-  getPrecisionRevision() {
-    return this.precisionRevision;
-  }
-
   async onPrecisionChange() {
     if (this.disposed || !this.dom.gPrecision) return;
     const revision = ++this.precisionRevision;

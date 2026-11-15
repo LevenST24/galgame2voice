@@ -14,7 +14,6 @@ import {
   applySessionImport,
 } from '../frontend/src/store.js';
 import { createConfigPanel, CONFIG_PANEL_FIELDS } from '../frontend/src/adv/config_panel.js';
-import { createAdvSettings, ADV_FIELDS, validateAdvField, validateAdvLanguages } from '../frontend/src/adv/settings.js';
 import { mountAdv } from '../frontend/src/adv/adv_app.js';
 import { fakeDocument, fakeClock, Element, microtasks } from './helpers/adv_dom.mjs';
 
@@ -586,25 +585,6 @@ test('global voice-mode toggle and model/session settings navigation buttons', t
   const saveBtn = h.app.configPanel.element.querySelector('.adv-config-btn-save');
   saveBtn.click();
   assert.equal(h.calls.voiceToggle, 1);
-});
-
-// ---------------------------------------------------------------------------
-// 7. Old modal compatibility
-// ---------------------------------------------------------------------------
-test('old modal createAdvSettings continues working and shares validation rules', () => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  const container = doc.createElement('div');
-  const oldUi = createAdvSettings(container, defaults);
-
-  oldUi.load({ advWindowOpacity: 60, advPlayerName: '老面板玩家' });
-  const readValues = oldUi.read();
-  assert.equal(readValues.advWindowOpacity, 60);
-  assert.equal(readValues.advPlayerName, '老面板玩家');
-
-  // Invalid value throws /ADV/
-  container.querySelector('#s-advWindowOpacity').value = '200';
-  assert.throws(() => oldUi.read(), /填写有误/);
 });
 
 // ---------------------------------------------------------------------------

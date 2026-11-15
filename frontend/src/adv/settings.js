@@ -1,4 +1,4 @@
-import { validAdvSetting, pickSettings } from '../session_data.js';
+import { validAdvSetting } from '../session_data.js';
 
 // Same field/label structure as the existing session panel. Values are inert text.
 export const ADV_FIELDS = {
@@ -16,9 +16,6 @@ export const ADV_FIELDS = {
   advLipSync: ['口型同步', ['true', 'false']],
 };
 export const ADV_LABELS = { true: '开启', false: '关闭', zh: '中文', ja: '日文', none: '无', 'voice-priority': '语音同步（推荐）', normal: '按阅读速度' };
-
-const fields = ADV_FIELDS;
-const labels = ADV_LABELS;
 
 export function validateAdvField(key, raw, defaults) {
   const meta = ADV_FIELDS[key];
@@ -51,73 +48,4 @@ export function validateAdvLanguages(primary, subtitle) {
     return '主要语言和字幕语言不能相同。';
   }
   return null;
-}
-
-export function createAdvSettings(container, defaults) {
-  if (!container) return { load() {}, read: () => ({}), snapshot: () => '' };
-  const group = document.createElement('details');
-  group.className = 'settings-advanced';
-  const summary = document.createElement('summary');
-  summary.textContent = 'ADV 显示与交互';
-  group.appendChild(summary);
-  const body = document.createElement('div');
-  body.className = 'settings-fields';
-  group.appendChild(body);
-  const controls = {};
-  for (const [key, [label, options, max]] of Object.entries(fields)) {
-    const field = document.createElement('div');
-    field.className = 'field';
-    const caption = document.createElement('label');
-    caption.textContent = label;
-    caption.htmlFor = `s-${key}`;
-    field.appendChild(caption);
-    const input = document.createElement(Array.isArray(options) ? 'select' : 'input');
-    input.id = `s-${key}`;
-    if (Array.isArray(options)) {
-      for (const value of options) {
-        const option = document.createElement('option');
-        option.value = value;
-        option.textContent = labels[value];
-        input.appendChild(option);
-      }
-    } else if (typeof options === 'number') {
-      input.type = 'number'; input.min = options; input.max = max; input.step = 1;
-    } else input.type = 'text';
-    controls[key] = input;
-    field.appendChild(input); body.appendChild(field);
-  }
-  // A small bilingual opacity preview uses no character assets or persisted URLs.
-  const preview = document.createElement('div');
-  preview.className = 'adv-settings-preview';
-  preview.textContent = '【Player】你好，欢迎回来。\nこんにちは、おかえりなさい。';
-  body.appendChild(preview);
-  const updatePreview = () => {
-    preview.style.backgroundColor = `rgba(12, 28, 58, ${Number(controls.advWindowOpacity.value) / 100})`;
-  };
-  controls.advWindowOpacity.addEventListener('input', updatePreview);
-  controls.advPrimaryLanguage.addEventListener('change', () => {
-    if (controls.advPrimaryLanguage.value === controls.advSubtitleLanguage.value) {
-      controls.advSubtitleLanguage.value = controls.advPrimaryLanguage.value === 'zh' ? 'ja' : 'zh';
-    }
-  });
-  container.appendChild(group);
-  function load(settings) {
-    const values = pickSettings(settings, defaults);
-    for (const key of Object.keys(fields)) controls[key].value = String(values[key]);
-    updatePreview();
-  }
-  function read() {
-    const result = {};
-    for (const key of Object.keys(fields)) {
-      const raw = controls[key].value;
-      const parsed = validateAdvField(key, raw, defaults);
-      if (!parsed.valid) throw new Error(parsed.error);
-      result[key] = parsed.value;
-    }
-    const langError = validateAdvLanguages(result.advPrimaryLanguage, result.advSubtitleLanguage);
-    if (langError) throw new Error(langError);
-    return result;
-  }
-  load(defaults);
-  return { load, read, snapshot: () => JSON.stringify(Object.values(controls).map(el => el.value)) };
 }

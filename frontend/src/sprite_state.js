@@ -3,22 +3,6 @@
  * No DOM, no timers.
  */
 
-export const EMOTION_LABELS = {
-  gentle: '温柔', happy: '开心', shy: '害羞', tsundere: '傲娇',
-  cool: '冷静', sad: '感伤', angry: '生气', surprised: '惊讶', thinking: '沉思',
-};
-
-export const KNOWN_EMOTION_KEYS = new Set(Object.keys(EMOTION_LABELS));
-
-const KEYWORD_EMOTIONS = [
-  ['shy', /害羞|脸红|别看我|恥ずかしい|バカ/i],
-  ['angry', /生气|火大|信じられない|何様/i],
-  ['tsundere', /哼|才没有|真是的|別に|今さら/i],
-  ['happy', /高兴|开心|太好了|谢谢|ふふ|ありがとう|嬉しい/i],
-  ['sad', /寂寞|难过|孤独|寂しい/i],
-  ['cool', /无聊|随便|敷衍|勝手に/i],
-];
-
 function isFiniteNumber(val) {
   return typeof val === 'number' && Number.isFinite(val);
 }
@@ -305,23 +289,6 @@ export function blushTier(model, costume, emotion, affectionLevel, faceId) {
   return ((affectionLevel || 1) >= threshold && faceUrl(model, costume, face.blush))
     ? face.blush
     : faceId;
-}
-
-export function inferEmotion(text, metaEmotion = null) {
-  if (metaEmotion && KNOWN_EMOTION_KEYS.has(String(metaEmotion).toLowerCase())) {
-    return String(metaEmotion).toLowerCase();
-  }
-  if (!text) return null;
-  const tag = String(text).match(/\[([a-zA-Z_\-]+)\]/);
-  if (tag && KNOWN_EMOTION_KEYS.has(tag[1].toLowerCase())) {
-    return tag[1].toLowerCase();
-  }
-  for (const [emotion, pattern] of KEYWORD_EMOTIONS) {
-    if (pattern.test(text)) {
-      return emotion;
-    }
-  }
-  return null;
 }
 
 function resolveOutfitPose(model, costume, requestedPose, stickyPose) {

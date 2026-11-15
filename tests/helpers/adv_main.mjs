@@ -25,7 +25,7 @@ export function setup(t, options = {}) {
     getSession: id => sessions.find(s => s.id === id), isSessionDeleting: () => deleting,
     getCurrentActiveProvider: () => null, getVoiceProfiles: () => [], haveProvidersLoaded: () => true,
     saveState: noop, autoTitle: noop, persistSession: async () => {}, clearMicTimers: noop,
-    getCurrentVoice: () => null, stopCurrentVoice: noop, setCurrentVoice: noop,
+    getCurrentVoice: () => null, stopCurrentVoice: noop,
     uid: () => `m_${++sequence}`, fetch: stream.fetch, showToast: noop, fetchAndCacheAudio: async () => {},
     streamAudioController: audio,
     addMessage(role, content) { const msg = { id: `m_${++sequence}`, role, content }; getActive().messages.push(msg); return msg; },

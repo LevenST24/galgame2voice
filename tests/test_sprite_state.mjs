@@ -6,7 +6,6 @@ import {
   facePool,
   pickFace,
   blushTier,
-  inferEmotion,
   resolveSpriteState,
   createActingGate,
 } from '../frontend/src/sprite_state.js';
@@ -233,29 +232,6 @@ test('thinking keeps the face when no thinking pool exists', () => {
   };
   const nextWithPool = resolveSpriteState(modelWithThinking, prev, { emotion: 'thinking' });
   assert.equal(nextWithPool.state.face, '04');
-});
-
-test('inferEmotion matches the old rules', () => {
-  // metaEmotion
-  assert.equal(inferEmotion('hello', 'happy'), 'happy');
-  assert.equal(inferEmotion('hello', 'TSUNDERE'), 'tsundere');
-  assert.equal(inferEmotion('hello', 'INVALID'), null);
-
-  // [emotion] bracket tags
-  assert.equal(inferEmotion('[shy] 你好呀'), 'shy');
-  assert.equal(inferEmotion('[angry] 哼'), 'angry');
-
-  // keyword patterns
-  assert.equal(inferEmotion('太好了，谢谢你'), 'happy');
-  assert.equal(inferEmotion('何様！生气了'), 'angry');
-  assert.equal(inferEmotion('别看我，害羞'), 'shy');
-  assert.equal(inferEmotion('才没有呢，哼'), 'tsundere');
-  assert.equal(inferEmotion('好寂寞'), 'sad');
-  assert.equal(inferEmotion('真无聊'), 'cool');
-
-  assert.equal(inferEmotion('普通的一句话'), null);
-  assert.equal(inferEmotion(''), null);
-  assert.equal(inferEmotion(null), null);
 });
 
 test('the acting gate: consecutive repeats, 2000 ms, 3000 ms fx', () => {

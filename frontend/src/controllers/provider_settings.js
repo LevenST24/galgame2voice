@@ -151,10 +151,6 @@ export class ProviderSettingsController {
     return this.providerSaving;
   }
 
-  getProviderRevision() {
-    return this.providerRevision;
-  }
-
   invalidateActiveProviderTest() {
     this.providerTestRevision += 1;
     if (this.providerTestController) {
