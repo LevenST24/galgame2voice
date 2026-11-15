@@ -308,6 +308,16 @@ class TestTextSplitterAndParserM4:
         assert isinstance(ch, str)
         assert isinstance(ja, str)
 
+    def test_parser_unclosed_trailing_backslash(self):
+        """Trailing backslashes and partial escape sequences must not crash parser."""
+        parser = StreamingBilingualParser()
+        parser.feed_chunk('{"chinese": "测试\\')
+        ch, _ = parser.feed_chunk('u4f60好", "japanese": "テスト\\')
+        _, _ = parser.feed_chunk('"}\\\\')
+        ch_full, ja_full, _ = parser.finalize()
+        assert "测试" in ch_full
+        assert "テスト" in ja_full
+
 
 # ============================================================================
 # ChatService End-to-End Tests
