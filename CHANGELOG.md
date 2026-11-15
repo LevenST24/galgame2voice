@@ -5,6 +5,8 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fixed
+- 修复使用会在回复前先输出一长段 `<think>` 思考内容的推理模型（如本机部署的模型）时，每收到一小段思考文字都要把已收到的全部内容从头扫描一遍、思考越长解析越慢的问题；现在思考过程中收到的文字不再触发整段重扫。
 
 ## [3.2.1] - 2026-11-15
 ### Changed
