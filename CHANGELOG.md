@@ -6,11 +6,6 @@ All notable changes to galgame2voice are documented here. The format follows
 
 ## [Unreleased]
 
-
-
-
-
-
 ### Fixed
 
 ### Removed
@@ -36,6 +31,8 @@ All notable changes to galgame2voice are documented here. The format follows
 - 修复使用默认 xAI 或 Google Gemini 配置及已保存旧模型发起对话时因官方停用旧模型或请求参数不兼容而报错，以及将「思考强度」设为「关闭」时对话失败的问题；现在预设更新为现行模型（`grok-4.7`、`grok-4.20-0309-non-reasoning` 与 `gemini-3.8-flash`、`gemini-3.5-flash-lite`）、默认低思考强度，并在启动时将已保存的旧模型自动迁移为现行模型。
 - 修复使用默认 Moonshot Kimi 配置或已保存旧版 Kimi 模型（`moonshot-v1-*` / `kimi-k2*` 等）发起对话或测试连通性时因旧模型已下线而报错，以及使用 Kimi K3 系列模型时因附带不兼容的采样、长度限制或思考强度参数被接口拒收的问题；现在预设更新为 `kimi-k3.1-pro`、`kimi-k3.1-pro-highspeed` 与 `kimi-k3`、默认低思考强度并按模型规则自动调整请求参数，启动时自动将已保存的旧模型配置迁移为现行模型。
 - 修复多个角色包使用相同模型权重或参考音频文件名（如 `gpt.ckpt`、`sovits.pth`）时，「新建自定义音色」下拉框只显示文件名导致无法区分归属角色的问题；现在同名文件会自动附上所在文件夹名，仍重名时显示完整路径，并在鼠标悬停时显示完整路径。
+### Changed
+- 打开设置中心或切换到「运行状态」「对话模型」「长期记忆」「备份与更新」页面时，底栏原本仍会显示「保存全局配置」按钮（在「对话模型」页还会与「保存并启用此模型」按钮同时出现）；现在该按钮仅在「语音服务」页面显示。
 ## [3.2.0] - 2026-11-14
 ### Added
 - 「角色与会话」新增「导入角色包」，支持选择角色包文件夹或 `.zip` 压缩包、或直接拖入设置窗口自动校验、放入 `characters/` 并选中该角色。
