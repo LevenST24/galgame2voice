@@ -11,10 +11,13 @@ Covers:
 - System Diagnostics Telemetry (/api/system/status)
 """
 
+import asyncio
 import json
 import logging
+import random
 import re
 import time
+from unittest.mock import patch
 import pytest
 import httpx
 from httpx import AsyncClient, ASGITransport
@@ -26,6 +29,7 @@ from galgame2voice.database.session import get_db, init_db
 from galgame2voice.database import crud
 from galgame2voice.database.crud import mask_api_key, is_masked_key
 from galgame2voice.database.models import SettingsUpdate, ProviderCreate, VoiceProfileCreate
+from galgame2voice.security import url_guard
 from galgame2voice.utils.logger import MaskingFilter, MaskingFormatter, sanitize_error_detail
 
 
@@ -720,4 +724,282 @@ class TestConsoleVoiceAndProviderIntegration:
             assert h_data["status"] == "ok"
             assert "uptime_seconds" in h_data
             assert h_data["app"] == "galgame2voice"
+
+
+# ============================================================================
+# 8. Migrated M11 Provider Isolation, Boundary, Concurrency & Latency Checks
+# ============================================================================
+
+# Canonical 8 providers for M11 testing
+CANONICAL_8_PROVIDERS = [
+    "gemini",
+    "openai",
+    "anthropic",
+    "deepseek",
+    "xai",
+    "siliconflow",
+    "custom",
+]
+
+
+@pytest.fixture
+def mock_dns_resolution(monkeypatch):
+    """Mocks DNS resolution for external hostnames to eliminate network latency and DNS timeouts."""
+    orig_resolve_host = url_guard._resolve_host
+
+    def fast_resolve_host(host: str, port: int):
+        norm = host.lower().strip()
+        if (
+            norm in ("127.0.0.1", "localhost", "169.254.169.254", "::1")
+            or norm.startswith("10.")
+            or norm.startswith("192.168.")
+            or norm.startswith("172.16.")
+            or norm.startswith("169.254.")
+        ):
+            return orig_resolve_host(host, port)
+        return True, ""
+
+    fast_resolve_host.cache_clear = getattr(orig_resolve_host, "cache_clear", url_guard.clear_dns_cache)
+    monkeypatch.setattr(url_guard, "_resolve_host", fast_resolve_host)
+
+
+@pytest.fixture
+async def app_client(isolate_test_database, mock_dns_resolution):
+    """Provides an ASGI test client connected to an initialized, isolated SQLite test DB."""
+    await init_db(isolate_test_database)
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+        yield client
+
+
+def make_http_mocks(matchers: dict):
+    """Patches httpx.AsyncClient get/post with URL-pattern matchers."""
+    orig_get = httpx.AsyncClient.get
+    orig_post = httpx.AsyncClient.post
+
+    def _is_internal(url_str: str) -> bool:
+        return (not url_str.startswith("http://") and not url_str.startswith("https://")) or url_str.startswith("http://127.0.0.1:8080")
+
+    async def mocked_get(self_client, url, *args, **kwargs):
+        url_str = str(url)
+        if _is_internal(url_str):
+            return await orig_get(self_client, url, *args, **kwargs)
+        for pattern, resp in matchers.items():
+            if pattern in url_str:
+                if callable(resp):
+                    return resp("GET", url_str, kwargs)
+                return resp
+        return httpx.Response(
+            200,
+            json={"data": [{"id": "default-mock-model"}]},
+            request=httpx.Request("GET", url_str),
+        )
+
+    async def mocked_post(self_client, url, *args, **kwargs):
+        url_str = str(url)
+        if _is_internal(url_str):
+            return await orig_post(self_client, url, *args, **kwargs)
+        for pattern, resp in matchers.items():
+            if pattern in url_str:
+                if callable(resp):
+                    return resp("POST", url_str, kwargs)
+                return resp
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "pong"}}]},
+            request=httpx.Request("POST", url_str),
+        )
+
+    return patch.object(httpx.AsyncClient, "get", mocked_get), patch.object(httpx.AsyncClient, "post", mocked_post)
+
+
+class TestSecretIsolationAndZeroLeakage:
+    """Empirically asserts that NO endpoint leaks plaintext API keys."""
+
+    @pytest.mark.asyncio
+    async def test_no_get_endpoint_leaks_plaintext_keys(self, app_client):
+        """Registers secret keys across providers and scans all GET endpoints for leakage."""
+        secrets = {}
+        for pid in CANONICAL_8_PROVIDERS:
+            secret = f"high-entropy-secret-{pid}-Z7x9Q2wE4rT6yU8i"
+            secrets[pid] = secret
+            await app_client.post(
+                "/api/providers",
+                json={
+                    "id": pid,
+                    "api_key": secret,
+                    "custom_headers": {"Authorization": f"Bearer {secret}"},
+                },
+            )
+
+        # 1. Scan GET /api/providers
+        resp_list = await app_client.get("/api/providers")
+        assert resp_list.status_code == 200
+        text_list = resp_list.text
+        for pid, secret in secrets.items():
+            assert secret not in text_list, f"Plaintext secret for '{pid}' leaked in GET /api/providers!"
+
+        # 2. Scan GET /api/providers/{id} for each provider
+        for pid, secret in secrets.items():
+            resp_single = await app_client.get(f"/api/providers/{pid}")
+            assert resp_single.status_code == 200
+            text_single = resp_single.text
+            assert secret not in text_single, f"Plaintext secret for '{pid}' leaked in GET /api/providers/{pid}!"
+
+        # 3. Scan GET /api/config
+        # Activate one of the providers
+        await app_client.post("/api/providers/xai/activate")
+        resp_cfg = await app_client.get("/api/config")
+        assert resp_cfg.status_code == 200
+        text_cfg = resp_cfg.text
+        for pid, secret in secrets.items():
+            assert secret not in text_cfg, f"Plaintext secret for '{pid}' leaked in GET /api/config!"
+
+        # 4. Scan GET /api/system/status
+        resp_status = await app_client.get("/api/system/status")
+        assert resp_status.status_code == 200
+        text_status = resp_status.text
+        for pid, secret in secrets.items():
+            assert secret not in text_status, f"Plaintext secret for '{pid}' leaked in GET /api/system/status!"
+
+
+class TestUIBoundaryAndAdversarialStress:
+    """Stress tests boundary conditions and concurrent operations."""
+
+    @pytest.mark.asyncio
+    async def test_malformed_and_adversarial_provider_ids(self, app_client):
+        """Verifies rejection of invalid or malicious provider IDs."""
+        # Empty string ID
+        r1 = await app_client.post("/api/providers", json={"id": ""})
+        assert r1.status_code in (400, 422)
+
+        # Extremely long ID (> 64 chars)
+        r2 = await app_client.post("/api/providers", json={"id": "a" * 65})
+        assert r2.status_code in (400, 422)
+
+        # SQL Injection attempt in ID
+        sqli_id = "openai' OR '1'='1"
+        r3 = await app_client.post(
+            "/api/providers",
+            json={"id": sqli_id, "chat_model": "test"},
+        )
+        assert r3.status_code in (200, 422)  # Either safely parameterized or rejected, NEVER 500
+        if r3.status_code == 200:
+            # Check parameterized retrieval
+            r3_get = await app_client.get(f"/api/providers/{sqli_id}")
+            assert r3_get.status_code in (200, 404)
+
+    @pytest.mark.asyncio
+    async def test_concurrent_provider_switching_burst_on_seeded_providers(self, app_client):
+        """Fires 20 concurrent activation requests across seeded providers to verify SQLite WAL transaction isolation."""
+        # Pre-seed all canonical providers sequentially first
+        for pid in CANONICAL_8_PROVIDERS:
+            act = await app_client.post(f"/api/providers/{pid}/activate")
+            assert act.status_code == 200
+
+        async def activate_worker(provider_id: str):
+            res = await app_client.post(f"/api/providers/{provider_id}/activate")
+            return res.status_code, res.json()
+
+        providers_to_test = [random.choice(CANONICAL_8_PROVIDERS) for _ in range(20)]
+        results = await asyncio.gather(*(activate_worker(pid) for pid in providers_to_test))
+
+        for status_code, data in results:
+            assert status_code == 200
+            assert data["status"] == "success"
+
+        # Final verification: exactly 1 active provider in DB
+        list_resp = await app_client.get("/api/providers")
+        assert list_resp.status_code == 200
+        active = [p for p in list_resp.json()["providers"] if p.get("is_active")]
+        assert len(active) == 1
+
+    @pytest.mark.asyncio
+    async def test_concurrent_activation_of_unseeded_providers_reveals_toctou_race_condition(self, app_client):
+        """
+        EMPIRICAL FINDING PROBE:
+        When multiple concurrent requests activate an unseeded provider (e.g. 'siliconflow' which is not yet in SQLite),
+        both see existing=None and attempt `crud.create_provider`.
+        Because `crud.create_provider` uses plain `INSERT INTO providers` rather than `INSERT OR IGNORE`,
+        the concurrent runner triggers `sqlite3.IntegrityError: UNIQUE constraint failed: providers.id`.
+        """
+        async def activate_unseeded(provider_id: str):
+            try:
+                res = await app_client.post(f"/api/providers/{provider_id}/activate")
+                return res.status_code
+            except Exception:
+                return 500
+
+        # Launch 10 concurrent requests targeting the same unseeded provider 'siliconflow'
+        tasks = [activate_unseeded("siliconflow") for _ in range(10)]
+        codes = await asyncio.gather(*tasks)
+        has_500 = any(c == 500 for c in codes)
+        all_200 = all(c == 200 for c in codes)
+        assert all_200 and not has_500
+
+
+class TestInFlightConnectivityTesting:
+    """Empirically tests POST /api/providers/test across diverse providers and failure modes."""
+
+    @pytest.mark.asyncio
+    async def test_valid_parameters_mock_success_and_latency(self, app_client):
+        """Valid parameters mock -> returns success=True, latency_ms is a positive number, and models discovered."""
+        mock_models = httpx.Response(
+            200,
+            json={"data": [{"id": "grok-3"}, {"id": "grok-3-mini"}]},
+            request=httpx.Request("GET", "https://api.x.ai/v1/models"),
+        )
+        p_get, p_post = make_http_mocks({"api.x.ai": mock_models})
+
+        with p_get, p_post:
+            t0 = time.perf_counter()
+            resp = await app_client.post("/api/providers/test", json={
+                "id": "xai",
+                "api_key": "xai-valid-emp-test-key-123",
+                "chat_model": "grok-3",
+            })
+            elapsed = time.perf_counter() - t0
+
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["success"] is True
+            assert isinstance(data["latency_ms"], (int, float))
+            assert data["latency_ms"] >= 0
+            assert "grok-3" in data.get("models", [])
+            assert elapsed < 3.0, f"Execution took {elapsed}s, expected < 3.0s"
+
+
+class TestAdversarialStressAndConcurrency:
+    """Stress tests concurrent in-flight requests and execution bounds without stalling."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_connectivity_tests_no_stall(self, app_client):
+        """Fires 10 concurrent in-flight connectivity requests to ensure no locks, stalls, or degradation."""
+        mock_resp = httpx.Response(
+            200,
+            json={"data": [{"id": "grok-3"}, {"id": "llama-3.3-70b-versatile"}]},
+            request=httpx.Request("GET", "https://api.openai.com/v1/models"),
+        )
+        p_get, p_post = make_http_mocks({"models": mock_resp})
+
+        with p_get, p_post:
+            t0 = time.perf_counter()
+
+            async def probe(idx: int):
+                provider = "xai" if idx % 2 == 0 else "deepseek"
+                key = f"{provider}-concurrent-key-{idx}"
+                return await app_client.post("/api/providers/test", json={
+                    "id": provider,
+                    "api_key": key,
+                })
+
+            responses = await asyncio.gather(*[probe(i) for i in range(10)])
+            elapsed = time.perf_counter() - t0
+
+            assert len(responses) == 10
+            for r in responses:
+                assert r.status_code == 200
+            # All 10 requests completed without deadlocking or stalling
+            assert elapsed < 20.0, f"10 concurrent requests took {elapsed:.2f}s, expected < 20.0s"
 

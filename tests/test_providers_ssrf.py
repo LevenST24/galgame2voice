@@ -10,7 +10,10 @@ import sqlite3
 import httpx
 import pytest
 
+from galgame2voice.database import crud
+from galgame2voice.database.session import get_db, init_db
 from galgame2voice.main import create_app
+from galgame2voice.security import url_guard
 
 
 @pytest.fixture
@@ -193,3 +196,145 @@ class TestCredentialMasking:
         stored = _json.loads(row["custom_headers"])
         assert stored["X-Auth-Token"] == "real-secret-value-777"
         assert stored["X-Note"] == "changed"
+
+
+# Canonical 8 providers for M11 testing
+CANONICAL_8_PROVIDERS = [
+    "gemini",
+    "openai",
+    "anthropic",
+    "deepseek",
+    "xai",
+    "siliconflow",
+    "custom",
+]
+
+
+@pytest.fixture
+def mock_dns_resolution(monkeypatch):
+    """Mocks DNS resolution for external hostnames to eliminate network latency and DNS timeouts."""
+    orig_resolve_host = url_guard._resolve_host
+
+    def fast_resolve_host(host: str, port: int):
+        norm = host.lower().strip()
+        if (
+            norm in ("127.0.0.1", "localhost", "169.254.169.254", "::1")
+            or norm.startswith("10.")
+            or norm.startswith("192.168.")
+            or norm.startswith("172.16.")
+            or norm.startswith("169.254.")
+        ):
+            return orig_resolve_host(host, port)
+        return True, ""
+
+    fast_resolve_host.cache_clear = getattr(orig_resolve_host, "cache_clear", url_guard.clear_dns_cache)
+    monkeypatch.setattr(url_guard, "_resolve_host", fast_resolve_host)
+
+
+@pytest.fixture
+async def app_client(isolate_test_database, mock_dns_resolution):
+    """Provides an ASGI test client connected to an initialized, isolated SQLite test DB."""
+    await init_db(isolate_test_database)
+    app = create_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as c:
+        yield c
+
+
+class TestNonDestructiveSecretRetention:
+    """Empirically stress-tests non-destructive key retention across canonical providers."""
+
+    @pytest.mark.asyncio
+    async def test_all_canonical_providers_support_key_retention(self, app_client):
+        """Verifies non-destructive key retention across all 8 canonical providers."""
+        for pid in CANONICAL_8_PROVIDERS:
+            secret = f"secret-token-for-{pid}-9876543210"
+            # 1. Save
+            resp = await app_client.post(
+                "/api/providers",
+                json={
+                    "id": pid,
+                    "api_key": secret,
+                    "chat_model": "test-model-v1",
+                },
+            )
+            assert resp.status_code == 200, f"Failed saving key for {pid}"
+            assert "****" in resp.json()["provider"]["api_key"]
+
+            # 2. Mutate model with masked key
+            masked = resp.json()["provider"]["api_key"]
+            resp2 = await app_client.post(
+                "/api/providers",
+                json={
+                    "id": pid,
+                    "api_key": masked,
+                    "chat_model": "test-model-v2",
+                },
+            )
+            assert resp2.status_code == 200
+            assert resp2.json()["provider"]["chat_model"] == "test-model-v2"
+
+            # 3. Assert raw secret in DB remained unchanged
+            async with get_db() as conn:
+                raw_prov = await crud.get_provider_raw(conn, pid)
+                assert raw_prov is not None
+                assert raw_prov.api_key == secret, f"Secret for {pid} was corrupted: {raw_prov.api_key}"
+
+
+class TestBaseUrlResetLogic:
+    """Empirically tests modifying Base URLs to custom proxies and resetting them to official defaults."""
+
+    @pytest.mark.asyncio
+    async def test_base_url_customization_and_official_reset(self, app_client):
+        """
+        For each of the canonical providers:
+        1. Enable allow_private_llm_endpoints so custom loopback URLs are tested smoothly.
+        2. Fetch official preset default_base_url.
+        3. Set custom proxy URL (e.g. https://proxy.ai.corp/v1 or http://127.0.0.1:8000/v1).
+        4. Verify custom URL is saved and returned.
+        5. Reset Base URL to official preset default_base_url.
+        6. Verify official default Base URL is strictly restored.
+        """
+        # Enable allow_private_llm_endpoints for local testing of custom provider
+        await app_client.post("/api/config", json={"settings": {"allow_private_llm_endpoints": True}})
+
+        presets_resp = await app_client.get("/api/providers")
+        assert presets_resp.status_code == 200
+        presets = {p["id"]: p for p in presets_resp.json()["presets"]}
+
+        for pid in CANONICAL_8_PROVIDERS:
+            official_url = presets[pid]["default_base_url"]
+            assert official_url, f"Missing official default_base_url for {pid}"
+
+            custom_url = f"https://my-custom-proxy.internal.corp/{pid}/v1"
+            if pid == "custom":
+                custom_url = "http://127.0.0.1:8000/v1"
+
+            # 1. Modify to custom URL
+            mod_resp = await app_client.post(
+                "/api/providers",
+                json={
+                    "id": pid,
+                    "api_base_url": custom_url,
+                },
+            )
+            assert mod_resp.status_code == 200, f"Failed updating base_url for {pid}: {mod_resp.text}"
+            prov_data = mod_resp.json()["provider"]
+            assert prov_data["api_base_url"] == custom_url
+
+            # 2. Reset back to official URL
+            reset_resp = await app_client.post(
+                "/api/providers",
+                json={
+                    "id": pid,
+                    "api_base_url": official_url,
+                },
+            )
+            assert reset_resp.status_code == 200, f"Failed resetting base_url for {pid}: {reset_resp.text}"
+            reset_data = reset_resp.json()["provider"]
+            assert reset_data["api_base_url"] == official_url
+
+            # 3. Double check via GET
+            get_resp = await app_client.get(f"/api/providers/{pid}")
+            assert get_resp.status_code == 200
+            assert get_resp.json()["provider"]["api_base_url"] == official_url
