@@ -675,6 +675,46 @@ class TestMaskingFilterLogSanitization:
         assert "sk-query-param-1234567890" not in sanitized
 
 
+@pytest.mark.asyncio
+class TestLogMaskingSecurity:
+    """Adversarial validation of zero-leak log masking."""
+
+    async def test_api_key_masking_filter_sanitizes_all_sensitive_tokens(self):
+        """Verifies that MaskingFilter catches OpenAI, Bearer, Telegram tokens, and URL params without leakage."""
+        filter_instance = MaskingFilter()
+
+        # Sensitive strings to sanitize
+        samples = [
+            ("Connecting with key sk-proj-1234567890abcdef1234567890 to API", "sk-pro****7890"),
+            ("Authorization: Bearer mySecretToken1234567890xyz", "Bearer [MASKED_TOKEN]"),
+            ("Bot initialized with token 1234567890:ABCDefgh-123456789012345678901234567890", "1234567890:[MASKED_TELEGRAM_TOKEN]"),
+            ('{"api_key": "super_secret_key_value_999"}', '{"api_key": "****"}'),
+            ("https://api.provider.com/v1/chat?api_key=secretKey123456", "https://api.provider.com/v1/chat?api_key=[MASKED]"),
+        ]
+
+        for raw, expected_substr in samples:
+            sanitized = filter_instance.sanitize(raw)
+            assert expected_substr in sanitized
+            assert "1234567890abcdef1234567890" not in sanitized
+            assert "super_secret_key_value_999" not in sanitized
+            assert "secretKey123456" not in sanitized
+
+        # Verify LogRecord sanitization in Python logging pipeline
+        record = logging.LogRecord(
+            name="test_logger",
+            level=logging.INFO,
+            pathname=__file__,
+            lineno=10,
+            msg="Sending request with key: %s and header %s",
+            args=("sk-proj-9876543210abcdef9876543210", "Bearer secretToken12345678"),
+            exc_info=None,
+        )
+
+        filter_instance.filter(record)
+        assert "9876543210abcdef" not in str(record.args)
+        assert "secretToken12345678" not in str(record.args)
+
+
 # ============================================================================
 # 7. Console Voice & Provider Integration Edge Cases
 # ============================================================================
