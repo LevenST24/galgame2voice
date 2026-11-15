@@ -55,7 +55,7 @@ export function createSettingsCenter({ dom, openCenter, getExperience, getSessio
     sessionLoadedFor = null;
     switching = false;
   };
-  sessionActions.hidden = experienceSave.hidden = dom.gResetBtn.hidden = true;
+  sessionActions.hidden = experienceSave.hidden = dom.gResetBtn.hidden = dom.gTgSave.hidden = true;
   onModalChange(() => { if (!visible()) closePage(); });
 
   return {
@@ -71,7 +71,7 @@ export function createSettingsCenter({ dom, openCenter, getExperience, getSessio
       sessionActions.hidden = name !== 'session';
       experienceSave.hidden = name !== 'experience';
       dom.gResetBtn.hidden = name !== 'inference';
-      dom.gTgSave.hidden = ['experience', 'session'].includes(name);
+      dom.gTgSave.hidden = name !== 'inference';
       if (name === 'experience') getExperience()?.open();
       if (name === 'session' && !loadedSession && sessionLoadedFor !== getSession()?.id) loadSession();
       switching = false;

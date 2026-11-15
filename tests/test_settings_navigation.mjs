@@ -153,8 +153,9 @@ test('settings center: reset button is visible only on inference tab, and resets
   });
   assert.ok(center, 'Settings center instantiated');
 
-  // Initialization: gResetBtn should be hidden (dashboard is default tab)
+  // Initialization: gResetBtn and gTgSave should be hidden (dashboard is default tab)
   assert.equal(dom.gResetBtn.hidden, true, 'gResetBtn should be hidden on initialization');
+  assert.equal(dom.gTgSave.hidden, true, 'gTgSave should be hidden on initialization');
 
   // 1. Traverse switching 7 tabs:
   const tabs = ['dashboard', 'models', 'inference', 'memory', 'update', 'experience', 'session'];
@@ -167,8 +168,8 @@ test('settings center: reset button is visible only on inference tab, and resets
     );
     assert.equal(
       dom.gTgSave.hidden,
-      ['experience', 'session'].includes(tab),
-      `gTgSave.hidden for tab "${tab}" should be ${['experience', 'session'].includes(tab)}`
+      tab !== 'inference',
+      `gTgSave.hidden for tab "${tab}" should be ${tab !== 'inference'}`
     );
   }
 
