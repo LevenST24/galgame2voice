@@ -22,6 +22,7 @@ Covers:
 """
 
 import asyncio
+import json
 import math
 import os
 import tempfile
@@ -455,3 +456,20 @@ class TestProsodyOptionEnrichment:
         assert resolved["top_k"] in range(DYNAMIC_TOP_K_MIN, DYNAMIC_TOP_K_MAX + 1)
         assert DYNAMIC_TOP_P_MIN <= resolved["top_p"] <= DYNAMIC_TOP_P_MAX
         assert DYNAMIC_FRAGMENT_INTERVAL_MIN <= resolved["fragment_interval"] <= DYNAMIC_FRAGMENT_INTERVAL_MAX
+
+
+class TestStreamingBilingualParserEmotion:
+    """Tests for incremental JSON parsing containing emotion metadata."""
+
+    def test_parser_keyword_fallback_when_emotion_missing_in_json(self):
+        """If LLM outputs standard JSON without emotion, parser auto-classifies via keywords."""
+        parser = StreamingBilingualParser()
+        raw_stream = json.dumps({
+            "chinese": "哇！今天好开心呀，太好了！",
+            "japanese": "わーい！やったー！すごく嬉しい！"
+        }, ensure_ascii=False)
+
+        parser.feed_chunk(raw_stream)
+        full_zh, full_ja, _ = parser.finalize()
+        assert full_zh == "哇！今天好开心呀，太好了！"
+        assert parser.get_emotion() == "happy"

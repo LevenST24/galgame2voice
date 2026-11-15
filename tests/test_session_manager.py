@@ -423,3 +423,23 @@ class TestSessionManagerHistoryEdges:
         assert cleared is True
         hist_after = await sm.get_history(session_id)
         assert len(hist_after) == 0
+
+
+class TestSessionManagerEmotion:
+    """Tests for SessionTurn emotion persistence and system template formatting."""
+
+    @pytest.mark.asyncio
+    async def test_session_turn_emotion_retention(self, temp_db_path):
+        sm = SessionManager(temp_db_path)
+        turn = await sm.add_turn(
+            session_id="sess_emo_1",
+            role="assistant",
+            chinese="傲娇台词",
+            japanese="ツンデレ台詞",
+            emotion="tsundere",
+        )
+        assert turn.emotion == "tsundere"
+
+        # Default template stays format-agnostic because render_lines_contract supplies the schema
+        assert "{character_name}" in sm.DEFAULT_SYSTEM_TEMPLATE
+        assert '"chinese"' not in sm.DEFAULT_SYSTEM_TEMPLATE
