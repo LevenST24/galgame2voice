@@ -343,15 +343,14 @@ test('blocks handleActivateProvider locally when gAllowPrivateEndpoints is unche
   assert.ok(toasts.some(msg => msg.includes('请先勾选「允许连接本机或局域网的模型服务」后再保存启用')));
 });
 
-test('blocks footer saveGlobalConfig locally without saving provider or config when gAllowPrivateEndpoints is unchecked', async t => {
+test('footer saveGlobalConfig saves global config without saving private custom draft or prompting private endpoint toggle', async t => {
   const writeRequests = [];
   globalThis.fetch = async (url, options = {}) => {
     if (options.method === 'POST') {
       writeRequests.push({ url, body: JSON.parse(options.body) });
       return response({
         status: 'ok',
-        settings: { allow_private_llm_endpoints: false, speed_factor: 1.2 },
-        provider: { id: 'custom', name: '自定义模型', api_base_url: 'http://127.0.0.1:11434/v1', chat_model: 'qwen3:latest', is_active: true },
+        settings: { allow_private_llm_endpoints: false, audio_retention_minutes: 60 },
       });
     }
     if (url === '/api/providers') {
@@ -363,7 +362,7 @@ test('blocks footer saveGlobalConfig locally without saving provider or config w
       });
     }
     if (url === '/api/config') {
-      return response({ status: 'ok', settings: { allow_private_llm_endpoints: false, speed_factor: 1 } });
+      return response({ status: 'ok', settings: { allow_private_llm_endpoints: false, audio_retention_minutes: 30 } });
     }
     return response({});
   };
@@ -377,20 +376,25 @@ test('blocks footer saveGlobalConfig locally without saving provider or config w
   onProviderChange();
   dom.gChatModel.value = 'qwen3:latest';
   await dom.gChatModel.dispatch('input');
-  dom.gParamSpeed.value = '1.2';
-  await dom.gParamSpeed.dispatch('input');
+  dom.gAudioRetention.value = '60';
+  await dom.gAudioRetention.dispatch('input');
 
-  const footerResult = await saveGlobalConfig();
-  assert.notEqual(footerResult, true, 'footer save must not succeed');
-  assert.equal(writeRequests.length, 0, 'footer save must not POST /api/providers or /api/config');
+  await saveGlobalConfig();
+  assert.equal(writeRequests.length, 1, 'footer save must only POST /api/config');
+  assert.equal(writeRequests[0].url, '/api/config');
+  assert.equal(writeRequests[0].body.audio_retention_minutes, 60);
   assert.equal(dom.gAllowPrivateEndpoints.checked, false, 'must not auto-check checkbox on footer save');
-  assert.equal(dom.gAllowPrivateEndpoints.focusCalls, 1, 'must focus checkbox on footer save');
+  assert.equal(dom.gAllowPrivateEndpoints.focusCalls, 0, 'footer save must not focus private endpoint checkbox');
+  assert.equal(dom.gProviderTestResult.classList.contains('hidden'), true, 'footer save must not open private endpoint error box');
   assert.equal(dom.gTgSave.disabled, false, 'footer save button unlocked');
   assert.equal(dom.gProviderActivate.disabled, false, 'activate button unlocked');
-  assert.equal(dom.gProviderTestResult.classList.contains('hidden'), false);
-  assert.ok(
-    toasts.some(msg => msg.includes('请先勾选「允许连接本机或局域网的模型服务」后再保存启用；其他设置也还没有保存')),
-    `expected footer warning toast, got: ${JSON.stringify(toasts)}`,
+  assert.equal(dom.gProvider.value, '__custom__', 'custom provider draft preserved');
+  assert.equal(dom.gChatModel.value, 'qwen3:latest', 'custom model draft preserved');
+  assert.ok(toasts.includes('全局配置已保存'), `expected global save toast, got: ${JSON.stringify(toasts)}`);
+  assert.equal(
+    toasts.some(msg => msg.includes('允许连接本机或局域网的模型服务')),
+    false,
+    `unexpected private endpoint warning toast: ${JSON.stringify(toasts)}`,
   );
 });
 

@@ -22,33 +22,35 @@ test('providerTestResultFromError keeps structured diagnostics from a rejected r
   assert.equal(result.retryable, false);
 });
 
-test('commitAll saves the engine directory, then the model, then global config', async () => {
+test('commitAll saves the engine directory, then global config, without saving dirty model drafts', async () => {
   const { createSettingsDraftStore } = await import('../frontend/src/controllers/settings_draft_store.js');
   const order = [];
-  let modelSaved = true;
+  const toasts = [];
   let configSaving = false;
+  let dirDirty = true;
+  let dirResult = true;
   const directory = {
-    isDirty: () => true,
+    isDirty: () => dirDirty,
     async save() {
       order.push('directory.save');
-      return true;
+      if (dirResult) dirDirty = false;
+      return dirResult;
     },
   };
   const provider = {
     disposed: false,
     isProviderSaving: () => false,
     isProviderDirty: () => true,
-    async saveAndActivateProvider(options) {
+    async saveAndActivateProvider() {
       order.push('saveAndActivateProvider');
-      order.push(options);
-      return modelSaved;
+      return true;
     },
   };
   const store = createSettingsDraftStore({
     isConfigSaving: () => configSaving,
     getProviderController: () => provider,
     isConfigLoaded: () => true,
-    showToast: () => {},
+    showToast: (msg, type) => { toasts.push({ msg, type }); },
     reloadConfig: () => {},
     getEngineDirectory: () => directory,
     getCoordinatorRevision: () => 1,
@@ -64,19 +66,13 @@ test('commitAll saves the engine directory, then the model, then global config',
   });
 
   await store.commitAll();
-  assert.deepEqual(order, [
-    'directory.save',
-    'saveAndActivateProvider',
-    { fromFooter: true },
-    'config',
-  ]);
+  assert.deepEqual(order, ['directory.save', 'config']);
+  assert.deepEqual(toasts, [{ msg: '全局配置已保存', type: 'success' }]);
 
   order.length = 0;
-  modelSaved = false;
+  toasts.length = 0;
+  dirDirty = true;
+  dirResult = false;
   await store.commitAll();
-  assert.deepEqual(order, [
-    'directory.save',
-    'saveAndActivateProvider',
-    { fromFooter: true },
-  ]);
+  assert.deepEqual(order, ['directory.save']);
 });

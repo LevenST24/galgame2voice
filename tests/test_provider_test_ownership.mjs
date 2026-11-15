@@ -137,6 +137,7 @@ function fixture(t, extraCallbacks = {}) {
     gApiKeyTip: element('div'),
     gBtnResetBaseUrl: element('button'),
     gChatModelSelect: element('select'),
+    gAudioRetention: element('input', '30'),
   };
 
   initGlobalSettings(dom, { openModal, closeModal, ...extraCallbacks });
@@ -656,37 +657,24 @@ test('reinit disposes previous controller: in-flight save rejecting or unconfirm
 });
 
 test('reinit disposes previous controller: in-flight footer save cannot leak success toast or clear new busy state', async t => {
-  let releaseOldProviderSave;
   let releaseOldConfigSave;
-  let releaseNewProviderSave;
   let releaseNewConfigSave;
 
-  const oldProviderPromise = new Promise(resolve => { releaseOldProviderSave = resolve; });
   const oldConfigPromise = new Promise(resolve => { releaseOldConfigSave = resolve; });
-  const newProviderPromise = new Promise(resolve => { releaseNewProviderSave = resolve; });
   const newConfigPromise = new Promise(resolve => { releaseNewConfigSave = resolve; });
 
   t.after(() => {
-    releaseOldProviderSave?.(response({}));
     releaseOldConfigSave?.(response({}));
-    releaseNewProviderSave?.(response({}));
     releaseNewConfigSave?.(response({}));
   });
 
   let providerPosts = 0;
   let configPosts = 0;
-  let currentActive = { id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o', api_base_url: 'https://api.openai.com/v1' };
 
   globalThis.fetch = async (url, options = {}) => {
     if (url === '/api/providers' && options.method === 'POST') {
       providerPosts++;
-      const body = JSON.parse(options.body);
-      if (body.chat_model === 'old-footer-model') return oldProviderPromise;
-      if (body.chat_model === 'new-footer-model') {
-        currentActive = { id: 'custom', name: '自定义模型', is_active: true, chat_model: 'new-footer-model', api_base_url: 'https://custom.api/v1' };
-        return newProviderPromise;
-      }
-      throw new Error(`Unexpected provider save: ${body.chat_model}`);
+      return response({ provider: { ...JSON.parse(options.body), is_active: true } });
     }
     if (url === '/api/config' && options.method === 'POST') {
       configPosts++;
@@ -696,8 +684,8 @@ test('reinit disposes previous controller: in-flight footer save cannot leak suc
     if (url === '/api/providers') {
       return response({
         providers: [
-          currentActive.id === 'openai' ? currentActive : { id: 'openai', name: 'OpenAI', is_active: false, chat_model: 'gpt-4o', api_base_url: 'https://api.openai.com/v1' },
-          currentActive.id === 'custom' ? currentActive : { id: 'custom', name: '自定义模型', is_active: false, chat_model: 'custom-model', api_base_url: 'https://custom.api/v1' },
+          { id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o', api_base_url: 'https://api.openai.com/v1' },
+          { id: 'custom', name: '自定义模型', is_active: false, chat_model: 'custom-model', api_base_url: 'https://custom.api/v1' },
         ],
         presets: [],
       });
@@ -714,18 +702,15 @@ test('reinit disposes previous controller: in-flight footer save cannot leak suc
   await loadProviders();
   await loadGlobalConfig();
 
-  // Make provider dirty on fixture 1
-  fixture1.dom.gProvider.value = 'custom';
-  fixture1.dom.gChatModel.value = 'old-footer-model';
-  fixture1.dom.gBaseUrl.value = 'https://custom.api/v1';
-  await fixture1.dom.gChatModel.dispatch('input');
+  fixture1.dom.gAudioRetention.value = '45';
+  await fixture1.dom.gAudioRetention.dispatch('input');
 
   // Trigger footer save on fixture 1
   const pendingOldFooterSave = saveGlobalConfig();
   await settle();
 
   // Assert fixture 1 footer save actually started
-  assert.equal(providerPosts, 1, 'fixture 1 provider POST must be observed');
+  assert.equal(configPosts, 1, 'fixture 1 config POST must be observed');
   assert.equal(fixture1.dom.gTgSave.disabled, true, 'fixture 1 footer save button busy');
   assert.equal(fixture1.dom.gProviderActivate.disabled, true, 'fixture 1 activate button busy');
 
@@ -736,53 +721,47 @@ test('reinit disposes previous controller: in-flight footer save cannot leak suc
   await loadProviders();
   await loadGlobalConfig();
 
-  // Make provider dirty on fixture 2
+  // Leave a dirty provider draft and a new config draft on fixture 2
   fixture2.dom.gProvider.value = 'custom';
-  fixture2.dom.gChatModel.value = 'new-footer-model';
-  fixture2.dom.gBaseUrl.value = 'https://custom.api/v1';
+  fixture2.dom.gChatModel.value = 'new-unsaved-model';
   await fixture2.dom.gChatModel.dispatch('input');
+  fixture2.dom.gAudioRetention.value = '90';
+  await fixture2.dom.gAudioRetention.dispatch('input');
 
   // Trigger genuine new footer save on fixture 2
   const pendingNewFooterSave = saveGlobalConfig();
   await settle();
 
-  // Assert fixture 2 footer save started and set busy state
-  assert.equal(providerPosts, 2, 'fixture 2 provider POST must be observed');
+  // Assert fixture 2 footer save started (queued behind fixture 1 in runSettingsMutation) and set busy state
+  assert.equal(configPosts, 1, 'fixture 2 config POST waits behind fixture 1 in mutation queue');
   assert.equal(fixture2.dom.gTgSave.disabled, true, 'new coordinator footer save button must be busy');
   assert.equal(fixture2.dom.gProviderActivate.disabled, true, 'new coordinator activate button must be busy');
 
-  // 3. Release old provider and old config saves while new save is in flight
-  releaseOldProviderSave(response({
-    provider: { id: 'custom', name: '自定义模型', chat_model: 'old-footer-model', is_active: true },
-  }));
-  await settle();
-  assert.equal(configPosts, 1, 'fixture 1 config POST must be observed after provider save');
-  releaseOldConfigSave(response({ status: 'ok', settings: { audio_retention_minutes: 30 } }));
+  // 3. Release old config save while new save is queued
+  releaseOldConfigSave(response({ status: 'ok', settings: { audio_retention_minutes: 45 } }));
   await pendingOldFooterSave;
   await settle();
+  assert.equal(configPosts, 2, 'fixture 2 config POST must start after fixture 1 settles');
 
-  // 4. Assert: new coordinator busy state, label, and newer draft SURVIVE old save completion
+  // 4. Assert: new coordinator busy state and newer drafts SURVIVE old save completion
   assert.equal(fixture2.dom.gTgSave.disabled, true, 'new coordinator save button must remain busy despite old save completion');
   assert.equal(fixture2.dom.gProviderActivate.disabled, true, 'new coordinator activate button must remain busy');
-  assert.equal(fixture2.dom.gChatModel.value, 'new-footer-model', 'new coordinator model draft must not be overwritten or cleared');
+  assert.equal(fixture2.dom.gAudioRetention.value, '90', 'new coordinator config draft must not be overwritten or cleared');
+  assert.equal(fixture2.dom.gChatModel.value, 'new-unsaved-model', 'new coordinator model draft must not be overwritten or cleared');
   assert.deepEqual(fixture2.toasts, [], 'new coordinator must not receive toast from disposed footer save');
   assert.equal(badgeUpdates2, 1, 'new coordinator badge must not receive extra callback from old save completion');
 
-  // 5. Release new provider and new config saves to verify normal completion of new save
-  releaseNewProviderSave(response({
-    provider: { id: 'custom', name: '自定义模型', chat_model: 'new-footer-model', is_active: true },
-  }));
-  await settle();
-  assert.equal(configPosts, 2, 'fixture 2 config POST must be observed after its provider save');
-  releaseNewConfigSave(response({ status: 'ok', settings: { audio_retention_minutes: 30 } }));
+  // 5. Release new config save to verify normal completion of new save
+  releaseNewConfigSave(response({ status: 'ok', settings: { audio_retention_minutes: 90 } }));
   await pendingNewFooterSave;
   await settle();
 
-  // Assert: new save finishes normally, unlocks buttons, and displays its own toast
+  // Assert: new save finishes normally, unlocks buttons, displays its own toast, and never touched providers
+  assert.equal(providerPosts, 0, 'footer save must never post provider updates');
   assert.equal(fixture2.dom.gTgSave.disabled, false, 'new coordinator save button unlocked after completion');
   assert.equal(fixture2.dom.gProviderActivate.disabled, false, 'new coordinator activate button unlocked after completion');
-  assert.ok(fixture2.toasts.some(t => t.includes('全局配置和模型设置已保存')), 'new coordinator shows success toast');
-  assert.equal(getCurrentActiveProvider()?.chat_model, 'new-footer-model', 'current active provider reflects new model');
+  assert.ok(fixture2.toasts.some(t => t === '全局配置已保存'), 'new coordinator shows global config success toast');
+  assert.equal(getCurrentActiveProvider()?.id, 'openai', 'active provider remains unchanged');
 });
 
 test('reinit disposes previous controller: in-flight save lacking active confirmation does not issue fallback activation after disposal', async t => {
@@ -843,7 +822,7 @@ test('reinit disposes previous controller: in-flight save lacking active confirm
   assert.deepEqual(fixture2.toasts, [], 'no toasts on new coordinator');
 });
 
-test('switching provider in dropdown without editing inputs sets providerDirty, saving on footer save; switching back avoids POST', async t => {
+test('switching provider in dropdown activates via handleActivateProvider without editing inputs while footer save ignores it', async t => {
   const providerPosts = [];
   const configPosts = [];
 
@@ -901,73 +880,42 @@ test('switching provider in dropdown without editing inputs sets providerDirty, 
   assert.equal(getCurrentActiveProvider()?.id, 'openai');
   assert.equal(dom.gProvider.value, 'openai');
 
-  // 1. User switches dropdown to 'deepseek', but then switches back to original active 'openai' without editing
+  // 1. User switches dropdown to 'deepseek' and clicks footer save -> does not save provider
   dom.gProvider.value = 'deepseek';
   await dom.gProvider.dispatch('change');
-  dom.gProvider.value = 'openai';
-  await dom.gProvider.dispatch('change');
-
-  // User clicks footer save
   await saveGlobalConfig();
   await settle();
 
-  // Assert: No redundant POST /api/providers request
-  assert.equal(providerPosts.length, 0, 'switching to another provider then back to original active provider must not post provider save');
-  assert.ok(toasts.some(msg => msg === '全局配置已保存'), 'should show global config saved toast without model change');
+  assert.equal(providerPosts.length, 0, 'footer save must not post provider save');
+  assert.equal(getCurrentActiveProvider()?.id, 'openai', 'active provider remains openai');
+  assert.ok(toasts.some(msg => msg === '全局配置已保存'), 'footer save reports global config saved');
 
-  // Clear tracking
-  providerPosts.length = 0;
   toasts.length = 0;
 
-  // 2. User switches dropdown to 'deepseek' and triggers change
-  dom.gProvider.value = 'deepseek';
-  await dom.gProvider.dispatch('change');
-
-  // User does NOT edit any other input, directly clicks footer save
-  await saveGlobalConfig();
+  // 2. User explicitly clicks "保存并启用此模型" on deepseek without editing other inputs
+  await handleActivateProvider();
   await settle();
 
-  // Assert: POST /api/providers was issued for deepseek with is_active: true
-  assert.equal(providerPosts.length, 1, 'should have posted provider save for deepseek');
+  assert.equal(providerPosts.length, 1, 'handleActivateProvider posts provider save for deepseek');
   assert.equal(providerPosts[0].id, 'deepseek');
   assert.equal(providerPosts[0].is_active, true);
   assert.equal(getCurrentActiveProvider()?.id, 'deepseek');
-  assert.ok(toasts.some(msg => msg.includes('全局配置和模型设置已保存')), 'should show success toast including model saved');
+  assert.ok(toasts.some(msg => msg.includes('已成功保存并启用')), 'should show provider activation toast');
 
-  // Clear tracking
   providerPosts.length = 0;
   toasts.length = 0;
 
-  // 3. User switches dropdown to 'openai', then immediately back to 'deepseek' (the now-active provider) without editing
-  dom.gProvider.value = 'openai';
-  await dom.gProvider.dispatch('change');
-  dom.gProvider.value = 'deepseek';
-  await dom.gProvider.dispatch('change');
-
-  // User clicks footer save
-  await saveGlobalConfig();
-  await settle();
-
-  // Assert: No redundant POST /api/providers request
-  assert.equal(providerPosts.length, 0, 'switching to another provider then back to active provider must not post provider save');
-  assert.ok(toasts.some(msg => msg === '全局配置已保存'), 'should show global config saved toast without model change');
-
-  // Clear tracking
-  providerPosts.length = 0;
-  toasts.length = 0;
-
-  // 4. User switches dropdown to '__custom__' (keyless) and directly clicks footer save
+  // 3. User switches dropdown to '__custom__' (keyless) and activates via handleActivateProvider()
   dom.gProvider.value = '__custom__';
   await dom.gProvider.dispatch('change');
 
-  await saveGlobalConfig();
+  await handleActivateProvider();
   await settle();
 
-  // Assert: POST /api/providers was issued for custom with is_active: true
   assert.equal(providerPosts.length, 1, 'should have posted provider save for custom');
   assert.equal(providerPosts[0].id, 'custom');
   assert.equal(providerPosts[0].is_active, true);
   assert.equal(getCurrentActiveProvider()?.id, 'custom');
-  assert.ok(toasts.some(msg => msg.includes('全局配置和模型设置已保存')), 'should show success toast including custom model saved');
+  assert.ok(toasts.some(msg => msg.includes('已成功保存并启用')), 'should show custom provider activation toast');
 });
 
