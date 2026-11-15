@@ -40,4 +40,4 @@ export async function testProviderConnection(payload, { signal = null } = {}) {
   }
 }
 
-export { getConsoleToken, setConsoleToken, clearConsoleToken, promptConsoleToken } from './auth.js';
+export { getConsoleToken, setConsoleToken, promptConsoleToken } from './auth.js';

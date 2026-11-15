@@ -4,8 +4,6 @@ let listening = false;
 let listenGen = 0;
 let recorder = null;
 let recStream = null;
-let recChunks = [];
-let recStartTs = 0;
 
 /** 语音转写是否可用 */
 export function voiceSupported() {
@@ -57,9 +55,7 @@ export function startListening({ onInterim, onText, onRecorded, onError }) {
         }
         recStream = stream;
         const myChunks = [];
-        recChunks = myChunks;
         const myStartTs = Date.now();
-        recStartTs = myStartTs;
         const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find(
           (m) => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)
         );

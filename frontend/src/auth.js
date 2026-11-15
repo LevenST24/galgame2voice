@@ -36,15 +36,6 @@ export function setConsoleToken(token) {
 }
 
 /**
- * 清除当前会话的控制台令牌
- */
-export function clearConsoleToken() {
-  try {
-    window.sessionStorage.removeItem(STORAGE_KEY);
-  } catch {}
-}
-
-/**
  * 弹出控制台令牌输入模态框，返回 Promise<string|null>
  * @param {string} [reason] 触发原因
  * @returns {Promise<string|null>}

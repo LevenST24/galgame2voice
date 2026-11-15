@@ -37,7 +37,6 @@ from galgame2voice.utils.logger import sanitize_error_detail
 
 logger = logging.getLogger("galgame2voice.routers.providers")
 router = APIRouter(tags=["Providers & Testing"])
-providers_router = router
 
 
 async def _allow_private_endpoints() -> bool:
