@@ -1,10 +1,15 @@
 """Failed replies explain the next step in Chinese and carry a stable error code."""
 
+import os
+import tempfile
+from unittest.mock import AsyncMock
+
 import httpx
 import pytest
 
-from galgame2voice.adapters.base import MissingApiKeyError
+from galgame2voice.adapters.base import BaseLLMAdapter, MissingApiKeyError, TestResult
 from galgame2voice.adapters.registry import get_llm_adapter
+from galgame2voice.database.session import init_db
 from galgame2voice.services.chat_service import ChatService
 from galgame2voice.services.audio_identity import AudioIdentity, VoicePreparation
 from galgame2voice.services.gpt_sovits_client import GptSovitsClient
@@ -87,3 +92,51 @@ async def test_stream_reports_a_missing_cloud_key_before_contacting_the_provider
     assert errors[0]["error_code"] == "API_KEY_MISSING"
     assert "Google Gemini" in errors[0]["error"]
     assert not [event for event in events if event["event"] == "done"]
+
+
+@pytest.mark.asyncio
+async def test_chat_service_upstream_llm_timeout_handling(tmp_path):
+    """
+    When upstream LLM provider hangs or raises httpx.ReadTimeout,
+    the stream should yield an informative error event and terminate cleanly.
+    """
+    fd, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    await init_db(db_path)
+
+    client = GptSovitsClient()
+    tts_service = TtsService(client=client, audio_dir=tmp_path)
+    chat_service = ChatService(tts_service=tts_service, db_path=db_path)
+
+    class TimeoutLLM(BaseLLMAdapter):
+        async def stream_chat(self, *args, **kwargs):
+            raise httpx.ReadTimeout("Upstream LLM timed out after 30s")
+            yield ""
+
+        async def chat(self, *args, **kwargs):
+            raise httpx.ReadTimeout("Upstream LLM timed out")
+
+        async def test_connection(self, *args, **kwargs):
+            return TestResult(success=False, message="Timeout")
+
+        async def list_models(self):
+            return []
+
+    mock_llm = TimeoutLLM(api_key="sk-test", base_url="http://test")
+    chat_service._get_active_llm_adapter = AsyncMock(return_value=(mock_llm, "test-llm"))
+
+    events = []
+    async for ev in chat_service.stream_chat(prompt="超时测试", session_id="timeout_sess"):
+        events.append(ev)
+
+    assert len(events) >= 1
+    # Expect error event
+    error_events = [e for e in events if e["event"] == "error"]
+    assert len(error_events) == 1
+    assert "timed out" in error_events[0]["data"]["error"].lower() or "timeout" in error_events[0]["data"]["error"].lower()
+
+    if os.path.exists(db_path):
+        try:
+            os.remove(db_path)
+        except OSError:
+            pass

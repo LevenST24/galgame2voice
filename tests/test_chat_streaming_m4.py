@@ -10,11 +10,14 @@ Covers:
 """
 
 import asyncio
+import io
 import json
 import os
 import tempfile
 import time
+import wave
 from typing import AsyncIterator, Dict, Any, List, Optional
+from unittest.mock import AsyncMock
 import pytest
 from httpx import AsyncClient, ASGITransport
 import aiosqlite
@@ -26,7 +29,8 @@ from galgame2voice.services.gpt_sovits_client import GptSovitsClient
 from galgame2voice.adapters.base import BaseLLMAdapter, ChatMessage, LLMResponse, TestResult
 from galgame2voice.routers.chat import set_chat_service, get_chat_service, router as chat_router
 from galgame2voice.main import create_app
-from galgame2voice.database.session import init_db
+from galgame2voice.database import crud
+from galgame2voice.database.session import get_db, init_db
 from tests.conftest import MockGptSovitsServer, MockLLMServer
 
 
@@ -62,6 +66,26 @@ class MockStreamingLLMAdapter(BaseLLMAdapter):
 
     async def list_models(self) -> List[str]:
         return ["mock-chat"]
+
+
+class AdversarialStreamingLLMAdapter(BaseLLMAdapter):
+    def __init__(self, chunks: List[str]):
+        super().__init__(api_key="sk-adversarial", base_url="http://mock-llm")
+        self.chunks = chunks
+
+    async def chat(self, messages: List[ChatMessage], model: str, **kwargs) -> LLMResponse:
+        return LLMResponse(content="".join(self.chunks))
+
+    async def stream_chat(self, messages: List[ChatMessage], model: str, **kwargs) -> AsyncIterator[str]:
+        for c in self.chunks:
+            await asyncio.sleep(0.001)
+            yield c
+
+    async def test_connection(self, model: Optional[str] = None) -> TestResult:
+        return TestResult(success=True, message="OK", latency_ms=1.0)
+
+    async def list_models(self) -> List[str]:
+        return ["adv-model"]
 
 
 # ============================================================================
@@ -277,6 +301,13 @@ class TestTextSplitterAndParserM4:
         # Verify agile chunk 0 split on first clause pause: "お久しぶりですね、"
         assert emitted_ja[0] == "お久しぶりですね、"
 
+    def test_empty_and_corrupt_json_payloads(self):
+        parser = StreamingBilingualParser()
+        parser.feed_chunk("{")
+        ch, ja, _ = parser.finalize()
+        assert isinstance(ch, str)
+        assert isinstance(ja, str)
+
 
 # ============================================================================
 # ChatService End-to-End Tests
@@ -336,6 +367,92 @@ class TestChatServiceM4:
 
         assert len(events) == 0
 
+    def _create_mock_wav(self, duration_sec: float = 0.5) -> bytes:
+        """Helper to create a minimal valid PCM WAV byte payload."""
+        buf = io.BytesIO()
+        sample_rate = 24000
+        num_samples = int(sample_rate * duration_sec)
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(b"\x00\x00" * num_samples)
+        return buf.getvalue()
+
+    @pytest.mark.asyncio
+    async def test_chat_service_partial_tts_failure_recovery(self, tmp_path):
+        """
+        If sentence 1 synthesizes successfully but sentence 2 fails (e.g. GPT-SoVITS OOM/timeout),
+        ChatService should emit sentence 1's audio_chunk, emit the error or fallback,
+        and still finalize the chat session cleanly without hanging.
+        """
+        fd, db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        await init_db(db_path)
+
+        audio_dir = tmp_path / "audio_recovery"
+        audio_dir.mkdir()
+
+        # Mock TTS Service with 1 success, 1 failure
+        call_count = 0
+        async def mock_synth(text, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return self._create_mock_wav(0.3)
+            raise RuntimeError("GPT-SoVITS 500 Out of Memory")
+
+        client = GptSovitsClient()
+        client.synthesize = AsyncMock(side_effect=mock_synth)
+        tts_service = TtsService(client=client, audio_dir=audio_dir)
+
+        chat_service = ChatService(tts_service=tts_service, db_path=db_path)
+
+        # Mock LLM stream returning 2 Japanese sentences
+        class MultiSentenceLLM(BaseLLMAdapter):
+            async def stream_chat(self, *args, **kwargs):
+                yield '{"chinese": "第一句中文。第二句中文。", '
+                yield '"japanese": "最初の文です。二番目の文です。"}'
+
+            async def chat(self, *args, **kwargs):
+                return LLMResponse(content='{"chinese": "第一句中文。第二句中文。", "japanese": "最初の文です。二番目の文です。"}')
+
+            async def test_connection(self, *args, **kwargs):
+                return TestResult(success=True, message="OK")
+
+            async def list_models(self):
+                return ["test-llm"]
+
+        mock_llm = MultiSentenceLLM(api_key="sk-test", base_url="http://test")
+        chat_service._get_active_llm_adapter = AsyncMock(return_value=(mock_llm, "test-llm"))
+
+        events = []
+        async for ev in chat_service.stream_chat(prompt="测试容错", session_id="err_sess_1"):
+            events.append(ev)
+
+        # Verify stream completed and emitted done event
+        event_types = [e["event"] for e in events]
+        assert "text" in event_types
+        assert "done" in event_types
+
+        # Verify audio chunks: sentence 1 succeeded, sentence 2 did not crash the pipeline
+        audio_chunks = [e for e in events if e["event"] == "audio_chunk"]
+        assert len(audio_chunks) >= 1, "At least sentence 1 should have produced an audio chunk"
+
+        # Verify DB persisted message
+        async with get_db(db_path) as conn:
+            msgs = await crud.get_recent_messages(conn, "err_sess_1", limit=10)
+            assert len(msgs) == 2  # user + assistant
+            assert any(m.role == "assistant" for m in msgs)
+            assistant_m = next(m for m in msgs if m.role == "assistant")
+            assert "第一句中文" in assistant_m.content_chinese
+
+        if os.path.exists(db_path):
+            try:
+                os.remove(db_path)
+            except OSError:
+                pass
+
 
 # ============================================================================
 # FastAPI Chat Router Endpoints Tests
@@ -394,3 +511,68 @@ class TestChatRouterEndpointsM4:
             for name in asset_names:
                 r_asset = await c.get(f"/static/assets/{name}")
                 assert r_asset.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_sse_stream_error_handling_when_llm_fails(self, temp_db_path, mock_gpt_sovits, tmp_path):
+        """
+        When LLM provider raises an exception, the SSE stream should emit
+        an `event: error` rather than crashing the application.
+        """
+        app = create_app()
+        client = GptSovitsClient(server=mock_gpt_sovits)
+        tts_service = TtsService(client=client, audio_dir=tmp_path)
+        chat_service = ChatService(tts_service=tts_service, db_path=temp_db_path)
+
+        class FailingLLM(BaseLLMAdapter):
+            async def chat(self, *args, **kwargs):
+                raise RuntimeError("LLM 429 Rate Limit")
+            async def stream_chat(self, *args, **kwargs):
+                raise RuntimeError("LLM 429 Rate Limit")
+                yield ""
+            async def test_connection(self, *args, **kwargs):
+                return TestResult(success=False, message="Error")
+            async def list_models(self):
+                return []
+
+        async def _mock_adapter(*args, **kwargs):
+            return (FailingLLM(api_key="", base_url=""), "mock")
+        chat_service._get_active_llm_adapter = _mock_adapter
+        set_chat_service(chat_service)
+        try:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as c:
+                resp = await c.post(
+                    "/api/chat/stream",
+                    json={"session_id": "test_err_sess", "prompt": "fail test", "stream": True}
+                )
+                assert resp.status_code == 200
+                body = resp.text
+                assert "event: error" in body or "error" in body.lower()
+        finally:
+            set_chat_service(None)
+
+    @pytest.mark.asyncio
+    async def test_special_characters_and_html_injection_in_prompt(self, temp_db_path, mock_gpt_sovits, tmp_path):
+        app = create_app()
+        client = GptSovitsClient(server=mock_gpt_sovits)
+        tts_service = TtsService(client=client, audio_dir=tmp_path)
+        chat_service = ChatService(tts_service=tts_service, db_path=temp_db_path)
+
+        adapter = AdversarialStreamingLLMAdapter([
+            '{"chinese": "<script>alert(\'xss\')</script> & 特殊字符", "japanese": "<script>alert(\'xss\')</script> & 日本語"}'
+        ])
+        async def _mock_adapter(*args, **kwargs):
+            return (adapter, "adv-model")
+        chat_service._get_active_llm_adapter = _mock_adapter
+        set_chat_service(chat_service)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as c:
+            resp = await c.post("/api/chat/stream", json={
+                "prompt": "<script>alert('xss')</script> & 特殊字符 < > & \" '",
+                "session_id": "xss-test"
+            })
+            assert resp.status_code == 200
+            body = resp.text
+            assert "event: text" in body
+            assert "event: done" in body
