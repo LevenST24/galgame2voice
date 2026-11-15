@@ -5,16 +5,25 @@ Unit & Integration tests for:
 3. In-Memory Disk Cache Metadata Tracking in TtsCacheManager (galgame2voice.services.tts_cache_manager)
 """
 
+import asyncio
 import io
 import os
 import struct
+import sys
 import tempfile
 import wave
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
 from galgame2voice.config import get_settings
+from galgame2voice.database.session import init_db
+from galgame2voice.main import create_app
+from galgame2voice.routers.health import DatabaseTelemetry, router as health_router
 from galgame2voice.utils.path_guard import (
     PathTraversalError,
     contains_traversal_payload,
@@ -508,3 +517,208 @@ async def test_tts_cache_manager_in_memory_tracking(tmp_path):
     assert mgr._disk_bytes_total == 0
     assert mgr._disk_files_total == 0
     assert mgr._stats_initialized is True
+
+
+# ============================================================================
+# 4. Database Telemetry Path Normalization & Path Traversal Security Tests
+# ============================================================================
+
+
+class TestDatabaseTelemetryPathNormalization:
+    """Adversarial testing of DatabaseTelemetry path normalization across OS platforms."""
+
+    def test_database_telemetry_schema(self):
+        """Verify DatabaseTelemetry pydantic model accepts relative path and wal_mode."""
+        t = DatabaseTelemetry(status="connected", wal_mode=True, path="data/galgame2voice.db")
+        assert t.path == "data/galgame2voice.db"
+        assert t.wal_mode is True
+
+    @pytest.mark.parametrize(
+        "simulated_project_root,simulated_db_path,expected_relative_path",
+        [
+            # Standard Windows relative path
+            (
+                Path("C:/Users/JIYIF/Documents/New project/galgame2voice"),
+                Path("C:/Users/JIYIF/Documents/New project/galgame2voice/data/galgame2voice.db"),
+                "data/galgame2voice.db",
+            ),
+            # Custom subdirectory in project
+            (
+                Path("C:/Users/JIYIF/Documents/New project/galgame2voice"),
+                Path("C:/Users/JIYIF/Documents/New project/galgame2voice/custom_data/app.db"),
+                "custom_data/app.db",
+            ),
+            # Linux / POSIX project root
+            (
+                Path("/home/user/workspace/galgame2voice"),
+                Path("/home/user/workspace/galgame2voice/data/galgame2voice.db"),
+                "data/galgame2voice.db",
+            ),
+            # Windows different drive letter (outside project root) -> fallback
+            (
+                Path("C:/Users/JIYIF/galgame2voice"),
+                Path("D:/external_data/test_db.sqlite3"),
+                "data/test_db.sqlite3",
+            ),
+            # POSIX /tmp/ directory (outside project root) -> fallback
+            (
+                Path("/app/galgame2voice"),
+                Path("/tmp/pytest-of-root/temp.db"),
+                "data/temp.db",
+            ),
+            # UNC network share (outside project root) -> fallback
+            pytest.param(
+                Path("C:/galgame2voice"),
+                Path(r"\\remote-server\share\data.db"),
+                "data/data.db",
+                marks=pytest.mark.skipif(
+                    sys.platform != "win32",
+                    reason="UNC path parsing is Windows-specific; POSIX treats backslashes as literal characters",
+                ),
+            ),
+        ],
+    )
+    def test_path_normalization_logic(
+        self, simulated_project_root, simulated_db_path, expected_relative_path
+    ):
+        """
+        Verify path normalization logic:
+        1. If db_path is within project_root, returns relative_to(project_root).as_posix()
+        2. If outside project_root, safely falls back to f"{data_dir_name}/{db_path.name}"
+        3. Never leaks full host machine drive letters or user home directory.
+        """
+        from galgame2voice.routers.health import _resolve_rel_db_path
+        rel_db_path = _resolve_rel_db_path(simulated_db_path, simulated_project_root, "data")
+
+        assert rel_db_path == expected_relative_path
+        assert not rel_db_path.startswith("C:")
+        assert not rel_db_path.startswith("D:")
+        assert not rel_db_path.startswith("/home/")
+        assert not rel_db_path.startswith("/Users/")
+        assert "\\" not in rel_db_path  # Must be normalized POSIX forward slashes
+
+    @pytest.mark.parametrize("configured_folder", ["absolute", "../private"])
+    def test_external_data_directory_never_leaks_its_location(self, tmp_path, configured_folder):
+        from galgame2voice.routers.health import _resolve_rel_db_path
+        external = tmp_path / "private" / "history.db"
+        folder = str(external.parent) if configured_folder == "absolute" else configured_folder
+        assert _resolve_rel_db_path(external, tmp_path / "app", folder) == "data/history.db"
+
+    async def test_live_system_status_endpoint_returns_normalized_path(self):
+        """
+        Empirically invoke GET /api/system/status with an ASGI client and verify
+        that response['database']['path'] is strictly relative.
+        """
+        app = FastAPI()
+        app.include_router(health_router)
+
+        # Bypass auth for status test
+        with patch("galgame2voice.routers.health.require_auth", return_value="admin"):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.get("/api/system/status", headers={"X-Auth-Token": "test_token"})
+
+            assert response.status_code == 200, f"Health endpoint returned status {response.status_code}: {response.text}"
+            data = response.json()
+            assert "database" in data
+            db_info = data["database"]
+            assert "path" in db_info
+            path_val = db_info["path"]
+
+            # Assert path is relative POSIX
+            settings = get_settings()
+            # The isolation fixture deliberately keeps the DB outside the repo.
+            # The endpoint must conceal that absolute temp path using its fallback.
+            if settings.db_path.is_relative_to(settings.project_root):
+                expected = settings.db_path.relative_to(settings.project_root).as_posix()
+            else:
+                expected = f"data/{settings.db_path.name}"
+            assert path_val == expected
+            assert "C:" not in path_val
+            assert "Users" not in path_val
+            assert "\\" not in path_val
+
+
+@pytest.fixture
+def clean_db():
+    """Provides a fresh isolated temporary database."""
+    fd, db_path = tempfile.mkstemp(suffix=".db", prefix="m1_adv_chal_")
+    os.close(fd)
+    asyncio.run(init_db(db_path))
+    yield db_path
+    if os.path.exists(db_path):
+        try:
+            os.remove(db_path)
+        except OSError:
+            pass
+
+
+@pytest.fixture
+def app_client(clean_db, monkeypatch):
+    """Provides a TestClient with the isolated test database."""
+    monkeypatch.setenv("DATABASE_PATH", clean_db)
+    app = create_app()
+    with TestClient(app, base_url="http://127.0.0.1:8080") as client:
+        yield client, clean_db
+
+
+class TestPathTraversalAndFileSystemSecurity:
+    """Adversarially tests path traversal defense across static files and fs browser."""
+
+    def test_static_audio_path_traversal_attempts(self, app_client):
+        """
+        Sends diverse path traversal attacks to the /audio static mount.
+        Must return 404/400 (Not Found / Bad Request), NEVER leak outside files.
+        """
+        client, db_path = app_client
+
+        traversal_payloads = [
+            "/audio/../main.py",
+            "/audio/../../galgame2voice/main.py",
+            "/audio/..%2f..%2fgalgame2voice%2fmain.py",
+            "/audio/..%5c..%5cgalgame2voice%5cmain.py",
+            "/audio/%2e%2e%2f%2e%2e%2fmain.py",
+            "/audio/....//....//galgame2voice/main.py",
+            "/audio/C:/Windows/win.ini",
+            "/audio/c:\\windows\\system32\\calc.exe",
+            "/audio/cache/../../galgame2voice/routers/config.py",
+            "/audio/cache/%2e%2e%2f%2e%2e%2fPROJECT.md",
+            "/audio/NUL",
+            "/audio/CON",
+            "/audio/COM1",
+        ]
+
+        for payload in traversal_payloads:
+            resp = client.get(payload)
+            # Response must be 404 or 400, never 200 with source code
+            assert resp.status_code in (400, 404, 405), f"Path traversal succeeded or unhandled on {payload}: {resp.status_code}"
+            assert "def create_app" not in resp.text
+            assert "M1_SECURITY" not in resp.text
+
+    def test_legitimate_audio_file_serving_works(self, app_client):
+        """Verifies that legitimate files inside audio_dir are accessible."""
+        client, db_path = app_client
+        settings = get_settings()
+
+        test_wav = settings.audio_dir / "valid_test_audio.wav"
+        test_wav.write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00")
+        try:
+            resp = client.get("/audio/valid_test_audio.wav")
+            assert resp.status_code == 200
+            assert resp.content.startswith(b"RIFF")
+        finally:
+            if test_wav.exists():
+                test_wav.unlink()
+
+    def test_browse_file_api_handles_arbitrary_inputs(self, app_client):
+        """Tests /api/voice/browse-file with invalid file types and non-existent initial_dir."""
+        pytest.importorskip("tkinter")
+        client, db_path = app_client
+
+        payload = {
+            "file_type": "invalid_type_123",
+            "initial_dir": "C:\\InvalidNonExistentPath9876",
+        }
+        with patch("tkinter.filedialog.askopenfilename", side_effect=Exception("Headless mode")):
+            resp = client.post("/api/voice/browse-file", json=payload)
+            assert resp.status_code == 200
+            assert resp.json() == {"selected_path": ""}

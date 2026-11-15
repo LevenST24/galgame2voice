@@ -3,7 +3,7 @@
 import errno
 import json
 import sqlite3
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -12,6 +12,8 @@ from galgame2voice.database import crud
 from galgame2voice.database.models import MessageCreate
 from galgame2voice.database.session import get_db
 from galgame2voice.main import create_app
+from galgame2voice.routers.chat import sse_event_formatter
+from galgame2voice.services.chat_service import ChatService
 from galgame2voice.utils.logger import sanitize_error_detail
 
 from tests.test_line_audio_regeneration import repair  # noqa: F401
@@ -157,4 +159,122 @@ class TestStorageErrorEndpoints:
             else:
                 assert json.loads(row["lines_json"]) == orig_lines
                 assert (row["audio_url"] or "") == orig_audio_url
+
+
+class TestSseErrorFormattingAndZeroLeakage:
+    """Adversarial testing of SSE error events and zero-leakage masking."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "secret_exception,expected_masked_substring,leaked_secret",
+        [
+            # OpenAI API Key
+            (
+                ValueError("OpenAI API request failed with key sk-proj-1234567890abcdef1234567890abcdef: quota exceeded"),
+                "sk-proj-****cdef",
+                "sk-proj-1234567890abcdef1234567890abcdef",
+            ),
+            # Anthropic API Key
+            (
+                RuntimeError("Anthropic API Error: sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890 invalid auth"),
+                "sk-ant-****7890",
+                "sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890",
+            ),
+            # Google Gemini Key
+            (
+                ConnectionError("Failed connecting to https://generativelanguage.googleapis.com/v1beta/models?key=AIzaSyD123456789012345678901234567890123"),
+                "AIzaSyD****0123",
+                "AIzaSyD123456789012345678901234567890123",
+            ),
+            # HuggingFace Token
+            (
+                Exception("HF Hub 401: hf_abcdef1234567890abcdef12345678901234 unauthorized"),
+                "hf_abc****1234",
+                "hf_abcdef1234567890abcdef12345678901234",
+            ),
+            # Telegram Bot Token URL
+            (
+                "httpx.ConnectError: https://api.telegram.org/bot123456789:ABCdef-ghijk_1234567890lmnopqrst/getMe failed",
+                "https://api.telegram.org/bot[MASKED_TELEGRAM_TOKEN]/getMe",
+                "123456789:ABCdef-ghijk_1234567890lmnopqrst",
+            ),
+            # Bearer Token
+            (
+                "401 Unauthorized: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0",
+                "Bearer [MASKED_TOKEN]",
+                "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0",
+            ),
+            # Query Param Secrets
+            (
+                "Request failed: https://my-llm.internal/v1/chat?api_key=my_secret_token_12345&secret=topsecret_shhh",
+                "?api_key=[MASKED]&secret=[MASKED]",
+                "my_secret_token_12345",
+            ),
+        ],
+    )
+    async def test_sse_event_formatter_catches_and_masks_stream_exceptions(
+        self, secret_exception, expected_masked_substring, leaked_secret
+    ):
+        """
+        Adversarial test: when an exception containing sensitive credentials
+        is raised inside an SSE generator, sse_event_formatter MUST catch it,
+        emit an `event: error` JSON event, and NEVER leak the raw credentials.
+        """
+        async def failing_stream():
+            yield {"event": "text", "data": {"delta_chinese": "开始"}}
+            raise RuntimeError(str(secret_exception))
+
+        events = []
+        async for chunk in sse_event_formatter(failing_stream()):
+            events.append(chunk)
+
+        assert len(events) == 2
+        assert "event: text" in events[0]
+
+        error_chunk = events[1]
+        assert error_chunk.startswith("event: error\ndata: ")
+        assert error_chunk.endswith("\n\n")
+
+        # Parse data JSON
+        json_str = error_chunk.replace("event: error\ndata: ", "").strip()
+        data = json.loads(json_str)
+        assert "error" in data
+        err_msg = data["error"]
+
+        # ZERO LEAKAGE ASSERTIONS
+        assert leaked_secret not in err_msg, f"LEAKAGE DETECTED! Secret '{leaked_secret}' found in SSE error payload: {err_msg}"
+        assert expected_masked_substring in err_msg or "[MASKED" in err_msg or "****" in err_msg
+
+    @pytest.mark.asyncio
+    async def test_chat_service_stream_chat_zero_leakage_on_tts_failure(self):
+        """
+        Adversarial test: when TTS synthesis throws an exception with API secrets,
+        ChatService.stream_chat MUST emit an audio_chunk_error event with sanitized details.
+        """
+        mock_tts = MagicMock()
+        secret_key = "sk-proj-99998888777766665555444433332222"
+        mock_tts.synthesize_to_file = AsyncMock(
+            side_effect=RuntimeError(f"TTS Engine internal error with auth token: {secret_key}")
+        )
+        chat_service = ChatService(tts_service=mock_tts, db_path=":memory:")
+
+        # Mock adapter stream to return a Japanese sentence
+        mock_adapter = MagicMock()
+        async def mock_stream(*args, **kwargs):
+            yield '{"chinese": "你好", "japanese": "こんにちは。'
+            yield '"}'
+        mock_adapter.stream_chat = mock_stream
+        chat_service._get_active_llm_adapter = AsyncMock(return_value=(mock_adapter, "gpt-4o-mini", "openai"))
+
+        events = []
+        async for event in chat_service.stream_chat(prompt="你好"):
+            events.append(event)
+
+        # Check that audio_chunk_error was emitted
+        error_events = [e for e in events if e.get("event") == "audio_chunk_error"]
+        assert len(error_events) >= 1, f"Expected audio_chunk_error event, got events: {events}"
+        err_data = error_events[0]["data"]
+        assert "error" in err_data
+        assert secret_key not in err_data["error"], "CRITICAL: Secret key leaked into audio_chunk_error event!"
+        assert "****" in err_data["error"] or "[MASKED" in err_data["error"]
 
