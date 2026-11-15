@@ -400,3 +400,56 @@ def test_strip_reasoning_tags_removes_thinking_block():
     assert strip_reasoning_tags("你好<thinking>草稿</thinking>世界") == "你好世界"
     assert strip_reasoning_tags("<thinking/>你好") == "你好"
     assert strip_reasoning_tags("<thinking>只有思考</thinking>") == ""
+
+
+def test_incremental_think_stripper_matches_reference_across_chunk_boundaries():
+    from galgame2voice.services.streaming_parser import (
+        _IncrementalThinkStripper,
+        _strip_and_check_think_buffer,
+    )
+
+    samples = [
+        '<think>Outer <thought>nested {"lines": [{"zh": "draft"}]}</thought> tail</think>{"lines": [{"zh": "正文", "ja": "本文"}]}',
+        '前置引导<think attr="a>b">思考内容</think >正式回答【日本語】',
+        '</th' + 'ink>孤立闭合标签后正文<reasoning />末尾<think>未闭合思考...',
+        '<THINK>第一段</THINK>中间文本<thought>第二段</thought>结尾文本<p>保留普通尖括号</p>',
+    ]
+    for sample in samples:
+        for step in (1, 2, 3, 5, 11):
+            stripper = _IncrementalThinkStripper()
+            acc = ""
+            for idx in range(0, len(sample), step):
+                piece = sample[idx : idx + step]
+                acc += piece
+                got = stripper.feed(piece)
+                expected = _strip_and_check_think_buffer(acc, is_final=False)
+                assert got == expected, f"Mismatch at step={step} idx={idx}: {got!r} != {expected!r}"
+
+
+def test_streaming_parser_large_think_block_avoids_quadratic_rescan(monkeypatch):
+    import galgame2voice.services.streaming_parser as sp_mod
+
+    scan_calls = 0
+    orig_fn = sp_mod._strip_and_check_think_buffer
+
+    def counting_strip(buf: str, is_final: bool = False):
+        nonlocal scan_calls
+        scan_calls += 1
+        return orig_fn(buf, is_final=is_final)
+
+    monkeypatch.setattr(sp_mod, "_strip_and_check_think_buffer", counting_strip)
+
+    parser = StreamingBilingualParser()
+    parser.feed_chunk("<think>")
+    for i in range(1500):
+        delta, sents = parser.feed_chunk(f" step {i}: evaluating dialogue options... ")
+        assert delta == ""
+        assert sents == []
+    parser.feed_chunk("</think>")
+    parser.feed_chunk('{"lines": [{"zh": "久等啦！", "ja": "お待たせ！", "emotion": "happy"}]}')
+    zh, ja, _ = parser.finalize()
+
+    assert zh == "久等啦！"
+    assert ja == "お待たせ！"
+    assert scan_calls < 10, f"Expected O(1) regex scans across think body, got {scan_calls}"
+
