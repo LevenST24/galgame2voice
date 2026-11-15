@@ -174,7 +174,25 @@ export async function runFrontendTestsParallel({
   return { ok: true, total: files.length, passed, failedFile: null, exitCode: 0 };
 }
 
+export const MIN_NODE_MAJOR = 20;
+
+export function checkSupportedNodeVersion(
+  versions = process.versions,
+  { errorLog = console.error } = {},
+) {
+  const raw = String(versions?.node || '');
+  const major = Number.parseInt(raw.split('.')[0], 10);
+  if (Number.isFinite(major) && major >= MIN_NODE_MAJOR) {
+    return { ok: true, major, raw };
+  }
+  errorLog(
+    `[frontend-test] Unsupported Node.js v${raw || 'unknown'}: frontend tests require Node.js >= ${MIN_NODE_MAJOR}.0.0 (MockTimers object config & Date mocking).`,
+    );
+  return { ok: false, major: Number.isFinite(major) ? major : 0, raw };
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  if (!checkSupportedNodeVersion().ok) process.exit(1);
   const summary = await runFrontendTestsParallel();
   if (!summary.ok) process.exit(summary.exitCode);
 }
