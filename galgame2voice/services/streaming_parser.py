@@ -121,6 +121,112 @@ def _strip_and_check_think_buffer(buffer: str, is_final: bool = False) -> tuple[
 
     return cleaned, False
 
+class _IncrementalThinkStripper:
+    """Incrementally computes ``_strip_and_check_think_buffer(buffer, is_final=False)``.
+    
+    Avoids O(n^2) full-buffer regex sweeps when reasoning models stream thousands of
+    tokens inside ``<think>...</think>`` blocks or when normal text chunks contain no ``<``.
+    """
+
+    __slots__ = (
+        "_settled_prefix",
+        "_unsettled_tail",
+        "_cached_effective",
+        "_cached_inside",
+        "_in_open_think_body",
+        "_saw_close_slash_since_scan",
+    )
+
+    def __init__(self) -> None:
+        self._settled_prefix: str = ""
+        self._unsettled_tail: str = ""
+        self._cached_effective: str = ""
+        self._cached_inside: bool = False
+        self._in_open_think_body: bool = False
+        self._saw_close_slash_since_scan: bool = False
+
+    def feed(self, chunk: str) -> tuple[str, bool]:
+        if not chunk:
+            return self._cached_effective, self._cached_inside
+
+        if not self._unsettled_tail and "<" not in chunk:
+            self._settled_prefix += chunk
+            self._cached_effective = self._settled_prefix
+            self._cached_inside = False
+            return self._cached_effective, False
+
+        if self._in_open_think_body:
+            prev_last = self._unsettled_tail[-1:]
+            self._unsettled_tail += chunk
+            if "</" in (prev_last + chunk):
+                self._saw_close_slash_since_scan = True
+            if not (self._saw_close_slash_since_scan and ">" in chunk):
+                return self._cached_effective, True
+        elif not self._unsettled_tail:
+            lt_idx = chunk.find("<")
+            if lt_idx > 0:
+                self._settled_prefix += chunk[:lt_idx]
+                self._unsettled_tail = chunk[lt_idx:]
+            else:
+                self._unsettled_tail = chunk
+        else:
+            self._unsettled_tail += chunk
+
+        cleaned_tail, is_inside = _strip_and_check_think_buffer(self._unsettled_tail, is_final=False)
+        if is_inside:
+            reduced = self._unsettled_tail
+            prev = None
+            while prev != reduced:
+                prev = reduced
+                reduced = _RE_THINK_BLOCK_CLOSED.sub("", reduced)
+
+            m_open = _RE_THINK_BLOCK_UNCLOSED.search(reduced)
+            if m_open is not None:
+                before = _RE_THINK_TAG_ORPHAN_CLOSE.sub("", reduced[: m_open.start()])
+                if before:
+                    self._settled_prefix += before
+                self._unsettled_tail = reduced[m_open.start() :]
+                gt_pos = self._unsettled_tail.find(">")
+                if gt_pos != -1:
+                    self._in_open_think_body = True
+                    self._saw_close_slash_since_scan = "</" in self._unsettled_tail[gt_pos + 1 :]
+                else:
+                    self._in_open_think_body = False
+                    self._saw_close_slash_since_scan = False
+                self._cached_effective = self._settled_prefix
+            else:
+                m_pfx = _RE_THINK_TAG_PREFIX_PENDING.search(reduced)
+                if m_pfx is not None:
+                    before = _RE_THINK_TAG_ORPHAN_CLOSE.sub("", reduced[: m_pfx.start()])
+                    if before:
+                        self._settled_prefix += before
+                    self._unsettled_tail = reduced[m_pfx.start() :]
+                    self._cached_effective = self._settled_prefix
+                else:
+                    self._cached_effective = self._settled_prefix + cleaned_tail
+                self._in_open_think_body = False
+                self._saw_close_slash_since_scan = False
+            self._cached_inside = True
+            return self._cached_effective, True
+
+        self._in_open_think_body = False
+        self._saw_close_slash_since_scan = False
+        last_lt = cleaned_tail.rfind("<")
+        if last_lt != -1 and ">" not in cleaned_tail[last_lt:] and (len(cleaned_tail) - last_lt) <= 32:
+            self._settled_prefix += cleaned_tail[:last_lt]
+            self._unsettled_tail = cleaned_tail[last_lt:]
+            self._cached_effective = self._settled_prefix + self._unsettled_tail
+        else:
+            self._settled_prefix += cleaned_tail
+            self._unsettled_tail = ""
+            self._cached_effective = self._settled_prefix
+        self._cached_inside = False
+        return self._cached_effective, False
+
+    @property
+    def current(self) -> tuple[str, bool]:
+        return self._cached_effective, self._cached_inside
+
 
 def _extract_numeric_param(
     text: str,
@@ -212,6 +318,8 @@ class StreamingBilingualParser:
         self._lines_started = False
         self.lines_truncated = False
         self.buffer: str = ""
+        self._think_stripper = _IncrementalThinkStripper()
+        self._think_stripper_len: int = 0
         self.chinese_extracted: str = ""
         self.japanese_extracted: str = ""
         self.emotion_extracted: str = ""
@@ -301,10 +409,16 @@ class StreamingBilingualParser:
         """Returns the classified emotion for current extracted content."""
         return classify_emotion(self.chinese_extracted, self.japanese_extracted, self.emotion_extracted)
 
+    def _current_effective_buffer(self) -> tuple[str, bool]:
+        """Returns incremental (effective_text, is_inside_think) if buffer was fed via feed_chunk."""
+        if self._think_stripper_len == len(self.buffer):
+            return self._think_stripper.current
+        return _strip_and_check_think_buffer(self.buffer)
+
     @property
     def chinese_complete(self) -> bool:
         """Whether the legacy JSON Chinese string has closed (even before EOF)."""
-        effective_buf, _ = _strip_and_check_think_buffer(self.buffer)
+        effective_buf, _ = self._current_effective_buffer()
         clean = self.clean_markdown_delimiters(effective_buf)
         if bool(_RE_CHINESE_CLOSED.search(clean)):
             return True
@@ -315,7 +429,7 @@ class StreamingBilingualParser:
     @property
     def japanese_complete(self) -> bool:
         """Whether the legacy JSON Japanese string has closed (even before EOF)."""
-        effective_buf, _ = _strip_and_check_think_buffer(self.buffer)
+        effective_buf, _ = self._current_effective_buffer()
         return bool(_RE_JAPANESE_CLOSED.search(self.clean_markdown_delimiters(effective_buf)))
 
     def get_dynamic_tts_options(
@@ -353,7 +467,7 @@ class StreamingBilingualParser:
                 emo = text_emo
         effective_buf: str | None = None
         if not emo and self.buffer:
-            effective_buf, _ = _strip_and_check_think_buffer(self.buffer)
+            effective_buf, _ = self._current_effective_buffer()
             if effective_buf:
                 _, text_emo = extract_stage_directions_and_emotion(effective_buf)
                 if text_emo:
@@ -364,7 +478,7 @@ class StreamingBilingualParser:
         text_context = sentence_text or self.japanese_extracted or self.chinese_extracted
         if not text_context:
             if effective_buf is None:
-                effective_buf, _ = _strip_and_check_think_buffer(self.buffer)
+                effective_buf, _ = self._current_effective_buffer()
             text_context = effective_buf
         adaptive_calc = calculate_adaptive_prosody(text=text_context, emotion=emo, base_params=opts)
 
@@ -457,7 +571,13 @@ class StreamingBilingualParser:
         if not chunk:
             return "", []
 
-        self.buffer += chunk
+        if self._think_stripper_len == len(self.buffer):
+            effective_buffer, is_inside_think = self._think_stripper.feed(chunk)
+            self.buffer += chunk
+            self._think_stripper_len = len(self.buffer)
+        else:
+            self.buffer += chunk
+            effective_buffer, is_inside_think = _strip_and_check_think_buffer(self.buffer)
         completed_lines = self.line_scanner.feed(chunk)
         if self.line_scanner.format == "lines":
             if not self._lines_started:
@@ -473,7 +593,6 @@ class StreamingBilingualParser:
             self.emitted_chinese_len = len(self.chinese_extracted)
             return delta, []
 
-        effective_buffer, is_inside_think = _strip_and_check_think_buffer(self.buffer)
         if is_inside_think and not effective_buffer.strip():
             return "", []
 
