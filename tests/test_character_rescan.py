@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 import threading
+from unittest.mock import patch
 import wave
 
 import pytest
@@ -15,6 +16,7 @@ from galgame2voice.database import crud
 from galgame2voice.database.models import CharacterAffectionUpdate
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.main import create_app
+from galgame2voice.services import character_manager, character_package
 from galgame2voice.services.character_manager import CharacterManager, CharacterManifest, CharacterPackage
 from galgame2voice.services.voice_resolver import get_voice_resolver
 
@@ -264,3 +266,38 @@ async def test_rescan_package_rename_with_alias_updates_profile_and_preserves_as
             assert aff is not None
             assert aff.affection_score == 42
             assert aff.affection_level == 3
+
+
+class TestCharacterAudioProbeCache:
+    """Verifies that _AUDIO_PROBE_CACHE memoizes file hash and duration."""
+
+    def test_audio_probe_caching_performance(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(character_package, "_AUDIO_PROBE_CACHE", {})
+        monkeypatch.setattr(character_manager, "_AUDIO_PROBE_CACHE", character_package._AUDIO_PROBE_CACHE)
+        audio = tmp_path / "ref.wav"
+        with wave.open(str(audio), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(32000)
+            w.writeframes(b"\x01\x00" * 32000 * 4)
+
+        first = CharacterManager._probe_audio_file(audio, audio)
+        assert first[0] is not None and first[2] is None
+        assert len(character_package._AUDIO_PROBE_CACHE) == 1
+
+        # An unchanged file is served from the cache without re-probing.
+        with patch("galgame2voice.services.tts_service.TtsService.get_audio_duration") as mock_probe:
+            assert CharacterManager._probe_audio_file(audio, audio) == first
+            mock_probe.assert_not_called()
+
+        # A changed file (new size) is probed again.
+        with wave.open(str(audio), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(32000)
+            w.writeframes(b"\x02\x00" * 32000 * 5)
+        with patch("galgame2voice.services.tts_service.TtsService.get_audio_duration", return_value=5.0) as mock_probe:
+            second = CharacterManager._probe_audio_file(audio, audio)
+            mock_probe.assert_called_once()
+        assert second[0] != first[0]
+        assert second[1] == 5.0
