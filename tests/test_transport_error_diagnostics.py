@@ -283,3 +283,86 @@ def test_502_wrapped_and_contextual_errno_transport_resets_remain_connection_res
     diag_dict = format_provider_error("openai", 502, err)
     assert diag_dict["error_code"] == "CONNECTION_RESET"
     assert diag_dict["status_code"] == 502
+
+
+class TestAdapterRegistryAndFactory:
+    """Tests for Provider Registry presets and dynamic adapter factory instantiation."""
+
+    def test_get_provider_preset_valid_and_invalid(self):
+        from galgame2voice.adapters.registry import get_provider_preset
+
+        deepseek = get_provider_preset("deepseek")
+        assert deepseek is not None
+        assert deepseek["id"] == "deepseek"
+        assert "deepseek" in deepseek["default_chat_model"]
+
+        nonexistent = get_provider_preset("unknown_provider_xyz")
+        assert nonexistent is None
+
+    def test_get_llm_adapter_by_dict_and_model(self):
+        from galgame2voice.adapters.llm import GLMLLMAdapter, MoonshotLLMAdapter
+        from galgame2voice.adapters.registry import get_llm_adapter
+        from galgame2voice.database.models import ProviderInDB
+
+        config_dict = {
+            "provider_type": "glm",
+            "api_key": "glm-token-123",
+            "api_base_url": "https://open.bigmodel.cn/api/paas/v4",
+            "custom_headers": {"X-Test": "1"},
+        }
+        adapter = get_llm_adapter(config_dict)
+        assert isinstance(adapter, GLMLLMAdapter)
+        assert adapter.api_key == "glm-token-123"
+        assert adapter.extra_config["custom_headers"]["X-Test"] == "1"
+
+        provider_obj = ProviderInDB(
+            id="moonshot",
+            name="Moonshot",
+            api_base_url="https://api.moonshot.cn/v1",
+            api_key="sk-moonshot-key",
+            chat_model="moonshot-v1-8k",
+        )
+        adapter2 = get_llm_adapter(provider_obj)
+        assert isinstance(adapter2, MoonshotLLMAdapter)
+        assert adapter2.api_key == "sk-moonshot-key"
+
+    def test_get_stt_adapter_factory(self):
+        from galgame2voice.adapters.registry import get_stt_adapter
+        from galgame2voice.adapters.stt import (
+            OpenAICompatibleSTTAdapter,
+            QwenSTTAdapter,
+            SiliconFlowSTTAdapter,
+        )
+
+        silicon = get_stt_adapter("siliconflow", api_key="sk-sf-key")
+        assert isinstance(silicon, SiliconFlowSTTAdapter)
+
+        qwen = get_stt_adapter("qwen", api_key="sk-qw-key")
+        assert isinstance(qwen, QwenSTTAdapter)
+
+        default_stt = get_stt_adapter("openai", api_key="sk-openai")
+        assert isinstance(default_stt, OpenAICompatibleSTTAdapter)
+
+
+class TestAdaptersExecutionWithMockServer:
+    """Tests LLM and STT adapter execution, streaming, and error handling with MockLLMServer."""
+
+    @pytest.mark.asyncio
+    async def test_llm_list_models_mock(self, mock_llm_server):
+        from galgame2voice.adapters.llm import SiliconFlowLLMAdapter
+
+        adapter = SiliconFlowLLMAdapter(api_key="sk-valid-key", client_override=mock_llm_server)
+        models = await adapter.list_models()
+        assert "deepseek-chat" in models
+        assert "gpt-4o" in models
+
+    @pytest.mark.asyncio
+    async def test_stt_transcription_and_test(self, mock_llm_server):
+        from galgame2voice.adapters.stt import SiliconFlowSTTAdapter
+
+        adapter = SiliconFlowSTTAdapter(api_key="sk-valid-key", client_override=mock_llm_server)
+        text = await adapter.transcribe(b"RIFF" + b"\x00" * 200, filename="audio.wav", language="ja")
+        assert "おはよう" in text
+
+        res = await adapter.test_connection()
+        assert res.success is True
