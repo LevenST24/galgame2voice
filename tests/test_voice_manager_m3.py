@@ -109,6 +109,45 @@ class TestPresetResolution:
         assert opts["top_k"] == 30
         assert opts["text_split_method"] == "cut3"
 
+    def test_preset_application_with_extreme_values(self):
+        """Tests resolve_tts_options across extreme boundary values."""
+        # Case 1: Extreme low vs extreme high speed
+        low_speed = resolve_tts_options({"preset": "high_quality", "speed": 0.1})
+        assert low_speed["speed"] == 0.1
+        assert low_speed["top_k"] == 20  # from high_quality preset
+
+        high_speed = resolve_tts_options({"preset": "low_latency", "speed": 3.0})
+        assert high_speed["speed"] == 3.0
+        assert high_speed["top_k"] == 5  # from low_latency preset
+
+        # Case 2: Extreme temperature 0.0 vs 2.0
+        zero_temp = resolve_tts_options({"temperature": 0.0})
+        assert zero_temp["temperature"] == 0.0
+
+        high_temp = resolve_tts_options({"temperature": 2.0})
+        assert high_temp["temperature"] == 2.0
+
+        # Case 3: Extreme top_k 1 vs 100
+        min_topk = resolve_tts_options({"top_k": 1})
+        assert min_topk["top_k"] == 1
+
+        max_topk = resolve_tts_options({"top_k": 100})
+        assert max_topk["top_k"] == 100
+
+        # Case 4: Extreme top_p 0.01 vs 1.0
+        low_topp = resolve_tts_options({"top_p": 0.01})
+        assert low_topp["top_p"] == 0.01
+
+        max_topp = resolve_tts_options({"top_p": 1.0})
+        assert max_topp["top_p"] == 1.0
+
+    def test_invalid_or_unknown_preset_fallback(self):
+        """Verifies non-existent preset name falls back to 'balanced' without raising exception."""
+        resolved = resolve_tts_options({"preset": "non_existent_preset_xyz"})
+        assert resolved["speed"] == TTS_PRESETS["balanced"]["speed"]
+        assert resolved["top_k"] == TTS_PRESETS["balanced"]["top_k"]
+        assert resolved["temperature"] == TTS_PRESETS["balanced"]["temperature"]
+
 
 # ============================================================================
 # 3. Tests for GptSovitsClient (Endpoints, Mutex, Rollback, Streaming)

@@ -14,10 +14,12 @@ Covers:
 import asyncio
 import json
 import logging
+import os
 import random
 import re
+import tempfile
 import time
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 import pytest
 import httpx
 from httpx import AsyncClient, ASGITransport
@@ -94,6 +96,17 @@ class TestConsoleRoutesAndRedirects:
             resp2 = await client.get(f"/settings?{query}")
             assert resp2.status_code == 307
             assert resp2.headers["location"] == f"/?settings=1&{query}"
+
+    @pytest.mark.asyncio
+    async def test_follow_redirect_delivers_200_html(self):
+        """Verifies following the 307 redirect lands successfully on / with HTTP 200."""
+        app = create_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=True) as client:
+            resp = await client.get("/console?tab=voice&profile=1")
+            assert resp.status_code == 200
+            assert "text/html" in resp.headers.get("content-type", "")
+            assert "Gal2Voice" in resp.text or "galgame2voice" in resp.text
 
 
 # ============================================================================
@@ -1002,4 +1015,314 @@ class TestAdversarialStressAndConcurrency:
                 assert r.status_code == 200
             # All 10 requests completed without deadlocking or stalling
             assert elapsed < 20.0, f"10 concurrent requests took {elapsed:.2f}s, expected < 20.0s"
+
+
+# ============================================================================
+# 9. Migrated M5 Console Concurrency, Boundary & Recovery Tests
+# ============================================================================
+
+@pytest.fixture
+async def adversarial_m5_db():
+    """Yields an isolated initialized temporary SQLite database path."""
+    fd, path = tempfile.mkstemp(suffix=".db", prefix="adv_m5_test_")
+    os.close(fd)
+    await init_db(path)
+    yield path
+    if os.path.exists(path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+class TestConcurrencyAndRaceConditions:
+    """Stress tests concurrent operations on settings, providers, and masked updates."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_settings_updates(self, monkeypatch):
+        """
+        50 concurrent workers updating different settings parameters simultaneously.
+        Verify no SQLite database locked errors and all updates commit successfully.
+
+        The request-rate limiter is disabled here on purpose: this test stresses
+        database concurrency, and the strict budget guarding admin mutations
+        (/api/config) is verified separately in tests/test_rate_limit.py.
+        """
+        monkeypatch.setenv("GALGAME2VOICE_RATE_LIMIT_DISABLED", "1")
+        app = create_app()
+        transport = ASGITransport(app=app)
+
+        async def worker(idx: int):
+            async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+                speed = 1.0 + (idx % 10) * 0.05
+                temp = 0.5 + (idx % 5) * 0.1
+                top_k = 10 + (idx % 20)
+                resp = await client.post("/api/config", json={
+                    "settings": {
+                        "speed_factor": speed,
+                        "temperature": temp,
+                        "top_k": top_k,
+                        "seed": idx,
+                    }
+                })
+                assert resp.status_code == 200
+                assert resp.json()["status"] == "success"
+
+        tasks = [worker(i) for i in range(50)]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for r in results:
+            assert not isinstance(r, Exception), f"Concurrent settings update failed: {r}"
+
+        # Verify DB is readable and intact
+        async with get_db() as conn:
+            final_settings = await crud.get_settings_raw(conn)
+            assert final_settings.id == 1
+            assert final_settings.top_k >= 10
+
+    @pytest.mark.asyncio
+    async def test_concurrent_provider_activation_race(self, monkeypatch):
+        """
+        Multiple providers created; 30 workers concurrently activate different providers.
+        Verify invariant: exactly ONE provider is active in DB and settings.active_provider_id matches.
+
+        Rate limiting is disabled on purpose: this test stresses DB concurrency,
+        not request throttling (see tests/test_rate_limit.py).
+        """
+        monkeypatch.setenv("GALGAME2VOICE_RATE_LIMIT_DISABLED", "1")
+        monkeypatch.setattr("galgame2voice.security.url_guard._resolve_host", lambda host, port: (True, ""))
+        app = create_app()
+        transport = ASGITransport(app=app)
+
+        provider_ids = [f"race_prov_{i}" for i in range(5)]
+
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+            # Pre-create 5 providers
+            for pid in provider_ids:
+                await client.post("/api/providers", json={
+                    "id": pid,
+                    "name": f"Provider {pid}",
+                    "api_base_url": "https://api.test.com/v1",
+                    "api_key": f"sk-secret-{pid}-12345678",
+                    "chat_model": "test-model",
+                })
+
+            # Concurrently activate random providers
+            async def activate_worker(worker_id: int):
+                target = provider_ids[worker_id % len(provider_ids)]
+                resp = await client.post(f"/api/providers/{target}/activate")
+                assert resp.status_code == 200
+
+            tasks = [activate_worker(i) for i in range(30)]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for r in results:
+                assert not isinstance(r, Exception), f"Activation race error: {r}"
+
+            # Invariant check: exactly 1 active provider in DB
+            async with get_db() as conn:
+                cursor = await conn.execute("SELECT id FROM providers WHERE is_active = 1;")
+                active_rows = await cursor.fetchall()
+                assert len(active_rows) == 1, f"Expected 1 active provider, got {len(active_rows)}"
+                active_id = active_rows[0][0]
+
+                raw_settings = await crud.get_settings_raw(conn)
+                assert raw_settings.active_provider_id == active_id
+
+            # Clean up
+            for pid in provider_ids:
+                await client.delete(f"/api/providers/{pid}")
+
+    @pytest.mark.asyncio
+    async def test_concurrent_masked_form_submissions_under_load(self, monkeypatch):
+        """
+        Stress test 40 concurrent workers submitting masked keys and configuration updates
+        to ensure zero race conditions cause raw secret erasure in SQLite.
+
+        Rate limiting is disabled on purpose: this test stresses DB concurrency,
+        not request throttling (see tests/test_rate_limit.py).
+        """
+        monkeypatch.setenv("GALGAME2VOICE_RATE_LIMIT_DISABLED", "1")
+        app = create_app()
+        transport = ASGITransport(app=app)
+        test_provider_id = "concurrent_mask_target"
+        real_api_key = "sk-super-secret-production-key-999888777"
+
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+            # Create target provider
+            await client.post("/api/providers", json={
+                "id": test_provider_id,
+                "name": "Concurrent Mask Target",
+                "api_base_url": "https://api.test.com/v1",
+                "api_key": real_api_key,
+                "chat_model": "model-v1",
+            })
+
+            async def submit_worker(worker_id: int):
+                # 80% of workers submit masked key, 20% omit key
+                submit_key = "sk-****8777" if worker_id % 5 != 0 else ""
+                resp = await client.post("/api/providers", json={
+                    "id": test_provider_id,
+                    "name": f"Target Updated Worker {worker_id}",
+                    "api_key": submit_key,
+                    "chat_model": f"model-v{worker_id % 3}",
+                })
+                assert resp.status_code == 200
+
+            tasks = [submit_worker(i) for i in range(40)]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for r in results:
+                assert not isinstance(r, Exception), f"Worker error: {r}"
+
+            # Verify secret is still completely intact in DB
+            async with get_db() as conn:
+                raw_p = await crud.get_provider_raw(conn, test_provider_id)
+                assert raw_p.api_key == real_api_key
+
+            # Clean up
+            await client.delete(f"/api/providers/{test_provider_id}")
+
+
+class TestConsoleRoutingAndDefensiveBoundaries:
+    """Tests edge cases and boundary handling in console endpoints."""
+
+    @pytest.mark.asyncio
+    async def test_config_update_with_unknown_and_invalid_fields(self):
+        """
+        POST /api/config with malicious/extra fields: extra fields must be safely ignored,
+        valid fields must be persisted.
+        """
+        app = create_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+            resp = await client.post("/api/config", json={
+                "malicious_sql_injection": "DROP TABLE settings;",
+                "__proto__": {"polluted": True},
+                "speed_factor": 1.05,
+                "text_split_method": "cut2",
+            })
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "success"
+            assert data["settings"]["speed_factor"] == 1.05
+            assert data["settings"]["text_split_method"] == "cut2"
+
+    @pytest.mark.asyncio
+    async def test_provider_upsert_special_characters_and_headers(self):
+        """
+        Create and update provider with special ID characters, unicode names,
+        and complex custom headers.
+        """
+        app = create_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+            prov_id = "custom-special_123"
+            custom_headers = {
+                "X-Custom-Header": "Value-123",
+                "Authorization-Extra": "Bearer extra_token",
+                "Nested-Config": {"key": "val"},
+            }
+
+            resp = await client.post("/api/providers", json={
+                "id": prov_id,
+                "name": "特殊プロバイダー (Special Provider)",
+                "api_base_url": "https://api.special.org/v1",
+                "api_key": "sk-special-prov-key-9999",
+                "chat_model": "special-llm-v1",
+                "custom_headers": custom_headers,
+            })
+            assert resp.status_code == 200
+            p = resp.json()["provider"]
+            assert p["name"] == "特殊プロバイダー (Special Provider)"
+            assert p["api_key"] == "sk-****9999"
+
+            # Retrieve single provider
+            get_resp = await client.get(f"/api/providers/{prov_id}")
+            assert get_resp.status_code == 200
+            retrieved = get_resp.json()["provider"]
+            assert retrieved["custom_headers"]["X-Custom-Header"] == "Value-123"
+
+            # Clean up
+            await client.delete(f"/api/providers/{prov_id}")
+
+
+class TestNetworkTimeoutsAndErrorRecovery:
+    """Stress-tests network timeouts, unreachable endpoints, DNS errors, and HTTP fault codes."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status_code", [403, 404, 500, 502, 503])
+    async def test_provider_test_http_error_statuses(self, status_code):
+        """Verifies /api/providers/test gracefully converts various HTTP error status codes into informative responses."""
+        app = create_app()
+        transport = ASGITransport(app=app)
+
+        orig_get = httpx.AsyncClient.get
+        orig_post = httpx.AsyncClient.post
+
+        mock_response = httpx.Response(
+            status_code=status_code,
+            text=f"Simulated HTTP {status_code} Error from Upstream Provider",
+            request=httpx.Request("GET", "https://api.openai.com/v1/models"),
+        )
+
+        async def conditional_get(self_client, url, *args, **kwargs):
+            if "api.openai.com" in str(url):
+                return mock_response
+            return await orig_get(self_client, url, *args, **kwargs)
+
+        async def conditional_post(self_client, url, *args, **kwargs):
+            if "api.openai.com" in str(url):
+                return mock_response
+            return await orig_post(self_client, url, *args, **kwargs)
+
+        with patch.object(httpx.AsyncClient, "get", conditional_get), \
+             patch.object(httpx.AsyncClient, "post", conditional_post):
+            async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+                resp = await client.post("/api/providers/test", json={
+                    "id": "openai",
+                    "api_key": "sk-testkey12345678",
+                    "base_url": "https://api.openai.com/v1",
+                })
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["success"] is False
+                assert str(status_code) in data["message"] or "Authentication" in data["message"] or "Provider test returned" in data["message"] or "Invalid credentials" in data["message"]
+
+    @pytest.mark.asyncio
+    async def test_system_status_timeout_and_recovery(self):
+        """Verifies /api/system/status gracefully reports degraded status on GPT-SoVITS timeout and recovers."""
+        app = create_app()
+        transport = ASGITransport(app=app)
+
+        # 1. Simulate GPT-SoVITS probe timeout
+        with patch("galgame2voice.routers.health._probe_gpt_sovits", new_callable=AsyncMock) as mock_probe:
+            from galgame2voice.routers.health import GptSovitsTelemetry
+            mock_probe.return_value = GptSovitsTelemetry(
+                status="unreachable",
+                base_url="http://127.0.0.1:9880",
+                latency_ms=2000.0,
+                error="ConnectTimeout",
+            )
+            async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+                resp = await client.get("/api/system/status")
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["status"] == "degraded"
+                assert data["gpt_sovits"]["status"] == "unreachable"
+                assert data["gpt_sovits"]["error"] == "ConnectTimeout"
+
+        # 2. Simulate GPT-SoVITS recovery
+        with patch("galgame2voice.routers.health._probe_gpt_sovits", new_callable=AsyncMock) as mock_probe2:
+            from galgame2voice.routers.health import GptSovitsTelemetry
+            mock_probe2.return_value = GptSovitsTelemetry(
+                status="reachable",
+                base_url="http://127.0.0.1:9880",
+                latency_ms=12.5,
+                error=None,
+            )
+            async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+                resp2 = await client.get("/api/system/status")
+                assert resp2.status_code == 200
+                data2 = resp2.json()
+                assert data2["status"] == "healthy"
+                assert data2["gpt_sovits"]["status"] == "reachable"
+                assert data2["gpt_sovits"]["error"] is None
 
