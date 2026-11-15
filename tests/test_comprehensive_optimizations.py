@@ -7,8 +7,14 @@ Unit and regression tests for comprehensive optimizations:
 5. StreamingBilingualParser bracketed emotion auto-detection
 """
 
+import io
+import struct
+import wave
+
 import pytest
 
+from galgame2voice.database.session import get_db, init_db
+from galgame2voice.services.chat_service import ChatService
 from galgame2voice.utils.text_splitter import (
     MODAL_PARTICLES_PATTERN,
     is_natural_clause_boundary,
@@ -388,5 +394,134 @@ class TestAudioConcatAlignmentSafety:
         ok = service._concat_wav_files([str(c1)], out, pause_duration=0.0)
         assert ok is True
         assert out.exists()
+
+
+def _generate_test_wav(duration_s: float = 0.1, sample_rate: int = 16000) -> bytes:
+    """Helper creating a minimal valid PCM WAV in-memory."""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sample_rate)
+        num_samples = int(sample_rate * duration_s)
+        frames = struct.pack(f"<{num_samples}h", *[0] * num_samples)
+        w.writeframes(frames)
+    return buf.getvalue()
+
+
+class TestAudioConcatenationOptimization:
+    """Tests in-memory buffered WAV concatenation in ChatService."""
+
+    def test_concat_wav_files_empty_and_unreadable_fallback(self, tmp_path):
+        service = ChatService(db_path=tmp_path / "test.db")
+        out = tmp_path / "master_empty.wav"
+
+        assert service._concat_wav_files([], out) is False
+        assert service._concat_wav_files(["", None], out) is False
+
+        # One corrupt and one valid
+        corrupt = tmp_path / "corrupt.wav"
+        corrupt.write_bytes(b"not_a_wav")
+        valid = tmp_path / "valid.wav"
+        valid.write_bytes(_generate_test_wav(0.05, 16000))
+
+        ok = service._concat_wav_files([str(corrupt), str(valid)], out)
+        assert ok is True
+        with wave.open(str(out), "rb") as w:
+            assert w.getnframes() == int(16000 * 0.05)
+
+
+class TestDatabasePragmasAndIndexCoverage:
+    """Verifies SQLite performance tuning pragmas and index existence."""
+
+    @pytest.mark.asyncio
+    async def test_performance_pragmas_configured(self, tmp_path):
+        db_p = tmp_path / "pragma_test.db"
+        async with get_db(db_p) as conn:
+            mode = (await (await conn.execute("PRAGMA journal_mode;")).fetchone())[0]
+            assert str(mode).lower() == "wal"
+
+            timeout = (await (await conn.execute("PRAGMA busy_timeout;")).fetchone())[0]
+            assert timeout == 5000
+
+            sync = (await (await conn.execute("PRAGMA synchronous;")).fetchone())[0]
+            # synchronous = NORMAL is 1 in SQLite
+            assert sync == 1
+
+            cache = (await (await conn.execute("PRAGMA cache_size;")).fetchone())[0]
+            assert cache == -64000
+
+            temp = (await (await conn.execute("PRAGMA temp_store;")).fetchone())[0]
+            # temp_store = MEMORY is 2 in SQLite
+            assert temp == 2
+
+    @pytest.mark.asyncio
+    async def test_database_indices_coverage(self, tmp_path):
+        db_p = tmp_path / "index_coverage.db"
+        await init_db(db_p)
+
+        async with get_db(db_p) as conn:
+            cursor = await conn.execute("SELECT name FROM sqlite_master WHERE type='index';")
+            rows = await cursor.fetchall()
+            index_names = {r[0] for r in rows}
+
+            expected_indices = {
+                "idx_messages_session_id",
+                "idx_messages_created_at",
+                "idx_messages_session_created",
+                "idx_sessions_channel",
+                "idx_sessions_updated_at",
+                "idx_sessions_user_id",
+                "idx_sessions_voice_profile",
+                "idx_voice_profiles_is_default",
+                "idx_user_memories_user_cat",
+                "idx_user_memories_char_key",
+                "idx_affection_user_char",
+                "idx_tts_cache_last_accessed",
+                "idx_tts_cache_clean_text",
+            }
+            for exp in expected_indices:
+                assert exp in index_names, f"Expected index {exp} not found in DB schema!"
+
+
+class TestArchitecturalHardeningAndEdgeCases:
+    """Tests edge cases, bug fixes, and deep verification scenarios."""
+
+    def test_trailing_newlines_and_escapes_preserved(self):
+        """Verifies that trailing newlines, tabs, and escaped backslashes are NOT stripped by _strip_incomplete_escape."""
+        parser = StreamingBilingualParser()
+        parser.feed_chunk('{"chinese": "第一行\\n第二行\\n", "japanese": "一行目\\n二行目\\n"}')
+        zh, ja, _ = parser.finalize()
+        assert zh == "第一行\n第二行\n", f"Trailing newline was stripped: {zh!r}"
+        assert ja == "一行目\n二行目\n", f"Trailing newline was stripped: {ja!r}"
+
+        # Escaped backslash preserved
+        parser2 = StreamingBilingualParser()
+        parser2.feed_chunk('{"chinese": "C:\\\\path\\\\", "japanese": "パス\\\\"}')
+        zh2, ja2, _ = parser2.finalize()
+        assert zh2 == "C:\\path\\"
+        assert ja2 == "パス\\"
+
+    def test_concat_wav_files_mismatched_sample_rate_skipped(self, tmp_path):
+        """Verifies _concat_wav_files skips chunks with mismatched sample rate/channels rather than corrupting audio."""
+        service = ChatService(db_path=tmp_path / "test.db")
+        c1 = tmp_path / "chunk1_16k.wav"
+        c2 = tmp_path / "chunk2_24k_mismatched.wav"
+        c3 = tmp_path / "chunk3_16k.wav"
+        out = tmp_path / "out_clean.wav"
+
+        c1.write_bytes(_generate_test_wav(0.1, 16000))
+        c2.write_bytes(_generate_test_wav(0.1, 24000))  # Conflicting 24kHz rate
+        c3.write_bytes(_generate_test_wav(0.2, 16000))
+
+        ok = service._concat_wav_files([str(c1), str(c2), str(c3)], out)
+        assert ok is True
+        assert out.exists()
+
+        with wave.open(str(out), "rb") as w:
+            assert w.getframerate() == 16000
+            assert w.getnchannels() == 1
+            # Combined 0.1s + 0.2s = 0.3s (4800 frames), skipping the 24k chunk
+            assert w.getnframes() == int(16000 * 0.3)
 
 
