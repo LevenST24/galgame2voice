@@ -410,10 +410,6 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     return conversation.send(typeof rawText === 'string' ? rawText : advApp?.textbox.draft || '', voiceMeta);
   }
 
-  function retryFailedMessage(msg) {
-    conversation.retry(msg);
-  }
-
   conversation.on('turnstart', () => {
     renderSidebar();
     renderHeader();
@@ -761,7 +757,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     advApp?.prepareHome();
     return showTitleScreen(actions);
   }
-  const app = { sendMessage, retryFailedMessage, loadOlderSessionHistory, fullRender, updateControls, conversation,
+  const app = { sendMessage, loadOlderSessionHistory, fullRender, updateControls, conversation,
     switchSession, syncAdv, actions, returnHome, get adv() { return advApp; } };
   let settingsCenter = null;
   if (!initialize) return app;

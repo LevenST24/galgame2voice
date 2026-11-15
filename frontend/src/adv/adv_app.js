@@ -878,7 +878,6 @@ export function mountAdv(dom, deps) {
     },
     backgroundUrl: (id, time, work) => selectionUrl(backgrounds, { id: backgroundKey(id ?? '', work || null), time }),
     listBackgrounds: () => backgrounds.map(({ key, name, work }) => ({ key, name, work })),
-    isConfigOpen: () => Boolean(configPanel?.isOpen),
     get backlog() { return backlog; },
     unmount() {
       if (destroyed) return;

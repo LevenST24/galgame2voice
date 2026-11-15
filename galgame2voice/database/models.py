@@ -390,15 +390,6 @@ class UserMemoryCreate(UserMemoryBase):
     pass
 
 
-class UserMemoryUpdate(BaseModel):
-    category: str | None = None
-    fact_key: str | None = None
-    fact_value: str | None = None
-    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
-    recall_count: int | None = None
-    last_recalled_at: str | None = None
-
-
 class UserMemoryInDB(UserMemoryBase):
     id: int
     created_at: str | None = None

@@ -28,7 +28,6 @@ __all__ = [
     "update_settings",
     "verify_console_token",
     "get_tts_cache_entry",
-    "touch_tts_cache_entry",
     "batch_touch_tts_cache_entries",
     "upsert_tts_cache_entry",
     "delete_tts_cache_entry",
@@ -187,16 +186,6 @@ async def get_tts_cache_entry(conn: aiosqlite.Connection, cache_key: str) -> Tts
     if not row:
         return None
     return TtsCacheEntry(**dict(row))
-
-
-async def touch_tts_cache_entry(conn: aiosqlite.Connection, cache_key: str) -> None:
-    """Updates last_accessed_at and increments hit count for a cache key."""
-    async with immediate_transaction(conn):
-        await conn.execute("""
-            UPDATE tts_cache_entries
-            SET hit_count = hit_count + 1, last_accessed_at = CURRENT_TIMESTAMP
-            WHERE cache_key = ?;
-        """, (cache_key,))
 
 
 async def batch_touch_tts_cache_entries(conn: aiosqlite.Connection, touches: dict[str, int]) -> None:

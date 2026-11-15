@@ -74,14 +74,6 @@ export function onProviderChange() {
   return providerController?.onProviderChange();
 }
 
-export function toggleKeyVisibility() {
-  return providerController?.toggleKeyVisibility();
-}
-
-export function onChatModelSelectChange() {
-  return providerController?.onChatModelSelectChange();
-}
-
 export function handleProviderTest() {
   return providerController ? providerController.handleProviderTest() : Promise.resolve();
 }

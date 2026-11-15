@@ -7,7 +7,7 @@ dynamic composite relevance scoring, top-K RAG retrieval, and prompt injection.
 import pytest
 import aiosqlite
 from galgame2voice.database import crud
-from galgame2voice.database.models import UserMemoryCreate, UserMemoryUpdate
+from galgame2voice.database.models import UserMemoryCreate
 from galgame2voice.database.session import get_db
 from galgame2voice.services.memory_service import MemoryService
 from galgame2voice.services.session_manager import SessionManager

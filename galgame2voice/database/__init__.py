@@ -22,7 +22,7 @@ from galgame2voice.database.models import (
     SessionBase, SessionInDB, SessionResponse, SessionCreate, SessionUpdate,
     MessageBase, MessageInDB, MessageResponse, MessageCreate,
     TtsOptions,
-    UserMemoryBase, UserMemoryCreate, UserMemoryUpdate, UserMemoryInDB, UserMemoryResponse,
+    UserMemoryBase, UserMemoryCreate, UserMemoryInDB, UserMemoryResponse,
     CharacterAffectionBase, CharacterAffectionUpdate, CharacterAffectionResponse
 )
 from galgame2voice.database.crud import (
@@ -50,7 +50,7 @@ __all__ = [
     "SessionBase", "SessionInDB", "SessionResponse", "SessionCreate", "SessionUpdate",
     "MessageBase", "MessageInDB", "MessageResponse", "MessageCreate",
     "TtsOptions",
-    "UserMemoryBase", "UserMemoryCreate", "UserMemoryUpdate", "UserMemoryInDB", "UserMemoryResponse",
+    "UserMemoryBase", "UserMemoryCreate", "UserMemoryInDB", "UserMemoryResponse",
     "CharacterAffectionBase", "CharacterAffectionUpdate", "CharacterAffectionResponse",
     "mask_api_key", "is_masked_key",
     "get_settings", "get_settings_raw", "update_settings", "verify_console_token",
