@@ -58,3 +58,26 @@ console.log('Voice first setup: 4 scenarios passed');
   assert.equal(requests, 1);
 }
 console.log('Model scan invalidation: 1 scenario passed');
+
+// Same-named weights include parent folder, falling back to full path on collision.
+{
+  const dom = { sCvGpt: makeSelect(), sCvSovits: makeSelect(), sCvRef: makeSelect() };
+  initVoiceSettings(dom);
+  invalidateScannedModels();
+  const gpt = [
+    { name: 'gpt.ckpt', path: 'C:\\pk\\丛雨\\gpt.ckpt' },
+    { name: 'gpt.ckpt', path: 'D:/pk/常陆茉子/gpt.ckpt' },
+    { name: 'gpt.ckpt', path: 'E:\\other\\丛雨\\gpt.ckpt' },
+    { name: 'solo.ckpt', path: '/x/solo.ckpt' },
+  ];
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({ gpt_weights: gpt, sovits_weights: [], audio_files: [] }),
+  });
+  await populateScanOptions();
+  assert.deepEqual(dom.sCvGpt.options.map(o => o.textContent), [
+    gpt[0].path, '常陆茉子 / gpt.ckpt', gpt[2].path, 'solo.ckpt',
+  ]);
+  assert.deepEqual(dom.sCvGpt.options.map(o => [o.value, o.title]), gpt.map(f => [f.path, f.path]));
+}
+console.log('Same-named weight disambiguation: 1 scenario passed');
