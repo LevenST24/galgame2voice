@@ -215,3 +215,22 @@ test('runFrontendTestsParallel isolates output, reports failing file, and cancel
     assert.equal(errors.some((m) => m.includes('[frontend-test] FAILED (2/5): test_b.mjs (exit 1)')), true);
     assert.equal(started.includes('test_d.mjs') || started.includes('test_e.mjs'), false);
   }));
+
+test('checkSupportedNodeVersion enforces Node >= 20 and frontend/package.json declares engines.node', async () => {
+  const { checkSupportedNodeVersion, MIN_NODE_MAJOR } = await import('../frontend/run_tests.mjs');
+  const pkg = JSON.parse(fs.readFileSync(PACKAGE_JSON_PATH, 'utf8'));
+  assert.equal(pkg?.engines?.node, '>=20.0.0');
+  assert.equal(MIN_NODE_MAJOR, 20);
+
+  const errs = [];
+  const oldNode = checkSupportedNodeVersion({ node: '18.20.4' }, { errorLog: (m) => errs.push(m) });
+  assert.equal(oldNode.ok, false);
+  assert.equal(oldNode.major, 18);
+  assert.equal(errs.length, 1);
+  assert.match(errs[0], /Node\.js >= 20\.0\.0/);
+
+  const okNode = checkSupportedNodeVersion({ node: '20.18.0' }, { errorLog: (m) => errs.push(m) });
+  assert.equal(okNode.ok, true);
+  assert.equal(okNode.major, 20);
+  assert.equal(errs.length, 1);
+  });
