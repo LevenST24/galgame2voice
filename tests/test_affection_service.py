@@ -301,3 +301,46 @@ class TestAffectionTurnHandlingAndDailyCap:
             assert reset_res.affection_level == 1
             assert reset_res.unlocked_dialogues == []
             assert reset_res.custom_nickname is None
+
+class TestNegationAndCustomCharacterRules:
+    def test_negated_compliments_and_preferences_do_not_award_bonus_points(self, affection_service):
+        for text in (
+            "我一点都不喜欢你，真讨厌",
+            "你真不可爱",
+            "并不觉得漂亮",
+            "别夸你了",
+            "我讨厌女仆装，也不喜欢咖啡加糖",
+        ):
+            pts, reasons = affection_service.calculate_turn_points(user_text=text, assistant_text="……")
+            assert pts == 1, f"Negated text {text!r} falsely awarded {pts} points ({reasons})"
+            assert "compliment" not in reasons
+            assert "character_preference" not in reasons
+
+    def test_double_negatives_and_later_positive_clauses_still_award_points(self, affection_service):
+        pts_double, reasons_double = affection_service.calculate_turn_points(
+            user_text="你也不是不可爱啦，不得不喜欢你",
+        )
+        assert pts_double == 3
+        assert "compliment" in reasons_double
+
+        pts_clause, reasons_clause = affection_service.calculate_turn_points(
+            user_text="虽然今天心情不好，但夏目真可爱",
+        )
+        assert pts_clause == 3
+        assert "compliment" in reasons_clause
+
+    def test_custom_character_keywords_and_empty_easter_eggs_override_defaults(self, isolate_test_database):
+        custom_svc = AffectionService(
+            db_path=isolate_test_database,
+            preference_keywords=["草莓圣代", "占卜"],
+            easter_eggs={},
+        )
+        # Default Natsume keywords/easter eggs do not fire on another character's config
+        pts_old, _ = custom_svc.calculate_turn_points(user_text="去星光咖啡馆喝咖啡加糖吧")
+        assert pts_old == 1
+        assert custom_svc.check_easter_egg("枣子姐天下第一！") is None
+
+        # Custom preference keywords award +3
+        pts_new, reasons_new = custom_svc.calculate_turn_points(user_text="一起去吃草莓圣代吧")
+        assert pts_new == 4
+        assert "character_preference" in reasons_new
