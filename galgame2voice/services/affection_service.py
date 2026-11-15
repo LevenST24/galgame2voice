@@ -5,8 +5,10 @@ emotional state transitions, and interactive easter egg voicelines.
 """
 
 import logging
-from typing import Any
+import re
+from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_database_path, get_db
@@ -14,6 +16,35 @@ from galgame2voice.services.emotion_classifier import VALID_EMOTIONS, EMOTION_NA
 from galgame2voice.services.emotion_references import EMOTION_SYNONYMS
 
 logger = logging.getLogger("galgame2voice.services.affection_service")
+
+_CLAUSE_SPLIT_RE = re.compile(r"[\s,，。！!?？~、；;：:…]+")
+_NEGATED_PREFIX_RE = re.compile(
+    r"(?:(?<!不)(?<!并非)(?<!不是)(?<!不得不)(?<!不能不)"
+    r"(?:不|没|没有|别|莫|勿|未|甭)"
+    r"(?:是|算|觉得|喜欢|爱|太|很|真|挺|那么|这么|怎么|会|能|想|肯|配|要|许|准)?"
+    r"|算不上|谈不上|称不上|谁说(?:你|她|他|我)?|讨厌|最烦|恨透(?:了)?)$"
+)
+
+
+def _has_positive_keyword_match(text: str, keywords: Iterable[str]) -> bool:
+    """Returns True if any keyword appears in ``text`` without immediate clause-local negation."""
+    normalized_kws = [kw.lower() for kw in keywords if isinstance(kw, str) and kw]
+    if not normalized_kws:
+        return False
+    for clause in _CLAUSE_SPLIT_RE.split(text):
+        if not clause:
+            continue
+        for kw in normalized_kws:
+            start = 0
+            while True:
+                pos = clause.find(kw, start)
+                if pos == -1:
+                    break
+                prefix = clause[max(0, pos - 10) : pos]
+                if not _NEGATED_PREFIX_RE.search(prefix):
+                    return True
+                start = pos + len(kw)
+    return False
 
 
 class AffectionService:
@@ -136,9 +167,24 @@ class AffectionService:
             "emotion": "gentle",
         },
     }
-
-    def __init__(self, db_path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        db_path: str | Path | None = None,
+        *,
+        compliment_keywords: list[str] | None = None,
+        preference_keywords: list[str] | None = None,
+        easter_eggs: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
         self.db_path = str(db_path) if db_path is not None else get_database_path()
+        self.compliment_keywords = (
+            list(compliment_keywords) if compliment_keywords is not None else list(self.COMPLIMENT_KEYWORDS)
+        )
+        self.preference_keywords = (
+            list(preference_keywords)
+            if preference_keywords is not None
+            else list(self.CHARACTER_PREFERENCE_KEYWORDS)
+        )
+        self.easter_eggs = dict(easter_eggs) if easter_eggs is not None else dict(self.EASTER_EGGS)
 
     def calculate_level(self, score: int) -> tuple[int, str]:
         """Calculates intimacy level and tier name based on total affection score."""
@@ -152,8 +198,14 @@ class AffectionService:
                 return level, tier["name"]
         return 1, self.LEVEL_TIERS[1]["name"]
 
-    def calculate_turn_points(self, user_text: str, assistant_text: str = "") -> tuple[int, list[str]]:
-        """Calculates turn affection points and reason tags."""
+    def calculate_turn_points(
+        self,
+        user_text: str,
+        assistant_text: str = "",
+        *,
+        preference_keywords: Iterable[str] | None = None,
+    ) -> tuple[int, list[str]]:
+        """Calculates turn affection points and reason tags, ignoring negated matches."""
         if not user_text or not isinstance(user_text, str):
             return 1, ["base_turn", "base_interaction (+1)"]
 
@@ -162,14 +214,13 @@ class AffectionService:
 
         combined = user_text[:4000].lower()
 
-        # Check compliments
-        has_compliment = any(kw.lower() in combined for kw in self.COMPLIMENT_KEYWORDS)
+        has_compliment = _has_positive_keyword_match(combined, self.compliment_keywords)
         if has_compliment:
             points += 2
             reasons.extend(["compliment", "warm_compliment (+2)"])
 
-        # Check character preferences
-        has_preference = any(kw.lower() in combined for kw in self.CHARACTER_PREFERENCE_KEYWORDS)
+        active_prefs = self.preference_keywords if preference_keywords is None else preference_keywords
+        has_preference = _has_positive_keyword_match(combined, active_prefs)
         if has_preference:
             points += 3
             reasons.extend(["character_preference", "character_preference (+3)"])
@@ -248,8 +299,9 @@ class AffectionService:
             curr_lvl = 1
 
         text_lower = user_text[:4000].lower()
-        for egg in self.EASTER_EGGS.values():
-            if curr_lvl >= egg.get("min_level", 1) and any(trigger.lower() in text_lower for trigger in egg["triggers"]):
+        for egg in self.easter_eggs.values():
+            triggers = egg.get("triggers") or ()
+            if curr_lvl >= egg.get("min_level", 1) and _has_positive_keyword_match(text_lower, triggers):
                 return egg
         return None
 
