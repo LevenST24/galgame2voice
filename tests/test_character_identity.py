@@ -215,50 +215,6 @@ async def test_sync_rolls_back_all_changes_when_one_package_fails(project, isola
 
 
 @pytest.mark.asyncio
-async def test_switch_lookup_does_not_select_similar_profile(project, isolate_test_database, monkeypatch):
-    from galgame2voice.routers import characters
-
-    manager = catalog(project)
-    monkeypatch.setattr(characters, "get_character_manager", lambda: manager)
-    async with aiosqlite.connect(isolate_test_database) as conn:
-        conn.row_factory = aiosqlite.Row
-        await profile(conn, "Annabelle")
-        assert await characters._resolve_profile_by_name(conn, "Ann") is None
-
-
-@pytest.mark.asyncio
-async def test_switch_alias_syncs_own_profile_instead_of_borrowing(project, isolate_test_database, monkeypatch):
-    from galgame2voice.routers import characters
-
-    install(project, "ann", "Ann", ["Bella"])
-    install(project, "bella", "Bella")
-    manager = catalog(project)
-    monkeypatch.setattr(characters, "get_character_manager", lambda: manager)
-    async with aiosqlite.connect(isolate_test_database) as conn:
-        conn.row_factory = aiosqlite.Row
-        other = await profile(conn, "Bella")
-        selected = await characters._resolve_profile_by_name(conn, "ann")
-        assert selected.id != other.id
-        assert selected.name == "Ann"
-
-
-@pytest.mark.asyncio
-async def test_switch_ambiguous_normalized_names_reports_conflict(project, isolate_test_database, monkeypatch):
-    from fastapi import HTTPException
-    from galgame2voice.routers import characters
-
-    manager = catalog(project)
-    monkeypatch.setattr(characters, "get_character_manager", lambda: manager)
-    async with aiosqlite.connect(isolate_test_database) as conn:
-        conn.row_factory = aiosqlite.Row
-        await profile(conn, "Anna")
-        await profile(conn, "ANNA")
-        with pytest.raises(HTTPException) as error:
-            await characters._resolve_profile_by_name(conn, "anna")
-        assert error.value.status_code == 409
-
-
-@pytest.mark.asyncio
 async def test_sync_does_not_borrow_a_bare_reference_from_another_package(project, isolate_test_database, monkeypatch):
     from galgame2voice.services import character_manager
 
@@ -418,25 +374,6 @@ def test_character_manager_is_conflicting(project):
     assert manager.is_conflicting("Alice") is False
     assert manager.is_conflicting("") is False
     assert manager.is_conflicting("nonexistent") is False
-
-
-@pytest.mark.asyncio
-async def test_switch_conflicting_package_identity_returns_409(project, isolate_test_database, monkeypatch):
-    from fastapi import HTTPException
-    from galgame2voice.routers import characters
-
-    install(project, "alice", "Alice", ["shared"])
-    install(project, "bella", "Bella", ["shared"])
-    manager = catalog(project)
-    monkeypatch.setattr(characters, "get_character_manager", lambda: manager)
-    async with aiosqlite.connect(isolate_test_database) as conn:
-        conn.row_factory = aiosqlite.Row
-        await profile(conn, "Alice")
-        await profile(conn, "Bella")
-        with pytest.raises(HTTPException) as exc_info:
-            await characters._resolve_profile_by_name(conn, "shared")
-        assert exc_info.value.status_code == 409
-        assert "多个角色包" in exc_info.value.detail
 
 
 @pytest.mark.asyncio

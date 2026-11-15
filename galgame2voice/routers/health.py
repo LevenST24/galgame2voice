@@ -277,12 +277,6 @@ async def _get_dir_metrics_cached(directory: Path, owner: TelemetryJobs | None =
     return await (owner or default_telemetry_jobs).run(("directory", key), collect)
 
 
-# Backward-compatible sync alias (kept for existing tooling/tests).
-def _get_dir_metrics(directory: Path) -> tuple[int, float]:
-    """Synchronous directory metrics — blocking, prefer _get_dir_metrics_cached."""
-    return _scan_dir_sync(directory)
-
-
 def _get_process_memory_mb() -> float | None:
     """Retrieves RSS memory usage in MB using psutil if available."""
     try:

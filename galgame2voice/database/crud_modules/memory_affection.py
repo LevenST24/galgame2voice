@@ -14,7 +14,6 @@ from galgame2voice.database.models import (
     CharacterAffectionUpdate,
     UserMemoryCreate,
     UserMemoryResponse,
-    UserMemoryUpdate,
 )
 from galgame2voice.database.session import immediate_transaction
 
@@ -32,11 +31,7 @@ __all__ = [
     "create_memory",
     "get_memory",
     "list_memories",
-    "update_memory",
-    "delete_memory",
-    "clear_memories",
     "upsert_memory",
-    "record_memory_recall",
     "record_memory_recall_batch",
     "calculate_affection_level",
     "_format_affection_response",
@@ -44,7 +39,6 @@ __all__ = [
     "get_user_affections_for_profiles",
     "get_character_affection",
     "update_character_affection",
-    "reset_character_affection",
     "unlock_character_dialogues",
     "increment_affection",
 ]
@@ -109,40 +103,6 @@ async def list_memories(
     return [UserMemoryResponse(**dict(r)) for r in rows]
 
 
-async def update_memory(
-    conn: aiosqlite.Connection,
-    memory_id: int,
-    updates: UserMemoryUpdate
-) -> UserMemoryResponse | None:
-    current = await get_memory(conn, memory_id)
-    if not current:
-        return None
-
-    fields = []
-    values: list[Any] = []
-    up_dict = updates.model_dump(exclude_unset=True)
-
-    for k, v in up_dict.items():
-        if v is not None:
-            fields.append(f"{k} = ?")
-            values.append(v)
-
-    if fields:
-        fields.append("updated_at = CURRENT_TIMESTAMP")
-        values.append(memory_id)
-        query = f"UPDATE user_memories SET {', '.join(fields)} WHERE id = ?;"
-        async with immediate_transaction(conn):
-            await conn.execute(query, tuple(values))
-
-    return await get_memory(conn, memory_id)
-
-
-async def delete_memory(conn: aiosqlite.Connection, memory_id: int) -> bool:
-    async with immediate_transaction(conn):
-        cursor = await conn.execute("DELETE FROM user_memories WHERE id = ?;", (memory_id,))
-    return cursor.rowcount > 0
-
-
 async def delete_memory_by_key(
     conn: aiosqlite.Connection,
     user_id: str,
@@ -155,23 +115,6 @@ async def delete_memory_by_key(
             (user_id, character_id, fact_key),
         )
     return cursor.rowcount > 0
-
-
-async def clear_memories(
-    conn: aiosqlite.Connection,
-    user_id: str = "default_user",
-    character_id: int | None = None
-) -> int:
-    conditions = ["user_id = ?"]
-    params: list[Any] = [user_id]
-    if character_id is not None:
-        conditions.append("character_id = ?")
-        params.append(character_id)
-
-    where_clause = " AND ".join(conditions)
-    async with immediate_transaction(conn):
-        cursor = await conn.execute(f"DELETE FROM user_memories WHERE {where_clause};", tuple(params))
-    return cursor.rowcount
 
 
 async def upsert_memory(conn: aiosqlite.Connection, memory: UserMemoryCreate) -> UserMemoryResponse | None:
@@ -202,15 +145,6 @@ async def upsert_memory(conn: aiosqlite.Connection, memory: UserMemoryCreate) ->
             )
             row = await cur2.fetchone()
     return UserMemoryResponse(**dict(row)) if row else None
-
-
-async def record_memory_recall(conn: aiosqlite.Connection, memory_id: int) -> None:
-    async with immediate_transaction(conn):
-        await conn.execute("""
-            UPDATE user_memories
-            SET recall_count = recall_count + 1, last_recalled_at = CURRENT_TIMESTAMP
-            WHERE id = ?;
-        """, (memory_id,))
 
 
 async def record_memory_recall_batch(conn: aiosqlite.Connection, memory_ids: list[int]) -> None:
@@ -398,23 +332,6 @@ async def update_character_affection(
             await conn.execute(query, tuple(values))
 
     return await get_character_affection(conn, user_id, character_id)
-
-
-async def reset_character_affection(
-    conn: aiosqlite.Connection,
-    user_id: str = "default_user",
-    character_id: int = 1
-) -> CharacterAffectionResponse:
-    await get_or_create_character_affection(conn, user_id, character_id)
-    async with immediate_transaction(conn):
-        await conn.execute("""
-            UPDATE character_affection
-            SET affection_score = 0, affection_level = 1, current_emotion = 'normal',
-                interaction_count = 0, daily_points_earned = 0, last_interaction_date = '',
-                unlocked_dialogues = '[]', custom_nickname = NULL, updated_at = CURRENT_TIMESTAMP
-            WHERE user_id = ? AND character_id = ?;
-        """, (user_id, character_id))
-    return await get_or_create_character_affection(conn, user_id, character_id)
 
 
 async def unlock_character_dialogues(

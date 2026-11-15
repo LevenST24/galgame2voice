@@ -268,20 +268,3 @@ class TestAffectionTurnHandlingAndDailyCap:
             assert aff4.daily_points_earned == 8
             assert aff4.affection_score == 23
             assert aff4.affection_level == 2
-
-    @pytest.mark.asyncio
-    async def test_affection_update_and_reset(self, isolate_test_database):
-        async with get_db(isolate_test_database) as conn:
-            await crud.update_character_affection(
-                conn, user_id="u_gal", character_id=1,
-                updates=CharacterAffectionUpdate(
-                    affection_score=45,
-                    custom_nickname="昂晴亲",
-                    unlocked_dialogues=["milestone_lv1", "milestone_lv2", "milestone_lv3", "easter_egg_zaozi"],
-                ),
-            )
-            reset_res = await crud.reset_character_affection(conn, user_id="u_gal", character_id=1)
-            assert reset_res.affection_score == 0
-            assert reset_res.affection_level == 1
-            assert reset_res.unlocked_dialogues == []
-            assert reset_res.custom_nickname is None

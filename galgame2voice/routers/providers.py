@@ -532,6 +532,3 @@ async def test_provider(req: ProviderTestRequest):
             action_zh=diag_info["action_zh"],
             retryable=diag_info["retryable"],
         )
-
-
-test_provider_connectivity = test_provider

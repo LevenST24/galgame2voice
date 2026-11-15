@@ -505,24 +505,6 @@ async def update_character_system_prompt(character_id: int, req: SystemPromptUpd
     )
 
 
-async def _resolve_profile_by_name(conn: aiosqlite.Connection, char_name: str) -> Any | None:
-    """Use the same identity rules for switching as for package reconciliation."""
-    return await get_character_voice_catalog().resolve_profile_by_name(
-        conn, char_name, character_manager=get_character_manager()
-    )
-
-
-async def _lookup_character_profile(
-    conn: aiosqlite.Connection,
-    char_id: int | None,
-    char_name: str | None,
-) -> Any | None:
-    """Resolves character profile by ID or name fallback."""
-    return await get_character_voice_catalog().lookup_profile(
-        conn, char_id, char_name, character_manager=get_character_manager()
-    )
-
-
 @router.post(
     "/switch",
     summary="Switch Active Character",

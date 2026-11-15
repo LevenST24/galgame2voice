@@ -26,7 +26,6 @@ from galgame2voice.routers.providers import (
     list_providers,
     router as providers_router,
     test_provider,
-    test_provider_connectivity,
     update_provider,
 )
 from galgame2voice.utils.logger import sanitize_error_detail
@@ -52,7 +51,6 @@ __all__ = [
     "delete_provider",
     "activate_provider",
     "test_provider",
-    "test_provider_connectivity",
 ]
 
 

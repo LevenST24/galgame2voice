@@ -35,14 +35,8 @@ __all__ = [
     "get_oldest_tts_cache_entries",
     "get_tts_cache_stats",
     "clear_all_tts_cache_entries",
-    "record_tts_cache_hit",
-    "record_tts_cache_miss",
-    "clean_tts_cache_lru",
     "insert_token_metric",
-    "get_metrics_overview",
 ]
-
-USD_TO_CNY_RATE: float = 7.20
 
 
 async def get_settings_raw(conn: aiosqlite.Connection) -> SettingsInDB:
@@ -220,17 +214,6 @@ async def batch_touch_tts_cache_entries(conn: aiosqlite.Connection, touches: dic
         """, params)
 
 
-async def record_tts_cache_hit(conn: aiosqlite.Connection, cache_key: str) -> None:
-    """Record a TTS cache hit in the database by touching the entry timestamp and incrementing hit count."""
-    await touch_tts_cache_entry(conn, cache_key)
-
-
-async def record_tts_cache_miss(conn: aiosqlite.Connection, cache_key: str | None = None) -> None:
-    """Record a TTS cache miss (placeholder hook for SQLite telemetry if needed)."""
-    # SQLite cache table does not store misses; this is a safe telemetry hook.
-    pass
-
-
 async def upsert_tts_cache_entry(
     conn: aiosqlite.Connection,
     cache_key: str,
@@ -278,48 +261,6 @@ async def get_oldest_tts_cache_entries(conn: aiosqlite.Connection, limit: int = 
     """, (limit,))
     rows = await cursor.fetchall()
     return [TtsCacheEntry(**dict(r)) for r in rows]
-
-
-async def clean_tts_cache_lru(
-    conn: aiosqlite.Connection,
-    max_entries: int = 5000,
-    max_mb: int | None = None,
-) -> int:
-    """
-    Prunes the oldest entries in SQLite TTS cache when total entries or size exceed limits.
-    Returns the number of deleted database entries.
-    """
-    stats = await get_tts_cache_stats(conn)
-    total_files = stats.get("total_files", 0)
-    total_mb = stats.get("total_size_mb", 0.0)
-
-    entries_exceeded = total_files > max_entries
-    mb_exceeded = max_mb is not None and total_mb > max_mb
-
-    if not entries_exceeded and not mb_exceeded:
-        return 0
-
-    deleted_count = 0
-    while True:
-        excess = total_files - max_entries if entries_exceeded else 50
-        batch_limit = min(max(excess, 10), 200)
-        oldest = await get_oldest_tts_cache_entries(conn, limit=batch_limit)
-        if not oldest:
-            break
-
-        for entry in oldest:
-            if await delete_tts_cache_entry(conn, entry.cache_key):
-                deleted_count += 1
-                total_files -= 1
-
-        if total_files <= max_entries:
-            if max_mb is None:
-                break
-            new_stats = await get_tts_cache_stats(conn)
-            if new_stats.get("total_size_mb", 0.0) <= max_mb:
-                break
-
-    return deleted_count
 
 
 async def get_tts_cache_stats(conn: aiosqlite.Connection) -> dict[str, Any]:
@@ -387,40 +328,3 @@ async def insert_token_metric(
         ))
         new_id = cursor.lastrowid
     return new_id
-
-
-async def get_metrics_overview(conn: aiosqlite.Connection) -> dict[str, Any]:
-    """Computes aggregated token usage, cost, and latency metrics."""
-    conn.row_factory = aiosqlite.Row
-    cursor = await conn.execute("""
-        SELECT
-            COUNT(*) as total_requests,
-            COALESCE(SUM(prompt_tokens), 0) as total_prompt_tokens,
-            COALESCE(SUM(completion_tokens), 0) as total_completion_tokens,
-            COALESCE(SUM(total_tokens), 0) as total_tokens,
-            COALESCE(SUM(estimated_cost), 0.0) as estimated_cost_usd,
-            COALESCE(AVG(NULLIF(ttft_ms, 0)), 0.0) as avg_ttft_ms,
-            COALESCE(AVG(NULLIF(tts_first_chunk_ms, 0)), 0.0) as avg_tts_first_chunk_ms,
-            COALESCE(AVG(NULLIF(total_latency_ms, 0)), 0.0) as avg_total_latency_ms
-        FROM token_usage_metrics;
-    """)
-    row = await cursor.fetchone()
-    if not row:
-        return {
-            "total_requests": 0, "total_prompt_tokens": 0, "total_completion_tokens": 0,
-            "total_tokens": 0, "estimated_cost_usd": 0.0, "estimated_cost_cny": 0.0,
-            "avg_ttft_ms": 0.0, "avg_tts_first_chunk_ms": 0.0, "avg_total_latency_ms": 0.0,
-        }
-    cost_usd = float(row["estimated_cost_usd"] or 0.0)
-    cost_cny = round(cost_usd * USD_TO_CNY_RATE, 4)
-    return {
-        "total_requests": row["total_requests"] or 0,
-        "total_prompt_tokens": row["total_prompt_tokens"] or 0,
-        "total_completion_tokens": row["total_completion_tokens"] or 0,
-        "total_tokens": row["total_tokens"] or 0,
-        "estimated_cost_usd": round(cost_usd, 6),
-        "estimated_cost_cny": cost_cny,
-        "avg_ttft_ms": round(float(row["avg_ttft_ms"] or 0.0), 1),
-        "avg_tts_first_chunk_ms": round(float(row["avg_tts_first_chunk_ms"] or 0.0), 1),
-        "avg_total_latency_ms": round(float(row["avg_total_latency_ms"] or 0.0), 1),
-    }

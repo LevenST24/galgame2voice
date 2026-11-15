@@ -423,10 +423,6 @@ class CharacterAffectionBase(BaseModel):
     custom_nickname: str | None = None
 
 
-class CharacterAffectionCreate(CharacterAffectionBase):
-    pass
-
-
 class CharacterAffectionUpdate(BaseModel):
     affection_score: int | None = Field(default=None, ge=0, le=100)
     affection_level: int | None = Field(default=None, ge=1, le=5)
@@ -436,23 +432,6 @@ class CharacterAffectionUpdate(BaseModel):
     last_interaction_date: str | None = None
     unlocked_dialogues: list[str] | None = None
     custom_nickname: str | None = None
-
-
-class CharacterAffectionInDB(BaseModel):
-    id: int
-    user_id: str = "default_user"
-    character_id: int = 1
-    affection_score: int = 0
-    affection_level: int = 1
-    current_emotion: str = "normal"
-    interaction_count: int = 0
-    daily_points_earned: int = 0
-    last_interaction_date: str = ""
-    unlocked_dialogues: str = "[]"
-    custom_nickname: str | None = None
-    created_at: str | None = None
-    updated_at: str | None = None
-    model_config = ConfigDict(from_attributes=True)
 
 
 class CharacterAffectionResponse(CharacterAffectionBase):
