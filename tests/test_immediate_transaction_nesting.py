@@ -103,3 +103,47 @@ async def test_sequential_transactions_on_shared_connection(temp_db):
     async with get_db(temp_db) as conn:
         cursor = await conn.execute("SELECT COUNT(*) FROM t")
         assert (await cursor.fetchone())[0] == 3
+
+
+@pytest.mark.asyncio
+async def test_get_db_avoids_duplicate_thread_hops_and_recreates_removed_parent_dir(tmp_path, monkeypatch):
+    import asyncio
+    import shutil
+    from galgame2voice.database import session as session_mod
+
+    to_thread_calls = []
+    orig_to_thread = asyncio.to_thread
+
+    async def spy_to_thread(func, /, *args, **kwargs):
+        to_thread_calls.append(func.__name__)
+        return await orig_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", spy_to_thread)
+
+    nested_dir = tmp_path / "sub_a" / "sub_b"
+    db_file = nested_dir / "test.db"
+
+    # First open creates missing parent directory once (no second abspath to_thread hop)
+    async with session_mod.get_db(db_file) as conn:
+        await conn.execute("CREATE TABLE t (x INTEGER);")
+    assert to_thread_calls == ["makedirs"]
+
+    # Subsequent opens on existing directory perform zero to_thread hops
+    to_thread_calls.clear()
+    for _ in range(5):
+        async with session_mod.get_db(db_file) as conn:
+            await conn.execute("SELECT 1;")
+    assert to_thread_calls == []
+
+    # Memory DB never touches filesystem or caches WAL path
+    async with session_mod.get_db(":memory:") as mem_conn:
+        assert mem_conn._db_path == ":memory:"
+    assert ":memory:" not in session_mod._wal_confirmed_paths
+    assert to_thread_calls == []
+
+    # If parent directory is deleted externally, get_db detects missing dir and recreates it
+    shutil.rmtree(nested_dir)
+    async with session_mod.get_db(db_file) as conn:
+        await conn.execute("CREATE TABLE t2 (x INTEGER);")
+    assert to_thread_calls == ["makedirs"]
+    
