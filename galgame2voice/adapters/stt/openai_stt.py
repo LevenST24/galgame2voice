@@ -165,7 +165,3 @@ class OpenAICompatibleSTTAdapter(BaseSTTAdapter):
                     message=f"STT Connection error: {exc}",
                     latency_ms=latency_ms,
                 )
-
-
-# Alias for backward compatibility
-OpenAISTTAdapter = OpenAICompatibleSTTAdapter

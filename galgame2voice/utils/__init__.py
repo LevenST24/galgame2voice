@@ -30,7 +30,6 @@ from galgame2voice.utils.hardware import (
 )
 from galgame2voice.utils.precision import (
     read_precision_cache,
-    resolve_initial_is_half,
     write_precision_cache,
 )
 from galgame2voice.utils.path_guard import (
@@ -42,7 +41,6 @@ from galgame2voice.utils.path_guard import (
     discover_gpt_sovits_roots,
     get_authorized_roots,
     validate_path_containment,
-    is_path_safe,
     safe_resolve_audio_path,
     validate_voice_profile_paths,
 )
@@ -95,7 +93,6 @@ __all__ = [
     "detect_gpu_capability",
     "get_system_memory_status",
     "read_precision_cache",
-    "resolve_initial_is_half",
     "write_precision_cache",
     "PathTraversalError",
     "is_windows_device_name",
@@ -105,7 +102,6 @@ __all__ = [
     "discover_gpt_sovits_roots",
     "get_authorized_roots",
     "validate_path_containment",
-    "is_path_safe",
     "safe_resolve_audio_path",
     "validate_voice_profile_paths",
     "find_ffmpeg",

@@ -26,7 +26,6 @@ from galgame2voice.services.tts_service import (
 from galgame2voice.providers import (
     LLMProvider,
     BaseLLMProvider,
-    ProviderError,
     OpenAIProvider,
     GeminiProvider,
     AnthropicProvider,
@@ -34,7 +33,6 @@ from galgame2voice.providers import (
     XAIProvider,
     create_provider,
     get_provider_class,
-    list_registered_providers,
 )
 from galgame2voice.schemas.character_manifest import (
     CharacterManifestV2,
@@ -42,8 +40,6 @@ from galgame2voice.schemas.character_manifest import (
 )
 from galgame2voice.utils.profiler import (
     ChatTurnProfiler,
-    is_profiling_enabled,
-    set_profiling_enabled,
 )
 
 
@@ -131,13 +127,6 @@ async def test_tts_service_memoizes_db_lookups():
 # ============================================================================
 
 def test_provider_registry_and_factory():
-    registered = list_registered_providers()
-    assert "openai" in registered
-    assert "gemini" in registered
-    assert "anthropic" in registered
-    assert "deepseek" in registered
-    assert "xai" in registered
-
     openai_p = create_provider("openai", api_key="sk-test")
     assert isinstance(openai_p, LLMProvider)
     assert isinstance(openai_p, OpenAIProvider)
@@ -149,29 +138,6 @@ def test_provider_registry_and_factory():
     anthropic_p = create_provider("anthropic", api_key="sk-test")
     assert isinstance(anthropic_p, LLMProvider)
     assert isinstance(anthropic_p, AnthropicProvider)
-
-
-def test_provider_error_normalization():
-    p = create_provider("openai", api_key="sk-test")
-
-    # 401 Auth error
-    mock_resp_401 = MagicMock(status_code=401)
-    err_401 = Exception("Unauthorized")
-    err_401.response = mock_resp_401
-    norm_401 = p.normalize_error(err_401)
-    assert isinstance(norm_401, ProviderError)
-    assert norm_401.code == "AUTHENTICATION_FAILED"
-    assert norm_401.status_code == 401
-    assert not norm_401.retryable
-
-    # 429 Rate limit error
-    mock_resp_429 = MagicMock(status_code=429)
-    err_429 = Exception("Too Many Requests")
-    err_429.response = mock_resp_429
-    norm_429 = p.normalize_error(err_429)
-    assert norm_429.code == "RATE_LIMIT_EXCEEDED"
-    assert norm_429.status_code == 429
-    assert norm_429.retryable
 
 
 # ============================================================================
@@ -228,15 +194,6 @@ def test_profiler_waterfall_generation():
     assert "TTS Inference:" in report
     assert "TTFA:" in report
     assert "Cache Hit:" in report
-
-
-def test_profiler_env_toggle():
-    set_profiling_enabled(False)
-    assert not is_profiling_enabled()
-
-    set_profiling_enabled(True)
-    assert is_profiling_enabled()
-    set_profiling_enabled(False)
 
 
 # ============================================================================

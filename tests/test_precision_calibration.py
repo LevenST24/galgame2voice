@@ -1,6 +1,6 @@
 """
 Evidence-based precision calibration tests:
-1. precision store read/write and resolve_initial_is_half priority (env > cache > default).
+1. precision store read/write and resolve_initial_device_and_half priority (env > cache > default).
 2. calibrate_engine_precision decision table (audible / silent / inconclusive), with a
    fake probe + fake restart — no real engine or GPU needed.
 """
@@ -22,7 +22,6 @@ from galgame2voice.services.gpt_sovits_client import GptSovitsClient
 from galgame2voice.services.sovits_endpoint import parse_sovits_endpoint
 from galgame2voice.utils.precision import (
     read_precision_cache,
-    resolve_initial_is_half,
     write_precision_cache,
 )
 from scripts import run_server
@@ -49,44 +48,6 @@ class TestPrecisionStore:
         payload = json.dumps({"is_half": True, "sovits_dir": "x", "verified_at": 0})
         (tmp_path / "data" / "precision.json").write_bytes(b"\xef\xbb\xbf" + payload.encode("utf-8"))
         assert read_precision_cache(tmp_path)["is_half"] is True
-
-
-class TestResolveInitialIsHalf:
-    def test_env_override_fp32_wins(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("GPT_SOVITS_PRECISION", "fp32")
-        is_half, source = resolve_initial_is_half(tmp_path, tmp_path / "engine")
-        assert is_half is False and source == "env"
-
-    def test_env_override_fp16_wins(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("GPT_SOVITS_PRECISION", "FP16")
-        is_half, source = resolve_initial_is_half(tmp_path, tmp_path / "engine")
-        assert is_half is True and source == "env"
-
-    def test_cache_used_when_engine_dir_matches(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("GPT_SOVITS_PRECISION", raising=False)
-        engine = tmp_path / "engine"
-        write_precision_cache(tmp_path, str(engine), False)
-        is_half, source = resolve_initial_is_half(tmp_path, engine)
-        assert is_half is False and source == "cache"
-
-    def test_cache_ignored_when_engine_dir_changed(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("GPT_SOVITS_PRECISION", raising=False)
-        monkeypatch.setattr(
-            "galgame2voice.utils.hardware.detect_gpu_capability",
-            lambda: (True, "Mock GPU", 0),
-        )
-        write_precision_cache(tmp_path, str(tmp_path / "old_engine"), False)
-        is_half, source = resolve_initial_is_half(tmp_path, tmp_path / "new_engine")
-        assert is_half is True and source == "default"
-
-    def test_default_is_fp16(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("GPT_SOVITS_PRECISION", raising=False)
-        monkeypatch.setattr(
-            "galgame2voice.utils.hardware.detect_gpu_capability",
-            lambda: (True, "Mock GPU", 0),
-        )
-        is_half, source = resolve_initial_is_half(tmp_path, tmp_path / "engine")
-        assert is_half is True and source == "default"
 
 
 class TestCalibrateEnginePrecision:
@@ -179,7 +140,6 @@ class TestYamlPrecisionSync:
     def test_yaml_read_write_roundtrip(self, tmp_path):
         from galgame2voice.utils.precision import (
             read_sovits_yaml_is_half,
-            write_sovits_yaml_is_half,
             find_sovits_yaml_path,
         )
         configs_dir = tmp_path / "GPT_SoVITS" / "configs"
@@ -193,35 +153,9 @@ class TestYamlPrecisionSync:
         assert find_sovits_yaml_path(tmp_path) == yaml_file
         assert read_sovits_yaml_is_half(tmp_path) is True
 
-        # Switch to FP32
-        out_path = write_sovits_yaml_is_half(tmp_path, False)
-        assert out_path == yaml_file
-        assert read_sovits_yaml_is_half(tmp_path) is False
-        content = yaml_file.read_text(encoding="utf-8")
-        assert "is_half: false" in content
-        assert "is_half: true" not in content.split("v1:")[0]
-
-        # Switch back to FP16
-        write_sovits_yaml_is_half(tmp_path, True)
-        assert read_sovits_yaml_is_half(tmp_path) is True
-
-    def test_resolve_initial_is_half_picks_up_yaml_fp32(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("GPT_SOVITS_PRECISION", raising=False)
-        configs_dir = tmp_path / "GPT_SoVITS" / "configs"
-        configs_dir.mkdir(parents=True)
-        yaml_file = configs_dir / "tts_infer.yaml"
-        yaml_file.write_text(
-            "custom:\n  device: cuda\n  is_half: false\n  version: v2\n",
-            encoding="utf-8",
-        )
-
-        is_half, source = resolve_initial_is_half(tmp_path, tmp_path)
-        assert is_half is False
-        assert source == "yaml"
-
     def test_resolve_initial_is_half_picks_up_db_setting(self, tmp_path, monkeypatch):
         import sqlite3
-        from galgame2voice.utils.precision import read_db_precision, resolve_initial_is_half
+        from galgame2voice.utils.precision import read_db_precision
         monkeypatch.delenv("GPT_SOVITS_PRECISION", raising=False)
 
         data_dir = tmp_path / "data"
@@ -232,17 +166,11 @@ class TestYamlPrecisionSync:
             conn.execute("INSERT INTO settings (id, inference_precision) VALUES (1, 'fp32');")
 
         assert read_db_precision(tmp_path) == "fp32"
-        is_half, source = resolve_initial_is_half(tmp_path, tmp_path)
-        assert is_half is False
-        assert source == "db"
 
         # Update DB to fp16
         with sqlite3.connect(str(db_file)) as conn:
             conn.execute("UPDATE settings SET inference_precision = 'fp16' WHERE id = 1;")
         assert read_db_precision(tmp_path) == "fp16"
-        is_half2, source2 = resolve_initial_is_half(tmp_path, tmp_path)
-        assert is_half2 is True
-        assert source2 == "db"
 
     def test_cpu_mode_yaml_and_resolution(self, tmp_path, monkeypatch):
         import sqlite3

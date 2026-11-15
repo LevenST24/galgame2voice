@@ -278,10 +278,6 @@ def clean_japanese_parentheses(text: str, max_passes: int = 5) -> str:
     return cleaned.strip()
 
 
-# Alias for cleaning stage directions and action parentheticals
-strip_stage_directions = clean_japanese_parentheses
-
-
 def extract_stage_directions_and_emotion(text: str) -> tuple[str, str | None]:
     """
     Cleans stage cues and action prompts from text for pure dialogue speech synthesis,

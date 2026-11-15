@@ -27,7 +27,3 @@ class SiliconFlowSTTAdapter(OpenAICompatibleSTTAdapter):
             default_model=default_model,
             **kwargs,
         )
-
-
-# Alias
-SenseVoiceSTTAdapter = SiliconFlowSTTAdapter

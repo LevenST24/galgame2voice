@@ -18,10 +18,8 @@ from galgame2voice.providers.deepseek import DeepSeekProvider
 from galgame2voice.providers.xai import XAIProvider
 from galgame2voice.providers.registry import (
     PROVIDER_REGISTRY,
-    register_provider,
     get_provider_class,
     create_provider,
-    list_registered_providers,
 )
 
 __all__ = [
@@ -37,8 +35,6 @@ __all__ = [
     "DeepSeekProvider",
     "XAIProvider",
     "PROVIDER_REGISTRY",
-    "register_provider",
     "get_provider_class",
     "create_provider",
-    "list_registered_providers",
 ]

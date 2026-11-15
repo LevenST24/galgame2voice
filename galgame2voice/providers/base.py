@@ -16,8 +16,6 @@ from galgame2voice.adapters.base import (
     LLMResponse,
     TestResult,
     BaseLLMAdapter,
-    TRANSIENT_STATUS_CODES,
-    TRANSIENT_NETWORK_EXCEPTIONS,
 )
 
 
@@ -56,10 +54,6 @@ class LLMProvider(Protocol):
         """Discovers supported or available model IDs from provider endpoint."""
         ...
 
-    def normalize_error(self, error: Exception) -> ProviderError:
-        """Normalizes an exception into a structured ProviderError."""
-        ...
-
 
 class BaseLLMProvider(BaseLLMAdapter):
     """
@@ -76,41 +70,6 @@ class BaseLLMProvider(BaseLLMAdapter):
     ) -> AsyncIterator[str]:
         """Convenience alias for stream_chat."""
         return self.stream_chat(messages, model, temperature=temperature, **kwargs)
-
-    def normalize_error(self, error: Exception) -> ProviderError:
-        """Default error normalization inspecting status codes and error messages."""
-        msg = str(error)
-        status_code = getattr(error, "status_code", None)
-        if hasattr(error, "response") and hasattr(error.response, "status_code"):
-            status_code = error.response.status_code
-
-        code = "PROVIDER_ERROR"
-        retryable = False
-        diagnostic = None
-
-        if status_code == 401:
-            code = "AUTHENTICATION_FAILED"
-            diagnostic = "API Key 无效或已过期，请核对凭证。"
-        elif status_code == 429:
-            code = "RATE_LIMIT_EXCEEDED"
-            retryable = True
-            diagnostic = "触发服务商频率限制或额度不足，系统将自动重试。"
-        elif status_code and status_code in TRANSIENT_STATUS_CODES:
-            code = "SERVER_ERROR"
-            retryable = True
-            diagnostic = "服务商服务器暂时故障，系统将自动重试。"
-        elif isinstance(error, TRANSIENT_NETWORK_EXCEPTIONS) or "timeout" in msg.lower():
-            code = "TIMEOUT"
-            retryable = True
-            diagnostic = "请求服务商超时或网络异常，请检查网络或代理连接。"
-
-        return ProviderError(
-            code=code,
-            message=msg,
-            status_code=status_code,
-            diagnostic=diagnostic,
-            retryable=retryable,
-        )
 
 
 __all__ = [
