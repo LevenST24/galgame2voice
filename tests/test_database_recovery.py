@@ -7,11 +7,15 @@ from pathlib import Path
 import sqlite3
 from unittest.mock import AsyncMock, MagicMock
 
+import aiosqlite
 import pytest
 from fastapi import HTTPException
 
-from galgame2voice.database import backups, session
+from galgame2voice.database import backups, crud, session
+from galgame2voice.database.crud import init_schema_and_seeds
 from galgame2voice.database.migrations import CURRENT_SCHEMA_VERSION
+from galgame2voice.database.models import MessageCreate
+from galgame2voice.database.session import configure_connection, get_db, init_db
 from galgame2voice.routers.chat import ChatImportRequest, import_chat_sessions
 from scripts import database_recovery, desktop_entry, desktop_instance
 
@@ -249,3 +253,116 @@ def test_chat_import_rejects_invalid_and_duplicate_ids():
         import_request("ordinary-existing-id")
     with pytest.raises(ValidationError):
         import_request("s_import_duplicate", "s_import_duplicate")
+
+
+class TestDatabaseTimeoutsAndConcurrencySafety:
+    """Tests SQLite connection configuration and dual-table cleanup safety."""
+
+    @pytest.mark.asyncio
+    async def test_busy_timeout_configured_to_5000ms(self, tmp_path):
+        """Verify configure_connection sets PRAGMA busy_timeout to 5000."""
+        db_p = tmp_path / "timeout_test.db"
+        async with aiosqlite.connect(str(db_p)) as conn:
+            await configure_connection(conn, str(db_p))
+            cur = await conn.execute("PRAGMA busy_timeout;")
+            row = await cur.fetchone()
+            assert row[0] == 5000
+
+    @pytest.mark.asyncio
+    async def test_clear_session_messages_clears_both_tables_if_present(self, tmp_path):
+        """Verify clear_session_messages purges from both session_messages and messages if both exist."""
+        db_p = tmp_path / "dual_table.db"
+        await init_db(db_p)
+
+        async with get_db(db_p) as conn:
+            # Create session_messages table if not already existing
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS session_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content_chinese TEXT DEFAULT '',
+                    content_japanese TEXT DEFAULT '',
+                    raw_content TEXT DEFAULT ''
+                );
+            """)
+            # Insert into both
+            await conn.execute("""
+                INSERT INTO session_messages (session_id, role, content_chinese)
+                VALUES ('dual_sess', 'user', 'Dual Table Test');
+            """)
+            await crud.add_message(conn, MessageCreate(
+                session_id="dual_sess",
+                role="assistant",
+                content_chinese="Dual Table Reply",
+            ))
+            await conn.commit()
+
+            # Call clear_session_messages
+            cleared = await crud.clear_session_messages(conn, "dual_sess")
+            assert cleared is True
+
+            # Verify both are empty
+            cur1 = await conn.execute("SELECT COUNT(*) FROM session_messages WHERE session_id = 'dual_sess';")
+            assert (await cur1.fetchone())[0] == 0
+            cur2 = await conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = 'dual_sess';")
+            assert (await cur2.fetchone())[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_database_indexes_created(tmp_path):
+    """Verifies that all performance indexes are created on init_schema_and_seeds."""
+    test_db = str(tmp_path / "test_indexes.db")
+    async with aiosqlite.connect(test_db) as conn:
+        await init_schema_and_seeds(conn)
+
+        cursor = await conn.execute("SELECT name, tbl_name FROM sqlite_master WHERE type = 'index';")
+        rows = await cursor.fetchall()
+        indexes = dict(rows)
+
+        assert "idx_sessions_updated_at" in indexes
+        assert indexes["idx_sessions_updated_at"] == "sessions"
+
+        assert "idx_messages_role_session" in indexes
+        assert indexes["idx_messages_role_session"] == "messages"
+
+        assert "idx_token_usage_provider_tokens" in indexes
+        assert indexes["idx_token_usage_provider_tokens"] == "token_usage_metrics"
+
+        assert "idx_messages_session_id_desc" in indexes
+        assert indexes["idx_messages_session_id_desc"] == "messages"
+
+
+@pytest.mark.asyncio
+async def test_session_ordering_uses_index(tmp_path):
+    """Verifies that EXPLAIN QUERY PLAN shows index usage on sessions(updated_at)."""
+    test_db = str(tmp_path / "test_query_plan.db")
+    async with aiosqlite.connect(test_db) as conn:
+        await init_schema_and_seeds(conn)
+
+        cursor = await conn.execute("EXPLAIN QUERY PLAN SELECT * FROM sessions ORDER BY updated_at DESC;")
+        plan_rows = await cursor.fetchall()
+        plan_str = " ".join(r["detail"] for r in plan_rows)
+        # Should use idx_sessions_updated_at and NOT require temporary B-tree filesort
+        assert "idx_sessions_updated_at" in plan_str
+        assert "B-TREE FOR ORDER BY" not in plan_str.upper()
+
+
+@pytest.mark.asyncio
+async def test_recent_messages_ordering_uses_index(tmp_path):
+    """Verifies that EXPLAIN QUERY PLAN shows index usage on messages(session_id, id DESC)."""
+    test_db = str(tmp_path / "test_messages_query_plan.db")
+    async with aiosqlite.connect(test_db) as conn:
+        await init_schema_and_seeds(conn)
+
+        cursor = await conn.execute(
+            "EXPLAIN QUERY PLAN SELECT * FROM (SELECT * FROM messages INDEXED BY idx_messages_session_id_desc WHERE session_id = ? ORDER BY id DESC LIMIT ?) ORDER BY id ASC;",
+            ("sess_test", 10),
+        )
+        plan_rows = await cursor.fetchall()
+        plan_str = " ".join(r["detail"] for r in plan_rows)
+        assert "idx_messages_session_id_desc" in plan_str
+
+        # Verify crud.get_recent_messages executes cleanly with the index
+        recent = await crud.get_recent_messages(conn, "sess_test", 10)
+        assert recent == []

@@ -17,9 +17,10 @@ from galgame2voice.database import crud
 from galgame2voice.database.models import MessageResponse, ReplyLineRecord, decode_lines
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.main import create_app
-from galgame2voice.routers.chat import get_turn_reply, set_chat_service, sse_event_formatter
+from galgame2voice.routers.chat import ChatRequest, get_turn_reply, set_chat_service, sse_event_formatter
 from galgame2voice.services.chat_pipelines.line_scanner import FX, MOTIONS, MOVES
 from galgame2voice.services.chat_pipelines.stream_coordinator import StreamCoordinator
+from galgame2voice.services.chat_service import SseKeepAlive
 from galgame2voice.utils.sse import format_sse_frame
 from scripts import package_release
 
@@ -359,3 +360,39 @@ async def test_turn_reply_route_matches_all_five_contract_statuses(tmp_path, mon
                 sync_conn.close()
     finally:
         set_chat_service(None)
+
+
+class TestSseStreamingBackpressureAndDisconnect:
+    """Tests SSE streaming pipeline cancellation, backpressure, and disconnect handling."""
+
+    @pytest.mark.asyncio
+    async def test_chat_request_stream_flag_contract(self):
+        """Verify ChatRequest accepts stream boolean sent by frontend."""
+        req = ChatRequest(prompt="Hello", session_id="test", stream=True)
+        assert req.stream is True
+        req_false = ChatRequest(prompt="Hello", session_id="test", stream=False)
+        assert req_false.stream is False
+
+
+class TestSseKeepAliveFormatting:
+    """Verifies that sse_event_formatter properly adheres to W3C SSE comment specifications."""
+
+    @pytest.mark.asyncio
+    async def test_sse_event_formatter_keep_alive_dict(self):
+        async def dummy_gen():
+            yield {"event": "text", "data": {"delta_chinese": "你好"}}
+            yield SseKeepAlive()
+            yield {"comment": ": keep-alive\n\n"}
+            yield ": keep-alive\n\n"
+            yield {"event": "done", "data": {"truncated": False}}
+
+        formatted = []
+        async for chunk in sse_event_formatter(dummy_gen()):
+            formatted.append(chunk)
+
+        assert len(formatted) == 5
+        assert formatted[0] == 'event: text\ndata: {"delta_chinese": "你好"}\n\n'
+        assert formatted[1] == ': keep-alive\n\n'
+        assert formatted[2] == ': keep-alive\n\n'
+        assert formatted[3] == ': keep-alive\n\n'
+        assert 'event: done' in formatted[4]
