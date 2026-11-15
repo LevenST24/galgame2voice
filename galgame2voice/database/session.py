@@ -26,8 +26,12 @@ _init_lock = asyncio.Lock()
 # journal_mode=WAL is persistent in the database file; remember paths already
 # in WAL so per-connection setup skips the (lock-taking) SET.
 _wal_confirmed_paths: set[str] = set()
+_confirmed_parent_dirs: set[str] = set()
 
-
+def _is_memory_db_path(path_str: str) -> bool:
+    """Returns True when ``path_str`` refers to an ephemeral in-memory SQLite database."""
+    return path_str == ":memory:" or path_str.startswith("file::memory:") or "mode=memory" in path_str
+    
 def get_database_path() -> str:
     """Resolve database path from environment or defaults."""
     env_path = os.getenv("GALGAME2VOICE_DB_PATH") or os.getenv("GALGAME_DB_PATH")
@@ -40,10 +44,22 @@ def get_database_path() -> str:
         return DEFAULT_DB_PATH
 
 
-async def configure_connection(conn: aiosqlite.Connection, resolved_path: str | None = None) -> None:
+async def configure_connection(
+    conn: aiosqlite.Connection,
+    resolved_path: str | None = None,
+    *,
+    _abspath_key: str | None = None,
+) -> None:    
     """Configure SQLite pragmas for performance and data integrity."""
     conn.row_factory = aiosqlite.Row
-    key = await asyncio.to_thread(os.path.abspath, resolved_path) if resolved_path else None
+    if resolved_path and _is_memory_db_path(resolved_path):
+        key = None
+    elif _abspath_key is not None:
+        key = _abspath_key
+    elif resolved_path:
+        key = os.path.abspath(resolved_path)
+    else:
+        key = None
     if key is None or key not in _wal_confirmed_paths:
         mode = (await (await conn.execute("PRAGMA journal_mode;")).fetchone())[0]
         if str(mode).lower() != "wal":
@@ -122,16 +138,20 @@ def _get_conn_imm_tx_lock(conn: aiosqlite.Connection) -> asyncio.Lock:
 async def get_db(db_path: str | Path | None = None) -> AsyncGenerator[aiosqlite.Connection, None]:
     """Async context manager yielding an active, configured aiosqlite connection."""
     resolved_path = str(db_path) if db_path is not None else get_database_path()
-    def prepare_path() -> str:
-        absolute_path = os.path.abspath(resolved_path)
-        parent_dir = os.path.dirname(absolute_path)
-        if parent_dir:
-            os.makedirs(parent_dir, exist_ok=True)
-        return os.path.normcase(absolute_path)
-    normalized_path = await asyncio.to_thread(prepare_path)
+    if _is_memory_db_path(resolved_path):
+        normalized_path = resolved_path
+        abspath_key = None
+    else:
+        abspath_key = os.path.abspath(resolved_path)
+        normalized_path = os.path.normcase(abspath_key)
+        parent_dir = os.path.dirname(abspath_key)
+        if parent_dir and (parent_dir not in _confirmed_parent_dirs or not os.path.isdir(parent_dir)):
+            await asyncio.to_thread(os.makedirs, parent_dir, exist_ok=True)
+            _confirmed_parent_dirs.add(parent_dir)
+            
     async with aiosqlite.connect(resolved_path, timeout=30.0) as conn:
         conn._db_path = normalized_path
-        await configure_connection(conn, resolved_path)
+        await configure_connection(conn, resolved_path, _abspath_key=abspath_key)
         yield conn
 
 
