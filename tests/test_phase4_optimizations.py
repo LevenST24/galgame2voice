@@ -404,3 +404,31 @@ class TestPhase4DeepEdgeCases:
         assert should_include(Path("audio/chunk_0_1234.wav")) is False
         assert should_include(Path("audio/full_5678.wav")) is False
         assert should_include(Path("logs/app.log")) is False
+
+
+class TestAnthropicStreamErrorHandling:
+    """Verifies that SSE error chunks raise RuntimeError in both client_override and live modes."""
+
+    async def test_client_override_stream_error_chunk_raises(self):
+        adapter = AnthropicAdapter(api_key="test-key")
+
+        mock_client = AsyncMock()
+        error_sse = (
+            'data: {"type": "content_block_delta", "delta": {"text": "Start"}}\n\n'
+            'data: {"type": "error", "error": {"type": "rate_limit_error", "message": "Rate limited"}}\n\n'
+        )
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = error_sse
+        mock_client.post.return_value = mock_resp
+
+        gen = adapter.stream_chat(
+            messages=[ChatMessage(role="user", content="Hello")],
+            client_override=mock_client,
+        )
+
+        first_token = await anext(gen)
+        assert first_token == "Start"
+
+        with pytest.raises(RuntimeError, match="Anthropic stream error: .*rate_limit_error"):
+            await anext(gen)

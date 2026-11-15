@@ -13,6 +13,8 @@ import tempfile
 
 import pytest
 
+from galgame2voice.database import crud
+from galgame2voice.database.models import MessageCreate, UserMemoryCreate
 from galgame2voice.database.session import get_db, immediate_transaction, init_db
 
 
@@ -103,3 +105,55 @@ async def test_sequential_transactions_on_shared_connection(temp_db):
     async with get_db(temp_db) as conn:
         cursor = await conn.execute("SELECT COUNT(*) FROM t")
         assert (await cursor.fetchone())[0] == 3
+
+
+class TestNestedTransactionRollbackAtomicity:
+    """Confirms that nested CRUD operations do NOT prematurely commit outer transactions."""
+
+    async def test_outer_rollback_reverts_nested_crud_writes(self, tmp_path):
+        """When an outer transaction rolls back, all inner CRUD writes must be undone."""
+        db_file = tmp_path / "rollback_atomicity.db"
+        await init_db(str(db_file))
+
+        async with get_db(str(db_file)) as conn:
+            # Create base session
+            await crud.get_or_create_session(conn, "test_session")
+
+        # Now begin an outer transaction, do multiple CRUD writes, then fail
+        try:
+            async with get_db(str(db_file)) as conn:
+                async with immediate_transaction(conn):
+                    # 1. Add message (which uses immediate_transaction internally)
+                    await crud.add_message(
+                        conn,
+                        MessageCreate(
+                            session_id="test_session",
+                            role="user",
+                            content_chinese="Hello outer",
+                            content_japanese="Konnichiwa",
+                        ),
+                    )
+                    # 2. Create memory (which uses immediate_transaction internally)
+                    await crud.create_memory(
+                        conn,
+                        UserMemoryCreate(
+                            user_id="user1",
+                            character_id=1,
+                            category="fact",
+                            fact_key="fav_food",
+                            fact_value="ramen",
+                            confidence=1.0,
+                        ),
+                    )
+                    # 3. Simulate failure in outer business logic
+                    raise ValueError("Simulated failure in outer scope")
+        except ValueError:
+            pass
+
+        # Verify NOTHING was committed
+        async with get_db(str(db_file)) as conn:
+            messages = await crud.get_recent_messages(conn, "test_session", limit=10)
+            assert len(messages) == 0, f"Expected 0 messages due to outer rollback, found {len(messages)}"
+
+            memories = await crud.list_memories(conn, user_id="user1", character_id=1)
+            assert len(memories) == 0, f"Expected 0 memories due to outer rollback, found {len(memories)}"
