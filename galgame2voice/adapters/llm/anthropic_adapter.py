@@ -152,13 +152,20 @@ class AnthropicAdapter(BaseLLMAdapter):
         """Separates system prompt and formats messages for Anthropic API."""
         system_content = ""
         user_assistant_msgs: list[dict[str, str]] = []
+        saw_dialogue = False
 
         for m in messages:
             role = m.role if hasattr(m, "role") else m.get("role")
             content = m.content if hasattr(m, "content") else m.get("content")
-            if role == "system":
+            if role == "system" and not saw_dialogue:
                 system_content = (system_content + "\n" + content).strip() if system_content else content
+            elif role == "system":
+                # Keep trailing dynamic context blocks after dialogue history instead of
+                # hoisting them into top-level payload["system"], preserving prefix cache.
+                if content and str(content).strip():
+                    user_assistant_msgs.append({"role": "user", "content": str(content).strip()})
             else:
+                saw_dialogue = True
                 user_assistant_msgs.append({
                     "role": "user" if role == "user" else "assistant",
                     "content": content,
