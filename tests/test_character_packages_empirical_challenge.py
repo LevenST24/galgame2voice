@@ -11,6 +11,7 @@ Evaluates:
 
 import hashlib
 import json
+import re
 from pathlib import Path
 import pytest
 
@@ -24,8 +25,10 @@ from galgame2voice.services.emotion_references import (
     resolve_emotion_reference,
     normalize_emotion,
 )
+from galgame2voice.services.streaming_parser import StreamingBilingualParser
 from galgame2voice.services.tts_service import TtsService
 
+TENSHI_5 = ["白雪乃爱", "谷风天音", "小云雀来海", "星河辉耶", "高楯欧丽叶"]
 NEW_FIVE_CHARACTERS = ["白雪乃爱", "谷风天音", "小云雀来海", "星河辉耶", "高楯欧丽叶"]
 ALL_THIRTEEN_CHARACTERS = [
     "四季夏目", "明月栞那", "西园寺风莉", "三司绫濑",
@@ -214,3 +217,114 @@ def test_global_audio_uniqueness_across_all_91_tracks():
 
     assert total_tracks == 91, f"Expected 91 total audio tracks, verified {total_tracks}"
     assert len(global_hashes) == 91, f"Expected 91 unique MD5 hashes, got {len(global_hashes)}"
+
+
+@pytest.mark.requires_character_assets
+@pytest.mark.parametrize("char_name", TENSHI_5)
+def test_prompt_json_example_extraction_and_schema(char_name):
+    """
+    Extracts the JSON example from each heroine's system prompt and validates
+    its structure, keys, values, and adherence to TTS prosody constraints.
+    """
+    settings = get_settings()
+    prompt_file = settings.characters_dir / char_name / "system_prompt.txt"
+    assert prompt_file.is_file(), f"system_prompt.txt missing for {char_name}"
+    content = prompt_file.read_text(encoding="utf-8")
+
+    # Find the JSON snippet in the prompt
+    match = re.search(r'\{"tts":\s*\{[^}]+\},\s*"chinese":\s*"[^"]+",\s*"japanese":\s*"[^"]+"\}', content)
+    assert match is not None, f"Could not find valid JSON format example in {char_name} prompt"
+    json_str = match.group(0)
+
+    # 1. Parse JSON
+    parsed = json.loads(json_str)
+    assert "tts" in parsed
+    assert "chinese" in parsed
+    assert "japanese" in parsed
+
+    tts = parsed["tts"]
+    assert "speed" in tts
+    assert "temp" in tts
+    assert "emotion" in tts
+
+    speed = tts["speed"]
+    temp = tts["temp"]
+    emotion = tts["emotion"]
+
+    # 2. Assert prosody constraints
+    assert isinstance(speed, (int, float))
+    assert 0.5 <= speed <= 1.5, f"{char_name} JSON example speed {speed} not in [0.5, 1.5]"
+
+    assert isinstance(temp, (int, float))
+    assert 0.6 <= temp <= 1.2, f"{char_name} JSON example temp {temp} not in [0.6, 1.2]"
+
+    assert emotion in STANDARD_EMOTIONS, f"{char_name} JSON example emotion {emotion} not in {STANDARD_EMOTIONS}"
+
+
+@pytest.mark.requires_character_assets
+@pytest.mark.parametrize("char_name", TENSHI_5)
+def test_streaming_parser_with_prompt_json_complete_and_chunked(char_name):
+    """
+    Tests feeding each character's prompt JSON through StreamingBilingualParser:
+    - Complete chunk
+    - Token-by-token (1 char at a time)
+    - Markdown fenced code blocks (```json ... ```)
+    """
+    settings = get_settings()
+    content = (settings.characters_dir / char_name / "system_prompt.txt").read_text(encoding="utf-8")
+    match = re.search(r'\{"tts":\s*\{[^}]+\},\s*"chinese":\s*"[^"]+",\s*"japanese":\s*"[^"]+"\}', content)
+    raw_json = match.group(0)
+    expected = json.loads(raw_json)
+
+    # 1. Single chunk test
+    parser = StreamingBilingualParser()
+    parser.feed_chunk(raw_json)
+    ch, ja, _ = parser.finalize()
+
+    assert parser.tts_speed == expected["tts"]["speed"]
+    assert parser.tts_temperature == expected["tts"]["temp"]
+    assert parser.tts_emotion == expected["tts"]["emotion"]
+    assert parser.get_emotion() == expected["tts"]["emotion"]
+    assert ch == expected["chinese"]
+    assert ja == expected["japanese"]
+
+    # 2. Token-by-token streaming (1 character per chunk)
+    parser2 = StreamingBilingualParser()
+    for char in raw_json:
+        parser2.feed_chunk(char)
+    ch2, ja2, _ = parser2.finalize()
+
+    assert parser2.tts_speed == expected["tts"]["speed"]
+    assert parser2.tts_temperature == expected["tts"]["temp"]
+    assert parser2.tts_emotion == expected["tts"]["emotion"]
+    assert ch2 == expected["chinese"]
+    assert ja2 == expected["japanese"]
+
+    # 3. Markdown code block wrapping
+    parser3 = StreamingBilingualParser()
+    md_payload = f"```json\n{raw_json}\n```"
+    parser3.feed_chunk(md_payload)
+    ch3, ja3, _ = parser3.finalize()
+
+    assert parser3.tts_speed == expected["tts"]["speed"]
+    assert parser3.tts_temperature == expected["tts"]["temp"]
+    assert parser3.tts_emotion == expected["tts"]["emotion"]
+    assert ch3 == expected["chinese"]
+    assert ja3 == expected["japanese"]
+
+
+@pytest.mark.requires_character_assets
+def test_manifest_and_system_prompt_txt_synchronized_tenshi_5():
+    """
+    Verifies that manifest.json['system_prompt'] strictly matches system_prompt.txt
+    for all 5 Tenshi Souzou heroines.
+    """
+    settings = get_settings()
+    for name in TENSHI_5:
+        char_dir = settings.characters_dir / name
+        manifest_data = json.loads((char_dir / "manifest.json").read_text(encoding="utf-8"))
+        prompt_txt = (char_dir / "system_prompt.txt").read_text(encoding="utf-8")
+
+        assert manifest_data.get("system_prompt") == prompt_txt, (
+            f"Manifest system_prompt is not strictly synchronized with system_prompt.txt in {name}"
+        )

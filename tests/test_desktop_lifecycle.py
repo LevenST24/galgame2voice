@@ -3,15 +3,21 @@
 import json
 import io
 import os
+import socket
 import subprocess
 import sys
 import time
+import urllib.request
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import psutil
 import pytest
 
 from scripts import desktop_entry, desktop_instance, run_server
+from scripts.run_server import is_port_in_use
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def test_cleanup_never_kills_pid_read_from_disk(tmp_path, monkeypatch):
@@ -210,3 +216,90 @@ def test_native_job_close_kills_child_and_descendant(tmp_path, monkeypatch):
         child.wait(timeout=5)
         if descendant and psutil.pid_exists(descendant):
             psutil.Process(descendant).kill()
+
+
+class TestProcessTerminationAndPortReleaseWindows:
+    """Verifies clean Windows process reclamation and socket re-binding."""
+
+    @pytest.mark.skipif(
+        sys.platform != "win32",
+        reason="Windows Job Object process reclamation and WSAEADDRINUSE-free port rebinding are Windows-specific",
+    )
+    def test_subprocess_server_spawn_terminate_and_port_rebind(self):
+        """
+        Spawn uvicorn in a subprocess on an ephemeral port, verify health response,
+        terminate the process, and verify the port is immediately re-bindable without WSAEADDRINUSE.
+        """
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reservation:
+            reservation.bind(("127.0.0.1", 0))
+            test_port = reservation.getsockname()[1]
+        cmd = [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "galgame2voice.main:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(test_port),
+        ]
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(PROJECT_ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+        try:
+            # Poll /api/health until responsive
+            ready = False
+            t0 = time.perf_counter()
+            while time.perf_counter() - t0 < 30.0:
+                time.sleep(0.5)
+                try:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{test_port}/api/health", timeout=1.0) as resp:
+                        if resp.status == 200:
+                            ready = True
+                            break
+                except Exception:
+                    pass
+
+            assert ready, f"Uvicorn server failed to respond on port {test_port} within 30s"
+            assert is_port_in_use(test_port), f"Port {test_port} must be marked in use while running"
+
+        finally:
+            # Terminate server
+            proc.terminate()
+            try:
+                proc.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=2.0)
+
+        # Verify process is dead
+        assert proc.poll() is not None, "Process failed to terminate"
+
+        # Verify the port is reclaimed by the kernel and re-bindable.
+        # On Windows, socket handle cleanup after TerminateProcess is asynchronous,
+        # so retry within a bounded window instead of demanding instantaneous rebind.
+        deadline = time.perf_counter() + 10.0
+        last_error: OSError | None = None
+        while time.perf_counter() < deadline:
+            test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                # Bind without SO_REUSEADDR to strictly verify kernel port reclamation
+                test_sock.bind(("127.0.0.1", test_port))
+                test_sock.listen(1)
+                last_error = None
+                break
+            except OSError as e:
+                last_error = e
+                time.sleep(0.25)
+            finally:
+                test_sock.close()
+
+        if last_error is not None:
+            pytest.fail(
+                f"Port {test_port} was not released within 10s of process exit: {last_error}"
+            )
