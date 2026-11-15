@@ -544,12 +544,21 @@ async function refreshScanOptions(revision, dom) {
         : list.length ? '（请选择模型或参考音频文件）' : emptyHint;
       sel.appendChild(opt);
     }
-    for (const file of list) {
+    const tally = (keys) => keys.reduce((m, k) => m.set(k, (m.get(k) || 0) + 1), new Map());
+    const nameCounts = tally(list.map(file => file.name));
+    const labels = list.map((file) => {
+      if (nameCounts.get(file.name) <= 1) return file.name;
+      const dir = file.path.split(/[\\/]+/).at(-2);
+      return dir ? `${dir} / ${file.name}` : file.path;
+    });
+    const labelCounts = tally(labels);
+    list.forEach((file, i) => {
       const opt = document.createElement('option');
       opt.value = file.path;
-      opt.textContent = file.name;
+      opt.title = file.path;
+      opt.textContent = labelCounts.get(labels[i]) > 1 ? file.path : labels[i];
       sel.appendChild(opt);
-    }
+    });
     sel.value = stillAvailable ? previous : needsChoice ? '' : list[0]?.path || '';
   };
   try {
