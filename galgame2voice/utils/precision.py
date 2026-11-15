@@ -178,11 +178,6 @@ def write_sovits_yaml_config(
         return None
 
 
-def write_sovits_yaml_is_half(sovits_dir: str | Path | None, is_half: bool) -> Path | None:
-    """Compatibility helper for synchronizing custom.is_half."""
-    return write_sovits_yaml_config(sovits_dir, is_half=is_half)
-
-
 def read_db_precision(project_root: Path, *, db_path: Path | None = None) -> str | None:
     """Reads inference_precision ('auto' | 'fp16' | 'fp32' | 'cpu') from SQLite settings table."""
     db_path = db_path if db_path is not None else project_root / "data" / "galgame2voice.db"
@@ -359,13 +354,3 @@ def resolve_initial_device_and_half(
     if not has_gpu:
         return DEVICE_CPU, False, "default"
     return DEVICE_CUDA, True, "default"
-
-
-def resolve_initial_is_half(
-    project_root: Path,
-    sovits_dir: Path,
-    environ: dict[str, str] | None = None,
-) -> tuple[bool, str]:
-    """Compatibility helper returning (is_half, source)."""
-    _, is_half, source = resolve_initial_device_and_half(project_root, sovits_dir, environ)
-    return is_half, source

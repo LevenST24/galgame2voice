@@ -7,7 +7,6 @@ from galgame2voice.adapters.base import (
     ChatMessage,
     LLMResponse,
     TestResult,
-    ProviderTestResult,
     BaseLLMAdapter,
     BaseSTTAdapter,
 )
@@ -23,7 +22,6 @@ __all__ = [
     "ChatMessage",
     "LLMResponse",
     "TestResult",
-    "ProviderTestResult",
     "BaseLLMAdapter",
     "BaseSTTAdapter",
     "PROVIDER_PRESETS",

@@ -22,11 +22,6 @@ PROVIDER_REGISTRY: dict[str, type[BaseLLMProvider]] = {
 }
 
 
-def register_provider(provider_id: str, provider_class: type[BaseLLMProvider]) -> None:
-    """Registers a new LLM provider implementation."""
-    PROVIDER_REGISTRY[provider_id.lower().strip()] = provider_class
-
-
 def get_provider_class(provider_id: str) -> type[BaseLLMProvider] | None:
     """Retrieves the provider implementation class by ID."""
     return PROVIDER_REGISTRY.get(provider_id.lower().strip())
@@ -48,15 +43,8 @@ def create_provider(
     return cls(api_key=api_key, **kwargs)
 
 
-def list_registered_providers() -> list[str]:
-    """Lists registered provider identifiers."""
-    return sorted(list(PROVIDER_REGISTRY.keys()))
-
-
 __all__ = [
     "PROVIDER_REGISTRY",
-    "register_provider",
     "get_provider_class",
     "create_provider",
-    "list_registered_providers",
 ]

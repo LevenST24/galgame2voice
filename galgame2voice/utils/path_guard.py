@@ -296,19 +296,6 @@ def validate_path_containment(
     return candidate
 
 
-def is_path_safe(
-    path: str | Path,
-    allowed_roots: Sequence[str | Path] | None = None,
-    base_dir: str | Path | None = None,
-) -> bool:
-    """Returns True if path is valid and strictly bounded, False otherwise."""
-    try:
-        validate_path_containment(path, allowed_roots=allowed_roots, base_dir=base_dir)
-        return True
-    except (PathTraversalError, ValueError, OSError):
-        return False
-
-
 def safe_resolve_audio_path(
     path_or_filename: str | Path,
     allowed_roots: Sequence[str | Path] | None = None,
@@ -515,7 +502,6 @@ __all__ = [
     "discover_gpt_sovits_roots",
     "get_authorized_roots",
     "validate_path_containment",
-    "is_path_safe",
     "safe_resolve_audio_path",
     "validate_voice_profile_paths",
     "resolve_existing_audio_path",

@@ -361,10 +361,6 @@ class LLMResponse(BaseModel):
     usage: dict[str, Any] | None = Field(default=None, description="Token usage statistics")
 
 
-# Alias for backward compatibility
-ChatResponse = LLMResponse
-
-
 class TestResult(BaseModel):
     """Result of provider connectivity, authentication, and latency testing."""
     __test__ = False  # Avoid pytest test collector discovery
@@ -376,10 +372,6 @@ class TestResult(BaseModel):
     error: str | None = Field(default=None, description="Error classification")
     diagnostic: str | None = Field(default=None, description="User-friendly Chinese troubleshooting guidance")
     status_code: int | None = Field(default=None, description="HTTP status code from probe")
-
-
-# Alias for backward compatibility with tests
-ProviderTestResult = TestResult
 
 
 class MissingApiKeyError(ValueError):

@@ -17,14 +17,6 @@ def is_profiling_enabled() -> bool:
     return val in ("1", "true", "yes", "on")
 
 
-def set_profiling_enabled(enabled: bool = True) -> None:
-    """Explicitly enables or disables profiling mode."""
-    if enabled:
-        os.environ["GALGAME2VOICE_PROFILE"] = "1"
-    else:
-        os.environ.pop("GALGAME2VOICE_PROFILE", None)
-
-
 class ChatTurnProfiler:
     """
     Tracks and visualizes latency checkpoints for a single chat turn (T0 ~ T7).
@@ -95,10 +87,6 @@ class ChatTurnProfiler:
     def record_playback_started(self) -> None:
         if self.t_playback_started is None:
             self.t_playback_started = time.perf_counter()
-
-    @property
-    def app_first_chunk_ts(self) -> float | None:
-        return self.t_first_audio
 
     def _diff_ms(self, t: float | None) -> float | None:
         """Milliseconds from t_start, or None when the checkpoint was never reached."""
@@ -229,6 +217,5 @@ class ChatTurnProfiler:
 
 __all__ = [
     "is_profiling_enabled",
-    "set_profiling_enabled",
     "ChatTurnProfiler",
 ]

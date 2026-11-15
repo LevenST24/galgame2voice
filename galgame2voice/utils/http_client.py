@@ -32,7 +32,7 @@ import httpx
 
 logger = logging.getLogger("galgame2voice.utils.http_client")
 
-__all__ = ["create_async_client", "create_sync_client", "proxy_environment_is_usable", "PROXY_ENV_HINT"]
+__all__ = ["create_async_client", "proxy_environment_is_usable", "PROXY_ENV_HINT"]
 
 PROXY_ENV_HINT = (
     "Check NO_PROXY/HTTP_PROXY/HTTPS_PROXY for malformed entries such as the "
@@ -69,11 +69,6 @@ def create_async_client(**kwargs: Any) -> httpx.AsyncClient:
     ``trust_env=False`` instead of raising ``httpx.InvalidURL``.
     """
     return _build_with_fallback(httpx.AsyncClient, kwargs)
-
-
-def create_sync_client(**kwargs: Any) -> httpx.Client:
-    """Sync counterpart of :func:`create_async_client`."""
-    return _build_with_fallback(httpx.Client, kwargs)
 
 
 def proxy_environment_is_usable() -> bool:

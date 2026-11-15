@@ -27,10 +27,6 @@ from galgame2voice.utils.http_client import create_async_client
 
 logger = logging.getLogger("galgame2voice.adapters.llm.openai")
 
-# Backward compatibility aliases
-_parse_retry_after = parse_retry_after
-_calculate_backoff_delay = calculate_backoff_delay
-
 # Parameters that are valid for OpenAI but rejected by Google Gemini's
 # OpenAI-compatible endpoint (generativelanguage.googleapis.com).
 _GEMINI_UNSUPPORTED_PARAMS = frozenset({

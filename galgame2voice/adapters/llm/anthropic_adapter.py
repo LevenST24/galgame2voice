@@ -28,10 +28,6 @@ from galgame2voice.utils.http_client import create_async_client
 
 logger = logging.getLogger("galgame2voice.adapters.llm.anthropic")
 
-# Backward compatibility aliases
-_parse_retry_after = parse_retry_after
-_calculate_backoff_delay = calculate_backoff_delay
-
 _THINKING_OFF_BY_PREFIX = {
     "claude-sonnet-5-5": "between_tools",
     "claude-haiku-5-5": "disabled",
