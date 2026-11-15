@@ -3,10 +3,13 @@ Test suite for startup performance and latency optimizations.
 """
 
 import asyncio
+import sqlite3
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 import pytest
 
+from galgame2voice.database import crud
+from galgame2voice.database.models import MessageCreate
 from galgame2voice.services.gpt_sovits_client import GptSovitsClient
 from galgame2voice.services.voice_manager import VoiceManager
 from galgame2voice.database.session import get_db, init_db
@@ -154,3 +157,95 @@ async def test_lifespan_drains_resources_when_serving_context_raises(monkeypatch
             raise RuntimeError("serving context failed")
     shutdown_mock.assert_awaited_once()
     assert cleanup_tasks[0].done()
+
+
+class TestServerLifespanCyclesAndCheckpointing:
+    """Verifies server startup and shutdown lifespans, detecting lingering locks or regressions."""
+
+    @pytest.mark.asyncio
+    async def test_lifespan_startup_gpt_sovits_url_unbound_local_regression(self, tmp_path, monkeypatch):
+        """
+        Adversarial probe: Verify that lifespan startup successfully reads gpt_sovits_url
+        from the DB without raising UnboundLocalError for 'get_db'.
+        """
+        test_db = tmp_path / "lifespan_scope_test.db"
+        monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(test_db))
+        await init_db(test_db)
+
+        # Set custom gpt_sovits_url in DB settings
+        async with get_db(test_db) as conn:
+            await conn.execute("UPDATE settings SET gpt_sovits_url = 'http://127.0.0.1:19880' WHERE id = 1;")
+            await conn.commit()
+
+        app = create_app()
+
+        # Capture warnings/errors during lifespan startup
+        import logging
+        records = []
+
+        class LogHandler(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        handler = LogHandler()
+        logging.getLogger("galgame2voice.main").addHandler(handler)
+
+        try:
+            async with app.router.lifespan_context(app):
+                pass
+        finally:
+            logging.getLogger("galgame2voice.main").removeHandler(handler)
+
+        unbound_errors = [
+            r.getMessage() for r in records
+            if "cannot access local variable 'get_db'" in r.getMessage()
+            or "UnboundLocalError" in str(r.exc_info)
+        ]
+        assert len(unbound_errors) == 0, (
+            f"Lifespan startup suffered UnboundLocalError on get_db: {unbound_errors}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_lifespan_shutdown_wal_checkpoint_truncate_zero_locks(self, tmp_path, monkeypatch):
+        """
+        Verify that PRAGMA wal_checkpoint(TRUNCATE) executes on shutdown and leaves zero
+        lingering transaction locks across multiple sequential startup/shutdown cycles.
+        """
+        test_db = tmp_path / "lifespan_cycles.db"
+        monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(test_db))
+        await init_db(test_db)
+
+        app = create_app()
+
+        for cycle in range(3):
+            # Startup phase
+            async with app.router.lifespan_context(app):
+                # Write data during active session
+                async with get_db(test_db) as conn:
+                    for i in range(5):
+                        await crud.add_message(conn, MessageCreate(
+                            session_id=f"cycle-sess-{cycle}",
+                            role="user",
+                            content_chinese=f"Cycle {cycle} Msg {i}",
+                            content_japanese=f"Cycle {cycle} Msg {i}"
+                        ))
+            # Shutdown phase has completed here.
+
+            # Empirical Lock Verification: Open direct exclusive connection
+            # If any transaction lock lingered, BEGIN EXCLUSIVE will raise OperationalError.
+            direct_conn = sqlite3.connect(str(test_db), timeout=1.0)
+            try:
+                cur = direct_conn.cursor()
+                cur.execute("BEGIN EXCLUSIVE;")
+                cur.execute("SELECT COUNT(*) FROM messages;")
+                count = cur.fetchone()[0]
+                assert count == (cycle + 1) * 5
+                direct_conn.commit()
+
+                # Verify WAL checkpoint status
+                cur.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                res = cur.fetchall()
+                # res is [(busy, log, checkpointed)]
+                assert res[0][0] == 0, f"WAL checkpoint returned busy={res[0][0]}"
+            finally:
+                direct_conn.close()
