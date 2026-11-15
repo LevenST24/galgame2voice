@@ -23,7 +23,7 @@ from galgame2voice.database.models import (
     MessageBase, MessageInDB, MessageResponse, MessageCreate,
     TtsOptions,
     UserMemoryBase, UserMemoryCreate, UserMemoryUpdate, UserMemoryInDB, UserMemoryResponse,
-    CharacterAffectionBase, CharacterAffectionCreate, CharacterAffectionUpdate, CharacterAffectionInDB, CharacterAffectionResponse
+    CharacterAffectionBase, CharacterAffectionUpdate, CharacterAffectionResponse
 )
 from galgame2voice.database.crud import (
     mask_api_key, is_masked_key,
@@ -34,10 +34,10 @@ from galgame2voice.database.crud import (
     create_voice_profile, update_voice_profile, set_active_voice_profile, delete_voice_profile,
     get_or_create_session, get_session, list_sessions, list_sessions_overview, upsert_session, delete_session, clear_session_messages,
     add_message, get_recent_messages, count_session_messages,
-    create_memory, get_memory, list_memories, update_memory, delete_memory, clear_memories,
-    upsert_memory, record_memory_recall,
+    create_memory, get_memory, list_memories,
+    upsert_memory,
     calculate_affection_level, get_or_create_character_affection, get_character_affection,
-    update_character_affection, reset_character_affection, increment_affection, unlock_character_dialogues
+    update_character_affection, increment_affection, unlock_character_dialogues
 )
 
 __all__ = [
@@ -51,7 +51,7 @@ __all__ = [
     "MessageBase", "MessageInDB", "MessageResponse", "MessageCreate",
     "TtsOptions",
     "UserMemoryBase", "UserMemoryCreate", "UserMemoryUpdate", "UserMemoryInDB", "UserMemoryResponse",
-    "CharacterAffectionBase", "CharacterAffectionCreate", "CharacterAffectionUpdate", "CharacterAffectionInDB", "CharacterAffectionResponse",
+    "CharacterAffectionBase", "CharacterAffectionUpdate", "CharacterAffectionResponse",
     "mask_api_key", "is_masked_key",
     "get_settings", "get_settings_raw", "update_settings", "verify_console_token",
     "list_providers", "get_provider", "get_provider_raw", "get_active_provider", "get_active_provider_raw",
@@ -60,9 +60,9 @@ __all__ = [
     "create_voice_profile", "update_voice_profile", "set_active_voice_profile", "delete_voice_profile",
     "get_or_create_session", "get_session", "list_sessions", "list_sessions_overview", "upsert_session", "delete_session", "clear_session_messages",
     "add_message", "get_recent_messages", "count_session_messages",
-    "create_memory", "get_memory", "list_memories", "update_memory", "delete_memory", "clear_memories",
-    "upsert_memory", "record_memory_recall",
+    "create_memory", "get_memory", "list_memories",
+    "upsert_memory",
     "calculate_affection_level", "get_or_create_character_affection", "get_character_affection",
-    "update_character_affection", "reset_character_affection", "increment_affection", "unlock_character_dialogues"
+    "update_character_affection", "increment_affection", "unlock_character_dialogues"
 ]
 

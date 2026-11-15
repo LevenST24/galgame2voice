@@ -230,17 +230,6 @@ async def delete_voice_profile(profile_id: int) -> dict[str, Any]:
 # ============================================================================
 
 
-async def _lookup_voice_profile(
-    conn: Any,
-    profile_id: int | None,
-    profile_name: str | None,
-) -> Any | None:
-    """Looks up voice profile by ID or unified character/profile name rules."""
-    return await get_character_voice_catalog().lookup_profile(
-        conn, profile_id, profile_name, character_manager=get_character_manager()
-    )
-
-
 @router.post(
     "/switch",
     summary="Switch Active Voice Profile",

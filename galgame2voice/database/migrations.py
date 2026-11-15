@@ -22,10 +22,6 @@ from galgame2voice.adapters.registry import PROVIDER_PRESETS, RETIRED_CHAT_MODEL
 
 logger = logging.getLogger("galgame2voice.database.migrations")
 
-# Compatibility exports for existing integrations; not used to seed new databases.
-_DEFAULT_REF_AUDIO = "audio/references/natsume/gentle.ogg"
-_DEFAULT_REF_TEXT = "とりあえず、今日見たことは忘れて、わかった?"
-
 # ==================== Schema Versioning & Migrations ====================
 
 CURRENT_SCHEMA_VERSION = 7

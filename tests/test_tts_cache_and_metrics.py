@@ -17,7 +17,6 @@ from typing import Dict, Any
 from fastapi.testclient import TestClient
 from galgame2voice.main import app, _audio_cleanup_loop
 from galgame2voice.database.session import get_db, init_db
-from galgame2voice.database import crud
 from galgame2voice.services.tts_cache_manager import TtsCacheManager, get_tts_cache_manager
 from galgame2voice.services.metrics_collector import MetricsCollector, get_metrics_collector, MODEL_PRICING_MAP
 from galgame2voice.services.tts_service import TtsService
@@ -502,27 +501,12 @@ class TestMetricsCollectorAndTelemetry:
         )
 
         async with get_db(db_p) as conn:
-            overview = await crud.get_metrics_overview(conn)
             cur = await conn.execute("SELECT * FROM token_usage_metrics ORDER BY id ASC")
             rows = await cur.fetchall()
-        assert overview["total_requests"] == 2
-        assert overview["total_prompt_tokens"] == 3000
-        assert overview["total_completion_tokens"] == 1300
-        assert overview["total_tokens"] == 4300
-        assert overview["avg_ttft_ms"] == 300.0
 
         assert len(rows) == 2
         p_ids = {r["provider_id"] for r in rows}
         assert p_ids == {"deepseek", "openai"}
-
-    @pytest.mark.asyncio
-    async def test_metrics_overview_empty_database_is_zero(self, tmp_path):
-        db_p = tmp_path / "empty_metrics.db"
-        await init_db(db_p)
-        async with get_db(db_p) as conn:
-            overview = await crud.get_metrics_overview(conn)
-        assert overview["total_requests"] == 0
-        assert overview["total_tokens"] == 0
 
     @pytest.mark.asyncio
     async def test_record_metric_rejects_negative_tokens_and_bad_latencies(self, tmp_path):
@@ -574,16 +558,10 @@ class TestMetricsCollectorAndTelemetry:
         assert len(collector.ring_buffer) == 50
 
         async with get_db(db_p) as conn:
-            overview = await crud.get_metrics_overview(conn)
             cur = await conn.execute(
                 "SELECT provider_id, COUNT(*) FROM token_usage_metrics GROUP BY provider_id"
             )
             provider_counts = dict(await cur.fetchall())
-        assert overview["total_requests"] == num_tasks
-        assert overview["total_prompt_tokens"] == num_tasks * prompt_per_task
-        assert overview["total_completion_tokens"] == num_tasks * comp_per_task
-        assert overview["total_tokens"] == num_tasks * (prompt_per_task + comp_per_task)
-        assert overview["estimated_cost_usd"] > 0.0
         assert provider_counts == {"deepseek": num_tasks // 2, "openai": num_tasks // 2}
 
 
@@ -678,11 +656,8 @@ class TestChatServiceTelemetryIntegration:
 
         # Verify persisted to SQLite
         async with get_db(db_p) as conn:
-            overview = await crud.get_metrics_overview(conn)
             cur = await conn.execute("SELECT * FROM token_usage_metrics")
             rows = await cur.fetchall()
-        assert overview["total_requests"] >= 1
-        assert overview["total_tokens"] > 0
         assert len(rows) >= 1
         assert rows[0]["session_id"] == "test_stream_sess"
         assert rows[0]["model_name"] == "deepseek-chat"

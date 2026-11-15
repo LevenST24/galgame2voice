@@ -411,9 +411,6 @@ class StaticCacheControlMiddleware:
         await self.app(scope, receive, send)
 
 
-_StaticCacheControlMiddleware = StaticCacheControlMiddleware
-
-
 def create_app(*, engine_supervisor: EngineSupervisor | None = None) -> FastAPI:
     """Factory function creating configured FastAPI application instance."""
     settings = get_settings()

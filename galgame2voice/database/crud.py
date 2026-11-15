@@ -13,9 +13,7 @@ import logging
 from galgame2voice.database.crud_modules.memory_affection import (
     _format_affection_response,
     calculate_affection_level,
-    clear_memories,
     create_memory,
-    delete_memory,
     delete_memory_by_key,
     get_character_affection,
     get_memory,
@@ -23,12 +21,9 @@ from galgame2voice.database.crud_modules.memory_affection import (
     get_user_affections_for_profiles,
     increment_affection,
     list_memories,
-    record_memory_recall,
     record_memory_recall_batch,
-    reset_character_affection,
     unlock_character_dialogues,
     update_character_affection,
-    update_memory,
     upsert_memory,
 )
 from galgame2voice.database.crud_modules.providers import (
@@ -60,18 +55,14 @@ from galgame2voice.database.crud_modules.sessions import (
     upsert_session,
 )
 from galgame2voice.database.crud_modules.settings_cache import (
-    clean_tts_cache_lru,
     clear_all_tts_cache_entries,
     delete_tts_cache_entry,
-    get_metrics_overview,
     get_oldest_tts_cache_entries,
     get_settings,
     get_settings_raw,
     get_tts_cache_entry,
     get_tts_cache_stats,
     insert_token_metric,
-    record_tts_cache_hit,
-    record_tts_cache_miss,
     touch_tts_cache_entry,
     batch_touch_tts_cache_entries,
     update_settings,
@@ -90,8 +81,6 @@ from galgame2voice.database.crud_modules.voice_profiles import (
 )
 from galgame2voice.database.migrations import (
     CURRENT_SCHEMA_VERSION,
-    _DEFAULT_REF_AUDIO,
-    _DEFAULT_REF_TEXT,
     _add_column_if_missing,
     _get_table_columns,
     _migration_v1_base_schema,
@@ -123,8 +112,6 @@ __all__ = [
     "_migration_v5_precision_and_column_integrity",
     "_migration_v6_session_titles_and_settings",
     "_migration_v7_legacy_character_fk_rebuild",
-    "_DEFAULT_REF_AUDIO",
-    "_DEFAULT_REF_TEXT",
     # Providers
     "mask_api_key",
     "is_masked_key",
@@ -164,12 +151,8 @@ __all__ = [
     "create_memory",
     "get_memory",
     "list_memories",
-    "update_memory",
-    "delete_memory",
     "delete_memory_by_key",
-    "clear_memories",
     "upsert_memory",
-    "record_memory_recall",
     "record_memory_recall_batch",
     "calculate_affection_level",
     "_format_affection_response",
@@ -177,7 +160,6 @@ __all__ = [
     "get_user_affections_for_profiles",
     "get_character_affection",
     "update_character_affection",
-    "reset_character_affection",
     "unlock_character_dialogues",
     "increment_affection",
     # Settings & TTS Cache
@@ -193,11 +175,7 @@ __all__ = [
     "get_oldest_tts_cache_entries",
     "get_tts_cache_stats",
     "clear_all_tts_cache_entries",
-    "record_tts_cache_hit",
-    "record_tts_cache_miss",
-    "clean_tts_cache_lru",
     "insert_token_metric",
-    "get_metrics_overview",
     # Module logger
     "logger",
 ]
