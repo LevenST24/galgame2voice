@@ -1,6 +1,7 @@
 import pytest
 
 from galgame2voice.services.chat_pipelines.line_scanner import LineScanner
+from galgame2voice.services import streaming_parser
 from galgame2voice.services.streaming_parser import StreamingBilingualParser
 from galgame2voice.services.chat_pipelines.tts_pipeline import TtsStreamPipeline
 from galgame2voice.utils.japanese_phonetics import (
@@ -400,3 +401,56 @@ def test_strip_reasoning_tags_removes_thinking_block():
     assert strip_reasoning_tags("你好<thinking>草稿</thinking>世界") == "你好世界"
     assert strip_reasoning_tags("<thinking/>你好") == "你好"
     assert strip_reasoning_tags("<thinking>只有思考</thinking>") == ""
+
+
+def test_long_think_block_is_not_rescanned_on_every_chunk(monkeypatch):
+    """A model that streams a long <think> block before its reply used to make feed_chunk rescan the whole
+    buffer on every chunk, so parsing time grew with the square of the thinking length."""
+    scanned = []
+    real = streaming_parser._RE_THINK_BLOCK_UNCLOSED
+
+    class CountingPattern:
+        def search(self, text):
+            scanned.append(len(text))
+            return real.search(text)
+
+    monkeypatch.setattr(streaming_parser, "_RE_THINK_BLOCK_UNCLOSED", CountingPattern())
+    parser = StreamingBilingualParser()
+    parser.feed_chunk("<think>")
+    for i in range(1500):
+        parser.feed_chunk(f"第{i}步，先想一想。")
+    parser.feed_chunk("</think>")
+    parser.feed_chunk('{"lines":[{"zh":"你好","ja":"こんにちは","emotion":"happy"}]}')
+
+    assert len(scanned) < 10
+    assert parser.chinese_extracted == "你好"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '<think>a > b 的时候</think>{"zh":"好的","ja":"はい"}',
+        "<think>先想想</thought>还在想</think>你好",
+        "<THINK>草稿</Think>后面的话",
+        "<<think>x</think>",
+        '<think a=">">内容</think>正文',
+        "前面的话<think>没有闭合",
+    ],
+)
+def test_think_block_shortcut_gives_the_same_output_as_rescanning(monkeypatch, text):
+    def feed(step):
+        parser = StreamingBilingualParser()
+        return [parser.feed_chunk(text[i : i + step]) for i in range(0, len(text), step)], parser.finalize()
+
+    real = streaming_parser._strip_think_buffer
+
+    def never_frozen(buf, is_final=False):
+        effective, inside, _ = real(buf, is_final)
+        return effective, inside, False
+
+    for step in (1, 2, 3, 7):
+        shortcut = feed(step)
+        with monkeypatch.context() as m:
+            m.setattr(streaming_parser, "_strip_think_buffer", never_frozen)
+            rescanned = feed(step)
+        assert shortcut == rescanned, step

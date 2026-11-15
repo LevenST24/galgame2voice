@@ -90,8 +90,16 @@ def _strip_and_check_think_buffer(buffer: str, is_final: bool = False) -> tuple[
     Returns:
         (effective_text, is_inside_or_pending_think)
     """
+    effective, inside, _ = _strip_think_buffer(buffer, is_final)
+    return effective, inside
+
+
+def _strip_think_buffer(buffer: str, is_final: bool = False) -> tuple[str, bool, bool]:
+    """``_strip_and_check_think_buffer`` plus whether the buffer ends inside a think block whose opening tag is
+    complete. Appending text without a ``>`` to such a buffer cannot change the first two values: every block
+    match and every closing tag ends at a ``>``, and the unclosed block still starts at the same place."""
     if not buffer:
-        return "", False
+        return "", False, False
 
     # 1. Strip all closed think blocks (loop to handle nested blocks)
     cleaned = buffer
@@ -104,7 +112,7 @@ def _strip_and_check_think_buffer(buffer: str, is_final: bool = False) -> tuple[
     m_unclosed = _RE_THINK_BLOCK_UNCLOSED.search(cleaned)
     if m_unclosed:
         effective = _RE_THINK_TAG_ORPHAN_CLOSE.sub("", cleaned[: m_unclosed.start()])
-        return effective, True
+        return effective, True, ">" in cleaned[m_unclosed.start() :]
 
     # 3. Check for partial prefix at the tail (e.g. "<", "<th", "<thought")
     m_pfx = _RE_THINK_TAG_PREFIX_PENDING.search(cleaned)
@@ -114,12 +122,12 @@ def _strip_and_check_think_buffer(buffer: str, is_final: bool = False) -> tuple[
             pfx and any(tag.startswith(pfx) for tag in ("think", "thinking", "thought", "reasoning"))
         ):
             effective = _RE_THINK_TAG_ORPHAN_CLOSE.sub("", cleaned[: m_pfx.start()])
-            return effective, True
+            return effective, True, False
 
     # 4. Strip orphaned closing tags if any
     cleaned = _RE_THINK_TAG_ORPHAN_CLOSE.sub("", cleaned)
 
-    return cleaned, False
+    return cleaned, False, False
 
 
 def _extract_numeric_param(
@@ -212,6 +220,8 @@ class StreamingBilingualParser:
         self._lines_started = False
         self.lines_truncated = False
         self.buffer: str = ""
+        # Strip result kept while the buffer is inside a think block with a complete opening tag (see feed_chunk).
+        self._think_frozen: tuple[str, bool] | None = None
         self.chinese_extracted: str = ""
         self.japanese_extracted: str = ""
         self.emotion_extracted: str = ""
@@ -473,7 +483,13 @@ class StreamingBilingualParser:
             self.emitted_chinese_len = len(self.chinese_extracted)
             return delta, []
 
-        effective_buffer, is_inside_think = _strip_and_check_think_buffer(self.buffer)
+        if self._think_frozen is not None and ">" not in chunk:
+            # Inside a think block whose opening tag is complete, a chunk without '>' cannot finish a closing tag,
+            # so the result stays the same. Rescanning the whole buffer here made long think blocks quadratic.
+            effective_buffer, is_inside_think = self._think_frozen
+        else:
+            effective_buffer, is_inside_think, frozen = _strip_think_buffer(self.buffer)
+            self._think_frozen = (effective_buffer, is_inside_think) if frozen else None
         if is_inside_think and not effective_buffer.strip():
             return "", []
 
