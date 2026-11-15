@@ -62,6 +62,10 @@ class CharacterManifest(BaseModel):
     emotions: dict[str, EmotionConfig] = Field(default_factory=dict, description="Emotion to reference audio mapping")
     is_default: bool = Field(default=False, description="Whether this character is the default character")
     aliases: list[str] = Field(default_factory=list, description="Optional alternate names or aliases for matching")
+    preference_keywords: list[str] = Field(
+        default_factory=list,
+        description="Optional character-specific preference keywords for affection scoring",
+    )    
     portrait: dict[str, Any] | None = Field(default=None, description="Optional portrait metadata")
     # Cleaned on read (clean_character_work): a bad optional value must not invalidate the package.
     work: str | None = Field(default=None, description="Background work/pack this character belongs to")
