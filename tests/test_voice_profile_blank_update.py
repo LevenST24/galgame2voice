@@ -4,7 +4,8 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from galgame2voice.database import crud
-from galgame2voice.database.session import get_db
+from galgame2voice.database.models import VoiceProfileCreate, VoiceProfileUpdate
+from galgame2voice.database.session import get_db, init_db
 from galgame2voice.main import create_app
 
 
@@ -158,3 +159,47 @@ async def test_valid_profile_create_strips_paths_and_allows_nonexistent_local_fi
         assert stored_remote.name == "远端引擎文件系统音色"
         assert stored_remote.gpt_weights_path == "weights/remote_engine_host_gpt.ckpt"
         assert stored_remote.sovits_weights_path == "weights/remote_engine_host_sovits.pth"
+
+
+@pytest.mark.asyncio
+async def test_update_voice_profile_enforces_single_default(tmp_path):
+    """Setting is_default=True via update_voice_profile must clear is_default on all other profiles."""
+    db_path = str(tmp_path / "voice_default_excl.db")
+    await init_db(db_path)
+
+    async with get_db(db_path) as conn:
+        p1 = await crud.create_voice_profile(
+            conn,
+            VoiceProfileCreate(
+                name="CharA",
+                gpt_weights_path="models/a.ckpt",
+                sovits_weights_path="models/a.pth",
+                is_default=True,
+            ),
+        )
+        p2 = await crud.create_voice_profile(
+            conn,
+            VoiceProfileCreate(
+                name="CharB",
+                gpt_weights_path="models/b.ckpt",
+                sovits_weights_path="models/b.pth",
+                is_default=False,
+            ),
+        )
+        assert p1.is_default is True
+        assert p2.is_default is False
+
+        updated_p2 = await crud.update_voice_profile(
+            conn,
+            p2.id,
+            VoiceProfileUpdate(is_default=True),
+        )
+        assert updated_p2 is not None and updated_p2.is_default is True
+
+        refreshed_p1 = await crud.get_voice_profile(conn, p1.id)
+        assert refreshed_p1 is not None and refreshed_p1.is_default is False
+
+        profiles = await crud.list_voice_profiles(conn)
+        defaults = [p for p in profiles if p.is_default]
+        assert len(defaults) == 1
+        assert defaults[0].id == p2.id

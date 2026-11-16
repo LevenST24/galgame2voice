@@ -13,8 +13,9 @@ import sys
 import tempfile
 import wave
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import imageio_ffmpeg
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -459,6 +460,354 @@ async def test_convert_wav_to_ogg_with_mocked_ffmpeg(monkeypatch):
     assert len(captured_paths) == 2
     for p in captured_paths:
         assert not p.exists()
+
+
+class TestFFmpegDiscoveryBundledFallback:
+    """Verifies that find_ffmpeg discovers imageio-ffmpeg when PATH is stripped."""
+
+    @pytest.mark.requires_piped_subprocess
+    def test_find_ffmpeg_path_stripped_discovers_bundled_imageio(self, monkeypatch):
+        """When PATH is empty and no env override exists, find_ffmpeg must return imageio-ffmpeg."""
+        reset_ffmpeg_cache()
+        monkeypatch.setenv("PATH", "")
+        monkeypatch.delenv("FFMPEG_PATH", raising=False)
+        monkeypatch.delenv("FFMPEG_BIN", raising=False)
+        monkeypatch.setattr("galgame2voice.utils.audio_converter._find_ffmpeg_in_python_env", lambda *a: None)
+        monkeypatch.setattr("galgame2voice.utils.audio_converter._find_ffmpeg_in_project_dirs", lambda *a: None)
+
+        # Ensure imageio_ffmpeg binary path is valid on this machine
+        expected_bin = imageio_ffmpeg.get_ffmpeg_exe()
+        assert Path(expected_bin).is_file(), f"imageio_ffmpeg binary missing at {expected_bin}"
+
+        discovered = find_ffmpeg()
+        assert discovered is not None
+        assert Path(discovered).is_file()
+        assert Path(discovered).resolve() == Path(expected_bin).resolve()
+        assert is_ffmpeg_available() is True
+
+        # Second invocation must be served from cache
+        cached = find_ffmpeg()
+        assert cached == discovered
+
+    @pytest.mark.requires_piped_subprocess
+    def test_find_ffmpeg_custom_path_override(self, tmp_path):
+        """Explicit custom_path takes precedence when valid, and returns None if invalid."""
+        reset_ffmpeg_cache()
+        # Non-existent file
+        assert find_ffmpeg(str(tmp_path / "non_existent_binary")) is None
+
+        # Existing file probe
+        fake_bin = tmp_path / "custom_ffmpeg"
+        fake_bin.touch(mode=0o755)
+        assert find_ffmpeg(str(fake_bin)) == str(fake_bin.resolve())
+
+    @pytest.mark.requires_piped_subprocess
+    def test_find_ffmpeg_missing_imageio_handles_cleanly(self, monkeypatch):
+        """If imageio_ffmpeg raises an error or is missing, find_ffmpeg falls back gracefully to None."""
+        reset_ffmpeg_cache()
+        monkeypatch.setenv("PATH", "")
+        monkeypatch.delenv("FFMPEG_PATH", raising=False)
+        monkeypatch.delenv("FFMPEG_BIN", raising=False)
+        monkeypatch.setattr("galgame2voice.utils.audio_converter._find_ffmpeg_in_python_env", lambda *a: None)
+        monkeypatch.setattr("galgame2voice.utils.audio_converter._find_ffmpeg_in_project_dirs", lambda *a: None)
+
+        with patch("imageio_ffmpeg.get_ffmpeg_exe", side_effect=RuntimeError("Bundled binary corrupted")):
+            assert find_ffmpeg() is None
+            assert is_ffmpeg_available() is False
+
+    def test_find_ffmpeg_in_python_env_skips_posix_system_prefixes(self, monkeypatch, tmp_path):
+        """_find_ffmpeg_in_python_env ignores global /usr prefix on POSIX while discovering isolated venvs."""
+        from galgame2voice.utils.audio_converter import _find_ffmpeg_in_python_env
+
+        venv_dir = tmp_path / "isolated_venv"
+        bin_dir = venv_dir / "bin"
+        bin_dir.mkdir(parents=True)
+        fake_ffmpeg = bin_dir / "ffmpeg"
+        fake_ffmpeg.write_text("#!/bin/sh\n")
+
+        monkeypatch.setattr("sys.platform", "linux")
+        monkeypatch.setattr("sys.prefix", "/usr")
+        monkeypatch.setattr("sys.base_prefix", "/usr")
+        assert _find_ffmpeg_in_python_env("ffmpeg", "bin") is None
+
+        monkeypatch.setattr("sys.prefix", str(venv_dir))
+        assert _find_ffmpeg_in_python_env("ffmpeg", "bin") == str(fake_ffmpeg.resolve())
+
+    @pytest.mark.requires_piped_subprocess
+    def test_find_ffmpeg_prefers_bundled_tools_over_system_path(self, monkeypatch, tmp_path):
+        """Bundled project/portable tools/ffmpeg must take precedence over system PATH."""
+        reset_ffmpeg_cache()
+        monkeypatch.delenv("FFMPEG_PATH", raising=False)
+        monkeypatch.delenv("FFMPEG_BIN", raising=False)
+
+        is_win = sys.platform == "win32"
+        exe_name = "ffmpeg.exe" if is_win else "ffmpeg"
+
+        fake_install_root = tmp_path / "portable_root"
+        tools_dir = fake_install_root / "tools"
+        tools_dir.mkdir(parents=True)
+        bundled_bin = tools_dir / exe_name
+        bundled_bin.write_bytes(b"fake bundled binary")
+
+        system_bin = tmp_path / "system_bin" / exe_name
+        system_bin.parent.mkdir(parents=True)
+        system_bin.write_bytes(b"fake system binary")
+
+        from scripts import desktop_entry
+
+        monkeypatch.setattr("galgame2voice.runtime_paths.get_install_root", lambda: fake_install_root)
+        monkeypatch.setattr(desktop_entry, "get_install_root", lambda: fake_install_root)
+        from galgame2voice.config import get_settings
+        monkeypatch.setattr(get_settings(), "project_root", fake_install_root)
+        monkeypatch.setattr("shutil.which", lambda cmd: str(system_bin.resolve()) if "ffmpeg" in cmd else None)
+
+        discovered = find_ffmpeg()
+        assert discovered is not None
+        assert Path(discovered).resolve() == bundled_bin.resolve()
+        assert Path(discovered).resolve() != system_bin.resolve()
+
+        mock_tkinter = MagicMock()
+        mock_tkinter.Tcl.return_value.eval.return_value = "2"
+        with patch.dict(sys.modules, {"tkinter": mock_tkinter}), \
+             patch("galgame2voice.utils.audio_converter.convert_wav_to_ogg", return_value=b"OggS_fake_stream"):
+            from scripts.desktop_entry import verify_portable_runtime
+            verify_portable_runtime()
+
+    @pytest.mark.requires_piped_subprocess
+    def test_find_ffmpeg_prefers_bundled_tools_over_virtualenv_and_system_path(self, monkeypatch, tmp_path):
+        """Bundled tools takes precedence over both virtualenv and system PATH."""
+        reset_ffmpeg_cache()
+        monkeypatch.delenv("FFMPEG_PATH", raising=False)
+        monkeypatch.delenv("FFMPEG_BIN", raising=False)
+
+        is_win = sys.platform == "win32"
+        exe_name = "ffmpeg.exe" if is_win else "ffmpeg"
+
+        fake_install_root = tmp_path / "portable_root"
+        tools_dir = fake_install_root / "tools"
+        tools_dir.mkdir(parents=True)
+        bundled_bin = tools_dir / exe_name
+        bundled_bin.write_bytes(b"fake bundled binary")
+
+        venv_bin = tmp_path / "venv_bin" / exe_name
+        venv_bin.parent.mkdir(parents=True)
+        venv_bin.write_bytes(b"fake venv binary")
+
+        system_bin = tmp_path / "system_bin" / exe_name
+        system_bin.parent.mkdir(parents=True)
+        system_bin.write_bytes(b"fake system binary")
+
+        monkeypatch.setattr("galgame2voice.runtime_paths.get_install_root", lambda: fake_install_root)
+        from galgame2voice.config import get_settings
+        monkeypatch.setattr(get_settings(), "project_root", fake_install_root)
+        monkeypatch.setattr("galgame2voice.utils.audio_converter._find_ffmpeg_in_python_env", lambda *a: str(venv_bin.resolve()))
+        monkeypatch.setattr("shutil.which", lambda cmd: str(system_bin.resolve()) if "ffmpeg" in cmd else None)
+
+        discovered = find_ffmpeg()
+        assert discovered is not None
+        assert Path(discovered).resolve() == bundled_bin.resolve()
+
+    @pytest.mark.requires_piped_subprocess
+    def test_find_ffmpeg_prefers_virtualenv_over_system_path(self, monkeypatch, tmp_path):
+        """When bundled tools is missing, virtualenv takes precedence over system PATH."""
+        reset_ffmpeg_cache()
+        monkeypatch.delenv("FFMPEG_PATH", raising=False)
+        monkeypatch.delenv("FFMPEG_BIN", raising=False)
+
+        is_win = sys.platform == "win32"
+        exe_name = "ffmpeg.exe" if is_win else "ffmpeg"
+
+        empty_root = tmp_path / "empty_root"
+        empty_root.mkdir(parents=True)
+
+        venv_bin = tmp_path / "venv_bin" / exe_name
+        venv_bin.parent.mkdir(parents=True)
+        venv_bin.write_bytes(b"fake venv binary")
+
+        system_bin = tmp_path / "system_bin" / exe_name
+        system_bin.parent.mkdir(parents=True)
+        system_bin.write_bytes(b"fake system binary")
+
+        monkeypatch.setattr("galgame2voice.runtime_paths.get_install_root", lambda: empty_root)
+        from galgame2voice.config import get_settings
+        monkeypatch.setattr(get_settings(), "project_root", empty_root)
+        monkeypatch.setattr("galgame2voice.utils.audio_converter._find_ffmpeg_in_python_env", lambda *a: str(venv_bin.resolve()))
+        monkeypatch.setattr("shutil.which", lambda cmd: str(system_bin.resolve()) if "ffmpeg" in cmd else None)
+
+        discovered = find_ffmpeg()
+        assert discovered is not None
+        assert Path(discovered).resolve() == venv_bin.resolve()
+        assert Path(discovered).resolve() != system_bin.resolve()
+
+    @pytest.mark.requires_piped_subprocess
+    def test_find_ffmpeg_in_project_dirs_checks_both_install_root_and_project_root(self, monkeypatch, tmp_path):
+        """_find_ffmpeg_in_project_dirs inspects both get_install_root and settings.project_root."""
+        from galgame2voice.utils.audio_converter import _find_ffmpeg_in_project_dirs
+
+        is_win = sys.platform == "win32"
+        exe_name = "ffmpeg.exe" if is_win else "ffmpeg"
+
+        empty_install = tmp_path / "empty_install"
+        empty_install.mkdir(parents=True)
+
+        custom_project_root = tmp_path / "project_root"
+        tools_dir = custom_project_root / "tools"
+        tools_dir.mkdir(parents=True)
+        bin_path = tools_dir / exe_name
+        bin_path.write_bytes(b"fake")
+
+        monkeypatch.setattr("galgame2voice.runtime_paths.get_install_root", lambda: empty_install)
+        from galgame2voice.config import get_settings
+        monkeypatch.setattr(get_settings(), "project_root", custom_project_root)
+
+        found = _find_ffmpeg_in_project_dirs(exe_name)
+        assert found is not None
+        assert Path(found).resolve() == bin_path.resolve()
+
+    @pytest.mark.requires_piped_subprocess
+    def test_find_ffmpeg_falls_back_to_system_path_when_bundled_missing(self, monkeypatch, tmp_path):
+        """When bundled tools/ffmpeg does not exist, find_ffmpeg falls back to system PATH."""
+        reset_ffmpeg_cache()
+        monkeypatch.delenv("FFMPEG_PATH", raising=False)
+        monkeypatch.delenv("FFMPEG_BIN", raising=False)
+
+        is_win = sys.platform == "win32"
+        exe_name = "ffmpeg.exe" if is_win else "ffmpeg"
+
+        empty_install_root = tmp_path / "empty_root"
+        empty_install_root.mkdir(parents=True)
+
+        system_bin = tmp_path / "system_bin" / exe_name
+        system_bin.parent.mkdir(parents=True)
+        system_bin.write_bytes(b"fake system binary")
+
+        monkeypatch.setattr("galgame2voice.runtime_paths.get_install_root", lambda: empty_install_root)
+        from galgame2voice.config import get_settings
+        monkeypatch.setattr(get_settings(), "project_root", empty_install_root)
+        monkeypatch.setattr("galgame2voice.utils.audio_converter._find_ffmpeg_in_python_env", lambda *a: None)
+        monkeypatch.setattr("shutil.which", lambda cmd: str(system_bin.resolve()) if "ffmpeg" in cmd else None)
+
+        discovered = find_ffmpeg()
+        assert discovered is not None
+        assert Path(discovered).resolve() == system_bin.resolve()
+
+    @pytest.mark.requires_piped_subprocess
+    @pytest.mark.asyncio
+    async def test_audio_converter_roundtrip_with_bundled_imageio(self, monkeypatch):
+        """Verifies convert_wav_to_ogg and convert_ogg_to_wav roundtrip without global ffmpeg on PATH."""
+        reset_ffmpeg_cache()
+        monkeypatch.setenv("PATH", "")
+        monkeypatch.delenv("FFMPEG_PATH", raising=False)
+        monkeypatch.delenv("FFMPEG_BIN", raising=False)
+
+        sample_wav = _create_wav(sample_rate=16000, channels=1, duration_s=0.2)
+        assert is_target_wav_pcm(sample_wav, sample_rate=16000, channels=1)
+
+        # Transcode PCM WAV -> OGG Opus
+        converted_ogg = await convert_wav_to_ogg(sample_wav)
+        assert len(converted_ogg) > 0
+        assert converted_ogg.startswith(b"OggS")
+
+        # Transcode OGG Opus -> PCM WAV (16kHz mono 16-bit)
+        roundtrip_wav = await convert_ogg_to_wav(converted_ogg, sample_rate=16000, channels=1)
+        assert roundtrip_wav.startswith(b"RIFF")
+        assert is_target_wav_pcm(roundtrip_wav, sample_rate=16000, channels=1)
+
+    @pytest.mark.requires_piped_subprocess
+    @pytest.mark.asyncio
+    async def test_convert_ogg_to_wav_adversarial_corrupted_input(self, monkeypatch):
+        """Adversarial corrupted payload must raise ValueError and clean up processes."""
+        reset_ffmpeg_cache()
+        monkeypatch.setenv("PATH", "")
+        monkeypatch.delenv("FFMPEG_PATH", raising=False)
+        monkeypatch.delenv("FFMPEG_BIN", raising=False)
+
+        with pytest.raises(ValueError, match="Corrupted or unsupported|too short"):
+            await convert_ogg_to_wav(b"\x00\x01\x02\x03CORRUPTED_NON_AUDIO_BYTES_PAYLOAD")
+
+    @pytest.mark.requires_piped_subprocess
+    def test_find_ffmpeg_unset_path_still_discovers_binary(self, monkeypatch):
+        """Deleting PATH must not hide a discovered ffmpeg binary."""
+        monkeypatch.delenv("FFMPEG_PATH", raising=False)
+        monkeypatch.delenv("FFMPEG_BIN", raising=False)
+        monkeypatch.delenv("PATH", raising=False)
+        reset_ffmpeg_cache()
+
+        discovered = find_ffmpeg()
+        assert discovered is not None, "Discovery failed under PATH=None"
+        assert Path(discovered).is_file()
+        assert is_ffmpeg_available() is True
+
+    @pytest.mark.requires_piped_subprocess
+    def test_find_ffmpeg_garbage_path_still_discovers_binary(self, monkeypatch):
+        """A PATH of nonexistent directories must not hide a discovered ffmpeg binary."""
+        monkeypatch.delenv("FFMPEG_PATH", raising=False)
+        monkeypatch.delenv("FFMPEG_BIN", raising=False)
+        monkeypatch.setenv("PATH", "/nonexistent/dir:/dev/null/notdir")
+        reset_ffmpeg_cache()
+
+        discovered = find_ffmpeg()
+        assert discovered is not None, "Discovery failed under PATH=/nonexistent/dir:/dev/null/notdir"
+        assert Path(discovered).is_file()
+        assert is_ffmpeg_available() is True
+
+    @pytest.mark.requires_piped_subprocess
+    def test_find_ffmpeg_directory_and_nonexecutable_custom_paths(self, tmp_path):
+        """A directory is rejected. A non-executable file resolves to itself."""
+        reset_ffmpeg_cache()
+
+        sub_dir = tmp_path / "not_a_binary_dir"
+        sub_dir.mkdir()
+        assert find_ffmpeg(str(sub_dir)) is None
+
+        script = tmp_path / "fake_ffmpeg.sh"
+        script.write_text("#!/bin/sh\necho not ffmpeg")
+        script.chmod(0o644)
+        # shutil.which returns None for non-executable, then is_file() resolves the path.
+        assert find_ffmpeg(str(script)) == str(script.resolve())
+
+    @pytest.mark.requires_piped_subprocess
+    def test_find_ffmpeg_imageio_generic_exception_and_missing_path(self, monkeypatch):
+        """A generic imageio exception, or a path that is not a file, yields None."""
+        monkeypatch.setenv("PATH", "")
+        monkeypatch.delenv("FFMPEG_PATH", raising=False)
+        monkeypatch.delenv("FFMPEG_BIN", raising=False)
+        monkeypatch.setattr(
+            "galgame2voice.utils.audio_converter._find_ffmpeg_in_python_env", lambda *a: None
+        )
+        monkeypatch.setattr(
+            "galgame2voice.utils.audio_converter._find_ffmpeg_in_project_dirs", lambda *a: None
+        )
+
+        reset_ffmpeg_cache()
+        with patch("imageio_ffmpeg.get_ffmpeg_exe", side_effect=Exception("Simulated DLL missing")):
+            assert find_ffmpeg() is None
+            assert is_ffmpeg_available() is False
+
+        reset_ffmpeg_cache()
+        with patch("imageio_ffmpeg.get_ffmpeg_exe", return_value="/nonexistent/ffmpeg/bin"):
+            assert find_ffmpeg() is None
+            assert is_ffmpeg_available() is False
+
+    @pytest.mark.requires_piped_subprocess
+    async def test_find_ffmpeg_concurrent_probes_with_cache_resets(self):
+        """Fifty overlapping probes, resetting the cache every tenth call, all succeed."""
+        results = []
+        errors = []
+
+        async def worker(idx: int):
+            try:
+                if idx % 10 == 0:
+                    reset_ffmpeg_cache()
+                res = await asyncio.to_thread(find_ffmpeg)
+                results.append(res)
+            except Exception as exc:
+                errors.append(exc)
+
+        await asyncio.gather(*(worker(i) for i in range(50)))
+        assert len(errors) == 0, f"Encountered errors during concurrent probes: {errors}"
+        assert len(results) == 50
+        assert all(r is not None for r in results)
 
 
 # ============================================================================

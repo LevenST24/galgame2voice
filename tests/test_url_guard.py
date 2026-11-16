@@ -64,3 +64,27 @@ class TestOfficialHosts:
     def test_official_host_https_accepted_with_allow_private(self):
         ok, _ = validate_llm_base_url("https://api.openai.com/v1", allow_private=True)
         assert ok is True
+
+
+def test_url_guard_malformed_urls_and_cgnat_blocked():
+    """validate_llm_base_url rejects malformed IPv6, invalid ports, CGNAT, and mapped IPv6 without raising ValueError."""
+    for malformed in (
+        "http://[::1",
+        "http://example.com:99999/v1",
+        "http://example.com:notaport/v1",
+        "http://100.64.0.1:8000/v1",
+        "http://100.127.255.254:8000/v1",
+        "http://[::ffff:127.0.0.1]:8000/v1",
+        "http://[::ffff:100.64.0.1]:8000/v1",
+        "http://[64:ff9b::7f00:1]:8000/v1",
+        "http://[64:ff9b::a00:1]:8000/v1",
+        "http://[fe80::1%25eth0]:8000/v1",
+    ):
+        ok, reason = validate_llm_base_url(malformed, allow_private=False)
+        assert ok is False, f"Expected {malformed} to be rejected, but got ok=True"
+        assert reason
+
+    # Even with allow_private=True, syntactically invalid ports/URLs must be rejected
+    for bad_syntax in ("http://[::1", "http://127.0.0.1:99999", "http://localhost:abc"):
+        ok, _ = validate_llm_base_url(bad_syntax, allow_private=True)
+        assert ok is False
