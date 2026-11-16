@@ -155,3 +155,22 @@ async def test_chat_service_stream_chat_includes_telemetry(tmp_path):
     assert "t1_ttft_ms" in telemetry
     assert "t5_app_ttfa_ms" in telemetry
     assert "chunk_count" in telemetry
+
+
+def test_profiler_waterfall_generation():
+    profiler = ChatTurnProfiler(turn_id="test-turn-1", enabled=True)
+    profiler.record_llm_first_token()
+    profiler.record_first_sentence()
+    profiler.record_tts_dispatch(chunk_index=0)
+    profiler.record_tts_inference(chunk_index=0, cached=False)
+    profiler.record_tts_inference(chunk_index=1, cached=True)
+    profiler.record_first_audio()
+
+    report = profiler.generate_report()
+    assert "Chat Turn #test-turn-1" in report
+    assert "LLM TTFT:" in report
+    assert "First Sentence:" in report
+    assert "TTS Dispatch:" in report
+    assert "TTS Inference:" in report
+    assert "TTFA:" in report
+    assert "Cache Hit:" in report

@@ -3,8 +3,10 @@
 from contextlib import closing
 from datetime import datetime, timedelta
 import json
+import os
 from pathlib import Path
 import sqlite3
+import tempfile
 from unittest.mock import AsyncMock, MagicMock
 
 import aiosqlite
@@ -15,7 +17,13 @@ from galgame2voice.database import backups, crud, session
 from galgame2voice.database.crud import init_schema_and_seeds
 from galgame2voice.database.migrations import CURRENT_SCHEMA_VERSION
 from galgame2voice.database.models import MessageCreate
-from galgame2voice.database.session import configure_connection, get_db, init_db
+from galgame2voice.database.session import (
+    configure_connection,
+    get_db,
+    get_schema_version,
+    init_db,
+    set_schema_version,
+)
 from galgame2voice.routers.chat import ChatImportRequest, import_chat_sessions
 from scripts import database_recovery, desktop_entry, desktop_instance
 
@@ -366,3 +374,130 @@ async def test_recent_messages_ordering_uses_index(tmp_path):
         # Verify crud.get_recent_messages executes cleanly with the index
         recent = await crud.get_recent_messages(conn, "sess_test", 10)
         assert recent == []
+
+
+class TestDatabasePragmasAndIndexCoverage:
+    """Verifies SQLite performance tuning pragmas and index existence."""
+
+    @pytest.mark.asyncio
+    async def test_performance_pragmas_configured(self, tmp_path):
+        db_p = tmp_path / "pragma_test.db"
+        async with get_db(db_p) as conn:
+            mode = (await (await conn.execute("PRAGMA journal_mode;")).fetchone())[0]
+            assert str(mode).lower() == "wal"
+
+            timeout = (await (await conn.execute("PRAGMA busy_timeout;")).fetchone())[0]
+            assert timeout == 5000
+
+            sync = (await (await conn.execute("PRAGMA synchronous;")).fetchone())[0]
+            assert sync == 1
+
+            cache = (await (await conn.execute("PRAGMA cache_size;")).fetchone())[0]
+            assert cache == -64000
+
+            temp = (await (await conn.execute("PRAGMA temp_store;")).fetchone())[0]
+            assert temp == 2
+
+    @pytest.mark.asyncio
+    async def test_database_indices_coverage(self, tmp_path):
+        db_p = tmp_path / "index_coverage.db"
+        await init_db(db_p)
+
+        async with get_db(db_p) as conn:
+            cursor = await conn.execute("SELECT name FROM sqlite_master WHERE type='index';")
+            rows = await cursor.fetchall()
+            index_names = {r[0] for r in rows}
+
+            expected_indices = {
+                "idx_messages_session_id",
+                "idx_messages_created_at",
+                "idx_messages_session_created",
+                "idx_sessions_channel",
+                "idx_sessions_updated_at",
+                "idx_sessions_user_id",
+                "idx_sessions_voice_profile",
+                "idx_voice_profiles_is_default",
+                "idx_user_memories_user_cat",
+                "idx_user_memories_char_key",
+                "idx_affection_user_char",
+                "idx_tts_cache_last_accessed",
+                "idx_tts_cache_clean_text",
+            }
+            for exp in expected_indices:
+                assert exp in index_names, f"Expected index {exp} not found in DB schema!"
+
+
+class TestDatabaseSchemaMigrations:
+    """Tests for SQLite PRAGMA user_version tracking, incremental migrations, and idempotency."""
+
+    @pytest.fixture
+    def temp_db_path(self):
+        fd, path = tempfile.mkstemp(suffix=".db", prefix="test_phase4_mig_")
+        os.close(fd)
+        yield path
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    @pytest.mark.asyncio
+    async def test_fresh_database_initialization_sets_version(self, temp_db_path):
+        async with get_db(temp_db_path) as conn:
+            v0 = await get_schema_version(conn)
+            assert v0 == 0
+
+        await init_db(temp_db_path)
+
+        async with get_db(temp_db_path) as conn:
+            v_final = await get_schema_version(conn)
+            assert v_final == CURRENT_SCHEMA_VERSION
+            assert v_final >= 4
+
+    @pytest.mark.asyncio
+    async def test_schema_migrations_idempotency(self, temp_db_path):
+        await init_db(temp_db_path)
+        await init_db(temp_db_path)
+        await init_db(temp_db_path)
+
+        async with get_db(temp_db_path) as conn:
+            v = await get_schema_version(conn)
+            assert v == CURRENT_SCHEMA_VERSION
+
+            cur = await conn.execute("SELECT COUNT(*) FROM providers;")
+            count = (await cur.fetchone())[0]
+            assert count >= 8
+
+            cur = await conn.execute("SELECT COUNT(*) FROM voice_profiles WHERE id = 1;")
+            assert (await cur.fetchone())[0] == 0
+
+            cur = await conn.execute("SELECT COUNT(*) FROM settings WHERE id = 1;")
+            assert (await cur.fetchone())[0] == 1
+
+    @pytest.mark.asyncio
+    async def test_migration_preserves_existing_user_data(self, temp_db_path):
+        await init_db(temp_db_path)
+
+        async with get_db(temp_db_path) as conn:
+            await conn.execute("INSERT INTO sessions (id, channel, user_id) VALUES ('sess_custom', 'web', 'u1');")
+            await conn.execute(
+                "INSERT INTO messages (session_id, role, content_chinese, content_japanese) "
+                "VALUES ('sess_custom', 'user', '你好夏目', 'こんにちは');"
+            )
+            await conn.commit()
+
+        async with get_db(temp_db_path) as conn:
+            await set_schema_version(conn, 2)
+            v_low = await get_schema_version(conn)
+            assert v_low == 2
+
+        await init_db(temp_db_path)
+
+        async with get_db(temp_db_path) as conn:
+            v_upgraded = await get_schema_version(conn)
+            assert v_upgraded == CURRENT_SCHEMA_VERSION
+
+            cur = await conn.execute("SELECT content_chinese FROM messages WHERE session_id = 'sess_custom';")
+            row = await cur.fetchone()
+            assert row is not None
+            assert row[0] == "你好夏目"

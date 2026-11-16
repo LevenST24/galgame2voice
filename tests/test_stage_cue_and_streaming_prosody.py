@@ -234,3 +234,115 @@ def test_extract_wav_duration_invalid_payload_fallback():
     dur = extract_wav_duration(fake_payload)
     assert dur is not None
     assert pytest.approx(dur, 0.05) == 1.0
+
+
+class TestBracketedEmotionExtraction:
+    """Verifies deterministic extraction of bracketed emotion tags across languages."""
+
+    @pytest.mark.parametrize("text,expected_emo,expected_clean", [
+        ("【傲娇】才不是因为喜欢你呢！", "tsundere", "才不是因为喜欢你呢！"),
+        ("（害羞）あの、手をつないでもいいですか？", "shy", "あの、手をつないでもいいですか？"),
+        ("[happy] 今天真开心！", "happy", "今天真开心！"),
+        ("(cool) くだらない。", "cool", "くだらない。"),
+        ("【难过】呜呜，怎么会这样……", "sad", "呜呜，怎么会这样……"),
+        ("（生气）吵死了，笨蛋！", "angry", "吵死了，笨蛋！"),
+        ("【温柔】没关系的，有我在呢。", "gentle", "没关系的，有我在呢。"),
+        ("【ツンデレ】べ、別にアンタのためじゃないわよ！", "tsundere", "べ、別にアンタのためじゃないわよ！"),
+        ("普通の一日ですね。", None, "普通の一日ですね。"),
+        ("", None, ""),
+    ])
+    def test_extract_bracketed_emotion(self, text, expected_emo, expected_clean):
+        emo, cleaned = extract_bracketed_emotion(text)
+        assert emo == expected_emo
+        assert cleaned == expected_clean
+
+    def test_classify_emotion_integrates_bracketed_tags(self):
+        assert classify_emotion(chinese="【害羞】えっと……") == "shy"
+        assert classify_emotion(japanese="[tsundere] べ、別に！") == "tsundere"
+        assert classify_emotion(chinese="（愤怒）ふざけるな！") == "angry"
+
+
+class TestParenthesesCleanerBrackets:
+    """Verifies clean_japanese_parentheses strips fullwidth lenticular and square brackets."""
+
+    def test_clean_lenticular_brackets(self):
+        text = "【ため息】ふぅ、やっと終わった。"
+        assert clean_japanese_parentheses(text) == "ふぅ、やっと終わった。"
+
+    def test_clean_square_brackets(self):
+        text = "[happy] 今日もいい天気ですね！"
+        assert clean_japanese_parentheses(text) == "今日もいい天気ですね！"
+
+    def test_clean_mixed_and_nested_brackets(self):
+        text = "【ため息】（微笑）[sigh]こんにちは！"
+        assert clean_japanese_parentheses(text) == "こんにちは！"
+
+    def test_unclosed_brackets_preserve_inner_text(self):
+        text = "【未完了の指示 こんにちは"
+        assert clean_japanese_parentheses(text) == "未完了の指示 こんにちは"
+
+
+class TestStreamingParserBracketedEmotion:
+    """Verifies StreamingBilingualParser extracts bracketed emotion when explicit emotion is omitted."""
+
+    def test_parser_extracts_bracketed_emotion_from_chinese(self):
+        parser = StreamingBilingualParser()
+        parser.feed_chunk('{"chinese": "【害羞】あの……手をつないでいい？", "japanese": "あの……手をつないでいい？"}')
+        assert parser.emotion_extracted == "shy"
+        assert parser.get_emotion() == "shy"
+        assert parser.tts_emotion == "shy"
+        assert parser.get_dynamic_tts_options().get("emotion") == "shy"
+
+    def test_parser_extracts_bracketed_emotion_from_japanese(self):
+        parser = StreamingBilingualParser()
+        parser.feed_chunk('{"chinese": "没事的哦", "japanese": "【優しい】大丈夫ですよ"}')
+        assert parser.emotion_extracted == "gentle"
+        assert parser.tts_emotion == "gentle"
+        assert parser.get_dynamic_tts_options().get("emotion") == "gentle"
+
+
+class TestAdvancedBracketedEmotion:
+    """Verifies bracketed emotion extraction with quote wrappers, metadata prefixes, and aliases."""
+
+    def test_extract_with_quote_prefix(self):
+        emo, clean = extract_bracketed_emotion("「【傲娇】才不是因为喜欢你呢！」")
+        assert emo == "tsundere"
+        assert clean == "「才不是因为喜欢你呢！」"
+
+    def test_extract_with_metadata_prefix(self):
+        emo, clean = extract_bracketed_emotion("【情绪：害羞】那个……")
+        assert emo == "shy"
+        assert clean == "那个……"
+
+    def test_extract_with_japanese_alias(self):
+        emo, clean = extract_bracketed_emotion("【恥ずかしい】見ないでください……")
+        assert emo == "shy"
+        assert clean == "見ないでください……"
+
+
+class TestEnhancedBracketedEmotionVariations:
+    """Verifies trailing, middle, white lenticular, and tortoise shell bracketed emotion extraction."""
+
+    def test_trailing_bracketed_emotion(self):
+        emo, clean = extract_bracketed_emotion("才不是因为喜欢你呢！【傲娇】")
+        assert emo == "tsundere"
+        assert clean == "才不是因为喜欢你呢！"
+
+    def test_embedded_bracketed_emotion(self):
+        emo, clean = extract_bracketed_emotion("那个……【害羞】手をつないでもいい？")
+        assert emo == "shy"
+        assert clean == "那个……手をつないでもいい？"
+
+    def test_white_lenticular_brackets(self):
+        emo, clean = extract_bracketed_emotion("〖傲娇〗べ、別に！")
+        assert emo == "tsundere"
+        assert clean == "べ、別に！"
+
+    def test_tortoise_shell_brackets(self):
+        emo, clean = extract_bracketed_emotion("〔高兴〕やったー！")
+        assert emo == "happy"
+        assert clean == "やったー！"
+
+    def test_clean_japanese_parentheses_all_bracket_types(self):
+        text = "〖ため息〗〔ため息〕【ため息】[ため息]（ため息）(ため息)こんにちは！"
+        assert clean_japanese_parentheses(text) == "こんにちは！"

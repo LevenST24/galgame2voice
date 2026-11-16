@@ -1,13 +1,20 @@
 """Retries must recheck the address without contacting any external service."""
 
+import email.utils
 import socket
+import time
 from typing import List
 from unittest.mock import patch
 
 import httpx
 import pytest
 
-from galgame2voice.adapters.base import ChatMessage
+from galgame2voice.adapters.base import (
+    ChatMessage,
+    TRANSIENT_STATUS_CODES,
+    calculate_backoff_delay,
+    parse_retry_after,
+)
 from galgame2voice.adapters.llm import anthropic_adapter, openai_adapter
 from galgame2voice.adapters.llm.anthropic_adapter import AnthropicAdapter
 from galgame2voice.adapters.llm.openai_adapter import OpenAICompatibleLLMAdapter
@@ -248,3 +255,76 @@ class TestLlmRetryEdgeCases:
                 async for _ in adapter.stream_chat([ChatMessage(role="user", content="hi")]):
                     pass
             assert transport_401.attempt_count == 1
+
+    async def test_stream_chat_early_read_timeout_retries_successfully(self):
+        adapter = OpenAICompatibleLLMAdapter(api_key="sk-test", base_url="https://api.openai.com/v1")
+        attempt_count = 0
+
+        class MockStreamResponse:
+            status_code = 200
+            headers = {}
+
+            async def aiter_lines(self):
+                nonlocal attempt_count
+                attempt_count += 1
+                if attempt_count == 1:
+                    raise httpx.ReadTimeout("Server timed out before first byte")
+                yield 'data: {"choices": [{"delta": {"content": "RecoveredStream"}}]}'
+                yield 'data: [DONE]'
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+        with patch("httpx.AsyncClient.stream", return_value=MockStreamResponse()):
+            tokens = []
+            async for tok in adapter.stream_chat(
+                messages=[ChatMessage(role="user", content="hello")],
+                model="gpt-4o",
+                max_retries=2,
+                base_delay=0.01,
+            ):
+                tokens.append(tok)
+
+            assert "".join(tokens) == "RecoveredStream"
+            assert attempt_count == 2
+
+
+class TestLLMRetryPolicies:
+    """Tests for standardized exponential backoff, jitter, and Retry-After parsing."""
+
+    def test_transient_status_codes(self):
+        expected_codes = {408, 429, 500, 502, 503, 504}
+        for code in expected_codes:
+            assert code in TRANSIENT_STATUS_CODES
+
+    def test_parse_retry_after_numeric(self):
+        assert parse_retry_after({"retry-after": "5"}) == 5.0
+        assert parse_retry_after({"Retry-After": "2.5"}) == 2.5
+        assert parse_retry_after(None) is None
+        assert parse_retry_after({}) is None
+        assert parse_retry_after({"retry-after": "invalid_val"}) is None
+
+    def test_parse_retry_after_http_date(self):
+        future_time = time.time() + 120
+        date_str = email.utils.formatdate(future_time, usegmt=True)
+        val = parse_retry_after({"retry-after": date_str})
+        assert val is not None
+        assert 110.0 < val < 130.0
+
+    def test_calculate_backoff_delay_exponential_and_jitter(self):
+        for attempt in range(5):
+            delay = calculate_backoff_delay(attempt, base_delay=0.1, jitter_min=0.05, jitter_max=0.15)
+            min_expected = 0.1 * (2 ** attempt) + 0.05
+            max_expected = 0.1 * (2 ** attempt) + 0.15
+            assert min_expected <= delay <= max_expected
+
+    def test_calculate_backoff_delay_with_retry_after(self):
+        delay = calculate_backoff_delay(0, base_delay=1.0, retry_after=15.0, jitter_min=0.1, jitter_max=0.4)
+        assert 15.1 <= delay <= 15.4
+
+    def test_calculate_backoff_delay_max_ceiling(self):
+        delay = calculate_backoff_delay(20, base_delay=10.0, retry_after=120.0, max_delay=60.0)
+        assert delay <= 60.0

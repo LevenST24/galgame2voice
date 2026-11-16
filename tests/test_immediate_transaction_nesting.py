@@ -11,6 +11,7 @@ import asyncio
 import os
 import tempfile
 
+import aiosqlite
 import pytest
 
 from galgame2voice.database import crud
@@ -490,3 +491,33 @@ class TestImmediateTransactionSafety:
             cur = await conn.execute("SELECT COUNT(*) FROM user_memories;")
             count = (await cur.fetchone())[0]
             assert count == 50
+
+
+class TestImmediateTransactionCancellationRollback:
+    """Verifies that immediate_transaction cleanly rolls back when cancelled."""
+
+    @pytest.mark.asyncio
+    async def test_immediate_transaction_rollback_on_cancelled_error(self, tmp_path):
+        db_path = tmp_path / "tx_test.db"
+        async with aiosqlite.connect(str(db_path)) as conn:
+            await conn.execute("CREATE TABLE test_tbl (id INT PRIMARY KEY, val TEXT);")
+            await conn.commit()
+
+            async def cancelled_task():
+                async with immediate_transaction(conn):
+                    await conn.execute("INSERT INTO test_tbl VALUES (1, 'should_rollback');")
+                    raise asyncio.CancelledError()
+
+            with pytest.raises(asyncio.CancelledError):
+                await cancelled_task()
+
+            cursor = await conn.execute("SELECT COUNT(*) FROM test_tbl;")
+            row = await cursor.fetchone()
+            assert row[0] == 0
+
+            async with immediate_transaction(conn):
+                await conn.execute("INSERT INTO test_tbl VALUES (2, 'committed');")
+
+            cursor = await conn.execute("SELECT val FROM test_tbl WHERE id = 2;")
+            row = await cursor.fetchone()
+            assert row[0] == "committed"

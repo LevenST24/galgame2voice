@@ -218,3 +218,40 @@ def test_parser_unclosed_trailing_backslash():
     ch_full, ja_full, _ = parser.finalize()
     assert "测试" in ch_full
     assert "テスト" in ja_full
+
+
+class TestStreamingQuotedSentencesImmediateEmission:
+    """Verifies that dialogue sentences ending with quotes or brackets are emitted immediately during streaming."""
+
+    def test_single_quoted_sentence_emits_immediately(self):
+        parser = StreamingBilingualParser()
+        d1, s1 = parser.feed_chunk('{"chinese": "早上好！", "japanese": "「おはようございます！」')
+        assert len(s1) == 1
+        assert s1[0] == "「おはようございます！」"
+
+    def test_sequential_quoted_sentences_stream_promptly(self):
+        parser = StreamingBilingualParser()
+        d1, s1 = parser.feed_chunk('{"japanese": "「こんにちは！」')
+        assert s1 == ["「こんにちは！」"]
+        d2, s2 = parser.feed_chunk('「元気ですか？」')
+        assert s2 == ["「元気ですか？」"]
+
+    def test_curly_quotes_in_chinese_and_japanese(self):
+        parser = StreamingBilingualParser()
+        d, s = parser.feed_chunk('{"chinese": "“你好！”", "japanese": "“こんにちは！”')
+        assert s == ["“こんにちは！”"]
+
+
+def test_trailing_newlines_and_escapes_preserved():
+    """Verifies that trailing newlines, tabs, and escaped backslashes are NOT stripped by _strip_incomplete_escape."""
+    parser = StreamingBilingualParser()
+    parser.feed_chunk('{"chinese": "第一行\\n第二行\\n", "japanese": "一行目\\n二行目\\n"}')
+    zh, ja, _ = parser.finalize()
+    assert zh == "第一行\n第二行\n", f"Trailing newline was stripped: {zh!r}"
+    assert ja == "一行目\n二行目\n", f"Trailing newline was stripped: {ja!r}"
+
+    parser2 = StreamingBilingualParser()
+    parser2.feed_chunk('{"chinese": "C:\\\\path\\\\", "japanese": "パス\\\\"}')
+    zh2, ja2, _ = parser2.finalize()
+    assert zh2 == "C:\\path\\"
+    assert ja2 == "パス\\"

@@ -1,5 +1,7 @@
+from unittest.mock import AsyncMock, MagicMock
 import pytest
 
+from galgame2voice.adapters.base import ChatMessage
 from galgame2voice.adapters.llm.anthropic_adapter import AnthropicAdapter
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db
@@ -214,3 +216,32 @@ async def test_anthropic_stream_client_cancellation_exits(coordinator_factory, m
     assert len(dones) == 1
     assert dones[0]["data"]["truncated"] is True
     coordinator.affection_service.handle_turn_affection.assert_not_called()
+
+
+class TestAnthropicStreamErrorHandling:
+    """Verifies that SSE error chunks raise RuntimeError in both client_override and live modes."""
+
+    @pytest.mark.asyncio
+    async def test_client_override_stream_error_chunk_raises(self):
+        adapter = AnthropicAdapter(api_key="test-key")
+
+        mock_client = AsyncMock()
+        error_sse = (
+            'data: {"type": "content_block_delta", "delta": {"text": "Start"}}\n\n'
+            'data: {"type": "error", "error": {"type": "rate_limit_error", "message": "Rate limited"}}\n\n'
+        )
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = error_sse
+        mock_client.post.return_value = mock_resp
+
+        gen = adapter.stream_chat(
+            messages=[ChatMessage(role="user", content="Hello")],
+            client_override=mock_client,
+        )
+
+        first_token = await anext(gen)
+        assert first_token == "Start"
+
+        with pytest.raises(RuntimeError, match="Anthropic stream error: .*rate_limit_error"):
+            await anext(gen)

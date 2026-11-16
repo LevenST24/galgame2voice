@@ -2,7 +2,7 @@ import asyncio
 import httpx
 import pytest
 
-from galgame2voice.adapters.base import ChatMessage
+from galgame2voice.adapters.base import ChatMessage, extract_stream_token, parse_sse_lines
 from galgame2voice.adapters.llm.openai_adapter import OpenAICompatibleLLMAdapter
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db
@@ -262,3 +262,94 @@ async def test_openai_stream_client_cancellation_exits(coordinator_factory, monk
     assert len(dones) == 1
     assert dones[0]["data"]["truncated"] is True
     coordinator.affection_service.handle_turn_affection.assert_not_called()
+
+
+class TestStreamingSSEParser:
+    """Tests for SSE line parsing, fragmented payloads, malformed chunks, and error events."""
+
+    def test_extract_stream_token_openai(self):
+        chunk = {"choices": [{"delta": {"content": "Hello"}}]}
+        assert extract_stream_token(chunk) == "Hello"
+
+        chunk_text = {"choices": [{"text": "World"}]}
+        assert extract_stream_token(chunk_text) == "World"
+
+        chunk_empty = {"choices": [{"delta": {}}]}
+        assert extract_stream_token(chunk_empty) is None
+
+    def test_extract_stream_token_anthropic(self):
+        chunk = {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "AnthropicToken"}}
+        assert extract_stream_token(chunk) == "AnthropicToken"
+
+        chunk_start = {"type": "message_start"}
+        assert extract_stream_token(chunk_start) is None
+
+    def test_extract_stream_token_error_payload(self):
+        chunk_err = {"error": {"message": "Rate limit exceeded", "type": "rate_limit_error"}}
+        with pytest.raises(RuntimeError, match="Rate limit exceeded"):
+            extract_stream_token(chunk_err)
+
+    def test_extract_stream_token_null_or_false_error(self):
+        chunk_null = {"error": None, "choices": [{"delta": {"content": "ValidContent"}}]}
+        assert extract_stream_token(chunk_null) == "ValidContent"
+
+        chunk_false = {"error": False, "choices": [{"delta": {"content": "StillValid"}}]}
+        assert extract_stream_token(chunk_false) == "StillValid"
+
+    @pytest.mark.asyncio
+    async def test_parse_sse_lines_fragmented_and_comments(self):
+        lines = [
+            ": ping keepalive",
+            'data: {"choices": [{"delta": ',
+            'data: {"content": "Fragmented"}}]}',
+            "",
+            ': another keepalive',
+            'data: {"choices": [{"delta": {"content": " Resolved"}}]}',
+            'data: [DONE]',
+        ]
+
+        async def line_gen():
+            for line in lines:
+                yield line
+
+        tokens = []
+        async for t in parse_sse_lines(line_gen()):
+            tokens.append(t)
+
+        assert "".join(tokens) == "Fragmented Resolved"
+
+    @pytest.mark.asyncio
+    async def test_parse_sse_lines_malformed_chunk_tolerance(self):
+        lines = [
+            'data: {"choices": [{"delta": {"content": "Start "}}]}',
+            'data: {corrupted json {[[[',
+            'data: {"choices": [{"delta": {"content": "End"}}]}',
+            'data: [DONE]',
+        ]
+
+        async def line_gen():
+            for line in lines:
+                yield line
+
+        tokens = []
+        async for t in parse_sse_lines(line_gen()):
+            tokens.append(t)
+
+        assert "".join(tokens) == "Start End"
+
+    @pytest.mark.asyncio
+    async def test_parse_sse_lines_multi_fragment_triplet(self):
+        lines = [
+            'data: {"choices": [',
+            'data: {"delta": ',
+            'data: {"content": "MultiFragmentTriplet"}}]}',
+            "",
+            'data: [DONE]',
+        ]
+
+        async def line_gen():
+            for line in lines:
+                yield line
+
+        tokens = [t async for t in parse_sse_lines(line_gen())]
+        assert "".join(tokens) == "MultiFragmentTriplet"
