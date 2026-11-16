@@ -1,8 +1,11 @@
 """Tests for the SSRF url_guard module."""
 
+import socket
+import time
+
 import pytest
 
-from galgame2voice.security.url_guard import validate_llm_base_url
+from galgame2voice.security.url_guard import clear_dns_cache, validate_llm_base_url
 
 
 class TestSchemeValidation:
@@ -88,3 +91,43 @@ def test_url_guard_malformed_urls_and_cgnat_blocked():
     for bad_syntax in ("http://[::1", "http://127.0.0.1:99999", "http://localhost:abc"):
         ok, _ = validate_llm_base_url(bad_syntax, allow_private=True)
         assert ok is False
+
+
+def test_dns_rebind_ssrf_cache_vulnerability(monkeypatch):
+    """
+    Simulates DNS rebinding attack where domain originally resolves to public IP
+    and is later updated to private/loopback IP (127.0.0.1).
+    A secure SSRF guard must detect the updated IP via TTL expiration and clear_dns_cache.
+    """
+    clear_dns_cache()
+    current_time = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: current_time[0])
+
+    # Step 1: Initial DNS resolves to public IP 93.184.216.34 (example.com)
+    mock_addrs = [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+    ]
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *args, **kwargs: mock_addrs)
+    ok, _ = validate_llm_base_url("https://rebind-test.com/v1")
+    assert ok is True
+
+    # Step 2: Attacker changes DNS record to point to local loopback 127.0.0.1
+    mock_addrs = [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))
+    ]
+    # Advance time beyond 60s TTL
+    current_time[0] += 65.0
+
+    # With TTL expiration, the stale public IP cache has expired, so 127.0.0.1 is blocked!
+    ok_after_ttl, reason = validate_llm_base_url("https://rebind-test.com/v1")
+    assert ok_after_ttl is False
+    assert "环回/私网" in reason
+
+    # Step 3: Explicit clear_dns_cache immediately purges cache regardless of time
+    clear_dns_cache()
+    current_time[0] = 1000.0
+    mock_addrs = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+    assert validate_llm_base_url("https://rebind-test.com/v1")[0] is True
+    mock_addrs = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))]
+    clear_dns_cache()
+    assert validate_llm_base_url("https://rebind-test.com/v1")[0] is False

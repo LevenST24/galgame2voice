@@ -9,6 +9,7 @@ import os
 import sqlite3
 import tempfile
 import time
+import aiosqlite
 import pytest
 
 from galgame2voice.services.session_manager import SessionManager, SessionTurn
@@ -443,3 +444,31 @@ class TestSessionManagerEmotion:
         # Default template stays format-agnostic because render_lines_contract supplies the schema
         assert "{character_name}" in sm.DEFAULT_SYSTEM_TEMPLATE
         assert '"chinese"' not in sm.DEFAULT_SYSTEM_TEMPLATE
+
+
+@pytest.mark.asyncio
+async def test_session_manager_stale_cache_recovery():
+    """Verify that SessionManager handles dynamic table re-initialization and arbitrary connection row_factories."""
+    async with aiosqlite.connect(":memory:") as db:
+        await db.execute("""
+            CREATE TABLE session_messages (
+                id INTEGER PRIMARY KEY,
+                session_id TEXT,
+                role TEXT,
+                content_chinese TEXT,
+                content_japanese TEXT,
+                raw_content TEXT
+            );
+        """)
+        await db.execute(
+            "INSERT INTO session_messages VALUES (1, 's1', 'user', '你好', 'こんにちは', '你好');"
+        )
+        await db.commit()
+
+        mgr = SessionManager(db_path=":memory:")
+        mgr._table_name = "messages"  # Simulate stale cached table name
+
+        # This should recover, detect session_messages, ensure row_factory, and return the row
+        turns = await mgr._get_history_on_conn(db, "s1", 10, 8000)
+        assert len(turns) == 1
+        assert turns[0].content_chinese == "你好"

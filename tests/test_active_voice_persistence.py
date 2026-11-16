@@ -304,4 +304,55 @@ async def test_manager_delete_profile_clears_active_state(stack, monkeypatch):
     assert len(warmed_profiles) == 0
 
 
+@pytest.fixture
+async def temp_db_path(isolate_test_database):
+    """REST routes and their manager must use the same initialized database."""
+    await init_db(isolate_test_database)
+    return isolate_test_database
+
+
+@pytest.mark.asyncio
+async def test_concurrent_voice_switch_same_profile_optimization(temp_db_path, mock_gpt_sovits, sample_voice_profile, monkeypatch):
+    """
+    Multiple concurrent switch requests for the same already active profile
+    return 200 OK without redundant reload or race conditions.
+    """
+    manager = voice_manager.VoiceManager(gpt_sovits_client_or_server=mock_gpt_sovits, db_path=temp_db_path)
+    voice_manager.set_voice_manager(manager)
+
+    app = create_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+        p = await client.post("/api/voice/profiles", json=sample_voice_profile)
+        p_id = p.json()["id"]
+
+        # Initial switch
+        init_resp = await client.post("/api/voice/switch", json={"profile_id": p_id})
+        assert init_resp.status_code == 200
+
+        # Rapid concurrent switches to the same profile
+        tasks = [client.post("/api/voice/switch", json={"profile_id": p_id}) for _ in range(5)]
+        responses = await asyncio.gather(*tasks)
+
+        for r in responses:
+            assert r.status_code == 200
+            assert r.json()["status"] == "switched"
+            assert r.json()["profile_id"] == p_id
+
+
+@pytest.mark.asyncio
+async def test_switch_active_profile_alias_and_crud_by_name(temp_db_path, mock_gpt_sovits, sample_voice_profile):
+    """Verifies crud.get_voice_profile_by_name and VoiceManager.switch_active_profile alias."""
+    async with get_db(temp_db_path) as conn:
+        created = await crud.create_voice_profile(conn, VoiceProfileCreate(**sample_voice_profile))
+        found = await crud.get_voice_profile_by_name(conn, sample_voice_profile["name"])
+        assert found is not None
+        assert found.id == created.id
+
+    manager = voice_manager.VoiceManager(gpt_sovits_client_or_server=mock_gpt_sovits, db_path=temp_db_path)
+    success = await manager.switch_active_profile(sample_voice_profile["name"], persist=True)
+    assert success is True
+    assert manager.active_profile.name == sample_voice_profile["name"]
+
+
 
