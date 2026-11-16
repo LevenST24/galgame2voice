@@ -1,8 +1,5 @@
 """Tests for decoupled LLM provider protocol, registry, and factory."""
 
-# galgame2voice.providers cannot be the first galgame2voice import: it hits a circular import through
-# galgame2voice.adapters. Importing the chat service first loads them in the app's order.
-import galgame2voice.services.chat_service  # noqa: F401
 from galgame2voice.providers import (
     AnthropicProvider,
     GeminiProvider,
