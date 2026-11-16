@@ -10,8 +10,11 @@ Verifies:
 import asyncio
 from typing import AsyncGenerator
 from unittest.mock import AsyncMock, patch
+import aiosqlite
 import pytest
 
+from galgame2voice.database.session import get_db, init_db
+from galgame2voice.services.character_voice_catalog import get_character_voice_catalog
 from galgame2voice.services.voice_manager import VoiceManager
 from galgame2voice.services.gpt_sovits_client import GptSovitsClient
 from galgame2voice.services.tts_scheduler import get_tts_scheduler, TtsPriority
@@ -164,3 +167,64 @@ async def test_stream_tts_routes_through_scheduler_priority(temp_db_path, mock_c
         assert mock_sched.called
         call_kwargs = mock_sched.call_args[1]
         assert call_kwargs.get("priority") == TtsPriority.HIGH
+
+
+class TestVoiceManagerPersistence:
+    """Test suite for VoiceManager coordinating SQLite and GPT-SoVITS."""
+
+    @pytest.mark.asyncio
+    async def test_switch_profile_by_db_id(self, temp_db_path, mock_gpt_sovits, sample_voice_profile):
+        # A schema-only fixture has no singleton settings row; production init does.
+        await init_db(temp_db_path)
+        manager = VoiceManager(gpt_sovits_client_or_server=mock_gpt_sovits, db_path=temp_db_path)
+
+        # Insert voice profile into database
+        async with aiosqlite.connect(temp_db_path) as db:
+            cursor = await db.execute("""
+                INSERT INTO voice_profiles (name, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text, prompt_lang, is_default)
+                VALUES (?, ?, ?, ?, ?, ?, 1);
+            """, (
+                sample_voice_profile["name"],
+                sample_voice_profile["gpt_weights_path"],
+                sample_voice_profile["sovits_weights_path"],
+                sample_voice_profile["ref_audio_path"],
+                sample_voice_profile["prompt_text"],
+                sample_voice_profile["prompt_lang"],
+            ))
+            profile_id = cursor.lastrowid
+            await db.commit()
+
+        # Switch by profile ID
+        success = await manager.switch_profile(profile_id, persist=True)
+        assert success is True
+        assert mock_gpt_sovits.current_gpt_weights == sample_voice_profile["gpt_weights_path"]
+
+        # Verify active profile in DB settings
+        active_prof = await get_character_voice_catalog().get_active_profile(
+            db_factory=lambda: get_db(manager.db_path),
+        )
+        assert active_prof is not None
+        assert active_prof.id == profile_id
+
+    @pytest.mark.asyncio
+    async def test_switch_profile_by_name(self, temp_db_path, mock_gpt_sovits, sample_voice_profile):
+        manager = VoiceManager(gpt_sovits_client_or_server=mock_gpt_sovits, db_path=temp_db_path)
+
+        async with aiosqlite.connect(temp_db_path) as db:
+            await db.execute("""
+                INSERT INTO voice_profiles (name, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text, prompt_lang, is_default)
+                VALUES (?, ?, ?, ?, ?, ?, 0);
+            """, (
+                sample_voice_profile["name"],
+                sample_voice_profile["gpt_weights_path"],
+                sample_voice_profile["sovits_weights_path"],
+                sample_voice_profile["ref_audio_path"],
+                sample_voice_profile["prompt_text"],
+                sample_voice_profile["prompt_lang"],
+            ))
+            await db.commit()
+
+        success = await manager.switch_profile("Arona", persist=False)
+        assert success is True
+        assert mock_gpt_sovits.current_gpt_weights == sample_voice_profile["gpt_weights_path"]
+

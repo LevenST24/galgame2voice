@@ -32,6 +32,7 @@ from galgame2voice.database import crud
 from galgame2voice.database.crud import mask_api_key, is_masked_key
 from galgame2voice.database.models import SettingsUpdate, ProviderCreate, VoiceProfileCreate
 from galgame2voice.security import url_guard
+from galgame2voice.services.voice_manager import VoiceManager, set_voice_manager
 from galgame2voice.utils.logger import MaskingFilter, MaskingFormatter, sanitize_error_detail
 
 
@@ -1422,5 +1423,66 @@ class TestVoiceRouterHardening:
             "sovits_weights_path": "a.pth",
         })
         assert res.status_code == 422
+
+
+class TestVoiceRouterEndpoints:
+    """Test suite for /api/voice/* endpoints on the production FastAPI application."""
+
+    @pytest.mark.asyncio
+    async def test_voice_profiles_crud_and_switch_api(self, isolate_test_database, mock_gpt_sovits, sample_voice_profile):
+        await init_db(isolate_test_database)
+        # Configure VoiceManager singleton with mock server
+        manager = VoiceManager(gpt_sovits_client_or_server=mock_gpt_sovits, db_path=isolate_test_database)
+        set_voice_manager(manager)
+
+        app = create_app()
+        transport = ASGITransport(app=app)
+
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+            # 1. Create Voice Profile
+            post_resp = await client.post("/api/voice/profiles", json=sample_voice_profile)
+            assert post_resp.status_code == 201
+            data = post_resp.json()
+            profile_id = data["id"]
+            assert data["name"] == "Arona"
+
+            # 2. List Profiles
+            list_resp = await client.get("/api/voice/profiles")
+            assert list_resp.status_code == 200
+            profiles = list_resp.json()["profiles"]
+            assert len(profiles) >= 1
+
+            # 3. Get Single Profile
+            get_resp = await client.get(f"/api/voice/profiles/{profile_id}")
+            assert get_resp.status_code == 200
+            assert get_resp.json()["profile"]["name"] == "Arona"
+
+            # 4. Switch Voice Profile
+            switch_resp = await client.post("/api/voice/switch", json={"profile_id": profile_id})
+            assert switch_resp.status_code == 200
+            assert switch_resp.json()["status"] == "switched"
+            assert mock_gpt_sovits.current_gpt_weights == sample_voice_profile["gpt_weights_path"]
+
+            # 5. Delete Profile
+            del_resp = await client.delete(f"/api/voice/profiles/{profile_id}")
+            assert del_resp.status_code == 200
+            assert del_resp.json()["status"] == "deleted"
+
+    @pytest.mark.asyncio
+    async def test_voice_router_error_cases(self, temp_db_path, mock_gpt_sovits):
+        manager = VoiceManager(gpt_sovits_client_or_server=mock_gpt_sovits, db_path=temp_db_path)
+        set_voice_manager(manager)
+
+        app = create_app()
+        transport = ASGITransport(app=app)
+
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+            # Switch nonexistent profile
+            resp_switch = await client.post("/api/voice/switch", json={"profile_id": 99999})
+            assert resp_switch.status_code == 404
+
+            # Switch missing id and name
+            resp_missing = await client.post("/api/voice/switch", json={})
+            assert resp_missing.status_code == 400
 
 

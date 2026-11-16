@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 import pytest
 
+from galgame2voice.config import get_settings
 from galgame2voice.database import crud
 from galgame2voice.database.models import MessageCreate
 from galgame2voice.services.gpt_sovits_client import GptSovitsClient
@@ -249,3 +250,18 @@ class TestServerLifespanCyclesAndCheckpointing:
                 assert res[0][0] == 0, f"WAL checkpoint returned busy={res[0][0]}"
             finally:
                 direct_conn.close()
+
+    @pytest.mark.asyncio
+    async def test_app_lifespan_lifecycle(self):
+        """Verifies lifespan startup creates required directories and finishes cleanly upon exit."""
+        settings = get_settings()
+        app = create_app()
+
+        # Execute lifespan startup and shutdown
+        async with app.router.lifespan_context(app):
+            assert hasattr(app.state, "start_time")
+            assert hasattr(app.state, "start_time_iso")
+            assert settings.data_dir.exists()
+            assert settings.audio_dir.exists()
+            assert settings.logs_dir.exists()
+

@@ -156,3 +156,25 @@ def test_expanded_stage_cues():
     assert normalize_japanese_for_tts("（ふふっ）どうしたの？") == "どうしたの？"
     assert normalize_japanese_for_tts("（ドキドキ）緊張するな…") == "緊張するな…"
     assert normalize_japanese_for_tts("（えへへ）褒められちゃった！") == "褒められちゃった！"
+
+
+class TestJapaneseParenthesesCleaner:
+    """Edge cases for Japanese parenthetical stage-cue removal."""
+
+    def test_unmatched_brackets_handled_gracefully(self):
+        text = "（未完了の括弧 こんにちは"
+        assert clean_japanese_parentheses(text) == "未完了の括弧 こんにちは"
+
+    def test_closing_bracket_only(self):
+        text = "こんにちは）マスター"
+        assert clean_japanese_parentheses(text) == "こんにちはマスター"
+
+    def test_empty_and_whitespace(self):
+        assert clean_japanese_parentheses("") == ""
+        assert clean_japanese_parentheses("   ") == ""
+        assert clean_japanese_parentheses(None) == ""
+
+    def test_pure_text_unchanged(self):
+        pure = "先生、準備は完了しました！いつでも出発できます。"
+        assert clean_japanese_parentheses(pure) == pure
+
