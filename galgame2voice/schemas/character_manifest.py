@@ -13,7 +13,6 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from galgame2voice.services.tts_service import TtsService
 from galgame2voice.utils.audio_spec import (
     REFERENCE_AUDIO_MAX_SECONDS,
     REFERENCE_AUDIO_MIN_SECONDS,
@@ -134,6 +133,8 @@ def validate_character_package(character_dir: Path) -> tuple[bool, list[str]]:
 
     if not manifest.emotions:
         errors.append(no_emotions_error())
+
+    from galgame2voice.services.tts_service import TtsService
 
     for emo_key, emo in manifest.emotions.items():
         ref_path = char_dir / emo.audio
