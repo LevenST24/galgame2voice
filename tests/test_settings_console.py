@@ -1366,3 +1366,61 @@ class TestNetworkTimeoutsAndErrorRecovery:
                 assert data2["gpt_sovits"]["status"] == "reachable"
                 assert data2["gpt_sovits"]["error"] is None
 
+
+@pytest.mark.asyncio
+class TestVoiceRouterHardening:
+    @pytest.fixture
+    async def client(self):
+        app = create_app()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as c:
+            yield c
+
+    async def test_voice_profile_id_negative_or_zero_returns_422(self, client):
+        res = await client.get("/api/voice/profiles/0")
+        assert res.status_code == 422
+        assert "positive integer" in res.json()["detail"]
+
+        res = await client.get("/api/voice/profiles/-5")
+        assert res.status_code == 422
+
+        res = await client.put("/api/voice/profiles/0", json={"name": "test"})
+        assert res.status_code == 422
+
+        res = await client.delete("/api/voice/profiles/0")
+        assert res.status_code == 422
+
+    async def test_voice_switch_validation(self, client):
+        # Missing both id and name
+        res = await client.post("/api/voice/switch", json={})
+        assert res.status_code == 400
+
+        # Whitespace-only name
+        res = await client.post("/api/voice/switch", json={"profile_name": "   "})
+        assert res.status_code == 400
+
+        # Negative profile_id
+        res = await client.post("/api/voice/switch", json={"profile_id": -1})
+        assert res.status_code == 422
+
+        # Non-existent profile returns 404 (404 precedence)
+        res = await client.post("/api/voice/switch", json={"profile_id": 9999})
+        assert res.status_code == 404
+
+    async def test_voice_profile_create_length_bounds(self, client):
+        # Empty name
+        res = await client.post("/api/voice/profiles", json={
+            "name": "",
+            "gpt_weights_path": "a.ckpt",
+            "sovits_weights_path": "a.pth",
+        })
+        assert res.status_code == 422
+
+        # Name too long (> 100)
+        res = await client.post("/api/voice/profiles", json={
+            "name": "x" * 101,
+            "gpt_weights_path": "a.ckpt",
+            "sovits_weights_path": "a.pth",
+        })
+        assert res.status_code == 422
+
+

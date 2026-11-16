@@ -5,6 +5,8 @@ daily points cap, 7 emotion taxonomy classifiers, Galgame easter egg triggers,
 and milestone line unlocks.
 """
 
+import asyncio
+
 import pytest
 import aiosqlite
 from galgame2voice.database import crud
@@ -268,3 +270,104 @@ class TestAffectionTurnHandlingAndDailyCap:
             assert aff4.daily_points_earned == 8
             assert aff4.affection_score == 23
             assert aff4.affection_level == 2
+
+
+@pytest.mark.asyncio
+class TestAffectionServiceHardening:
+    async def test_affection_extreme_input_boundaries(self, isolate_test_database):
+        svc = AffectionService(db_path=isolate_test_database)
+
+        # Test None / non-str inputs
+        pts, reasons = svc.calculate_turn_points(None)
+        assert pts == 1
+        assert "base_turn" in reasons
+
+        emotion = svc.classify_emotion(None, None, current_emotion="tsundere", affection_level="invalid")
+        assert emotion == "tsundere"
+
+        egg = svc.check_easter_eggs(None, current_level=-1)
+        assert egg is None
+
+    async def test_handle_turn_affection_concurrent_unlocks_no_lost_updates(self, isolate_test_database):
+        svc = AffectionService(db_path=isolate_test_database)
+        user_id = "concurrent_unlock_user"
+
+        # Concurrently trigger different turns with distinct easter eggs and milestones
+        async def _turn(text: str, pts: int):
+            return await svc.handle_turn_affection(
+                user_id=user_id,
+                character_id=1,
+                user_text=text,
+                assistant_text="测试",
+                daily_limit=50,
+            )
+
+        # First advance user to level 2 so level-gated easter eggs are eligible
+        async with get_db(isolate_test_database) as conn:
+            await crud.increment_affection(conn, user_id=user_id, character_id=1, delta_points=25, daily_limit=50)
+
+        # Concurrently fire turns with distinct keywords
+        await asyncio.gather(
+            _turn("大枣和枣子姐", 1),
+            _turn("发卡姬最棒", 1),
+            _turn("女仆装很可爱", 1),
+            _turn("日常交流", 1),
+        )
+
+        async with get_db(isolate_test_database) as conn:
+            aff = await crud.get_character_affection(conn, user_id=user_id, character_id=1)
+            unlocked = aff.unlocked_dialogues
+
+            # Verify that all triggered easter eggs and milestones exist in unlocked_dialogues
+            assert "easter_egg_zaozi" in unlocked
+            assert "easter_egg_faka" in unlocked
+            assert "easter_egg_maid" in unlocked
+            assert "milestone_lv2" in unlocked
+
+    async def test_multi_level_jump_unlocks_all_milestones(self, isolate_test_database):
+        svc = AffectionService(db_path=isolate_test_database)
+        user_id = "jump_user"
+
+        # User starts at Lv1, directly gains 45 points (jumping straight to Lv3)
+        res = await svc.handle_turn_affection(
+            user_id=user_id,
+            character_id=1,
+            user_text="测试",
+            assistant_text="测试",
+            daily_limit=100,
+        )
+        # Advance score directly to 45
+        async with get_db(isolate_test_database) as conn:
+            await crud.increment_affection(conn, user_id=user_id, character_id=1, delta_points=44, daily_limit=100)
+
+        # Next turn should verify level 3 and ensure Lv1, Lv2, Lv3 milestones are ALL unlocked
+        res = await svc.handle_turn_affection(
+            user_id=user_id,
+            character_id=1,
+            user_text="日常交流",
+            assistant_text="日常交流",
+            daily_limit=100,
+        )
+        assert res["level"] == 3
+
+        async with get_db(isolate_test_database) as conn:
+            aff = await crud.get_character_affection(conn, user_id=user_id, character_id=1)
+            assert "milestone_lv1" in aff.unlocked_dialogues
+            assert "milestone_lv2" in aff.unlocked_dialogues
+            assert "milestone_lv3" in aff.unlocked_dialogues
+
+    async def test_unlock_character_dialogues_on_new_user(self, isolate_test_database):
+        async with get_db(isolate_test_database) as conn:
+            # Calling unlock on brand-new user whose row does not exist yet
+            unlocked = await crud.unlock_character_dialogues(
+                conn, user_id="brand_new_user_xyz", character_id=1, dialogue_ids_to_add=["milestone_lv1", "easter_egg_maid"]
+            )
+            assert "milestone_lv1" in unlocked
+            assert "easter_egg_maid" in unlocked
+
+            # Verify persisted in database
+            aff = await crud.get_character_affection(conn, user_id="brand_new_user_xyz", character_id=1)
+            assert aff is not None
+            assert "milestone_lv1" in aff.unlocked_dialogues
+            assert "easter_egg_maid" in aff.unlocked_dialogues
+

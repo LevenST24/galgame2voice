@@ -3,6 +3,7 @@ Tests for FastAPI Core Application Routes, Health Telemetry, Static Fallback, an
 """
 
 import re
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -102,3 +103,29 @@ class TestCoreMainAndHealthEndpoints:
             for name in asset_names:
                 r_asset = await c.get(f"/static/assets/{name}")
                 assert r_asset.status_code == 200
+
+
+@pytest.mark.asyncio
+class TestHealthRouterHardening:
+    async def test_probe_invalid_url_scheme(self):
+        from galgame2voice.routers.health import _probe_gpt_sovits
+        telemetry = await _probe_gpt_sovits("ftp://localhost:9880")
+        assert telemetry.status == "unreachable"
+        assert "scheme must be http or https" in telemetry.error
+
+        telemetry2 = await _probe_gpt_sovits("file:///etc/passwd")
+        assert telemetry2.status == "unreachable"
+        assert "scheme must be http or https" in telemetry2.error
+
+    async def test_probe_sanitizes_exception_details(self):
+        from galgame2voice.routers.health import _probe_gpt_sovits
+        with patch("galgame2voice.services.gpt_sovits_client.get_gpt_sovits_client") as mock_get:
+            mock_client = MagicMock()
+            mock_client.base_url = "http://localhost:9880"
+            mock_client.check_health = AsyncMock(side_effect=Exception("Failed with api_key=sk-1234567890abcdef"))
+            mock_get.return_value = mock_client
+
+            telemetry = await _probe_gpt_sovits("http://localhost:9880")
+            assert telemetry.status == "unreachable"
+            assert "sk-1234567890abcdef" not in telemetry.error
+            assert "REDACTED" in telemetry.error or "***" in telemetry.error or "api_key" in telemetry.error
