@@ -5,7 +5,10 @@ environment variable aliases and Pydantic Settings cache, preventing
 unauthenticated public network exposure or binding mismatch.
 """
 
+import io
 import os
+import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 import pytest
 import uvicorn
@@ -13,6 +16,7 @@ import uvicorn
 from galgame2voice.config import get_settings
 from galgame2voice.main import _init_logging_and_safety
 from scripts import run_server
+import scripts.run_server as rs
 
 
 @pytest.fixture
@@ -228,3 +232,124 @@ def test_fallback_port_is_reflected_in_settings(
     assert os.environ["GALGAME2VOICE_PORT"] == "8081"
     assert os.environ["PORT"] == "8081"
     assert os.environ["GALGAME_PORT"] == "8081"
+
+
+class TestRunServerReExports:
+    def test_run_server_reexports_hardware_functions(self):
+        assert hasattr(rs, "detect_gpu_capability")
+        assert hasattr(rs, "get_system_memory_status")
+        assert hasattr(rs, "get_system_ram_gb")
+
+        total, avail = rs.get_system_ram_gb()
+        assert isinstance(total, float)
+        assert isinstance(avail, float)
+
+    def test_run_hardware_diagnostics_structure(self):
+        diag = rs.run_hardware_diagnostics()
+        assert isinstance(diag, dict)
+        assert "cuda_available" in diag
+        assert "gpu_names" in diag
+        assert "total_ram_gb" in diag
+        assert "avail_ram_gb" in diag
+        assert "has_nvidia" in diag
+
+    @pytest.mark.real_hardware_probe
+    def test_run_server_detect_gpu_capability_respects_subprocess_monkeypatch(self, monkeypatch):
+        import subprocess as real_sub
+        mock_torch_no_cuda = type("Torch", (), {
+            "cuda": type("Cuda", (), {
+                "is_available": lambda: False,
+            })
+        })
+        monkeypatch.setitem(sys.modules, "torch", mock_torch_no_cuda)
+        monkeypatch.setattr(rs, "subprocess", type("M", (), {
+            "Popen": lambda *args, **kwargs: SimpleNamespace(
+                stdout=io.BytesIO(b"GeForce RTX 3070\n"),
+                wait=lambda timeout=None: 0,
+                returncode=0,
+                pid=12345,
+                kill=lambda: None,
+            ),
+            "PIPE": real_sub.PIPE,
+            "DEVNULL": real_sub.DEVNULL,
+        }))
+        avail, name, count = rs.detect_gpu_capability()
+        assert avail is True
+        assert name == "GeForce RTX 3070"
+        assert count == 1
+
+
+class TestServerLauncherCLI:
+    @pytest.fixture(autouse=True)
+    def _isolate_launcher_cli_env(self, monkeypatch):
+        for key in (
+            "GALGAME2VOICE_PORT", "PORT", "GALGAME_PORT",
+            "GALGAME2VOICE_HOST", "HOST", "GALGAME_HOST",
+            "GALGAME_NO_BROWSER",
+        ):
+            if key not in os.environ:
+                monkeypatch.setenv(key, "")
+            monkeypatch.delenv(key)
+
+    def test_parse_args_defaults(self):
+        args = rs.parse_args([])
+        assert args.host == "127.0.0.1"
+        assert args.port == 8080
+        assert args.no_browser is False
+        assert args.check_only is False
+
+    def test_parse_args_custom_values(self):
+        args = rs.parse_args(["--host", "0.0.0.0", "--port", "9090", "--no-browser", "--check-only"])
+        assert args.host == "0.0.0.0"
+        assert args.port == 9090
+        assert args.no_browser is True
+        assert args.check_only is True
+
+    def test_parse_args_env_overrides(self, monkeypatch):
+        monkeypatch.setenv("GALGAME_PORT", "9999")
+        monkeypatch.setenv("GALGAME_HOST", "0.0.0.0")
+        monkeypatch.setenv("GALGAME_NO_BROWSER", "1")
+        args = rs.parse_args([])
+        assert args.port == 9999
+        assert args.host == "0.0.0.0"
+        assert args.no_browser is True
+
+    def test_parse_args_env_alias_precedence(self, monkeypatch):
+        # GALGAME2VOICE_PORT takes precedence over PORT and GALGAME_PORT
+        monkeypatch.setenv("GALGAME_PORT", "9999")
+        monkeypatch.setenv("PORT", "8888")
+        monkeypatch.setenv("GALGAME2VOICE_PORT", "7777")
+        args = rs.parse_args([])
+        assert args.port == 7777
+
+        # PORT takes precedence over GALGAME_PORT when GALGAME2VOICE_PORT is unset
+        monkeypatch.delenv("GALGAME2VOICE_PORT")
+        args = rs.parse_args([])
+        assert args.port == 8888
+
+        # GALGAME2VOICE_HOST takes precedence over HOST and GALGAME_HOST
+        monkeypatch.setenv("GALGAME_HOST", "192.168.1.1")
+        monkeypatch.setenv("HOST", "10.0.0.1")
+        monkeypatch.setenv("GALGAME2VOICE_HOST", "172.16.0.1")
+        args = rs.parse_args([])
+        assert args.host == "172.16.0.1"
+
+        # HOST takes precedence over GALGAME_HOST when GALGAME2VOICE_HOST is unset
+        monkeypatch.delenv("GALGAME2VOICE_HOST")
+        args = rs.parse_args([])
+        assert args.host == "10.0.0.1"
+
+    def test_main_check_only_success(self, monkeypatch):
+        monkeypatch.setattr(rs, "check_python_environment", lambda: True)
+        monkeypatch.setattr(rs, "run_hardware_diagnostics", lambda: {"has_nvidia": False})
+
+        with pytest.raises(SystemExit) as exc_info:
+            rs.main(["--check-only"])
+        assert exc_info.value.code == 0
+
+    def test_main_check_only_env_failure(self, monkeypatch):
+        monkeypatch.setattr(rs, "check_python_environment", lambda: False)
+
+        with pytest.raises(SystemExit) as exc_info:
+            rs.main(["--check-only"])
+        assert exc_info.value.code == 1

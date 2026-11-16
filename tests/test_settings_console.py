@@ -422,6 +422,22 @@ class TestSystemDiagnostics:
             assert "gpt_sovits" in data
             assert "storage" in data
 
+    @pytest.mark.asyncio
+    async def test_system_status_contains_hardware_telemetry(self):
+        app = create_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+            resp = await client.get("/api/system/status")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert "hardware" in data
+            hw = data["hardware"]
+            assert isinstance(hw["gpu_available"], bool)
+            assert isinstance(hw["gpu_name"], str)
+            assert isinstance(hw["fp32_forced"], bool)
+            assert hw["system_memory_gb"] is None or isinstance(hw["system_memory_gb"], (int, float))
+            assert hw["system_memory_avail_gb"] is None or isinstance(hw["system_memory_avail_gb"], (int, float))
+
 
 # ============================================================================
 # 6. MaskingFilter & Security Log Sanitization Tests

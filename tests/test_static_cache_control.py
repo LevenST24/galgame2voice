@@ -1,9 +1,14 @@
 """ASGI StaticCacheControlMiddleware Cache-Control header tests for /audio/ and /static/assets/."""
 
+from pathlib import Path
 from fastapi.testclient import TestClient
+from httpx import AsyncClient, ASGITransport
+import pytest
 
 from galgame2voice.config import get_settings
-from galgame2voice.main import create_app
+from galgame2voice.main import AudioStaticFiles, create_app
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 class TestAudioCacheControlHeaders:
@@ -144,3 +149,89 @@ class TestAudioCacheControlHeaders:
         client = TestClient(create_app())
         resp_pct_html = client.get("/static/assets/%2e%2e/index.html")
         assert resp_pct_html.headers.get("Cache-Control") != self._IMMUTABLE
+
+
+class TestStaticAssetCaching:
+    @pytest.mark.asyncio
+    async def test_static_assets_immutable_cache_header(self):
+        app = create_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            # Request under /static/assets/ (real existing asset)
+            static_assets = list((PROJECT_ROOT / "galgame2voice" / "static" / "assets").glob("index-*.js"))
+            asset_name = static_assets[0].name if static_assets else "index-C1humFBM.js"
+            resp = await client.get(f"/static/assets/{asset_name}")
+            assert resp.status_code == 200
+            assert "cache-control" in resp.headers
+            assert resp.headers["cache-control"] == "public, max-age=31536000, immutable"
+
+            # Entry point index.html
+            resp_index = await client.get("/")
+            assert resp_index.status_code == 200
+            assert resp_index.headers.get("cache-control") == "no-cache"
+
+            # Legacy /settings.html redirects to unified SPA
+            resp_settings = await client.get("/settings.html")
+            assert resp_settings.status_code == 307
+            assert resp_settings.headers["location"] == "/?settings=1"
+
+    @pytest.mark.asyncio
+    async def test_static_assets_error_status_not_cached_immutably(self):
+        app = create_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/static/assets/non_existent_asset_xyz.js")
+            assert resp.status_code == 404
+            assert "immutable" not in resp.headers.get("cache-control", "")
+            assert "no-cache" in resp.headers.get("cache-control", "")
+
+    @pytest.mark.asyncio
+    async def test_static_assets_post_method_not_cached(self):
+        app = create_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            static_assets = list((PROJECT_ROOT / "galgame2voice" / "static" / "assets").glob("index-*.js"))
+            asset_name = static_assets[0].name if static_assets else "index-C1humFBM.js"
+            resp = await client.post(f"/static/assets/{asset_name}")
+            # POST should not receive immutable static cache header
+            assert "immutable" not in resp.headers.get("cache-control", "")
+
+
+@pytest.mark.asyncio
+async def test_audio_static_files_caching_headers(tmp_path: Path):
+    """AudioStaticFiles only adds Accept-Ranges; Cache-Control belongs to the middleware."""
+    audio_dir = tmp_path / "audio"
+    cache_dir = audio_dir / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    cache_file = cache_dir / "abc12345.wav"
+    cache_file.write_bytes(b"RIFFcache")
+
+    ephemeral_file = audio_dir / "voice_001.wav"
+    ephemeral_file.write_bytes(b"RIFFephemeral")
+
+    static_handler = AudioStaticFiles(directory=str(audio_dir))
+
+    # Test cache/ URL
+    scope_cache = {
+        "type": "http",
+        "method": "GET",
+        "path": "/cache/abc12345.wav",
+        "headers": [],
+    }
+    resp_cache = await static_handler.get_response("cache/abc12345.wav", scope_cache)
+    assert resp_cache.status_code == 200
+    assert resp_cache.headers.get("cache-control") is None
+    assert resp_cache.headers.get("accept-ranges") == "bytes"
+
+    # Test regular ephemeral audio URL
+    scope_eph = {
+        "type": "http",
+        "method": "GET",
+        "path": "/voice_001.wav",
+        "headers": [],
+    }
+    resp_eph = await static_handler.get_response("voice_001.wav", scope_eph)
+    assert resp_eph.status_code == 200
+    assert resp_eph.headers.get("cache-control") is None
+    assert resp_eph.headers.get("accept-ranges") == "bytes"
