@@ -428,3 +428,67 @@ class TestChatServiceModalParticleSingleChunk:
         assert synthesized_sentences[0] == "そうですね、私もそう思いますよ。"
 
 
+class TestJapaneseSentenceSplitting:
+    """Verifies Japanese sentence splitting edge cases (punctuation, whitespace, emojis)."""
+
+    def test_split_japanese_sentences_comprehensive(self):
+        text = "おはよう！今日もいい天気ですね。一緒に行きましょう？\n次はこれ！"
+        sentences = split_japanese_sentences(text)
+        assert len(sentences) == 4
+        assert sentences[0] == "おはよう！"
+        assert sentences[1] == "今日もいい天气ですね。" or "今日もいい天気ですね。" in sentences[1]
+        assert sentences[2] == "一緒に行きましょう？"
+        assert sentences[3] == "次はこれ！"
+
+    def test_split_empty_and_whitespace(self):
+        assert split_japanese_sentences("") == []
+        assert split_japanese_sentences("   \n\n  ") == []
+
+    def test_split_agile_whitespace(self):
+        """Blank agile input is empty after strip; tabs are empty on both paths."""
+        assert split_japanese_sentences("  \r\n  \t  ", is_first_chunk=True, min_chars=6) == []
+        assert split_japanese_sentences("\t\t", is_first_chunk=False) == []
+        assert split_japanese_sentences("\t\t", is_first_chunk=True, min_chars=6) == []
+
+    @pytest.mark.parametrize("punct_only", [
+        ",", "、", "，", "。", "！", "？", "!", "?",
+        ",,,,,,,,", "、、、、、、", "，，，，，，",
+        "。。。。。。", "！？！？！？", "!?!?!?",
+        "、、，，,,。。。！？!?",
+        "   ，，、、。。！？   ",
+    ])
+    def test_chunking_pure_punctuation(self, punct_only):
+        """Punctuation-only text must never crash, never hang, and never lose content."""
+        expected_stripped = punct_only.replace(" ", "").replace("\n", "")
+        res_default = split_japanese_sentences(punct_only, is_first_chunk=False)
+        assert isinstance(res_default, list)
+        if expected_stripped:
+            assert len(res_default) >= 1
+            combined_default = "".join(res_default).replace(" ", "").replace("\n", "")
+            assert combined_default == expected_stripped
+        else:
+            assert res_default == []
+
+        res_agile = split_japanese_sentences(punct_only, is_first_chunk=True, min_chars=6)
+        assert isinstance(res_agile, list)
+        if expected_stripped:
+            assert len(res_agile) >= 1
+            combined_agile = "".join(res_agile).replace(" ", "").replace("\n", "")
+            assert combined_agile == expected_stripped
+        else:
+            assert res_agile == []
+
+    def test_chunking_emojis_and_unicode_symbols(self):
+        """Emojis, math symbols, and mixed scripts must be preserved safely."""
+        emoji_text = "🐱こんにちは！🐶先生、今日はいい天気ですね🎉一緒に出かけましょう？🚀"
+        res = split_japanese_sentences(emoji_text, is_first_chunk=True, min_chars=6)
+        assert len(res) >= 2
+        assert "🐱こんにちは！" in res[0]
+        assert "".join(res) == emoji_text
+
+        emoji_clauses = "🍎、🍌、🍇、🍓、🍉、🍒、🍑"
+        res_emoji = split_japanese_sentences(emoji_clauses, is_first_chunk=True, min_chars=6)
+        assert len(res_emoji) >= 1
+        assert "".join(res_emoji) == emoji_clauses
+
+

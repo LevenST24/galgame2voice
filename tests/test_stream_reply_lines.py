@@ -448,3 +448,45 @@ async def test_interrupted_snapshot_equals_delivered_line_prefix(coordinator_fac
     finally:
         synthesis_release.set()
         await asyncio.wait_for(stream.aclose(), 2)
+
+
+_BACKPRESSURE_LINES = [
+    {"index": 900, "zh": '你好，"小猫"。\\路径\n下一句😀', "ja": 'こんにちは、猫です。次です。😀',
+     "emotion": "shy", "act": {"face": "smile", "motion": "nod", "blush": False}},
+    {"zh": "再见。", "ja": "さようなら。", "emotion": "cool", "act": {"fx": None}},
+]
+
+
+@pytest.mark.asyncio
+async def test_disconnect_under_lines_backpressure(coordinator_factory, monkeypatch):
+    async def tokens(*args, **kwargs):
+        yield json.dumps(
+            {"tts": {"speed": 1.05, "temp": 0.95, "emotion": "gentle"}, "lines": _BACKPRESSURE_LINES * 150},
+            ensure_ascii=False,
+        )
+
+    coordinator, _, database = coordinator_factory(tokens=tokens)
+    run = coordinator._init_stream_run()
+    full = asyncio.Event()
+    put = coordinator._put_with_cancel
+
+    async def observe(queue, item, *args):
+        if queue is run.event_queue and queue.full():
+            full.set()
+        return await put(queue, item, *args)
+
+    monkeypatch.setattr(coordinator, "_init_stream_run", lambda: run)
+    monkeypatch.setattr(coordinator, "_put_with_cancel", observe)
+    stream = coordinator.stream()
+    try:
+        while (await asyncio.wait_for(anext(stream), 3))["event"] != "line":
+            pass
+        await asyncio.wait_for(full.wait(), 3)
+        await asyncio.wait_for(stream.aclose(), 2)
+        assert run.producer_task.done() and run.worker_task.done()
+        async with get_db(database) as conn:
+            saved = (await crud.get_recent_messages(conn, "lines"))[-1]
+        assert [line["index"] for line in saved.lines] == [0]
+        assert saved.lines[0]["audio"]["status"] in {"ready", "failed"}
+    finally:
+        await stream.aclose()
