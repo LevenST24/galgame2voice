@@ -4,6 +4,8 @@ The switch route is the public entry: POST /api/voice/switch resolves the
 profile, then VoiceManager.switch_profile runs VoiceResourceGuard.check.
 """
 
+import asyncio
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -90,3 +92,117 @@ async def test_voice_switch_keeps_builtin_vram_floor_without_env(
     assert allowed.status_code == 200, allowed.text
     assert allowed.json()["status"] == "switched"
     assert any(call["endpoint"] == "/set_gpt_weights" for call in mock_gpt_sovits.call_history)
+
+
+@pytest.mark.asyncio
+async def test_voice_switch_nonexistent_profile_404_precedence(temp_db_path, mock_gpt_sovits, monkeypatch):
+    """
+    Non-existent voice profile switch should return 404 Not Found,
+    NOT 503 Service Unavailable, even when memory is low.
+    """
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("GALGAME2VOICE_SKIP_MEM_CHECK", raising=False)
+    # Simulate low memory (e.g. 0.8 GB free < scaled threshold)
+    monkeypatch.setattr("galgame2voice.services.voice_manager.get_system_memory_status", lambda: (16.0, 0.8))
+
+    manager = VoiceManager(gpt_sovits_client_or_server=mock_gpt_sovits, db_path=temp_db_path)
+    set_voice_manager(manager)
+
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+        resp = await client.post("/api/voice/switch", json={"profile_id": 99999})
+        # REST semantics: Non-existent profile should be 404, not 503!
+        assert resp.status_code == 404, f"Expected 404 for missing profile, got {resp.status_code}: {resp.text}"
+
+
+@pytest.mark.asyncio
+async def test_voice_switch_existing_profile_low_memory_503_and_force_override(
+    temp_db_path, mock_gpt_sovits, sample_voice_profile, monkeypatch
+):
+    """
+    When profile exists and free memory is < 1.5GB:
+    - Without force: returns 503 Service Unavailable.
+    - With force=True: bypasses memory check and switches successfully (200).
+    """
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("GALGAME2VOICE_SKIP_MEM_CHECK", raising=False)
+    # Simulate low memory (0.8 GB free)
+    monkeypatch.setattr("galgame2voice.services.voice_manager.get_system_memory_status", lambda: (16.0, 0.8))
+
+    manager = VoiceManager(gpt_sovits_client_or_server=mock_gpt_sovits, db_path=temp_db_path)
+    set_voice_manager(manager)
+
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+        post_resp = await client.post("/api/voice/profiles", json=sample_voice_profile)
+        assert post_resp.status_code == 201
+        profile_id = post_resp.json()["id"]
+
+        # Switch without force -> 503
+        resp_503 = await client.post("/api/voice/switch", json={"profile_id": profile_id})
+        assert resp_503.status_code == 503
+        assert "系统空闲内存不足" in resp_503.json()["detail"]
+
+        # Switch with force=True -> 200
+        resp_force = await client.post("/api/voice/switch", json={"profile_id": profile_id, "force": True})
+        assert resp_force.status_code == 200
+        assert resp_force.json()["status"] == "switched"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_voice_switch_serialization_and_toctou_prevention(temp_db_path, mock_gpt_sovits, monkeypatch):
+    """
+    Simulates concurrent voice switch requests where memory is sufficient for the first
+    switch but drops below threshold before the second switch.
+    Without switch_lock, both would race through the memory check.
+    Under switch_lock, the second switch detects depleted memory under the lock and gets 503.
+    """
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("GALGAME2VOICE_SKIP_MEM_CHECK", raising=False)
+
+    # Memory starts at 2.0GB, drops to 0.8GB after first check
+    mem_readings = [2.0, 0.8, 0.8, 0.8]
+    def mock_free_mem(*args, **kwargs):
+        return (16.0, mem_readings.pop(0) if mem_readings else 0.8)
+
+    monkeypatch.setattr("galgame2voice.services.voice_manager.get_system_memory_status", mock_free_mem)
+
+    manager = VoiceManager(gpt_sovits_client_or_server=mock_gpt_sovits, db_path=temp_db_path)
+    set_voice_manager(manager)
+
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+        # Create Profile A
+        p_a = await client.post("/api/voice/profiles", json={
+            "name": "Character A",
+            "gpt_weights_path": "a.ckpt",
+            "sovits_weights_path": "a.pth",
+            "refer_audio_path": "a.wav",
+            "refer_text": "こんにちは",
+        })
+        id_a = p_a.json()["id"]
+
+        # Create Profile B
+        p_b = await client.post("/api/voice/profiles", json={
+            "name": "Character B",
+            "gpt_weights_path": "b.ckpt",
+            "sovits_weights_path": "b.pth",
+            "refer_audio_path": "b.wav",
+            "refer_text": "さようなら",
+        })
+        id_b = p_b.json()["id"]
+
+        # Concurrently send switch requests
+        res_a, res_b = await asyncio.gather(
+            client.post("/api/voice/switch", json={"profile_id": id_a}),
+            client.post("/api/voice/switch", json={"profile_id": id_b}),
+            return_exceptions=True,
+        )
+
+        status_codes = {res_a.status_code, res_b.status_code}
+        # One succeeded (200), one safely rejected due to serialized low memory check (503)
+        assert 200 in status_codes, f"Expected at least one 200, got {status_codes}"
+        assert 503 in status_codes, f"Expected one 503 from TOCTOU guard, got {status_codes}"

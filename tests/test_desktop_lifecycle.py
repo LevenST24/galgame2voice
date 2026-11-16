@@ -499,3 +499,116 @@ def _safe_terminate_subprocess(proc: subprocess.Popen, timeout: float = 5.0) -> 
     terminate_process_tree(proc.pid, timeout=timeout)
     proc.wait(timeout=timeout)
 
+
+def test_posix_signal_registration_and_handling(monkeypatch):
+    """Verifies setup_signal_handlers registers SIGTERM and SIGHUP on non-Windows and calls cleanup."""
+    import signal
+
+    registered_handlers = {}
+    def mock_signal(sig, handler):
+        registered_handlers[sig] = handler
+
+    monkeypatch.setattr(signal, "signal", mock_signal)
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    # Add mock SIGHUP if not present on Windows platform
+    mock_sighup = getattr(signal, "SIGHUP", 1)
+    monkeypatch.setattr(signal, "SIGHUP", mock_sighup, raising=False)
+
+    run_server.setup_signal_handlers()
+
+    assert signal.SIGTERM in registered_handlers
+    assert mock_sighup in registered_handlers
+
+    # Simulate receiving SIGTERM
+    cleanup_called = [False]
+    monkeypatch.setattr(run_server, "cleanup_subprocesses", lambda: cleanup_called.__setitem__(0, True))
+
+    with pytest.raises(SystemExit) as exc_info:
+        registered_handlers[signal.SIGTERM](signal.SIGTERM, None)
+
+    assert cleanup_called[0] is True
+    assert exc_info.value.code == 128 + signal.SIGTERM
+
+
+def test_process_tree_termination_and_cleanup(tmp_path, monkeypatch):
+    """Verifies terminate_process_tree terminates process tree with taskkill fallback and cleans files."""
+    monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
+    (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+
+    # 1. Test psutil process tree termination
+    mock_parent = MagicMock()
+    mock_child1 = MagicMock()
+    mock_child2 = MagicMock()
+    mock_parent.children.return_value = [mock_child1, mock_child2]
+
+    mock_psutil = MagicMock()
+    mock_psutil.Process.return_value = mock_parent
+    # child1 alive after first wait, killed and gone after second wait
+    mock_psutil.wait_procs.side_effect = [([], [mock_child1]), ([mock_child1], [])]
+
+    taskkill_args = []
+    def mock_subprocess_run(args, **kwargs):
+        taskkill_args.append(args)
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(run_server.subprocess, "run", mock_subprocess_run)
+    monkeypatch.setitem(sys.modules, "psutil", mock_psutil)
+    run_server.terminate_process_tree(12345)
+
+    mock_parent.terminate.assert_called_once()
+    mock_child1.terminate.assert_called_once()
+    mock_child2.terminate.assert_called_once()
+    mock_child1.kill.assert_called_once()
+
+    # 2. Test taskkill fallback when psutil is missing or fails
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    monkeypatch.setattr(run_server.sys, "platform", "win32")
+
+    taskkill_args.clear()
+    run_server.terminate_process_tree(54321)
+
+    assert any("taskkill" in str(arg) and "54321" in str(arg) for arg in taskkill_args)
+
+    # 3. Test cleanup_subprocesses removes files and kills pid
+    (tmp_path / "data" / "active_port.txt").write_text("8080", encoding="utf-8")
+    (tmp_path / "galgame2voice.pid").write_text(str(run_server.os.getpid()), encoding="utf-8")
+    (tmp_path / "gptsovits.pid").write_text("54321", encoding="utf-8")
+
+    run_server.cleanup_subprocesses()
+
+    assert not (tmp_path / "data" / "active_port.txt").exists()
+    assert not (tmp_path / "galgame2voice.pid").exists()
+    assert not (tmp_path / "gptsovits.pid").exists()
+
+
+def test_terminate_process_tree_safety_and_access_denied_fallback(monkeypatch):
+    """
+    Verifies:
+    1. Safety guard protects PID 0, PID 1, and self (os.getpid()).
+    2. psutil AccessDenied does NOT falsely mark success and triggers OS-level fallback.
+    """
+    # 1. Safety guard checks
+    mock_psutil = MagicMock()
+    monkeypatch.setitem(sys.modules, "psutil", mock_psutil)
+
+    run_server.terminate_process_tree(0)
+    run_server.terminate_process_tree(1)
+    run_server.terminate_process_tree(os.getpid())
+    mock_psutil.Process.assert_not_called()
+
+    # 2. AccessDenied triggers fallback
+    mock_psutil.Process.side_effect = mock_psutil.AccessDenied()
+
+    called_commands = []
+    def mock_run(cmd, **kwargs):
+        called_commands.append(cmd)
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(run_server.subprocess, "run", mock_run)
+    run_server.terminate_process_tree(99999)
+
+    # Must have invoked fallback command
+    assert len(called_commands) > 0
+    cmd_str = " ".join(str(c) for c in called_commands[0])
+    assert "99999" in cmd_str

@@ -87,6 +87,24 @@ def test_agile_clause_boundary_is_not_re_emitted_after_mode_flip():
     assert len(emitted) == len(set(emitted)), f"duplicated sentences: {emitted!r}"
 
 
+def test_r1_streaming_bilingual_parser_agile_first_chunk():
+    """Verify StreamingBilingualParser emits chunk 0 immediately upon clause pause."""
+    parser = StreamingBilingualParser()
+    # Feed chunk 0 containing clause pause with length >= 6
+    ch_delta1, ja_sents1 = parser.feed_chunk('{"chinese": "你好", "japanese": "こんにちは、')
+    assert ja_sents1 == ["こんにちは、"]
+    assert parser.first_sentence_emitted is True
+
+    # Feed chunk 1 with intermediate clause pause: should NOT split on clause pause because chunk 0 already emitted
+    ch_delta2, ja_sents2 = parser.feed_chunk('先生、今日はいい天気ですね。')
+    assert ja_sents2 == ["先生、今日はいい天気ですね。"]
+
+    ch_full, ja_full, rem = parser.finalize()
+    assert ch_full == "你好"
+    assert ja_full == "こんにちは、先生、今日はいい天気ですね。"
+    assert rem == []
+
+
 def test_no_emission_before_a_sentence_is_confirmed():
     """A partial sentence without terminal punctuation must not be emitted early."""
     parser = StreamingBilingualParser()

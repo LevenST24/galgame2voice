@@ -491,4 +491,57 @@ class TestJapaneseSentenceSplitting:
         assert len(res_emoji) >= 1
         assert "".join(res_emoji) == emoji_clauses
 
+    def test_r1_split_japanese_sentences_clause_pauses(self):
+        """Verify split_japanese_sentences splits on clause pauses for chunk 0 when len >= 6."""
+        # Japanese comma '、' with len >= 6
+        text_ja = "こんにちは、先生、今日はいい天気ですね。"
+        sents = split_japanese_sentences(text_ja, is_first_chunk=True, min_chars=6)
+        assert len(sents) == 2
+        assert sents[0] == "こんにちは、"
+        assert sents[1] == "先生、今日はいい天気ですね。"
+
+        # Fullwidth Chinese comma '，' with len >= 6
+        text_cn = "初めまして，よろしくお願いします。"
+        sents_cn = split_japanese_sentences(text_cn, is_first_chunk=True, min_chars=6)
+        assert len(sents_cn) == 2
+        assert sents_cn[0] == "初めまして，"
+        assert sents_cn[1] == "よろしくお願いします。"
+
+        # Standard ASCII comma ',' with len >= 6
+        text_ascii = "Hello world,今日も一日頑張りましょう。"
+        sents_ascii = split_japanese_sentences(text_ascii, is_first_chunk=True, min_chars=6)
+        assert len(sents_ascii) == 2
+        assert sents_ascii[0] == "Hello world,"
+        assert sents_ascii[1] == "今日も一日頑張りましょう。"
+
+    def test_r1_split_japanese_sentences_backwards_compatibility(self):
+        """Verify is_first_chunk=False strictly preserves clauses and only terminal punctuation splits."""
+        text = "こんにちは、先生、今日はいい天気ですね。一緒に出かけましょう？"
+        # Strict mode (default / is_first_chunk=False)
+        strict_sents = split_japanese_sentences(text, is_first_chunk=False)
+        assert len(strict_sents) == 2
+        assert strict_sents[0] == "こんにちは、先生、今日はいい天気ですね。"
+        assert strict_sents[1] == "一緒に出かけましょう？"
+
+        # Subsequent chunks under is_first_chunk=True preserve terminal punctuation
+        sents_all = split_japanese_sentences(text, is_first_chunk=True, min_chars=6)
+        assert len(sents_all) == 3
+        assert sents_all[0] == "こんにちは、"
+        assert sents_all[1] == "先生、今日はいい天気ですね。"
+        assert sents_all[2] == "一緒に出かけましょう？"
+
+    def test_r1_split_short_clause_no_premature_split(self):
+        """Clause pauses with length < min_chars must NOT split prematurely."""
+        # 'はい、' length is 3 < 6 -> must not split on 'はい、'
+        short_clause = "はい、先生、今日はいい天気ですね。"
+        sents = split_japanese_sentences(short_clause, is_first_chunk=True, min_chars=6)
+        # 'はい、先生、' has length 6 -> splits at second comma!
+        assert sents[0] == "はい、先生、"
+        assert sents[1] == "今日はいい天気ですね。"
+
+        # Terminal punctuation overrides min_chars
+        terminal_short = "はい！先生、おはようございます。"
+        sents_term = split_japanese_sentences(terminal_short, is_first_chunk=True, min_chars=6)
+        assert sents_term[0] == "はい！"
+
 

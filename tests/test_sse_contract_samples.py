@@ -7,12 +7,14 @@ import json
 from pathlib import Path
 import sqlite3
 from types import SimpleNamespace
-from typing import Any
+import time
+from typing import Any, AsyncIterator, List, Optional
 from unittest.mock import AsyncMock
 
 from httpx import ASGITransport, AsyncClient
 import pytest
 
+from galgame2voice.adapters.base import BaseLLMAdapter, ChatMessage, LLMResponse, TestResult
 from galgame2voice.database import crud
 from galgame2voice.database.models import MessageResponse, ReplyLineRecord, decode_lines
 from galgame2voice.database.session import get_db, init_db
@@ -20,7 +22,9 @@ from galgame2voice.main import create_app
 from galgame2voice.routers.chat import ChatRequest, get_turn_reply, set_chat_service, sse_event_formatter
 from galgame2voice.services.chat_pipelines.line_scanner import FX, MOTIONS, MOVES
 from galgame2voice.services.chat_pipelines.stream_coordinator import StreamCoordinator
-from galgame2voice.services.chat_service import SseKeepAlive
+from galgame2voice.services.chat_service import ChatService, SseKeepAlive
+from galgame2voice.services.gpt_sovits_client import GptSovitsClient
+from galgame2voice.services.tts_service import TtsService
 from galgame2voice.utils.sse import format_sse_frame
 from scripts import package_release
 
@@ -396,3 +400,72 @@ class TestSseKeepAliveFormatting:
         assert formatted[2] == ': keep-alive\n\n'
         assert formatted[3] == ': keep-alive\n\n'
         assert 'event: done' in formatted[4]
+
+
+class MockPausingLLMAdapter(BaseLLMAdapter):
+    """Adapter that pauses mid-stream to trigger SSE keep-alive heartbeats."""
+
+    def __init__(self, pause_seconds: float = 0.6):
+        super().__init__(api_key="sk-mock-pause", base_url="http://mock-pause")
+        self.pause_seconds = pause_seconds
+        self.paused_event = asyncio.Event()
+
+    async def chat(self, messages: List[ChatMessage], model: str, **kwargs: Any) -> LLMResponse:
+        return LLMResponse(content='{"chinese": "你好", "japanese": "こんにちは"}')
+
+    async def stream_chat(self, messages: List[ChatMessage], model: str, **kwargs: Any) -> AsyncIterator[str]:
+        yield '{"chinese": "你好", "japanese": "'
+        self.paused_event.set()
+        await asyncio.sleep(self.pause_seconds)
+        yield 'こんにちは！"}'
+
+    async def test_connection(self, model: Optional[str] = None) -> TestResult:
+        return TestResult(success=True, message="OK", latency_ms=1.0)
+
+    async def list_models(self) -> List[str]:
+        return ["mock-pause-model"]
+
+
+class TestR3SseKeepAlive:
+    """Verifies W3C SSE keep-alive comment frames (: keep-alive\\n\\n) on silence."""
+
+    @pytest.mark.asyncio
+    async def test_r3_sse_keep_alive_on_queue_silence(self, temp_db_path, mock_gpt_sovits, monkeypatch):
+        """Verifies stream_chat emits SseKeepAlive with ': keep-alive\\n\\n' on silence."""
+        client = GptSovitsClient(server=mock_gpt_sovits)
+        tts_service = TtsService(client=client, db_path=temp_db_path)
+        chat_service = ChatService(tts_service=tts_service, db_path=temp_db_path)
+
+        adapter = MockPausingLLMAdapter(pause_seconds=0.8)
+
+        async def _mock_adapter_getter(conn=None, provider_id=None):
+            return adapter, "mock-pause-model", "mock-prov"
+
+        chat_service._get_active_llm_adapter = _mock_adapter_getter
+
+        # Accelerate monotonic time during pause so queue timeout (0.5s) triggers >= 5.0s jump
+        real_monotonic = time.monotonic
+        time_offset = 0.0
+
+        def accelerated_monotonic():
+            return real_monotonic() + time_offset
+
+        monkeypatch.setattr(time, "monotonic", accelerated_monotonic)
+
+        # Task to shift virtual clock during queue silence after the first token is consumed
+        async def _shift_clock():
+            await adapter.paused_event.wait()
+            await asyncio.sleep(0.05)
+            nonlocal time_offset
+            time_offset = 6.0
+
+        asyncio.create_task(_shift_clock())
+
+        # 1. Test stream_chat yields SseKeepAlive frame
+        events = []
+        async for ev in chat_service.stream_chat(prompt="测试保活心跳", session_id="ka_sess_1"):
+            events.append(ev)
+
+        keep_alive_events = [ev for ev in events if isinstance(ev, SseKeepAlive) or ev == ": keep-alive\n\n"]
+        assert len(keep_alive_events) >= 1, "stream_chat must yield SseKeepAlive frame during silence"
+        assert keep_alive_events[0].get("comment") == ": keep-alive\n\n"
