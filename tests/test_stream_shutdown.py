@@ -2,7 +2,7 @@
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import anyio
 import pytest
@@ -484,3 +484,44 @@ async def test_request_scope_cancel_before_reply_prunes_only_its_user_message(tm
     finally:
         await stream.aclose()
         await service.aclose()
+
+
+class TestChatStreamingDisconnectAndPruning:
+    """Validates message persistence/pruning when clients disconnect mid-stream."""
+
+    async def test_client_disconnect_before_any_tokens_prunes_orphaned_user_message(self, tmp_path):
+        """When client disconnects before ANY assistant tokens arrive, orphaned user message is pruned."""
+        db_file = tmp_path / "disconnect_zero.db"
+        await init_db(str(db_file))
+
+        service = ChatService(db_path=str(db_file))
+
+        async def hanging_stream(*args, **kwargs):
+            # Hangs without yielding any tokens
+            await asyncio.sleep(5.0)
+            yield '{"chinese": "never reached"}'
+
+        with patch.object(service, "_get_active_llm_adapter") as mock_get_adapter:
+            mock_adapter = MagicMock()
+            mock_adapter.stream_chat = hanging_stream
+            mock_get_adapter.return_value = (mock_adapter, "mock-model", "mock-provider")
+
+            gen = service.stream_chat(prompt="谁在吗？", session_id="test_zero_sess")
+            # Pull generator once so setup executes (user_msg is saved), then immediately close
+            gen_task = asyncio.create_task(gen.__anext__())
+            await asyncio.sleep(0.05)  # Let setup run
+            gen_task.cancel()
+            try:
+                await gen_task
+            except asyncio.CancelledError:
+                pass
+            await gen.aclose()
+
+        # Check DB: orphaned user message should be pruned, leaving 0 messages
+        async with get_db(str(db_file)) as conn:
+            cur = await conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id='test_zero_sess';"
+            )
+            count = (await cur.fetchone())[0]
+            assert count == 0
+

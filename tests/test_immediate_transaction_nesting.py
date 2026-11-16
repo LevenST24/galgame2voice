@@ -441,3 +441,52 @@ class TestDeleteMessageTransactionIsolation:
 
             await crud.delete_message(conn, msg.id)
             assert await crud.count_session_messages(conn, "sess_cancel") == 0
+
+
+class TestImmediateTransactionSafety:
+    """Validates immediate_transaction under concurrency and nested transactions."""
+
+    async def test_immediate_transaction_nested_in_active_transaction(self, tmp_path):
+        """Nested immediate_transaction should not fail with 'cannot start transaction'."""
+        db_file = tmp_path / "nested_tx.db"
+        await init_db(str(db_file))
+
+        async with get_db(str(db_file)) as conn:
+            # Simulate an existing deferred transaction
+            await conn.execute("INSERT INTO settings (id, active_provider_id) VALUES (1, 'deepseek') ON CONFLICT(id) DO UPDATE SET active_provider_id='deepseek';")
+            assert conn.in_transaction or getattr(getattr(conn, "_conn", None), "in_transaction", False)
+
+            # Enter immediate_transaction while already in transaction
+            async with immediate_transaction(conn):
+                await conn.execute("UPDATE settings SET active_provider_id='openai' WHERE id=1;")
+
+        # Verify change was committed
+        async with get_db(str(db_file)) as conn:
+            cur = await conn.execute("SELECT active_provider_id FROM settings WHERE id=1;")
+            row = await cur.fetchone()
+            assert row[0] == "openai"
+
+    async def test_concurrent_writes_with_immediate_transaction(self, tmp_path):
+        """20 concurrent tasks performing immediate writes should succeed without deadlocks."""
+        db_file = tmp_path / "concurrent_tx.db"
+        await init_db(str(db_file))
+
+        async def worker(worker_id: int):
+            for i in range(5):
+                async with get_db(str(db_file)) as conn:
+                    async with immediate_transaction(conn):
+                        await conn.execute(
+                            "INSERT INTO user_memories (user_id, character_id, category, fact_key, fact_value, confidence) "
+                            "VALUES (?, 1, 'preference', ?, 'val', 1.0) "
+                            "ON CONFLICT(user_id, character_id, fact_key) DO UPDATE SET fact_value = excluded.fact_value;",
+                            (f"user_{worker_id}", f"key_{i}"),
+                        )
+                await asyncio.sleep(0.01)
+
+        tasks = [asyncio.create_task(worker(w)) for w in range(10)]
+        await asyncio.gather(*tasks)
+
+        async with get_db(str(db_file)) as conn:
+            cur = await conn.execute("SELECT COUNT(*) FROM user_memories;")
+            count = (await cur.fetchone())[0]
+            assert count == 50

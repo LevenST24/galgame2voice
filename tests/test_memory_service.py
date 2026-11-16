@@ -7,7 +7,7 @@ dynamic composite relevance scoring, top-K RAG retrieval, and prompt injection.
 import pytest
 import aiosqlite
 from galgame2voice.database import crud
-from galgame2voice.database.models import UserMemoryCreate
+from galgame2voice.database.models import UserMemoryCreate, UserMemoryResponse
 from galgame2voice.database.session import get_db
 from galgame2voice.services.memory_service import MemoryService
 from galgame2voice.services.session_manager import SessionManager
@@ -461,3 +461,64 @@ class TestSessionManagerPromptInjection:
         assert "四季夏目" in msgs[0]["content"]
         assert msgs[1]["role"] == "user"
         assert msgs[1]["content"] == "你好夏目"
+
+
+@pytest.mark.asyncio
+class TestMemoryServiceHardening:
+    async def test_memory_safe_top_k_zero(self, isolate_test_database):
+        svc = MemoryService(db_path=isolate_test_database)
+        # Store a sample memory
+        await svc.process_user_message("user_top0", 1, "我喜欢玩原神")
+
+        # Top-K = 0 must short circuit and return empty immediately
+        res = await svc.retrieve_relevant_memories(user_id="user_top0", character_id=1, prompt="原神", top_k=0)
+        assert res == []
+
+    async def test_memory_extreme_input_boundaries(self, isolate_test_database):
+        svc = MemoryService(db_path=isolate_test_database)
+
+        # None / non-string message
+        res = await svc.process_user_message("user_ex", 1, None)
+        assert res == []
+
+        res = await svc.process_user_message("user_ex", 1, "")
+        assert res == []
+
+        # Overlap score with extreme inputs
+        score = svc._calculate_overlap_score(None, None, "like_game")
+        assert score == 0.0
+
+        score = svc._calculate_overlap_score("prompt", "fact", "like_fact")
+        assert 0.0 <= score <= 1.0
+
+        # Retrieve with extreme boundaries
+        res = await svc.retrieve_relevant_memories(
+            user_id=None,
+            character_id=-1,
+            prompt="A" * 10000,
+            top_k=9999,
+        )
+        assert isinstance(res, list)
+
+    async def test_format_memory_prompt_block_resilience(self):
+        svc = MemoryService()
+
+        # None memories and None affection_info
+        block = svc.format_memory_prompt_block(None, None)
+        assert block == ""
+
+        # Malformed items
+        dummy_mem = UserMemoryResponse(
+            id=1,
+            user_id="u",
+            character_id=1,
+            category="preference",
+            fact_key="like_item",
+            fact_value="咖啡",
+            confidence=1.0,
+            recall_count=0,
+        )
+        block = svc.format_memory_prompt_block([dummy_mem], {"level": "invalid", "level_name": None})
+        assert "咖啡" in block
+        assert "亲密度等级" in block
+
