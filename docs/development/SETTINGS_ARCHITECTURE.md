@@ -15,15 +15,15 @@
 | `telemetry_settings.js` | `TelemetrySettingsController` | 5 秒周期的硬件与系统遥测轮询，独立管理 GET 请求的 `AbortController`，弹窗关闭/切后台/重新初始化时中止旧读取；独立更新 GPT-SoVITS 在线状态卡片、推理精度徽标、系统 RAM、PID/运行时间与缓存容量。 |
 | `engine_settings.js` | `EngineSettingsController` | GPT-SoVITS 引擎精度下拉自动保存、一键设备精度轮转切换、热重启调度（单次 POST 结合带 AbortSignal 的 `waitForEngine` 状态轮询）与离线音频缓存二次确认清理。 |
 | `engine_directory.js` | `initEngineDirectory` | GPT-SoVITS 本地安装目录浏览与持久化保存，返回包含 `dispose()` 的清理接口。 |
-| `settings_ui.js` | `initSettingsTabs` 等 | 标签页键盘导航与 ARIA 属性绑定，返回注销监听器的清理函数。 |
+| `../settings_ui.js` | `initSettingsTabs` 等 | 标签页键盘导航与 ARIA 属性绑定，返回注销监听器的清理函数。 |
 
 ---
 
 ## 2. 公共兼容 API
 
-`global_settings.js` 继续作为统一入口导出所有历史命名函数，保证现有界面与其他调用方无缝兼容：
+`global_settings.js` 继续作为统一入口导出以下历史命名函数，保证现有界面与其他调用方无缝兼容：
 
-- 提供商与模型相关：`getCurrentActiveProvider()`、`haveProvidersLoaded()`、`hasProviderReadError()`、`loadProviders(options)`、`onProviderChange()`、`toggleKeyVisibility()`、`onChatModelSelectChange()`、`handleProviderTest()`、`handleActivateProvider()`。
+- 提供商与模型相关：`getCurrentActiveProvider()`、`haveProvidersLoaded()`、`hasProviderReadError()`、`loadProviders(options)`、`onProviderChange()`、`handleProviderTest()`、`handleActivateProvider()`（密钥显示切换 `toggleKeyVisibility()` 与模型下拉联动 `onChatModelSelectChange()` 为 `ProviderSettingsController` 实例方法）。
 - 窗口与协调相关：`initGlobalSettings(dom, callbacks)`、`openGlobalSettings(tabName)`、`loadGlobalConfig()`、`saveGlobalConfig()`、`savePrivateEndpointPreference()`。
 - 运行状态与引擎相关：`fetchSystemTelemetry()`、`handleRestartSovits(precision)`。
 
@@ -44,15 +44,14 @@
 
 - **受管引擎与 GPU 硬件**：CI 与本地测试均使用替身桩（`scripts/dev_standins.py`）及合成数据，未在真实 NVIDIA GPU 或真实 GPT-SoVITS 实例上运行深度推理或显存压力测试（实际效果由 T13 持续跟踪）。
 - **立绘角色资源**：不包含完整角色服装分层与情绪资源包，依赖本地测试替身桩。
-- **Windows 便携包**：最终前端部署后，用锁定的 desktop 依赖及标准 `build_windows_portable.py` 构建私有候选包。`smoke_windows_portable.py --skip-browser` 通过受限 PATH、中文/空格/感叹号路径、首次启动、FFmpeg 转换、重复启动、更新保留数据和离线恢复等检查；随后 `smoke_windows_turn_reply.py --with-browser-ui` 在该包的实际 EXE、独立 Chrome 与合成 LLM/TTS 上通过聊天身份关联、单句语音修复、重启持久化、LOG 播放、备份导出及设置导航，数据库保持一问一答两行，任务进程和端口均已收束。此项证明冻结包的合成业务流程可运行；不替代上述真实服务或听感验收。
-- **发布状态**：候选包仅供本地验收，包含 Unreleased 源码，沿用项目当前版本号，未覆盖已发布的 v3.1.2，也未签名、创建新标签或发布新 Release。后续正式发布仍须执行发布工作流。
+- **Windows 便携包**：打包及浏览验证由 `build_windows_portable.py`、`verify_windows_portable.py`、`smoke_windows_portable.py` 和 `smoke_windows_turn_reply.py` 覆盖，均基于合成 LLM/TTS 上游运行，不替代真实服务或听感验收。
 
 ---
 
 ## 5. 版本对照状态
 
-- **已发布版本 (v3.1.2)**：解决了 Windows 便携版启动器导航竞态与 CDP 上下文销毁问题，确立了当前稳定基线。
-- **未发布改动 (Unreleased)**：
+- **v3.1.2**：解决了 Windows 便携版启动器导航竞态与 CDP 上下文销毁问题。
+- **v3.2.0 起已包含**：
   - 历史无分句助手消息（`lines_json IS NULL`）的单句语音恢复与 409 多端同步（T03 收口）。
   - 大模型提供商控制器抽离与草稿隔离（T04 Phase 1，PR294）。
   - 遥测与引擎控制器完整解耦、`waitForEngine` 取消支持、监听器注销与相关竞态修复（T04 Phase 2 收口；原 Telegram 设置控制器已随 Telegram 机器人下线一并移除）。

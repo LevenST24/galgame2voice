@@ -48,4 +48,4 @@
 - **端到端集成验证**：通过真实本机 HTTP / SSE / SQLite 全链路测试（1 项独立复跑通过，接收 feature 后再跑 1 pass 通过）。使用 FakeDOM 驱动真实前端 `initApp`，完整打通“用户提问提交 → 收到部分台词后中断 → 状态先 pending 后 ready → 携带唯一非空助手 ID 发起修复 POST → SQLite 更新 `lines_json` → 按 `history?limit=100` 重新初始化拉取历史 → 向同一音频 URL 发起真实 GET 200 返回 RIFF/WAVE”。数据库旧 202 条核心列逐行未改，总行数由 202 增至 204；生命周期 `finally` 覆盖由静态确认，正常路径清理执行通过。
 - **历史回归基础（开发期）**：历史定点测试中，638 项相关后端测试、前端完整 `npm test` 57 脚本串行链及 `npm run deploy` 均 exit 0 通过。该阶段采用的替身为 FakeDOM、fake player、fake voice manager/profile switch、fake memory、非核心 config/assets/devices/version 桩接口及假 LLM/TTS 生成。
 - **最新 v3.1.1 节点验收证据**：在 v3.1.1 本地发布候选节点中，已通过完整 3720 项后端测试、全量前端测试以及真实 Windows 便携版 EXE + Chromium 浏览器端到端验收（覆盖单轮对话、中断恢复后 LOG 单句语音 HTTP 取回、备份导出与重启后 SQLite `reply_to_message_id` 持久化关联）。
-- **未验证项**：当前测试均基于本地替身与合成上游；真实物理 GPU 显存负载、公网商业模型 API 与人工听感品质仍未验证。详细交接说明见 [RELEASE_HANDOFF_3_1_1.md](RELEASE_HANDOFF_3_1_1.md)。
+- **未验证项**：当前测试均基于本地替身与合成上游；真实物理 GPU 显存负载、公网商业模型 API 与人工听感品质仍未验证。

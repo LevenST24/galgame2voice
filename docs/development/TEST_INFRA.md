@@ -27,7 +27,7 @@ second `temp_db_path` is suitable only when the test intentionally covers a
 separate database. Persistence-error tests assert `VOICE_PROFILE_SAVE_FAILED`,
 the target profile ID and actionable Chinese guidance rather than a former
 English message. See `tests/test_deployment_boundaries.py` and
-`tests/test_m3_resilience_regression.py` for initialized, shared-database cases.
+`tests/test_active_voice_persistence.py` for initialized, shared-database cases.
 
 ## 1. Executive Summary & Testing Philosophy
 
@@ -377,11 +377,10 @@ weight/reference setters, health/control probes, and GET/POST `/tts` without
 loading files. Its 32 kHz mono PCM WAV is quiet tone/noise with syllable bursts
 and punctuation pauses for playback/lip-sync testing, not intelligible speech.
 
-`--llm-format old` (default) emits today's bilingual JSON; `lines` emits the
-upcoming per-line schema; `mixed` alternates them. `broken` cycles through a
+`--llm-format old` (default) emits the legacy bilingual JSON; `lines` emits the
+per-line schema; `mixed` alternates them. `broken` cycles through a
 JSON fence, preamble, mid-string truncation, cut-off `lines` array, unknown
-actions, missing emotions, and trailing prose. The current app may not support
-the upcoming format yet. Edit `scripts/dev_standins_replies.json` to change the
+actions, missing emotions, and trailing prose. Edit `scripts/dev_standins_replies.json` to change the
 six replies per format or provisional action examples; replies cycle in file
 order. Both streaming SSE and non-streaming completions are available, along
 with `/v1/models` (`?stream=true` also supports SSE model records).

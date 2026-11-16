@@ -55,7 +55,7 @@
 - `settings.js`：ADV 设置项校验与字段规范。
 
 ### 4. 控制器与弹窗 (`src/controllers/`)
-- `global_settings.js`：全局设置兼容门面与配置草稿协调器（`#globalModal`，包含运行状态、语音服务、对话模型、角色与记忆、备份与更新 5 个服务 Tab）。
+- `global_settings.js`：全局设置兼容门面与配置草稿协调器（`#globalModal`，包含运行状态、语音服务、对话模型、长期记忆、备份与更新 5 个服务 Tab）。
   协调各业务控制器实例的创建、销毁（`dispose()`）、页脚通用配置保存与窗口导航。
 - `provider_settings.js`：`ProviderSettingsController`，大模型提供商清单、参数草稿、API Key 脱敏/可见性、连通性测试及模型启用生命周期。
 - `telemetry_settings.js`：`TelemetrySettingsController`，运行状态与硬件遥测轮询（5秒周期），持有独立 AbortController，关闭/后台/新刷新时取消旧 GET；引擎卡独立更新，核对操作归属。详见 `docs/development/TELEMETRY.md`。
@@ -100,7 +100,7 @@
 ## 设置面板位置
 
 主界面的设置按钮、F8 和首页齿轮统一进入设置中心；“聊天体验”和“角色与会话”从中心
-的分类导航进入，均嵌入同一个窗口，共享关闭、焦点与顶部返回开始页入口。聊天界面也有返回首页的入口。角色面板不再重复
+的分类导航进入，均嵌入同一个窗口，共享关闭、焦点与顶部返回首页入口。聊天界面也有返回首页的入口。角色面板不再重复
 注入 ADV 显示控件；显示与播放选项统一在聊天体验中编辑。返回流程与验证见
 `docs/development/SETTINGS_NAVIGATION.md`。
 
@@ -116,7 +116,7 @@
      - **运行状态**（`gp-dashboard`）：GPT-SoVITS 连通性、计算精度切换与重启、硬件资源与缓存清空。
      - **语音服务**（`gp-inference`）：引擎地址、本机 SoVITS 目录选择、全局计算精度与缓存保留时长。
      - **对话模型**（`gp-models`）：全厂商模型卡片（API Key、Base URL、模型选择、思考强度、连通性测试与一键启用、允许私网 LLM 端点开关）。
-     - **角色与记忆**（`gp-memory`）：长期记忆说明。
+     - **长期记忆**（`gp-memory`）：长期记忆说明。
      - **备份与更新**（`gp-update`）：完整聊天备份导出/导入，以及 GitHub Releases 新版本提示与下载页入口。
 
 ---
