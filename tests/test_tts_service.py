@@ -235,3 +235,50 @@ async def test_privacy_mode_tts_stream_pipeline_chunk(tmp_path, monkeypatch):
     assert chunk_data["audio_url"].startswith("/audio/")
     assert not chunk_data["is_cached"]
     assert Path(chunk_data["local_path"]).is_file()  # noqa: ASYNC240
+
+
+@pytest.mark.asyncio
+async def test_tts_service_bypasses_sqlite_when_pre_resolved():
+    svc = TtsService()
+    opts = {
+        "_pre_resolved": True,
+        "ref_audio_path": "refs/gentle.ogg",
+        "prompt_text": "テストです",
+        "prompt_lang": "ja",
+    }
+    with patch("galgame2voice.database.session.get_db") as mock_get_db:
+        res = await svc._populate_voice_profile_opts(opts)
+        mock_get_db.assert_not_called()
+        assert res.get("ref_audio_path") == "refs/gentle.ogg"
+        assert res.get("prompt_text") == "テストです"
+        assert res.get("prompt_lang") == "ja"
+
+
+@pytest.mark.asyncio
+async def test_tts_service_memoizes_db_lookups():
+    svc = TtsService()
+    fake_profile = MagicMock(
+        id=42,
+        name="TestChar",
+        prompt_text="テストプロンプト",
+        prompt_lang="ja",
+        text_lang="ja",
+        ref_audio_path="refs/test.ogg",
+        speed=1.0,
+        temperature=0.8,
+    )
+    with patch("galgame2voice.database.session.get_db") as mock_get_db:
+        mock_conn = AsyncMock()
+        mock_get_db.return_value.__aenter__.return_value = mock_conn
+        with patch("galgame2voice.database.crud.get_voice_profile", new_callable=AsyncMock) as mock_get_prof:
+            mock_get_prof.return_value = fake_profile
+
+            opts1 = {"voice_profile_id": 42}
+            res1 = await svc._populate_voice_profile_opts(opts1)
+            assert res1.get("prompt_text") == "テストプロンプト"
+            assert mock_get_prof.call_count == 1
+
+            opts2 = {"voice_profile_id": 42}
+            res2 = await svc._populate_voice_profile_opts(opts2)
+            assert res2.get("prompt_text") == "テストプロンプト"
+            assert mock_get_prof.call_count == 1

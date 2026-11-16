@@ -3,13 +3,17 @@ Unit tests for TTS pause, prosody normalization, and speech chunking optimizatio
 Tests the fixes for unnatural pauses and modal particles at clause endings.
 """
 
+import array
 import asyncio
+import io
+import struct
 import wave
 from pathlib import Path
 from typing import Any, cast
 import pytest
 
 from galgame2voice.utils.text_splitter import (
+    is_short_salutation,
     normalize_dialogue_prosody,
     MODAL_PARTICLES_PATTERN,
     split_japanese_sentences,
@@ -543,5 +547,221 @@ class TestJapaneseSentenceSplitting:
         terminal_short = "はい！先生、おはようございます。"
         sents_term = split_japanese_sentences(terminal_short, is_first_chunk=True, min_chars=6)
         assert sents_term[0] == "はい！"
+
+
+class TestExpandedModalParticles:
+    """Verifies expanded colloquial modal particles and clause boundary detection."""
+
+    @pytest.mark.parametrize("clause,expected", [
+        ("本当でしょ", True),
+        ("明日は晴れでしょう", True),
+        ("可愛いじゃん", True),
+        ("バカってば", True),
+        ("待っててば", True),
+        ("元気かい", True),
+        ("どうしたんだい", True),
+        ("好きだもんね", True),
+        ("行くもんよ", True),
+        ("そうなんだ", True),
+        ("好きなんだから", True),
+        ("楽しみなんです", True),
+        ("寂しいんだもん", True),
+        ("好呗", True),
+        ("走嘞", True),
+        ("对哒", True),
+        ("好的滴", True),
+        ("可爱喵", True),
+        ("痛嗷", True),
+        ("行咯", True),
+        ("こんにちは", False),
+        ("秋葉原", False),
+        ("東京", False),
+        ("先生", False),
+        ("学校", False),
+        ("約束", False),
+    ])
+    def test_particle_matching(self, clause, expected):
+        assert bool(MODAL_PARTICLES_PATTERN.search(clause)) is expected
+
+    def test_clause_boundary_preserves_colloquial_particles(self):
+        """Agile first chunk splitter must not break on commas following colloquial particles."""
+        text = "可愛いじゃん、先生もそう思うでしょ？"
+        chunks = split_japanese_sentences(text, is_first_chunk=True, min_chars=4)
+        assert len(chunks) == 1
+        assert chunks[0] == "可愛いじゃん、先生もそう思うでしょ？"
+
+
+class TestProsodyWhitespaceNormalization:
+    """Verifies whitespace preceding punctuation marks is stripped cleanly."""
+
+    def test_strip_whitespace_before_punctuation(self):
+        raw = "こんにちは 、 先生 ！ 元気ですか ？"
+        res = normalize_dialogue_prosody(raw)
+        assert res == "こんにちは、先生！元気ですか？"
+
+    def test_strip_whitespace_before_fullwidth_period(self):
+        raw = "今日もいい天気ですね 。"
+        res = normalize_dialogue_prosody(raw)
+        assert res == "今日もいい天気ですね。"
+
+
+class TestQuotedJapaneseSentenceSplitting:
+    """Verifies Japanese dialogue quotation marks are preserved without producing orphan bracket chunks."""
+
+    def test_quoted_sentence_preserves_closing_bracket(self):
+        text = "「こんにちは！先生、今日はいい天気ですね。」"
+        chunks = split_japanese_sentences(text, is_first_chunk=False)
+        assert len(chunks) == 2
+        assert chunks[0] == "「こんにちは！"
+        assert chunks[1] == "先生、今日はいい天気ですね。」"
+        assert "」" not in chunks
+
+    def test_sequential_dialogue_quotes(self):
+        text = "「行こう。」「うん！」"
+        chunks = split_japanese_sentences(text, is_first_chunk=False)
+        assert len(chunks) == 2
+        assert chunks[0] == "「行こう。」"
+        assert chunks[1] == "「うん！」"
+
+    def test_agile_first_chunk_quoted_dialogue(self):
+        text = "「こんにちは！先生、今日はいい天気ですね。」"
+        chunks = split_japanese_sentences(text, is_first_chunk=True)
+        assert len(chunks) == 2
+        assert chunks[0] == "「こんにちは！"
+        assert chunks[1] == "先生、今日はいい天気ですね。」"
+
+    def test_pure_bracket_or_punctuation_preserved(self):
+        assert split_japanese_sentences("」") == ["」"]
+        assert split_japanese_sentences("『』") == ["『』"]
+        assert split_japanese_sentences("！？。") == ["！？。"]
+
+
+class TestCharacterSpecificModalParticles:
+    """Verifies Galgame character signature modal particles (Murasame, Mako, Kanna) avoid disjoint pauses."""
+
+    @pytest.mark.parametrize("clause,expected", [
+        ("妾は叢雨じゃ", True),
+        ("我が主殿のじゃ", True),
+        ("そうじゃな", True),
+        ("元気でおるの", True),
+        ("お疲れ様っす", True),
+        ("大丈夫っすよ", True),
+        ("そうっすね", True),
+        ("行きますから", True),
+        ("私の秘密のよ", True),
+        ("好きなんだよ", True),
+        ("好哒", True),
+        ("好嘞", True),
+        ("行啦", True),
+    ])
+    def test_character_particles(self, clause, expected):
+        assert bool(MODAL_PARTICLES_PATTERN.search(clause)) is expected
+
+    def test_murasame_speech_preserves_clause_boundary(self):
+        text = "妾は叢雨じゃ、よろしく頼むのじゃ。"
+        chunks = split_japanese_sentences(text, is_first_chunk=True, min_chars=4)
+        assert len(chunks) == 1
+        assert chunks[0] == "妾は叢雨じゃ、よろしく頼むのじゃ。"
+
+
+def test_is_short_salutation():
+    assert is_short_salutation("はい、")
+    assert is_short_salutation("ええ、")
+    assert is_short_salutation("うん、")
+    assert is_short_salutation("あの、")
+    assert is_short_salutation("そうですね、")
+    assert is_short_salutation("大丈夫、")
+    assert not is_short_salutation("今日はとてもいい天気ですね。")
+    assert not is_short_salutation("")
+
+
+class TestAudioBoundaryZeroPop:
+    """Verifies micro-fade boundary smoothing on concatenated WAV chunks."""
+
+    def test_micro_fade_boundary_zero_pop(self, tmp_path):
+        service = ChatService(db_path=tmp_path / "test.db")
+        c1 = tmp_path / "chunk1.wav"
+        c2 = tmp_path / "chunk2.wav"
+        out = tmp_path / "out_smooth.wav"
+
+        rate = 16000
+        for p in (c1, c2):
+            with wave.open(str(p), "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(rate)
+                samples = array.array("h", [10000] * 200)
+                w.writeframes(samples.tobytes())
+
+        ok = service._concat_wav_files([str(c1), str(c2)], out, pause_duration=0.0)
+        assert ok is True
+        assert out.exists()
+
+        with wave.open(str(out), "rb") as w:
+            assert w.getnframes() == 400
+            raw = w.readframes(400)
+            samples = array.array("h")
+            samples.frombytes(raw)
+
+            assert samples[0] == 0
+            assert samples[199] == 0
+            assert samples[200] == 0
+            assert samples[399] == 0
+            assert samples[100] == 10000
+
+
+def _generate_test_wav(duration_s: float = 0.1, sample_rate: int = 16000) -> bytes:
+    """Helper creating a minimal valid PCM WAV in-memory."""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sample_rate)
+        num_samples = int(sample_rate * duration_s)
+        frames = struct.pack(f"<{num_samples}h", *[0] * num_samples)
+        w.writeframes(frames)
+    return buf.getvalue()
+
+
+class TestAudioConcatenationOptimization:
+    """Tests in-memory buffered WAV concatenation in ChatService."""
+
+    def test_concat_wav_files_empty_and_unreadable_fallback(self, tmp_path):
+        service = ChatService(db_path=tmp_path / "test.db")
+        out = tmp_path / "master_empty.wav"
+
+        assert service._concat_wav_files([], out) is False
+        assert service._concat_wav_files(["", None], out) is False
+
+        corrupt = tmp_path / "corrupt.wav"
+        corrupt.write_bytes(b"not_a_wav")
+        valid = tmp_path / "valid.wav"
+        valid.write_bytes(_generate_test_wav(0.05, 16000))
+
+        ok = service._concat_wav_files([str(corrupt), str(valid)], out)
+        assert ok is True
+        with wave.open(str(out), "rb") as w:
+            assert w.getnframes() == int(16000 * 0.05)
+
+    def test_concat_wav_files_mismatched_sample_rate_skipped(self, tmp_path):
+        """Verifies _concat_wav_files skips chunks with mismatched sample rate/channels rather than corrupting audio."""
+        service = ChatService(db_path=tmp_path / "test.db")
+        c1 = tmp_path / "chunk1_16k.wav"
+        c2 = tmp_path / "chunk2_24k_mismatched.wav"
+        c3 = tmp_path / "chunk3_16k.wav"
+        out = tmp_path / "out_clean.wav"
+
+        c1.write_bytes(_generate_test_wav(0.1, 16000))
+        c2.write_bytes(_generate_test_wav(0.1, 24000))
+        c3.write_bytes(_generate_test_wav(0.2, 16000))
+
+        ok = service._concat_wav_files([str(c1), str(c2), str(c3)], out)
+        assert ok is True
+        assert out.exists()
+
+        with wave.open(str(out), "rb") as w:
+            assert w.getframerate() == 16000
+            assert w.getnchannels() == 1
+            assert w.getnframes() == int(16000 * 0.3)
 
 

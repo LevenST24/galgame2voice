@@ -26,6 +26,7 @@ from galgame2voice.services.character_manager import (
     get_character_manager,
 )
 from galgame2voice.services.emotion_references import resolve_emotion_reference
+from galgame2voice.schemas.character_manifest import CharacterManifestV2
 import scripts.run_server as rs
 import scripts.package_release as pr
 
@@ -822,4 +823,25 @@ async def test_manifest_default_emotion_omitted_or_nonexistent_compatible_fallba
                 assert res["emotion"] == expected_emo
             ctx = await update_and_resolve(profiles[prof_name].id)
             assert _same_resolved_path(ctx.ref_audio_path, expected_wav)
+
+
+def test_character_manifest_v2_model():
+    manifest_data = {
+        "id": "test_heroine",
+        "name": "测试女主角",
+        "manifest_version": "2.0",
+        "default_voice_params": {"speed": 1.05, "temperature": 0.85},
+        "emotions": {
+            "gentle": {
+                "audio": "refs/gentle.ogg",
+                "text": "こんにちは、テストです。",
+                "lang": "ja",
+            }
+        },
+    }
+    m = CharacterManifestV2.model_validate(manifest_data)
+    assert m.id == "test_heroine"
+    assert m.manifest_version == "2.0"
+    assert "gentle" in m.emotions
+    assert m.default_voice_params.speed == 1.05
 
