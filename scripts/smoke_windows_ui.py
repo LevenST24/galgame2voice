@@ -44,11 +44,12 @@ class SimpleCdpClient:
     """Pure standard-library WebSocket client implementing RFC 6455 for CDP."""
 
     def __init__(self, ws_url: str, timeout: float = 15.0) -> None:
+        self.timeout = max(0.05, float(timeout))
         u = urllib.parse.urlparse(ws_url)
         host = u.hostname or "127.0.0.1"
         port = u.port or 80
-        self.sock = socket.create_connection((host, port), timeout=timeout)
-        self.sock.settimeout(timeout)
+        self.sock = socket.create_connection((host, port), timeout=self.timeout)
+        self.sock.settimeout(self.timeout)
         key = base64.b64encode(os.urandom(16)).decode("ascii")
         req = (
             f"GET {u.path} HTTP/1.1\r\n"
@@ -71,33 +72,45 @@ class SimpleCdpClient:
             raise ConnectionError(f"WebSocket handshake failed: {status_line.decode('latin1', 'replace')}")
         self._seq = 0
 
-    def _read_exact(self, n: int) -> bytes:
+    def _read_exact(self, n: int, deadline: float) -> bytes:
         buf = bytearray()
         while len(buf) < n:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("timed out")
+            self.sock.settimeout(remaining)
             chunk = self.sock.recv(n - len(buf))
             if not chunk:
                 raise ConnectionError("Unexpected EOF while reading WebSocket frame")
             buf.extend(chunk)
         return bytes(buf)
 
-    def _recv_frame(self) -> bytes:
-        head = self._read_exact(2)
+    def _recv_frame(self, deadline: float) -> bytes:
+        head = self._read_exact(2, deadline)
         opcode = head[0] & 0x0F
         masked = bool(head[1] & 0x80)
         pay_len = head[1] & 0x7F
         if pay_len == 126:
-            pay_len = int.from_bytes(self._read_exact(2), "big")
+            pay_len = int.from_bytes(self._read_exact(2, deadline), "big")
         elif pay_len == 127:
-            pay_len = int.from_bytes(self._read_exact(8), "big")
-        mask = self._read_exact(4) if masked else b""
-        raw = self._read_exact(pay_len)
+            pay_len = int.from_bytes(self._read_exact(8, deadline), "big")
+        mask = self._read_exact(4, deadline) if masked else b""
+        raw = self._read_exact(pay_len, deadline)
         if masked:
             raw = bytes(b ^ mask[i % 4] for i, b in enumerate(raw))
         if opcode == 0x8:
             raise ConnectionError("WebSocket closed by server")
         return raw
 
-    def send_command(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def send_command(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        effective = self.timeout if timeout is None else max(0.05, float(timeout))
+        deadline = time.monotonic() + effective
         self._seq += 1
         msg = json.dumps({"id": self._seq, "method": method, "params": params or {}}).encode("utf-8")
         frame = bytearray([0x81])
@@ -113,15 +126,17 @@ class SimpleCdpClient:
         mask = os.urandom(4)
         frame.extend(mask)
         frame.extend(b ^ mask[i % 4] for i, b in enumerate(msg))
-        self.sock.sendall(frame)
-
-        while True:
-            payload = self._recv_frame()
-            data = json.loads(payload.decode("utf-8"))
-            if data.get("id") == self._seq:
-                if "error" in data:
-                    raise RuntimeError(f"CDP command {method} failed: {data['error']}")
-                return data.get("result", {})
+        self.sock.settimeout(effective)
+        try:
+            self.sock.sendall(frame)
+            while True:
+                data = json.loads(self._recv_frame(deadline).decode("utf-8"))
+                if data.get("id") == self._seq:
+                    if "error" in data:
+                        raise RuntimeError(f"CDP command {method} failed: {data['error']}")
+                    return data.get("result", {})
+        except TimeoutError as exc:
+            raise TimeoutError(f"Timed out waiting {effective:.1f}s for CDP response to {method}") from exc
 
     def close(self) -> None:
         try:
@@ -131,25 +146,41 @@ class SimpleCdpClient:
         self.sock.close()
 
 
-def make_cdp_client(ws_url: str) -> Any:
+def make_cdp_client(ws_url: str, timeout: float = 15.0) -> Any:
     """Connects to CDP endpoint via websockets if present, or SimpleCdpClient."""
+    effective = max(0.05, float(timeout))
     try:
         from websockets.sync.client import connect as ws_connect
 
         class _WsAdapter:
-            def __init__(self, ws: Any) -> None:
+            def __init__(self, ws: Any, default_timeout: float) -> None:
                 self.ws = ws
+                self.timeout = default_timeout
                 self._seq = 0
 
-            def send_command(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+            def send_command(
+                self,
+                method: str,
+                params: dict[str, Any] | None = None,
+                *,
+                timeout: float | None = None,
+            ) -> dict[str, Any]:
+                cmd_timeout = self.timeout if timeout is None else max(0.05, float(timeout))
+                deadline = time.monotonic() + cmd_timeout
                 self._seq += 1
                 self.ws.send(json.dumps({"id": self._seq, "method": method, "params": params or {}}))
-                while True:
-                    data = json.loads(self.ws.recv(timeout=15))
-                    if data.get("id") == self._seq:
-                        if "error" in data:
-                            raise RuntimeError(f"CDP command {method} failed: {data['error']}")
-                        return data.get("result", {})
+                try:
+                    while True:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError("timed out")
+                        data = json.loads(self.ws.recv(timeout=remaining))
+                        if data.get("id") == self._seq:
+                            if "error" in data:
+                                raise RuntimeError(f"CDP command {method} failed: {data['error']}")
+                            return data.get("result", {})
+                except TimeoutError as exc:
+                    raise TimeoutError(f"Timed out waiting {cmd_timeout:.1f}s for CDP response to {method}") from exc
 
             def close(self) -> None:
                 try:
@@ -157,9 +188,12 @@ def make_cdp_client(ws_url: str) -> Any:
                 except Exception:
                     pass
 
-        return _WsAdapter(ws_connect(ws_url, origin="http://127.0.0.1", open_timeout=10, close_timeout=3))
+        return _WsAdapter(
+            ws_connect(ws_url, origin="http://127.0.0.1", open_timeout=min(10.0, effective), close_timeout=3),
+            effective,
+        )
     except (ImportError, Exception):
-        return SimpleCdpClient(ws_url)
+        return SimpleCdpClient(ws_url, timeout=effective)
 
 
 def stop_browser_process(proc: subprocess.Popen, timeout: float = 5.0) -> None:
@@ -453,6 +487,55 @@ def build_acceptance_script(target_session_id: str, prompt_text: str, repair_aud
 }})()"""
 
 
+def wait_for_page_target(
+    cdp_port: int,
+    *,
+    timeout: float = 15.0,
+    poll_interval: float = 0.05,
+    proc: subprocess.Popen[Any] | None = None,
+) -> dict[str, Any]:
+    """Polls CDP /json/list with a bounded deadline until an active page target appears."""
+    start = time.monotonic()
+    deadline = start + timeout
+    url = f"http://127.0.0.1:{cdp_port}/json/list"
+    last_targets: Any = None
+    last_error: str | None = None
+
+    while time.monotonic() < deadline:
+        if proc is not None and (exit_code := proc.poll()) is not None:
+            raise RuntimeError(
+                f"Browser exited while waiting {time.monotonic() - start:.2f}s for CDP page target "
+                f"at {url} (exit code: {exit_code})"
+            )
+        remaining = deadline - time.monotonic()
+        try:
+            with urllib.request.urlopen(url, timeout=min(5.0, max(0.05, remaining))) as res:
+                targets = json.load(res)
+            last_targets, last_error = targets, None
+            if isinstance(targets, list):
+                target = next(
+                    (
+                        t
+                        for t in targets
+                        if isinstance(t, dict) and t.get("type") == "page" and t.get("webSocketDebuggerUrl")
+                    ),
+                    None,
+                )
+                if target is not None:
+                    return target
+        except (OSError, ValueError, TimeoutError) as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(poll_interval, remaining))
+
+    raise TimeoutError(
+        f"Timed out waiting {time.monotonic() - start:.2f}s (limit {timeout:.1f}s) for CDP page target "
+        f"at {url} (last targets: {last_targets}, last error: {last_error})"
+    )
+
+
 def wait_for_initial_navigation(
     client: Any,
     base_url: str,
@@ -460,48 +543,104 @@ def wait_for_initial_navigation(
     poll_interval: float = 0.05,
 ) -> dict[str, Any]:
     """Navigates to base_url and polls read-only document URL and readyState until ready."""
-    client.send_command("Page.enable")
-    client.send_command("Runtime.enable")
-    client.send_command("Page.navigate", {"url": base_url})
-
-    deadline = time.monotonic() + timeout
+    start = time.monotonic()
+    deadline = start + timeout
     target_norm = base_url.rstrip("/")
     last_state: dict[str, Any] = {}
 
-    read_expr = (
-        "(() => ({ url: String(document.URL || location.href), "
-        "readyState: String(document.readyState) }))()"
-    )
+    def _send(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"Timed out waiting for initial navigation to {base_url} after "
+                f"{time.monotonic() - start:.2f}s (limit {timeout:.1f}s, stage: {method}, last state: {last_state})"
+            )
+        return client.send_command(method, params, timeout=remaining)
+
+    _send("Page.enable")
+    _send("Runtime.enable")
+    _send("Page.navigate", {"url": base_url})
+
+    read_expr = "(() => ({ url: String(document.URL || location.href), readyState: String(document.readyState) }))()"
 
     while time.monotonic() < deadline:
         try:
-            resp = client.send_command(
-                "Runtime.evaluate",
-                {"expression": read_expr, "returnByValue": True},
-            )
+            resp = _send("Runtime.evaluate", {"expression": read_expr, "returnByValue": True})
             val = resp.get("result", {}).get("value")
             if isinstance(val, dict):
                 last_state = val
-                cur_url = str(val.get("url", "")).rstrip("/")
-                ready_state = str(val.get("readyState", ""))
-                if cur_url == target_norm and ready_state in ("interactive", "complete"):
+                if str(val.get("url", "")).rstrip("/") == target_norm and str(val.get("readyState", "")) in (
+                    "interactive",
+                    "complete",
+                ):
                     return val
         except RuntimeError as exc:
             err_msg = str(exc)
             # Tolerate only concrete initial-context messages during navigation
-            transient_messages = (
-                "Execution context was destroyed",
-                "Cannot find context with specified id",
-            )
-            if any(msg in err_msg for msg in transient_messages):
-                pass
-            else:
+            if not any(
+                msg in err_msg for msg in ("Execution context was destroyed", "Cannot find context with specified id")
+            ):
                 raise
-        time.sleep(poll_interval)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(poll_interval, remaining))
 
     raise TimeoutError(
-        f"Timed out waiting for initial navigation to {base_url} after {timeout:.1f}s (last state: {last_state})"
+        f"Timed out waiting for initial navigation to {base_url} after {time.monotonic() - start:.2f}s "
+        f"(limit {timeout:.1f}s, last state: {last_state})"
     )
+
+
+def launch_browser_to_page(
+    browser_exe: Path | str,
+    make_profile_dir: Callable[[], Path],
+    extra_args: Sequence[str],
+    base_url: str,
+    *,
+    attempt_timeout: float = 15.0,
+    attempts: int = 2,
+    client_factory: Callable[[str], Any] | None = None,
+) -> tuple[subprocess.Popen[Any], Any, Path, dict[str, Any]]:
+    """Launches browser, finds its page target, and completes initial navigation (retrying with fresh profile)."""
+    factory = make_cdp_client if client_factory is None else client_factory
+    errors: list[str] = []
+    last_exc: Exception | None = None
+
+    for attempt in range(1, attempts + 1):
+        proc: subprocess.Popen[Any] | None = None
+        client: Any = None
+        succeeded = False
+        try:
+            proc, cdp_port, profile_dir = launch_browser_with_devtools(
+                browser_exe, make_profile_dir, extra_args, attempt_timeout=attempt_timeout, attempts=1
+            )
+            target = wait_for_page_target(cdp_port, timeout=attempt_timeout, proc=proc)
+            client = factory(target["webSocketDebuggerUrl"])
+            ready_state = wait_for_initial_navigation(client, base_url, timeout=attempt_timeout)
+            succeeded = True
+            return proc, client, profile_dir, ready_state
+        except (TimeoutError, ConnectionError, OSError, RuntimeError) as exc:
+            if isinstance(exc, RuntimeError) and "did not expose DevToolsActivePort" not in str(exc):
+                raise
+            if isinstance(exc, (ConnectionError, OSError)) and proc is not None and proc.poll() is not None:
+                raise RuntimeError(f"Browser exited during initial navigation (exit code: {proc.poll()}): {exc}") from exc
+            last_exc = exc
+            errors.append(f"attempt {attempt}: {exc}")
+        finally:
+            if not succeeded:
+                if client is not None:
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
+                if proc is not None:
+                    stop_browser_process(proc)
+
+    detail = f"after {attempts} attempts: {'; '.join(errors)}"
+    if isinstance(last_exc, TimeoutError):
+        raise TimeoutError(f"{last_exc} ({detail})") from last_exc
+    raise RuntimeError(f"Browser failed to reach {base_url} ({detail})") from last_exc
 
 
 def run_browser_ui_acceptance(
@@ -543,27 +682,20 @@ def run_browser_ui_acceptance(
     proc: subprocess.Popen[Any] | None = None
     client = None
     try:
-        proc, cdp_port, _profile_dir = launch_browser_with_devtools(
+        proc, client, _profile_dir, _ready = launch_browser_to_page(
             browser_exe,
             make_profile_dir,
             extra_args,
+            base_url,
             attempt_timeout=min(15.0, timeout),
             attempts=2,
         )
-
-        with urllib.request.urlopen(f"http://127.0.0.1:{cdp_port}/json/list", timeout=5) as res:
-            targets = json.load(res)
-        target = next((t for t in targets if t.get("type") == "page"), None)
-        if not target or "webSocketDebuggerUrl" not in target:
-            raise RuntimeError(f"Could not locate active page target in CDP targets: {targets}")
-
-        client = make_cdp_client(target["webSocketDebuggerUrl"])
-        wait_for_initial_navigation(client, base_url, timeout=min(15.0, timeout))
 
         js_code = build_acceptance_script(target_session_id, prompt_text, repair_audio_url)
         eval_resp = client.send_command(
             "Runtime.evaluate",
             {"expression": js_code, "awaitPromise": True, "returnByValue": True},
+            timeout=timeout,
         )
 
         if "exceptionDetails" in eval_resp:

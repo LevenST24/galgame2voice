@@ -30,7 +30,6 @@ from scripts.smoke_windows_ui import (  # noqa: E402
     find_browser,
     run_browser_ui_acceptance,
     stop_browser_process,
-    wait_for_initial_navigation,
 )
 
 
@@ -364,11 +363,11 @@ class TestSmokeWindowsUi(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             scratch = Path(tmp_dir)
 
-            def fake_popen(*args: Any, **kwargs: Any) -> MagicMock:
+            def fake_popen(cmd: list[str], *args: Any, **kwargs: Any) -> MagicMock:
                 proc = MagicMock()
                 proc.poll.return_value = None
                 proc.pid = 9999
-                profile = scratch / "ui_profile"
+                profile = Path(next(a.split("=", 1)[1] for a in cmd if a.startswith("--user-data-dir=")))
                 profile.mkdir(parents=True, exist_ok=True)
                 (profile / "DevToolsActivePort").write_text("9222\n/devtools/browser/fake", encoding="utf-8")
                 return proc
@@ -398,7 +397,7 @@ class TestSmokeWindowsUi(unittest.TestCase):
         mock_client = MagicMock()
         eval_calls: list[str] = []
 
-        def mock_send(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        def mock_send(method: str, params: dict[str, Any] | None = None, **_kwargs: Any) -> dict[str, Any]:
             if method == "Runtime.evaluate":
                 expr = (params or {}).get("expression", "")
                 eval_calls.append(expr)
@@ -428,7 +427,7 @@ class TestSmokeWindowsUi(unittest.TestCase):
         mock_client = MagicMock()
         eval_calls: list[str] = []
 
-        def mock_send(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        def mock_send(method: str, params: dict[str, Any] | None = None, **_kwargs: Any) -> dict[str, Any]:
             if method == "Runtime.evaluate":
                 expr = (params or {}).get("expression", "")
                 eval_calls.append(expr)
@@ -448,7 +447,7 @@ class TestSmokeWindowsUi(unittest.TestCase):
 
     def test_initial_navigation_wrong_url_or_never_ready_times_out_without_acceptance(self) -> None:
         def make_sender(bad_val: dict[str, Any], calls: list[str]) -> Any:
-            def mock_send(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+            def mock_send(method: str, params: dict[str, Any] | None = None, **_kwargs: Any) -> dict[str, Any]:
                 if method == "Runtime.evaluate":
                     expr = (params or {}).get("expression", "")
                     calls.append(expr)
@@ -475,7 +474,7 @@ class TestSmokeWindowsUi(unittest.TestCase):
         mock_client = MagicMock()
         eval_calls: list[str] = []
 
-        def mock_send(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        def mock_send(method: str, params: dict[str, Any] | None = None, **_kwargs: Any) -> dict[str, Any]:
             if method == "Runtime.evaluate":
                 expr = (params or {}).get("expression", "")
                 eval_calls.append(expr)
@@ -525,7 +524,7 @@ class TestSmokeWindowsUi(unittest.TestCase):
 
     def test_run_browser_ui_acceptance_retries_with_fresh_profile_when_first_launch_stalls(self) -> None:
         mock_client = MagicMock()
-        mock_client.send_command.side_effect = lambda m, p=None: (
+        mock_client.send_command.side_effect = lambda m, p=None, **_kw: (
             {"result": {"value": {"url": "http://127.0.0.1:8000/", "readyState": "complete"}}}
             if m == "Runtime.evaluate" and "document.URL" in (p or {}).get("expression", "")
             else ({"result": {"value": {"ok": True}}} if m == "Runtime.evaluate" else {})
@@ -616,6 +615,7 @@ class TestSmokeWindowsUi(unittest.TestCase):
         # single-threaded server blocks on that socket and never answers the navigation.
         class _SynthServer(ThreadingHTTPServer):
             daemon_threads = True
+            request_queue_size = 64
 
             def handle_error(self, request: Any, client_address: Any) -> None:
                 pass
@@ -662,23 +662,16 @@ class TestSmokeWindowsUi(unittest.TestCase):
             proc = None
             client = None
             try:
-                proc, cdp_port, _profile_dir = smoke_windows_ui.launch_browser_with_devtools(
+                base_url = f"http://127.0.0.1:{port}"
+                proc, client, _profile_dir, ready_state = smoke_windows_ui.launch_browser_to_page(
                     browser_exe,
                     make_profile_dir,
                     extra_args,
+                    base_url,
                     attempt_timeout=15.0,
                     attempts=2,
+                    client_factory=SimpleCdpClient,
                 )
-
-                import urllib.request
-                with urllib.request.urlopen(f"http://127.0.0.1:{cdp_port}/json/list", timeout=5) as res:
-                    targets = json.load(res)
-                target = next((t for t in targets if t.get("type") == "page"), None)
-                self.assertIsNotNone(target)
-
-                client = SimpleCdpClient(target["webSocketDebuggerUrl"])
-                base_url = f"http://127.0.0.1:{port}"
-                ready_state = wait_for_initial_navigation(client, base_url, timeout=10.0)
                 self.assertEqual(ready_state["url"].rstrip("/"), base_url)
                 self.assertIn(ready_state["readyState"], ("interactive", "complete"))
             finally:
@@ -688,6 +681,139 @@ class TestSmokeWindowsUi(unittest.TestCase):
                     stop_browser_process(proc)
                 server.shutdown()
                 server.server_close()
+
+    def _run_mocked_acceptance(
+        self, outcomes: list[Any], payloads: list[Any], *, client_factory: Any = None, timeout: float = 0.3
+    ) -> tuple[dict[str, Any], list[Any], list[Path], int]:
+        calls = 0
+
+        def fake_urlopen(*_args: Any, **_kwargs: Any) -> MagicMock:
+            nonlocal calls
+            resp = MagicMock()
+            resp.read.return_value = json.dumps(payloads[min(calls, len(payloads) - 1)]).encode("utf-8")
+            calls += 1
+            resp.__enter__.return_value = resp
+            return resp
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            _, fake_popen, procs, profiles, _ = self._make_browser_harness(Path(tmp_dir), outcomes)
+            with patch("scripts.smoke_windows_ui.find_browser", return_value=Path("C:/dummy/chrome.exe")), \
+                 patch("scripts.smoke_windows_ui.subprocess.Popen", side_effect=fake_popen), \
+                 patch("urllib.request.urlopen", side_effect=fake_urlopen), \
+                 patch("scripts.smoke_windows_ui.make_cdp_client", side_effect=client_factory):
+                res = run_browser_ui_acceptance(
+                    "http://127.0.0.1:8000", Path(tmp_dir), "s1", "hi", "/a.wav", timeout=timeout
+                )
+                return res, procs, profiles, calls
+
+    def test_run_browser_ui_acceptance_waits_for_late_page_target(self) -> None:
+        mock_client = MagicMock()
+        mock_client.send_command.return_value = {
+            "result": {"value": {"url": "http://127.0.0.1:8000/", "readyState": "complete", "ok": True}}
+        }
+        payloads = [
+            [], [],
+            [{"type": "background_page", "webSocketDebuggerUrl": "ws://127.0.0.1:9555/bg"}],
+            [{"type": "page", "webSocketDebuggerUrl": "ws://127.0.0.1:9555/page/late"}],
+        ]
+        res, procs, profiles, calls = self._run_mocked_acceptance(
+            [(None, 9555)], payloads, client_factory=lambda _u: mock_client, timeout=1.0
+        )
+        self.assertEqual((res["ok"], calls, len(profiles)), (True, 4, 1))
+        procs[0].terminate.assert_called_once()
+
+    def test_run_browser_ui_acceptance_fails_clearly_when_page_target_never_appears(self) -> None:
+        with self.assertRaises(TimeoutError) as ctx:
+            self._run_mocked_acceptance([(None, 9555), (None, 9556)], [[]], timeout=0.5)
+        self.assertIn("CDP page target", str(ctx.exception))
+        self.assertRegex(str(ctx.exception), r"\d+\.\d+s")
+
+    def test_run_browser_ui_acceptance_retries_with_fresh_profile_when_page_navigate_stalls(self) -> None:
+        import hashlib
+
+        srv = socket.create_server(("127.0.0.1", 0), backlog=4)
+        srv.settimeout(5.0)
+        stop = threading.Event()
+        timeouts: list[str] = []
+        orig_nav = smoke_windows_ui.wait_for_initial_navigation
+
+        def send_text(conn: socket.socket, obj: dict[str, Any]) -> None:
+            data = json.dumps(obj).encode("utf-8")
+            hdr = bytes([0x81, len(data)]) if len(data) < 126 else bytes([0x81, 126, *len(data).to_bytes(2, "big")])
+            conn.sendall(hdr + data)
+
+        def cdp_server() -> None:
+            for idx in range(2):
+                if stop.is_set():
+                    break
+                try:
+                    with srv.accept()[0] as conn:
+                        conn.settimeout(5.0)
+                        stream = conn.makefile("rb")
+                        req = b""
+                        while (line := stream.readline()) not in (b"\r\n", b""):
+                            req += line
+                        key = re.search(rb"Sec-WebSocket-Key:\s*(\S+)", req, re.I).group(1)  # type: ignore[union-attr]
+                        acc = base64.b64encode(
+                            hashlib.sha1(key + b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest()
+                        ).decode("ascii")
+                        conn.sendall(
+                            f"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+                            f"Connection: Upgrade\r\nSec-WebSocket-Accept: {acc}\r\n\r\n".encode("ascii")
+                        )
+                        while not stop.is_set():
+                            head = stream.read(2)
+                            if len(head) < 2:
+                                break
+                            n = int.from_bytes(stream.read(2), "big") if (head[1] & 0x7F) == 126 else (head[1] & 0x7F)
+                            mask = stream.read(4) if head[1] & 0x80 else b""
+                            raw = stream.read(n)
+                            msg = json.loads((bytes(b ^ mask[i % 4] for i, b in enumerate(raw)) if mask else raw).decode())
+                            method = msg["method"]
+                            if method == "Page.navigate" and idx == 0:
+                                for _ in range(200):  # bounded, so a lost deadline fails the test instead of hanging it
+                                    send_text(conn, {"method": "Page.frameAttached", "params": {"frameId": "f1"}})
+                                    if stop.wait(0.05):
+                                        break
+                                break
+                            if method == "Runtime.evaluate":
+                                val = {"url": "http://127.0.0.1:8000/", "readyState": "complete", "ok": True}
+                                send_text(conn, {"id": msg["id"], "result": {"result": {"value": val}}})
+                                if "document.URL" not in msg.get("params", {}).get("expression", ""):
+                                    break
+                            else:
+                                send_text(conn, {"id": msg["id"], "result": {}})
+                except (OSError, EOFError):
+                    pass
+
+        def spy_nav(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            try:
+                return orig_nav(*args, **kwargs)
+            except TimeoutError as exc:
+                timeouts.append(str(exc))
+                raise
+
+        thread = threading.Thread(target=cdp_server, daemon=True)
+        thread.start()
+        try:
+            ws_url = f"ws://127.0.0.1:{srv.getsockname()[1]}/devtools/page/1"
+            with patch("scripts.smoke_windows_ui.wait_for_initial_navigation", side_effect=spy_nav):
+                res, procs, profiles, _ = self._run_mocked_acceptance(
+                    [(None, 9661), (None, 9662)], [[{"type": "page", "webSocketDebuggerUrl": ws_url}]],
+                    client_factory=SimpleCdpClient, timeout=2.0,
+                )
+            self.assertTrue(res["ok"])
+            self.assertEqual(len(timeouts), 1)
+            self.assertIn("Page.navigate", timeouts[0])
+            self.assertRegex(timeouts[0], r"\d+\.\d+s")
+            self.assertEqual(len(profiles), 2)
+            self.assertNotEqual(profiles[0], profiles[1])
+            procs[0].terminate.assert_called_once()
+            procs[1].terminate.assert_called_once()
+        finally:
+            stop.set()
+            srv.close()
+            thread.join(timeout=2.0)
 
 
 
