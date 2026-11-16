@@ -31,16 +31,17 @@
   - 验收：切页/关窗/重新打开/修改草稿/迟到请求的现有回归保持通过；真实浏览器验证焦点、返回首页和未保存草稿；每次仅迁移一个职责，不同时重做视觉。
   - 本次收口：
     - Phase 1（已完成，PR294）：已将提供商表单/草稿/读取状态、模型与密钥渲染、连通性测试、保存与启用逻辑抽离至实例拥有的 `ProviderSettingsController`（`frontend/src/controllers/provider_settings.js`），保留原有页脚保存预约、细分版本守卫与草稿隔离语义。
-    - Phase 2（最终收口）：完成全部剩余业务控制器的生命周期解耦，将遥测轮询与硬件诊断卡片渲染抽离至 `TelemetrySettingsController`（`telemetry_settings.js`），引擎精度自动保存/切换/重启及离线缓存清理抽离至 `EngineSettingsController`（`engine_settings.js`），Telegram 开关/可见性/验证与测试逻辑抽离至 `TelegramSettingsController`（`telegram_settings.js`）；`global_settings.js` 收敛为纯粹的公共兼容门面与配置草稿协调器；每个控制器实例独立拥有 AbortController、代数守卫与事件解绑；`waitForEngine` 接入 AbortSignal 退出等待且不影响服务端重启；`initSettingsTabs` 与 `initEngineDirectory` 提供清理接口并在重新初始化时彻底释放旧监听器；消除了旧 Telegram 测试提前解锁新按钮、旧重启全局阻塞新操作、以及重复初始化堆叠监听器的缺陷；全部 17 项真实 Chromium 浏览器回归与 Node 全套回归（含新增 `test_settings_lifecycle_decomposition.mjs`）验证通过。
+    - Phase 2（最终收口）：完成全部剩余业务控制器的生命周期解耦，将遥测轮询与硬件诊断卡片渲染抽离至 `TelemetrySettingsController`（`telemetry_settings.js`），引擎精度自动保存/切换/重启及离线缓存清理抽离至 `EngineSettingsController`（`engine_settings.js`），原 Telegram 相关逻辑当时曾拆至 `TelegramSettingsController`（`telegram_settings.js`，现已随 Telegram 功能一并移除）；`global_settings.js` 收敛为纯粹的公共兼容门面与配置草稿协调器；每个控制器实例独立拥有 AbortController、代数守卫与事件解绑；`waitForEngine` 接入 AbortSignal 退出等待且不影响服务端重启；`initSettingsTabs` 与 `initEngineDirectory` 提供清理接口并在重新初始化时彻底释放旧监听器；消除了旧重启全局阻塞新操作、以及重复初始化堆叠监听器的缺陷；全部 17 项真实 Chromium 浏览器回归与 Node 全套回归（含新增 `test_settings_lifecycle_decomposition.mjs`）验证通过。
 
 - [ ] **T05 / P2：缩小流式协调器的职责边界。**
-  - 证据：[`stream_coordinator.py`](../../galgame2voice/services/chat_pipelines/stream_coordinator.py) 约 1,263 行，覆盖上游解析、TTS 队列、SSE、快照、拼接、数据库提交和好感度结算。
+  - 证据：[`stream_coordinator.py`](../../galgame2voice/services/chat_pipelines/stream_coordinator.py) 曾约 1,263 行（经两阶段拆分后现约 1,080 行），覆盖上游解析、TTS 队列、SSE、快照、拼接、数据库提交和好感度结算。
   - 工作：优先提取纯粹的快照状态计算和最终持久化策略；统一由现有轮次生命周期拥有任务与清理。先写清完成、截断、取消、断网的终态，再移动代码。
   - 验收：同一轮只保存一次、只结算一次；中断仍保留有效文本和已完整生成的音频；断连任务全部收束；不新增竞争读取 ASGI `receive()` 的任务，也不改变既有音色隔离。
   - 阶段进展：
     - 第一阶段（[PR #400](https://github.com/LevenST24/galgame2voice/pull/400)）：新增无 I/O 纯函数模块 [`stream_snapshot.py`](../../galgame2voice/services/chat_pipelines/stream_snapshot.py) 与单测 [`test_stream_snapshot.py`](../../tests/test_stream_snapshot.py)，将单句音频状态结算（`new_line_audio_state`、`build_line_audio_event`、`resolve_line_audio_snapshot_status`、`snapshot_lines_with_audio`）、完成/截断/取消/断网四类终态的快照状态计算（`compute_completion_snapshot`、`compute_early_exit_snapshot`、`compute_disconnect_snapshot`）、提前退出 `done` 事件构造（`build_early_done_event`）及切片/TTS 参数整理从 [`stream_coordinator.py`](../../galgame2voice/services/chat_pipelines/stream_coordinator.py) 中抽离。
-    - 已覆盖验收：以纯函数单测明确了正常完成、异常截断、用户取消与客户端断网四类终态下的有效文本判定与已完成单句音频保留/未完成句标 `failed` 规则；委托切换后不新增竞争读取 ASGI `receive()` 的任务，也不改变既有音色隔离。
-    - 剩余未完成：终态数据库落库、主音频 WAV 拼接计划与好感度结算的最终持久化策略仍在 [`stream_coordinator.py`](../../galgame2voice/services/chat_pipelines/stream_coordinator.py) 内联（同一轮只保存一次、只结算一次仍依赖协调器实例状态）；后台生产、合成与取消监听任务的生命周期及断连收束清理尚未统一收口；客户端断网兜底（`compute_disconnect_snapshot`）在仅有 `announced_lines` 而 `partial_chinese`/`partial_japanese` 为空时的部分落盘判据尚未与 `compute_early_exit_snapshot` 对齐。
+    - 第二阶段（[PR #411](https://github.com/LevenST24/galgame2voice/pull/411)）：新增无 I/O 纯函数模块 [`stream_persist_policy.py`](../../galgame2voice/services/chat_pipelines/stream_persist_policy.py) 与单测 [`test_stream_persist_policy.py`](../../tests/test_stream_persist_policy.py)，将四类终态下的落库动作判定（`decide_completion_policy`、`decide_early_exit_policy`、`decide_teardown_policy`、`decide_turn_message_action`）、空回复分类（`classify_empty_completion_error`）、主音频 WAV 拼接计划（`plan_master_audio_url`、`resolve_concat_pause_seconds`）及 `done` 载荷构造（`build_completion_done_event`）从 [`stream_coordinator.py`](../../galgame2voice/services/chat_pipelines/stream_coordinator.py) 中抽离。
+    - 已覆盖验收：以纯函数单测明确了正常完成、异常截断、用户取消与客户端断网四类终态下的有效文本判定、落库/清理/好感度结算策略及已完成单句音频保留/未完成句标 `failed` 规则；委托切换后不新增竞争读取 ASGI `receive()` 的任务，也不改变既有音色隔离。
+    - 剩余未完成：终态数据库读写执行（`_persist_turn_message`、`_persist_partial_message`、`_prune_orphaned_user_message`）、主音频 WAV 拼接执行（`_concat_audio_chunks`）与好感度执行（`_update_turn_affection`）及单次落库/结算守卫状态仍在 [`stream_coordinator.py`](../../galgame2voice/services/chat_pipelines/stream_coordinator.py) 内；后台生产、合成与取消监听任务的生命周期及断连收束清理（`_finish_teardown`）尚未从协调器拆出；客户端断网兜底（`compute_disconnect_snapshot`）在仅有 `announced_lines` 而 `partial_chinese`/`partial_japanese` 为空时的部分落盘判据尚未与 `compute_early_exit_snapshot` 对齐。
 
 - [ ] **T06 / P2：让 SSE 和恢复接口契约可以被前后端共同核验。**
   - 证据：[`ai.js`](../../frontend/src/ai.js)、[`conversation.js`](../../frontend/src/conversation.js)、后端流式协调器及轮次恢复接口分别维护事件名、字段和身份判定。
@@ -57,8 +58,9 @@
   - 验收：冷启动、热缓存、慢合成和网络抖动分别记录分布与环境；先拿到基线再决定缓冲或并行策略，不用固定 sleep 或模拟引擎成绩宣称真实提速。
   - 阶段进展：
     - 第一阶段（[PR #401](https://github.com/LevenST24/galgame2voice/pull/401)）：在 [`ai.js`](../../frontend/src/ai.js) 透传 SSE `done` 事件中的 `telemetry`（来自后端 [`profiler.py`](../../galgame2voice/utils/profiler.py) `ChatTurnProfiler`）与 `latency_ms`，并在 [`adv_app.js`](../../frontend/src/adv/adv_app.js)、[`main.js`](../../frontend/src/main.js) 与 [`index.html`](../../frontend/index.html) 诊断面板 `#g-dash-perf-summary` 中对接 [`audio_player.js`](../../frontend/src/audio_player.js) `StreamAudioController.playLine` 的 `onStart` 回调，建立容量上限为 5 轮的内存环形缓冲 `recentTurnTimelines`，配套单测 [`test_first_audio_timeline.mjs`](../../tests/test_first_audio_timeline.mjs)。
+    - 补充修复（[PR #431](https://github.com/LevenST24/galgame2voice/pull/431)）：[`profiler.py`](../../galgame2voice/utils/profiler.py) 在整轮未到达对应里程碑（包括无音频生成时的 `t5_app_ttfa_ms`）时改为上报 `null` 而非回退为整轮耗时，配套单测 [`test_profiler_unrecorded_milestones.py`](../../tests/test_profiler_unrecorded_milestones.py)。
     - 已覆盖验收：单轮时间线已记录请求发起、首字（`llm_first_token_ms`）、首句切出（`first_sentence_parsed_ms`）、首音就绪（`first_tts_ready_ms`）、浏览器真正开播（`first_audio_play_ms`）与整轮耗时（`total_ms`），覆盖首句无声跳至后续有声行、`done` 与 `onStart` 乱序到达、最多保留 5 轮上限且不记录对话正文或密钥、不发额外遥测请求。
-    - 剩余未完成：TTS 排队、合成、网络下载与 Web Audio 解码等细分阶段耗时拆分及 [`metrics_collector.py`](../../galgame2voice/services/metrics_collector.py) 汇聚/环境标签记录尚未补齐；后端 [`profiler.py`](../../galgame2voice/utils/profiler.py) 在整轮无音频生成时仍会将 `t5_app_ttfa_ms` 回退记为整轮耗时；冷启动、热缓存、慢合成和网络抖动四类场景下的真实环境分布基线采样及后续缓冲/并行策略评估**待维护者验收**。
+    - 剩余未完成：TTS 排队、合成、网络下载与 Web Audio 解码等细分阶段耗时拆分及 [`metrics_collector.py`](../../galgame2voice/services/metrics_collector.py) 汇聚/环境标签记录尚未补齐；冷启动、热缓存、慢合成和网络抖动四类场景下的真实环境分布基线采样及后续缓冲/并行策略评估**待维护者验收**。
 
 ## 测试与发布维护
 
@@ -68,10 +70,11 @@
   - 验收：受控失败能让整次 CI 失败；正常 Python/npm 审计通过。区分审计服务不可用与实际漏洞，不用重试掩盖真实结果。
   - 本次收口：移除作业级 `continue-on-error`，保留原 Python/npm 审计命令、阈值和固定 action 版本；真实执行结果见发布修复 PR 的 CI。尚未注入漏洞或人为失败来进行负向演练，该项边界不等于现有依赖存在漏洞。
 
-- [ ] **T09 / P2：把关键便携版回归提前到合并前。**
+- [x] **T09 / P2：把关键便携版回归提前到合并前。**
   - 证据：[`release.yml`](../../.github/workflows/release.yml) 已有真实 EXE 和 Chrome 业务验收，但仅由手动执行或版本标签触发；常规 PR CI 不执行该工作流。
   - 工作：复用现有流程，为启动器、打包、数据库迁移等相关改动添加有界的合并前检查；最终发布仍运行完整便携包验收。复用 workflow，避免复制一套会漂移的命令。
   - 验收：能在 PR 中发现缺少运行文件、启动失败或打包后恢复失败；纯文档变更不重复构建大包；失败上传现有诊断，成功后才允许正式发布。
+  - 本次收口（[PR #413](https://github.com/LevenST24/galgame2voice/pull/413)）：新增 [`.github/workflows/portable-premerge.yml`](../../.github/workflows/portable-premerge.yml)，按 `pull_request` 路径过滤仅在打包/启动器/数据库迁移/`WINDOWS_PORTABLE.md` 等相关改动时触发（纯普通文档变更不构建），在 `windows-latest` 上调用 [`build_windows_portable.py`](../../scripts/build_windows_portable.py)、[`verify_windows_portable.py`](../../scripts/verify_windows_portable.py)（`--skip-vite-dist`）及 [`smoke_windows_portable.py`](../../scripts/smoke_windows_portable.py)（`--startup-only`：覆盖运行文件、启动健康检查、首装建库、重复启动保护、运行中恢复拦截、FFmpeg 转换与静态资源检查，失败时上传 `.local/portable-premerge-smoke/diagnostics` 与 PyInstaller 警告）。边界：离线损坏库 `--restore-database` 恢复演练与 `--with-browser-ui` 完整业务验收仍保留在 [`release.yml`](../../.github/workflows/release.yml)。
 
 - [x] **T10 / P2：修复测试能力探测遗留临时目录。**
   - 证据：[`tests/conftest.py`](../../tests/conftest.py) 的 `_probe_writable_private_temp_dir` 创建 `g2v_cap_*`，写入后成功或失败均未清理。
@@ -86,17 +89,17 @@
   - 阶段进展：
     - 第一阶段（[PR #399](https://github.com/LevenST24/galgame2voice/pull/399)）：新增 [`run_tests.mjs`](../../frontend/run_tests.mjs) 与自检回归 [`test_frontend_test_discovery.mjs`](../../tests/test_frontend_test_discovery.mjs)，将 [`frontend/package.json`](../../frontend/package.json) 的 `npm test` 改为顶层 `tests/test_*.{mjs,js}` 按 ASCII 顺序自动发现（`discoverFrontendTests`）+ 显式冻结排除清单（`EXCLUDED_TESTS`）与临时探测前缀过滤（`TEMP_TEST_PREFIX_RE`）+ 逐文件独立 Node 子进程隔离执行。
     - 已覆盖验收：核对了迁移前 61 个前端测试集合零遗漏（合并时含自检共 62 项，后续新增的合规前端测试已自动纳入执行），独立浏览器/素材/集成脚本与 `tests/helpers/` 保持隔离可单独运行，子进程非零退出码、信号中断与空目录发现失败均严格透传并短路阻断。
-    - 剩余未完成：`tests/` 下历史遗留的 `adversarial_m*`、`challenger`、`m*` 等里程碑/流程化测试文件（含前端 `test_m7_audio_lru_challenger2.js` 与后端 `test_adversarial_*` 等）尚未按被测业务模块渐进改名与归档。
+    - 剩余未完成：前期前端 `test_m7_audio_lru_challenger2.js` 与后端 `test_adversarial_*`、`challenger` 等历史里程碑测试已合并清理移除，目前 `tests/` 下仅余 [`test_chat_streaming_m4.py`](../../tests/test_chat_streaming_m4.py) 一项带里程碑编号的后端测试文件待按模块改名归档。
 
 - [ ] **T12 / P2：为内部界面建立可重复的浏览器视觉验收。**
   - 证据：现有发布 smoke 验证设置 Tab、LOG、导出和音频地址等行为，尚不能证明立绘部件对齐、排版比例或所有滚动/遮挡场景符合审美。
   - 工作：以已认可的首页比例为参照，使用可公开分发的合成分层立绘和固定对话，覆盖舞台、设置、LOG 与错误/加载态；先确定截图和设计标准，再逐页改视觉。
   - 验收：1920×1080、1366×768、窄窗口及系统缩放下，正文、按钮、底部菜单可见可操作；表情/口型定位稳定；人工检查差异。禁止把“截图生成成功”当作视觉通过。
 
-- [ ] **T13 / P1（发布验证）：补真实供应商、GPT-SoVITS 和 Telegram 验收。**
-  - 证据：[`RELEASE_HANDOFF_3_1_1.md`](RELEASE_HANDOFF_3_1_1.md) 已明确现有商业 API、GPU/听感、真实 Telegram 和第三方立绘的验证空白。
+- [ ] **T13 / P1（发布验证）：补真实供应商和 GPT-SoVITS 验收。**
+  - 证据：自动化门禁仅使用本地替身与合成素材，尚未完成商业 API、真实 GPU/听感与第三方立绘的验证。
   - 工作：由维护者在专用测试安装中提供允许使用的服务和资源，记录配置类别、硬件、版本和结果；不把开发机真实聊天、密钥或素材复制进 CI。
-  - 验收：至少完成一轮真实文字流、连续逐句语音、角色切换、停止/重试、离线恢复与 Telegram 重置。没有环境时明确保留“未验证”，不阻塞无关代码维护，也不虚报通过。
+  - 验收：至少完成一轮真实文字流、连续逐句语音、角色切换、停止/重试与离线恢复。没有环境时明确保留“未验证”，不阻塞无关代码维护，也不虚报通过。
 
 - [x] **T14 / P1：在执行便携版业务脚本前确认浏览器导航就绪。**
   - 证据：v3.1.1 发布工作流两次在 `Runtime.evaluate` 报 `Execution context was destroyed`；截图仍处初始加载阶段，而后端回复关联、重启与修复音频校验已通过。

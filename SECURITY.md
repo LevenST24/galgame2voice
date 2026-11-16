@@ -21,7 +21,7 @@ Please report vulnerabilities privately through GitHub's private vulnerability r
 
 ## 认证
 
-- 除 `/api/health`、静态资源与音频文件外，**所有 API 路由均声明了控制台 Token 认证依赖**
+- 除 `/api/health`、`/api/media/*`（签名媒体资源）、静态资源与音频文件外，**所有 API 路由均声明了控制台 Token 认证依赖**
   （`Authorization: Bearer <token>` 或 `X-Console-Token` 头，见 `main.py` 的 `auth_deps`）。
 - **本地默认模式下鉴权实际上是关闭的**：`Settings.auth_disabled` 默认 `True`
   （`galgame2voice/config.py`），`require_auth()` 在该开关为真时直接放行
@@ -49,7 +49,7 @@ Please report vulnerabilities privately through GitHub's private vulnerability r
 - 提示词上限 4000 字符，会话 ID 上限 128 字符，TTS 文本上限 2000 字符。
 - TTS 选项（speed/top_k/top_p/temperature/batch_size/fragment_interval/seed）在 API 边界
   校验数值范围与字符串长度，内部再统一 clamp 兜底。
-- 请求限流：滑动窗口（全局 240 次/分、单 IP 120 次/分、聊天/合成类 30 次/分），
+- 请求限流：滑动窗口（全局 240 次/分、单 IP 120 次/分；`/api/chat/*` 与 `/api/config`、`/api/providers` 写操作 30 次/分），
   超限返回 429；测试可用 `GALGAME2VOICE_RATE_LIMIT_DISABLED=1` 关闭。
 
 ## 数据与凭据
@@ -68,11 +68,11 @@ Please report vulnerabilities privately through GitHub's private vulnerability r
   备份应妥善保护数据库和原密钥；Windows DPAPI 数据还依赖原 Windows 用户上下文。
 - Docker 默认启用鉴权并通过 `scripts/run_container.py` 启动；真实监听地址和启动安全检查
   都读取 `Settings.host`。将其设为非回环地址且关闭鉴权时，服务拒绝启动。
-- 文件浏览 API 仅列出项目、数据、音频和已配置/发现的 GPT-SoVITS 目录，拒绝解析后的越界路径。
-  外部模型目录需通过 `GPT_SOVITS_DIR` 或 `data/sovits_dir.txt` 声明。
+- 模型扫描（`/api/voice/scan-models`）与路径校验（`validate_path_containment()`）仅覆盖项目、数据、音频和已配置/发现的 GPT-SoVITS 目录，拒绝解析后的越界路径。
+  外部模型目录需通过 `GPT_SOVITS_DIR` 或 `data/sovits_dir.txt` 声明；`/api/voice/browse-file` 调用本机系统文件对话框选择权重或参考音频。
 - 所有 API 响应对密钥做脱敏（`sk-****xxxx` 形式）；自定义认证头同样脱敏，
   且前端回传的脱敏值不会被写回覆盖真实值。
-- 用户生成的音频文件以 `private, max-age=0` 缓存策略返回，不进共享代理缓存。
+- 用户生成的音频文件（`/audio/`，不含内容寻址缓存目录 `/audio/cache/`）以 `private, max-age=0` 缓存策略返回，不进共享代理缓存；`/audio/cache/` 使用 `public, max-age=31536000, immutable`。
 
 ## 已知边界（有意为之的简化）
 

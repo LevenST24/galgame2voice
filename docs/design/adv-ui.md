@@ -828,13 +828,15 @@ folders entirely, not merely model weights. Archive-content regressions cover lo
 assets, reference audio, private configuration, and linked directories.
 Document local installation separately; absence of assets remains a supported mode.
 
-P3 signs sprite/layer/skin images; P6 uses the same facility for backgrounds.
+P3 signs sprite/layer images; P6 uses the same facility for backgrounds (`skin` is deferred).
 Authenticated manifest APIs return same-origin expiring image URLs that `<img>`
 can request without an Authorization header. Never put the console token in a URL.
-Proposed route: `/api/assets/{kind}/{asset_id}?v={revision}&exp={unix}&sig={mac}`.
-Kinds are `portrait`, `layer`, `background`, `skin`; IDs resolve server-side entries.
-Sign kind, canonical asset ID, revision, and expiry with HMAC-SHA256; TTL is 900s.
-Constant-time verification rejects expiry, tampering, unknown kinds, and wrong paths.
+Implemented routes (`galgame2voice/routers/characters.py` and `backgrounds.py`):
+- Whole-image portrait: `GET /api/media/portrait/{character_id}/{costume}/{file_name}?v={revision}&exp={unix}&sig={mac}` (console-token fallback `GET /api/characters/{character_id}/portrait/file/{costume}/{file_name}` when signing key is unavailable).
+- Layered portrait: `GET /api/media/portrait/{character_id}/layers/{canvas}/{file_name}?v={revision}&exp={unix}&sig={mac}` (console-token fallback `GET /api/characters/{character_id}/portrait/layers/{canvas}/{file_name}`).
+- Background: `GET /api/media/background/{work}/{bg_id}/{variant}?v={revision}&exp={unix}&sig={mac}`.
+`generate_media_signature` (`galgame2voice/security/media_urls.py`) signs decoded path, expiry, and `v` revision with HMAC-SHA256; `compute_bucketed_expiry` rounds up to the next hour boundary plus `validity_hours` (12 hours by default, i.e., 12–13 hours total validity for hour-bucketed browser caching).
+Constant-time verification (`verify_media_url_signature`) rejects expiry, tampering, unknown kinds, and wrong paths.
 Resolve files under the allowed local root; reject traversal, symlink escape, and
 encoded separator bypasses before reading. Do not accept arbitrary disk filenames.
 Refresh the manifest 60s before expiry, or once after an image authentication error.
@@ -859,7 +861,7 @@ Keep existing `state.global.voiceMode` and TTS preset behavior; do not duplicate
 | P2a | None | Audio mode is selected by renderer, not persisted as another preference. |
 | P2b only | `advReplyFormat` (removed) | Ignored/dropped on session load and backup import; all generation uses `lines`. |
 | P3–P6 only | `advEnabled` (removed) | Ignored/dropped in P7; all sessions use ADV. |
-| P3 | `advPlayerName` | `Player`; nonempty string, maximum 40 graphemes. |
+| P3 | `advPlayerName` | `我` (legacy `Player` normalized to `我`); nonempty string, maximum 40 graphemes. |
 | P3 | `advPrimaryLanguage` | `zh`; enum `zh`, `ja`. |
 | P3 | `advSubtitleLanguage` | `ja`; enum `zh`, `ja`, `none`, distinct from primary. |
 | P3 | `advWindowOpacity` | 75; integer 0–100. |
@@ -869,12 +871,12 @@ Keep existing `state.global.voiceMode` and TTS preset behavior; do not duplicate
 | P3 | `advAutoPerCharMs` | 45; integer 0–200. |
 | P3 | `advAutoMode` | `voice-priority`; enum `normal`, `voice-priority`. |
 | P3 | `advOutfit` | Empty string means character-pack default; otherwise valid outfit ID. |
-| P4 | `advSkin` | Empty string means original CSS; otherwise installed local skin ID. |
+| P4 | `advSkin` (not implemented) | Deferred; not in the session settings schema. |
 | P5 | `advBlink` | true; effective only with compatible v3 partners. |
 | P5 | `advLipSync` | true; effective only with compatible v3 partners. |
-| P6 | `advBackground` | Empty string means CSS sky; otherwise local manifest ID. |
-| P6 | `advBackgroundTime` | `clock`; enum `clock`, `day`, `evening`, `night`. |
-| P6 | `advBackgroundBlur` | 6; finite number 0–12 logical units. |
+| P6 | `advBackground` | Empty string means character-pack default (`none` for plain sky, or `<work>/<id>`); otherwise local manifest ID. |
+| P6 | `advBgTime` | `auto`; enum `auto`, `day`, `evening`, `night`. |
+| P6 | `advBackgroundBlur` (not implemented) | Deferred; not in the session settings schema. |
 | P7 | No additional keys | Title reads sessions through `advActions`; the preview toggle is removed. |
 | P8 | No required keys | Responsive composition and preload policy are automatic. |
 
@@ -889,12 +891,11 @@ Missing installed assets preserve the selected ID but render a fallback/status.
 
 P6 background manifests map ID/name/source attribution to day/evening/night files.
 `GET /api/backgrounds` returns available choices and signed variant URLs.
-Initial clock boundaries are **provisional**: day 06:00–16:59, evening 17:00–19:59,
+Clock boundaries in `adv/background.js`: day 06:00–15:59, evening 16:00–18:59,
 night otherwise, using browser local time. Recheck once a minute and on tab resume.
-Manual time selection overrides clock; missing variants fall back to day then CSS.
+Manual time selection overrides clock; missing variants fall back to the next closest light level (`day` / `evening` / `night`) then CSS.
 Store background and time per session; defer automatic dialogue-driven scene changes.
-Use the planned Background / Time / Size selection layout; size is a preview-fit
-control in P6 unless a later spec adds a persisted crop/zoom setting.
+The background panel (`adv/bg_panel.js`) provides Background and Time selection; backgrounds use fit-to-stage sizing (no separate Size or blur control is implemented).
 
 Acceptance: set every new value, switch sessions, reload, export/import through
 browser and backend backups, and verify it survives; test invalid enum/range input.

@@ -48,7 +48,3 @@ uv run --frozen --extra desktop python scripts/smoke_windows_turn_reply.py --arc
 - 使用合成 LLM/TTS 上游，能检查打包程序的请求、流式处理、存储和故障反馈，不能证明真实模型质量、显存占用或人脸部件的对齐。
 - 实际语音引擎和真实角色资源需要单独验收。未执行的项目应注明未验证。
 - 构建成功、API 返回 200 或浏览器启动成功，都不能替代完整流程验收。
-
-## 节点交接与发布指引
-
-有关 v3.2.0 版本的详细交接范围、核心模块变更、升级兼容边界及发布步骤，请参阅 [RELEASE_HANDOFF_3_2_0.md](RELEASE_HANDOFF_3_2_0.md)。
