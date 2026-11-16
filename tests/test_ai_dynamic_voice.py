@@ -473,3 +473,11 @@ def test_lines_tts_defaults_clamps_and_user_overrides():
     parser.finalize()
     assert parser.tts_speed < 999 and parser.tts_temperature > -999
 
+
+def test_prosody_bounds_constants():
+    """Verify prosody clamping bounds adhere strictly to contract."""
+    assert DYNAMIC_SPEED_MIN == 0.50
+    assert DYNAMIC_SPEED_MAX == 1.50
+    assert DYNAMIC_TEMP_MIN == 0.60
+    assert DYNAMIC_TEMP_MAX == 1.20
+
