@@ -3,14 +3,16 @@
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from galgame2voice.adapters.base import BaseLLMAdapter, ChatMessage, LLMResponse, TestResult
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.routers.chat import ChatRequest, chat_stream_endpoint, set_chat_service
 from galgame2voice.services.chat_service import ChatService
+from galgame2voice.services.voice_manager import VoiceManager
 
 
 @pytest.fixture
@@ -342,3 +344,114 @@ async def test_turn_ownership_is_shared_by_database_and_session(concurrent_chat,
                 task.cancel()
         await asyncio.gather(*(task for task in (first, second) if task), return_exceptions=True)
         await other.aclose()
+
+
+class _ConcurrentSseMockAdapter(BaseLLMAdapter):
+    """Configurable/dynamic mock adapter for concurrent SSE streaming tests."""
+
+    def __init__(self, custom_tokens=None):
+        super().__init__(api_key="sk-dynamic", base_url="https://api.openai.com/v1")
+        self.custom_tokens = custom_tokens
+
+    async def chat(self, messages: list[ChatMessage], model: str, temperature: float = 1.0, **kwargs) -> LLMResponse:
+        if self.custom_tokens is not None:
+            return LLMResponse(content="".join(self.custom_tokens))
+        user_msg = messages[-1].content if messages else ""
+        return LLMResponse(content=json.dumps({"chinese": f"回复: {user_msg}", "japanese": f"応答: {user_msg}。"}, ensure_ascii=False))
+
+    async def stream_chat(self, messages: list[ChatMessage], model: str, temperature: float = 1.0, **kwargs):
+        if self.custom_tokens is not None:
+            tokens = self.custom_tokens
+        else:
+            user_msg = messages[-1].content if messages else ""
+            tokens = [
+                '{"chinese": "',
+                f"回复: {user_msg}",
+                '", "japanese": "',
+                f"応答: {user_msg}。",
+                '"}',
+            ]
+        for token in tokens:
+            await asyncio.sleep(0.001)
+            yield token
+
+    async def test_connection(self, model=None) -> TestResult:
+        return TestResult(success=True, message="Dynamic connection OK", latency_ms=10.0)
+
+    async def list_models(self):
+        return ["dynamic-model"]
+
+
+@pytest.mark.asyncio
+async def test_high_concurrency_multi_client_sse_streaming(
+    isolate_test_database, configured_voice, mock_gpt_sovits,
+):
+    """10 concurrent client sessions streaming multi-sentence bilingual responses with monotonic chunks."""
+    voice_manager = VoiceManager(gpt_sovits_client_or_server=mock_gpt_sovits, db_path=isolate_test_database)
+    chat_service = ChatService(tts_service=voice_manager.tts_service, db_path=isolate_test_database)
+
+    async def run_client(client_id: int):
+        events = []
+        async for event in chat_service.stream_chat(
+            prompt=f"Client {client_id} prompt",
+            session_id=f"concurrent_session_{client_id}",
+        ):
+            events.append(event)
+        return events
+
+    with patch("galgame2voice.services.chat_service.get_llm_adapter", return_value=_ConcurrentSseMockAdapter()):
+        tasks = [run_client(i) for i in range(10)]
+        results = await asyncio.gather(*tasks)
+
+    assert len(results) == 10
+    for i, events in enumerate(results):
+        done_events = [e for e in events if e["event"] == "done"]
+        assert len(done_events) == 1, f"Client {i} missing done event"
+        done_data = done_events[0]["data"]
+        assert f"Client {i} prompt" in done_data["chinese"]
+        assert f"Client {i} prompt" in done_data["japanese"]
+
+        audio_chunks = [e for e in events if e["event"] == "audio_chunk"]
+        assert len(audio_chunks) >= 1
+        for idx, ch in enumerate(audio_chunks):
+            assert ch["data"]["index"] == idx
+
+
+@pytest.mark.asyncio
+async def test_early_client_disconnect_cancellation_stress(
+    isolate_test_database, configured_voice, mock_gpt_sovits,
+):
+    """10 concurrent clients cancelling mid-stream leave backend clean for subsequent requests."""
+    voice_manager = VoiceManager(gpt_sovits_client_or_server=mock_gpt_sovits, db_path=isolate_test_database)
+    chat_service = ChatService(tts_service=voice_manager.tts_service, db_path=isolate_test_database)
+
+    def cancellation_adapter(*args, **kwargs):
+        tokens = [
+            '{"chinese": "正在开始...", ',
+            '"japanese": "始まりました。長い文です。' + "続く。" * 20 + '"}',
+        ]
+        return _ConcurrentSseMockAdapter(custom_tokens=tokens)
+
+    async def run_cancelled_client(client_id: int):
+        cancel_event = asyncio.Event()
+        received = 0
+        async for _event in chat_service.stream_chat(
+            prompt=f"Abort prompt {client_id}",
+            session_id=f"abort_session_{client_id}",
+            cancel_event=cancel_event,
+        ):
+            received += 1
+            if received >= 1:
+                cancel_event.set()
+
+    with patch("galgame2voice.services.chat_service.get_llm_adapter", side_effect=cancellation_adapter):
+        tasks = [run_cancelled_client(i) for i in range(10)]
+        await asyncio.gather(*tasks)
+
+    normal_adapter = _ConcurrentSseMockAdapter(custom_tokens=[
+        '{"chinese": "正常测试", "japanese": "正常テスト"}'
+    ])
+    with patch("galgame2voice.services.chat_service.get_llm_adapter", return_value=normal_adapter):
+        events = [e async for e in chat_service.stream_chat("Normal after cancel", session_id="post_cancel_session")]
+        done = next(e for e in events if e["event"] == "done")
+        assert done["data"]["chinese"] == "正常测试"

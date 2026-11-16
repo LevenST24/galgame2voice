@@ -1,14 +1,15 @@
 """Failed replies explain the next step in Chinese and carry a stable error code."""
 
+import asyncio
 import os
 import tempfile
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import httpx
 from httpx import ASGITransport, AsyncClient
 import pytest
 
-from galgame2voice.adapters.base import BaseLLMAdapter, MissingApiKeyError, TestResult
+from galgame2voice.adapters.base import BaseLLMAdapter, ChatMessage, LLMResponse, MissingApiKeyError, TestResult
 from galgame2voice.adapters.registry import get_llm_adapter
 from galgame2voice.database.session import init_db
 from galgame2voice.main import create_app
@@ -18,6 +19,7 @@ from galgame2voice.services.audio_identity import AudioIdentity, VoicePreparatio
 from galgame2voice.services.gpt_sovits_client import GptSovitsClient
 from galgame2voice.services import gpt_sovits_client as gpt_sovits_client_module
 from galgame2voice.services.tts_service import TtsService
+from galgame2voice.services.voice_manager import VoiceManager
 from galgame2voice.utils.error_diagnostics import chat_error_payload, format_provider_error
 
 
@@ -187,3 +189,59 @@ async def test_sse_stream_error_handling_when_llm_fails(temp_db_path, mock_gpt_s
             assert "event: error" in body or "error" in body.lower()
     finally:
         set_chat_service(None)
+
+
+@pytest.mark.asyncio
+async def test_cross_module_provider_failover_and_error_recovery(
+    isolate_test_database, configured_voice, mock_gpt_sovits,
+):
+    """Error in LLM streaming emits structured error event and leaves session recoverable for next turn."""
+    class _FailoverMockAdapter(BaseLLMAdapter):
+        def __init__(self, custom_tokens=None, fail_after_tokens=-1):
+            super().__init__(api_key="sk-mock-key", base_url="https://api.openai.com/v1")
+            self.custom_tokens = custom_tokens or ['{"chinese": "ok", "japanese": "ok"}']
+            self.fail_after_tokens = fail_after_tokens
+
+        async def chat(self, messages: list[ChatMessage], model: str, temperature: float = 1.0, **kwargs) -> LLMResponse:
+            return LLMResponse(content="".join(self.custom_tokens))
+
+        async def stream_chat(self, messages: list[ChatMessage], model: str, temperature: float = 1.0, **kwargs):
+            for idx, token in enumerate(self.custom_tokens):
+                if self.fail_after_tokens >= 0 and idx >= self.fail_after_tokens:
+                    raise RuntimeError(f"Simulated adapter failure at token index {idx}")
+                await asyncio.sleep(0.001)
+                yield token
+
+        async def test_connection(self, model=None) -> TestResult:
+            return TestResult(success=True, message="OK", latency_ms=1.0)
+
+        async def list_models(self):
+            return ["custom-model-v1"]
+
+    voice_manager = VoiceManager(gpt_sovits_client_or_server=mock_gpt_sovits, db_path=isolate_test_database)
+    chat_service = ChatService(tts_service=voice_manager.tts_service, db_path=isolate_test_database)
+
+    failing_adapter = _FailoverMockAdapter(fail_after_tokens=0)
+    with patch("galgame2voice.services.chat_service.get_llm_adapter", return_value=failing_adapter):
+        events = []
+        async for event in chat_service.stream_chat("Fail prompt", session_id="recovery_session"):
+            events.append(event)
+
+        assert len(events) == 2
+        assert events[0]["event"] == "turn_started"
+        assert events[0]["data"]["session_id"] == "recovery_session"
+        assert isinstance(events[0]["data"]["user_message_id"], int) and events[0]["data"]["user_message_id"] > 0
+        assert events[1]["event"] == "error"
+        assert "Simulated adapter failure" in events[1]["data"]["error"]
+
+    working_adapter = _FailoverMockAdapter(custom_tokens=[
+        '{"chinese": "已成功恢复！", "japanese": "無事に回復しました！"}'
+    ])
+    with patch("galgame2voice.services.chat_service.get_llm_adapter", return_value=working_adapter):
+        events = []
+        async for event in chat_service.stream_chat("Recover prompt", session_id="recovery_session"):
+            events.append(event)
+
+        done_event = next(e for e in events if e["event"] == "done")
+        assert done_event["data"]["chinese"] == "已成功恢复！"
+

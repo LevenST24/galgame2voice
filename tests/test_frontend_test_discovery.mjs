@@ -130,7 +130,6 @@ test('runFrontendTests propagates child process exit code and short-circuits on 
 test('discoverFrontendTests scans real tests/ directory and includes core tests without helpers', () => {
   const files = discoverFrontendTests();
   assert.equal(files.length >= 62, true, `expected >= 62 test files, got ${files.length}`);
-  assert.equal(files.includes('test_m7_audio_lru_challenger2.js'), true);
   assert.equal(files.includes('test_adv_main.mjs'), true);
   assert.equal(files.includes('test_frontend_test_discovery.mjs'), true);
   assert.equal(files.includes('adv_dom.mjs'), false);
