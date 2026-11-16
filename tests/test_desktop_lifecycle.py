@@ -11,6 +11,7 @@ import urllib.request
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import httpx
 import psutil
 import pytest
 
@@ -396,3 +397,105 @@ while True:
             except subprocess.TimeoutExpired:
                 parent.kill()
                 parent.wait(timeout=5)
+
+
+class TestLauncherPidRecovery:
+    """Tests for launcher PID file recovery with stale or corrupt PID files."""
+
+    def test_stale_pid_recovery_in_launcher(self, tmp_path, monkeypatch):
+        """Verify launcher cleanup_subprocesses gracefully handles non-existent stale PID without hanging."""
+        from scripts.run_server import cleanup_subprocesses
+        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
+        pid_file = tmp_path / "galgame2voice.pid"
+
+        # Write stale dead PID
+        pid_file.write_text("99999999\n", encoding="utf-8")
+        assert pid_file.exists()
+
+        cleanup_subprocesses()
+        assert not pid_file.exists()
+
+    def test_corrupt_pid_file_handling(self, tmp_path, monkeypatch):
+        """Verify launcher handles corrupted PID files (alphanumeric garbage, empty)."""
+        from scripts.run_server import cleanup_subprocesses
+        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
+        pid_file = tmp_path / "galgame2voice.pid"
+
+        # Case 1: Text garbage
+        pid_file.write_text("INVALID_PID_GARBAGE\n", encoding="utf-8")
+        cleanup_subprocesses()
+        assert not pid_file.exists()
+
+        # Case 2: Empty PID file
+        pid_file.write_text("", encoding="utf-8")
+        cleanup_subprocesses()
+        assert not pid_file.exists()
+
+
+class TestSubprocessServerLifecycle:
+    """Verifies real uvicorn subprocess startup and clean process-tree termination."""
+
+    def test_subprocess_server_spawn_and_terminate(self, tmp_path):
+        """Simulate spawning real uvicorn worker process and sending termination signal."""
+        with socket.socket() as reservation:
+            reservation.bind(("127.0.0.1", 0))
+            test_port = reservation.getsockname()[1]
+        cmd = [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "galgame2voice.main:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(test_port),
+        ]
+        log_path = tmp_path / "subprocess-server.log"
+        with log_path.open("w", encoding="utf-8") as server_log:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(PROJECT_ROOT),
+                stdout=server_log,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+
+            try:
+                # Wait for our server, without depending on the host proxy.
+                online = False
+                t0 = time.perf_counter()
+                with httpx.Client(trust_env=False, timeout=15.0) as client:
+                    while time.perf_counter() - t0 < 30.0:
+                        assert proc.poll() is None, log_path.read_text(encoding="utf-8")
+                        time.sleep(0.5)
+                        try:
+                            r = client.get(f"http://127.0.0.1:{test_port}/api/health")
+                            if r.status_code == 200:
+                                online = True
+                                break
+                        except httpx.RequestError:
+                            pass
+
+                    assert online, log_path.read_text(encoding="utf-8")
+
+                    # A different server on this port must not satisfy the test.
+                    r_sys = client.get(f"http://127.0.0.1:{test_port}/api/system/status")
+                    assert r_sys.status_code == 200
+                    data = r_sys.json()
+                    assert data["app"]["name"] == "galgame2voice"
+                    # Windows venv python.exe can redirect to a child interpreter.
+                    owned_pids = {proc.pid, *(child.pid for child in psutil.Process(proc.pid).children(recursive=True))}
+                    assert data["app"]["pid"] in owned_pids
+
+            finally:
+                # Terminate the process and any child workers owned by this test with bounded timeouts.
+                _safe_terminate_subprocess(proc, timeout=5.0)
+                assert proc.poll() is not None, "Process did not terminate cleanly within timeout"
+
+
+def _safe_terminate_subprocess(proc: subprocess.Popen, timeout: float = 5.0) -> None:
+    """Stop the test's server with its workers; a stuck process fails the test instead of hanging CI."""
+    from scripts.run_server import terminate_process_tree
+    terminate_process_tree(proc.pid, timeout=timeout)
+    proc.wait(timeout=timeout)
+

@@ -22,10 +22,13 @@ from galgame2voice.services.gpt_sovits_client import (
     AudioSpec,
     AudioSpecCache,
     GptSovitsClient,
+    SLICING_METHODS,
+    TTS_PRESETS,
     _GLOBAL_AUDIO_SPEC_CACHE,
     async_probe_audio_duration_seconds,
     extract_wav_duration,
     probe_audio_duration_seconds,
+    resolve_tts_options,
     validate_reference_audio,
     wav_is_silent,
     wav_peak_amplitude,
@@ -300,3 +303,197 @@ async def test_synthesize_multilingual_text_language_option(mock_gpt_sovits, sam
     assert audio.startswith(b"RIFF")
     assert mock_gpt_sovits.call_history[-1]["endpoint"] == "/tts"
     assert mock_gpt_sovits.call_history[-1]["payload"]["text_lang"] == language
+
+
+class TestPresetResolution:
+    """Test suite for TTS preset options and slicing configurations."""
+
+    def test_preset_definitions_exist(self):
+        assert "high_quality" in TTS_PRESETS
+        assert "balanced" in TTS_PRESETS
+        assert "low_latency" in TTS_PRESETS
+
+    def test_slicing_methods_coverage(self):
+        for cut in ["cut0", "cut1", "cut2", "cut3", "cut4", "cut5"]:
+            assert cut in SLICING_METHODS
+
+    def test_resolve_preset_high_quality(self):
+        opts = resolve_tts_options({"preset": "high_quality"})
+        assert opts["top_k"] == 20
+        assert opts["temperature"] == 0.8
+        assert opts["text_split_method"] == "cut5"
+
+    def test_resolve_preset_low_latency(self):
+        opts = resolve_tts_options({"preset": "low_latency"})
+        assert opts["top_k"] == 5
+        assert opts["temperature"] == 0.5
+        assert opts["speed"] == 1.2
+        assert opts["text_split_method"] == "cut5"
+
+    def test_custom_options_override_preset(self):
+        opts = resolve_tts_options({
+            "preset": "balanced",
+            "speed": 1.5,
+            "top_k": 30,
+            "text_split_method": "cut3",
+        })
+        assert opts["speed"] == 1.5
+        assert opts["top_k"] == 30
+        assert opts["text_split_method"] == "cut3"
+
+    def test_preset_application_with_extreme_values(self):
+        """Tests resolve_tts_options across extreme boundary values."""
+        # Case 1: Extreme low vs extreme high speed
+        low_speed = resolve_tts_options({"preset": "high_quality", "speed": 0.1})
+        assert low_speed["speed"] == 0.1
+        assert low_speed["top_k"] == 20  # from high_quality preset
+
+        high_speed = resolve_tts_options({"preset": "low_latency", "speed": 3.0})
+        assert high_speed["speed"] == 3.0
+        assert high_speed["top_k"] == 5  # from low_latency preset
+
+        # Case 2: Extreme temperature 0.0 vs 2.0
+        zero_temp = resolve_tts_options({"temperature": 0.0})
+        assert zero_temp["temperature"] == 0.0
+
+        high_temp = resolve_tts_options({"temperature": 2.0})
+        assert high_temp["temperature"] == 2.0
+
+        # Case 3: Extreme top_k 1 vs 100
+        min_topk = resolve_tts_options({"top_k": 1})
+        assert min_topk["top_k"] == 1
+
+        max_topk = resolve_tts_options({"top_k": 100})
+        assert max_topk["top_k"] == 100
+
+        # Case 4: Extreme top_p 0.01 vs 1.0
+        low_topp = resolve_tts_options({"top_p": 0.01})
+        assert low_topp["top_p"] == 0.01
+
+        max_topp = resolve_tts_options({"top_p": 1.0})
+        assert max_topp["top_p"] == 1.0
+
+    def test_invalid_or_unknown_preset_fallback(self):
+        """Verifies non-existent preset name falls back to 'balanced' without raising exception."""
+        resolved = resolve_tts_options({"preset": "non_existent_preset_xyz"})
+        assert resolved["speed"] == TTS_PRESETS["balanced"]["speed"]
+        assert resolved["top_k"] == TTS_PRESETS["balanced"]["top_k"]
+        assert resolved["temperature"] == TTS_PRESETS["balanced"]["temperature"]
+
+
+class TestGptSovitsClient:
+    """Test suite for GptSovitsClient endpoints, rollback, streaming, and serialization."""
+
+    @pytest.mark.asyncio
+    async def test_client_endpoints_and_health(self, mock_gpt_sovits):
+        client = GptSovitsClient(server=mock_gpt_sovits)
+        health = await client.check_health()
+        assert health["connected"] is True
+        assert health["status"] == "running"
+
+        control_res = await client.control("restart")
+        assert control_res["status"] == "running"
+
+    @pytest.mark.asyncio
+    async def test_set_individual_weights(self, mock_gpt_sovits):
+        client = GptSovitsClient(server=mock_gpt_sovits)
+
+        ok_gpt = await client.set_gpt_weights("weights/custom.ckpt")
+        assert ok_gpt is True
+        assert mock_gpt_sovits.current_gpt_weights == "weights/custom.ckpt"
+
+        ok_sovits = await client.set_sovits_weights("weights/custom.pth")
+        assert ok_sovits is True
+        assert mock_gpt_sovits.current_sovits_weights == "weights/custom.pth"
+
+        ok_ref = await client.set_refer_audio("ref/custom.wav", "カスタムテキスト", "ja")
+        assert ok_ref is True
+        assert mock_gpt_sovits.current_refer_audio == "ref/custom.wav"
+
+    @pytest.mark.asyncio
+    async def test_rollback_on_step2_sovits_failure(self, mock_gpt_sovits):
+        client = GptSovitsClient(server=mock_gpt_sovits)
+        profile_a = {
+            "name": "ProfileA",
+            "gpt_weights_path": "weights/a.ckpt",
+            "sovits_weights_path": "weights/a.pth",
+            "refer_audio_path": "ref/a.wav",
+            "refer_text": "テキストA",
+        }
+        await client.switch_voice_profile(profile_a)
+        assert mock_gpt_sovits.current_gpt_weights == "weights/a.ckpt"
+
+        profile_b = {
+            "name": "ProfileB",
+            "gpt_weights_path": "weights/b.ckpt",
+            "sovits_weights_path": "weights/b.pth",
+            "refer_audio_path": "ref/b.wav",
+            "refer_text": "テキストB",
+        }
+        mock_gpt_sovits.fail_on_step("set_sovits_weights")
+        success = await client.switch_voice_profile(profile_b)
+        assert success is False
+        # Rollback check: GPT weights restored to profile A
+        assert mock_gpt_sovits.current_gpt_weights == "weights/a.ckpt"
+
+    @pytest.mark.asyncio
+    async def test_rollback_on_step3_refer_audio_failure(self, mock_gpt_sovits):
+        client = GptSovitsClient(server=mock_gpt_sovits)
+        profile_a = {
+            "name": "ProfileA",
+            "gpt_weights_path": "weights/a.ckpt",
+            "sovits_weights_path": "weights/a.pth",
+            "refer_audio_path": "ref/a.wav",
+            "refer_text": "テキストA",
+        }
+        await client.switch_voice_profile(profile_a)
+
+        profile_b = {
+            "name": "ProfileB",
+            "gpt_weights_path": "weights/b.ckpt",
+            "sovits_weights_path": "weights/b.pth",
+            "refer_audio_path": "ref/b.wav",
+            "refer_text": "テキストB",
+        }
+        mock_gpt_sovits.fail_on_step("set_refer_audio")
+        success = await client.switch_voice_profile(profile_b)
+        assert success is False
+        # Rollback check: Both GPT and SoVITS weights restored to profile A
+        assert mock_gpt_sovits.current_gpt_weights == "weights/a.ckpt"
+        assert mock_gpt_sovits.current_sovits_weights == "weights/a.pth"
+
+    @pytest.mark.asyncio
+    async def test_synthesize_and_streaming(self, mock_gpt_sovits, sample_voice_profile):
+        client = GptSovitsClient(server=mock_gpt_sovits)
+        await client.switch_voice_profile(sample_voice_profile)
+
+        # Full synthesize
+        audio_bytes = await client.synthesize("（笑顔で）こんにちは、先生！")
+        assert audio_bytes.startswith(b"RIFF")
+        assert len(audio_bytes) > 44
+
+        # Stream TTS
+        chunks = []
+        async for chunk in client.stream_tts("（優しく）今日もお疲れ様でした。", chunk_size=512):
+            chunks.append(chunk)
+
+        combined = b"".join(chunks)
+        assert combined.startswith(b"RIFF")
+        assert len(chunks) > 1
+
+    @pytest.mark.asyncio
+    async def test_inference_mutex_serialization(self, mock_gpt_sovits):
+        client = GptSovitsClient(server=mock_gpt_sovits)
+        mock_gpt_sovits.simulate_latency_s = 0.05
+
+        p1 = {"name": "P1", "gpt_weights_path": "w1.ckpt", "sovits_weights_path": "w1.pth", "refer_audio_path": "r1.wav", "refer_text": "t1"}
+        p2 = {"name": "P2", "gpt_weights_path": "w2.ckpt", "sovits_weights_path": "w2.pth", "refer_audio_path": "r2.wav", "refer_text": "t2"}
+
+        res1, res2 = await asyncio.gather(
+            client.switch_voice_profile(p1),
+            client.switch_voice_profile(p2),
+        )
+        assert res1 is True
+        assert res2 is True
+        assert mock_gpt_sovits.max_concurrent_seen == 1
+
