@@ -8,7 +8,7 @@ import { getConsoleToken, promptConsoleToken } from '../auth.js';
 import { packTarBlob } from '../tar_pack.js';
 
 export const FIRST_USE_VOICE_HINT =
-  '首次使用：点「导入角色包」选择角色包（文件夹或 .zip），也可以直接拖进来；没有角色包时，可以用模型权重和参考音频新建音色。';
+  '首次使用：点「导入角色包」选 .zip 压缩包，或点「选择文件夹」选已解压的角色包，也可以直接拖进来；没有角色包时，可以用模型权重和参考音频新建音色。';
 
 let _dom = {};
 let _callbacks = {};

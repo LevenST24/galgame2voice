@@ -161,6 +161,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     const session = main();
     const firstUse = status.modelLoaded && !status.model?.readFailed && !chatOK();
     const signature = JSON.stringify([mode, session, status.modelLoaded, firstUse, status.engine?.state, textOnly,
+      firstUse && (actions.listCharacters?.() || []).length > 0,
       canReplayLine(session?.excerpt?.line, session?.excerpt, actions.voiceEnabled?.() ?? true, now().getTime())]);
     if (!force && rendered === signature) return;
     rendered = signature;
@@ -225,8 +226,10 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     }
     add(pane, heading, el('h1', 'home-first-title', '先做三件小事，就能开始聊天'));
     const done = [chatOK(), status.engine?.state === 'ready' || textOnly, Boolean(main()?.settings?.voiceProfileId)];
+    const installed = (actions.listCharacters?.() || []).length > 0;
     const labels = ['连接对话模型', '连接语音引擎', '选一个角色'];
-    const descriptions = ['让她能用文字回答你', '让她用自己的声音念出日语台词', '从已安装的角色里挑一位'];
+    const descriptions = ['让她能用文字回答你', '让她用自己的声音念出日语台词',
+      installed ? '从已安装的角色里挑一位' : '还没有角色，先导入一个角色包或新建音色'];
     labels.forEach((label, i) => {
       const row = el('div', `home-step${done[i] ? ' is-done' : ''}`);
       const copy = el('div', 'home-step-copy');
@@ -237,7 +240,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
           textOnly = true;
           renderPane(true);
         }));
-      row.appendChild(btn(`home-step-button${done[i] ? '' : ' home-step-pending'}`, i === 2 ? '选择' : '去设置', () => {
+      row.appendChild(btn(`home-step-button${done[i] ? '' : ' home-step-pending'}`, i === 2 ? (installed ? '选择' : '去导入') : '去设置', () => {
         stopListen();
         if (i === 2) actions.openCharacters?.(); else actions.openSettings?.(i === 0 ? 'models' : 'inference');
       }));

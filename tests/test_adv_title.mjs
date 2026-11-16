@@ -337,6 +337,18 @@ test('first use checks model/voice/character, text-only lasts only this opening,
   assert.equal(h.q('.home-first-title'), null); assert.ok(h.q('.home-continue')); assert.match(textTree(h.q('.home-notice')), /先用文字/);
   assert.equal(textTree(h.q('.home-continue')), '接着聊 →');
 });
+test('first use sends a user with no characters to import one, and offers a choice once one is installed', async t => {
+  const status = { modelLoaded: true, hasModel: false, model: { state: 'error', label: '未配置对话模型' }, engine: { state: 'unavailable' } };
+  const session = snapshot('a'); session.settings.voiceProfileId = null;
+  const characters = [];
+  const h = await fixture(t, { status, sessions: [session], actions: { listCharacters: () => characters } });
+  const row = () => textTree(h.ui.element.querySelectorAll('.home-step')[2]);
+  const button = () => textTree(h.ui.element.querySelectorAll('.home-step-button')[2]);
+  assert.match(row(), /还没有角色/); assert.equal(button(), '去导入');
+  characters.push({ id: 7, name: '角色甲' }); h.notify(); await microtasks();
+  assert.match(row(), /从已安装的角色里挑一位/); assert.equal(button(), '选择');
+});
+
 test('status colors/text, explanations, settings tabs, polling and disposal with fake clock', async t => {
   const h = await fixture(t);
   assert.deepEqual(h.ui.element.querySelectorAll('.home-dot').map(n => n.className), ['home-dot ok','home-dot ok']);
