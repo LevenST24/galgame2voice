@@ -4,6 +4,7 @@ import sys
 import pytest
 
 from galgame2voice.utils import hardware
+from galgame2voice.utils.hardware import detect_gpu_capability
 
 
 @pytest.mark.parametrize("probe,platform", [("smi", "win32"), ("windows", "win32"), ("linux", "linux")])
@@ -42,3 +43,41 @@ def test_torch_remains_a_fallback_when_native_inventory_is_unavailable(monkeypat
     monkeypatch.setattr(hardware, "_detect_torch_gpus", fallback)
     assert hardware.detect_gpu_capability() == expected
     assert calls == [True]
+
+
+def test_detect_gpu_capability_structure():
+    gpu_avail, gpu_name, count = detect_gpu_capability()
+    assert isinstance(gpu_avail, bool)
+    assert isinstance(gpu_name, str)
+    assert count is None or isinstance(count, int)
+
+
+def test_detect_gpu_capability_with_mocked_torch(monkeypatch):
+    mock_torch = type("Torch", (), {
+        "cuda": type("Cuda", (), {
+            "is_available": lambda: True,
+            "device_count": lambda: 2,
+            "get_device_name": lambda idx: "NVIDIA RTX 4080",
+        })
+    })
+    monkeypatch.setitem(sys.modules, "torch", mock_torch)
+    avail, name, count = detect_gpu_capability()
+    assert avail is True
+    assert name == "NVIDIA RTX 4080"
+    assert count == 2
+
+
+def test_detect_gpu_capability_with_mocked_nvidia_smi(monkeypatch):
+    mock_torch_no_cuda = type("Torch", (), {
+        "cuda": type("Cuda", (), {
+            "is_available": lambda: False,
+        })
+    })
+    monkeypatch.setitem(sys.modules, "torch", mock_torch_no_cuda)
+
+    import galgame2voice.utils.hardware as hw
+    monkeypatch.setattr(hw, "_exec_command_output", lambda *args, **kwargs: "GeForce GTX 1080\n")
+    avail, name, count = hw.detect_gpu_capability()
+    assert avail is True
+    assert name == "GeForce GTX 1080"
+    assert count == 1

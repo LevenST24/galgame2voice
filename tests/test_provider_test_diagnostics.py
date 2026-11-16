@@ -5,11 +5,14 @@ Route-level tests for structured diagnostics returned by POST /api/providers/tes
 import json
 from pathlib import Path
 import re
+from unittest.mock import patch
 
 import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from galgame2voice.adapters.llm.openai_adapter import OpenAICompatibleLLMAdapter
+from galgame2voice.adapters.llm.xai_adapter import XAILLMAdapter
 from galgame2voice.database.session import init_db
 from galgame2voice.main import create_app
 from galgame2voice.utils.error_diagnostics import (
@@ -520,3 +523,76 @@ async def test_provider_diagnostics_v1_contract_samples(app_client, monkeypatch)
     assert cfg_err["error_code"] == "provider_not_found"
     assert cfg_err["retryable"] is False
     assert _CJK_RE.search(cfg_err["summary_zh"]) and _CJK_RE.search(cfg_err["action_zh"])
+
+
+class TestOpenAICompatibleTestConnection:
+    """Verifies HTTP 400 auth error interception without falling through to chat completions."""
+
+    @pytest.mark.asyncio
+    async def test_test_connection_http_400_xai_auth_error_no_fallthrough(self):
+        """
+        xAI returns HTTP 400 with 'Incorrect API key provided'.
+        Must classify as auth failure and NOT fall through to /chat/completions.
+        """
+        adapter = XAILLMAdapter(api_key="xai-invalid-key")
+        mock_resp = httpx.Response(
+            status_code=400,
+            text='{"code":"invalid-argument","error":"Incorrect API key provided. You can obtain an API key from https://console.x.ai."}',
+            request=httpx.Request("GET", "https://api.x.ai/v1/models"),
+        )
+
+        chat_completions_called = False
+
+        async def mock_get(client, url, *args, **kwargs):
+            return mock_resp
+
+        async def mock_post(client, url, *args, **kwargs):
+            nonlocal chat_completions_called
+            if "chat/completions" in str(url):
+                chat_completions_called = True
+            return httpx.Response(status_code=200, json={}, request=httpx.Request("POST", str(url)))
+
+        with patch.object(httpx.AsyncClient, "get", mock_get), \
+             patch.object(httpx.AsyncClient, "post", mock_post):
+            result = await adapter.test_connection()
+            assert result.success is False
+            assert "Authentication failed (400)" in result.message
+            assert result.diagnostic is not None
+            assert "xai" in result.diagnostic.lower() or "console.x.ai" in result.diagnostic.lower()
+            assert chat_completions_called is False
+
+    @pytest.mark.asyncio
+    async def test_test_connection_http_400_gemini_auth_error_no_fallthrough(self):
+        """
+        Gemini returns HTTP 400 with 'Please pass a valid API key'.
+        Must classify as auth failure without falling through to chat completions.
+        """
+        adapter = OpenAICompatibleLLMAdapter(
+            api_key="bad-gemini-key",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            provider_id="gemini",
+        )
+        mock_resp = httpx.Response(
+            status_code=400,
+            text='{"error":{"code":400,"message":"Please pass a valid API key","status":"INVALID_ARGUMENT"}}',
+            request=httpx.Request("GET", "https://generativelanguage.googleapis.com/v1beta/openai/models"),
+        )
+
+        chat_called = False
+
+        async def mock_get(client, url, *args, **kwargs):
+            return mock_resp
+
+        async def mock_post(client, url, *args, **kwargs):
+            nonlocal chat_called
+            chat_called = True
+            return httpx.Response(status_code=200, json={}, request=httpx.Request("POST", str(url)))
+
+        with patch.object(httpx.AsyncClient, "get", mock_get), \
+             patch.object(httpx.AsyncClient, "post", mock_post):
+            result = await adapter.test_connection()
+            assert result.success is False
+            assert "Authentication failed (400)" in result.message
+            assert result.diagnostic is not None
+            assert "aistudio.google.com" in result.diagnostic
+            assert chat_called is False
