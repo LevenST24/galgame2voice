@@ -448,3 +448,28 @@ class TestChatRouterDynamicVoiceAPI:
             assert '"lines":' in sys_msg
             assert '"chinese"' not in sys_msg
             assert "要求：\n1. 角色口吻回复。" in sys_msg
+
+
+def test_lines_tts_defaults_clamps_and_user_overrides():
+    lines = [
+        {"index": 900, "zh": '你好，"小猫"。\\路径\n下一句😀', "ja": 'こんにちは、猫です。次です。😀',
+         "emotion": "shy", "act": {"face": "smile", "motion": "nod", "blush": False}},
+        {"zh": "再见。", "ja": "さようなら。", "emotion": "cool", "act": {"fx": None}},
+    ]
+    ja = "".join(line["ja"] for line in lines)
+    payload = json.dumps({"tts": {"speed": 1.05, "temp": 0.95, "emotion": "gentle"}, "lines": lines}, ensure_ascii=False)
+    parser = StreamingBilingualParser()
+    parser.feed_chunk(payload)
+    parser.finalize()
+    options = parser.get_dynamic_tts_options({"speed_factor": 1.2, "temp": 0.8}, sentence_text=ja)
+    assert options["speed_factor"] == 1.2
+    assert options["temp"] == 0.8
+    options = parser.get_dynamic_tts_options(sentence_text=ja)
+    assert options["speed"] == 1.05
+    assert options["temperature"] == 0.95
+    raw = json.dumps({"tts": {"speed": 999, "temp": -999}, "lines": lines})
+    parser = StreamingBilingualParser()
+    parser.feed_chunk(raw)
+    parser.finalize()
+    assert parser.tts_speed < 999 and parser.tts_temperature > -999
+

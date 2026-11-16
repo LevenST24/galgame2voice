@@ -282,3 +282,131 @@ async def test_non_lines_early_exit_emits_null_lines_matching_database(
         saved = (await crud.get_recent_messages(conn, "sess_early"))[-1]
         assert saved.role == "assistant"
         assert saved.lines is None
+
+
+_LEGACY_LINES = [
+    {"index": 900, "zh": '你好，"小猫"。\\路径\n下一句😀', "ja": 'こんにちは、猫です。次です。😀',
+     "emotion": "shy", "act": {"face": "smile", "motion": "nod", "blush": False}},
+    {"zh": "再见。", "ja": "さようなら。", "emotion": "cool", "act": {"fx": None}},
+]
+
+
+@pytest.mark.asyncio
+async def test_historical_legacy_message_displays_replays_and_regenerates_audio(tmp_path, monkeypatch):
+    from galgame2voice.services.chat_service import ChatService
+
+    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
+    get_settings.cache_clear()
+    db_file = tmp_path / "legacy-history.db"
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    ref_wav = tmp_path / "ref.wav"
+    ref_wav.write_bytes(_make_pcm_wav(100))
+    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db_file))
+    await init_db(db_file)
+
+    async with get_db(db_file) as conn:
+        profile = await crud.create_voice_profile(conn, VoiceProfileCreate(
+            name="历史角色",
+            gpt_weights_path="models/m.ckpt",
+            sovits_weights_path="models/m.pth",
+            ref_audio_path=str(ref_wav),
+            prompt_text="テスト",
+            prompt_lang="ja",
+            text_lang="ja",
+            is_default=True,
+        ))
+        await crud.set_active_voice_profile(conn, profile.id)
+        await crud.add_message(conn, MessageCreate(
+            session_id="s_legacy_hist",
+            role="user",
+            content_chinese="以前的问候",
+        ))
+        legacy_msg = await crud.add_message(conn, MessageCreate(
+            session_id="s_legacy_hist",
+            role="assistant",
+            content_chinese="旧版第一句。旧版第二句。",
+            content_japanese="旧版の一文目。旧版の二文目。",
+            audio_url="/audio/legacy-whole.wav",
+            lines=None,
+        ))
+
+    captured_messages: list[list] = []
+
+    async def stream_tokens(messages, *args, **kwargs):
+        captured_messages.append(list(messages))
+        yield json.dumps(
+            {"tts": {"speed": 1.05, "temp": 0.95, "emotion": "gentle"}, "lines": _LEGACY_LINES},
+            ensure_ascii=False,
+        )
+
+    engine = SimpleNamespace(
+        current_refer_audio=None,
+        current_gpt_weights=None,
+        current_sovits_weights=None,
+        synthesize=AsyncMock(return_value=_make_pcm_wav(180)),
+    )
+    scheduler = TtsScheduler()
+    monkeypatch.setattr("galgame2voice.services.tts_service.get_tts_scheduler", lambda: scheduler)
+    cache = TtsCacheManager(cache_dir=audio_dir / "cache", db_path=str(db_file))
+    tts_service = TtsService(client=engine, audio_dir=audio_dir, cache_manager=cache, db_path=str(db_file))
+    service = ChatService(db_path=db_file, tts_service=tts_service)
+    service._get_active_llm_adapter = AsyncMock(
+        return_value=(SimpleNamespace(stream_chat=stream_tokens, api_key="sk-test"), "mock-model", "deepseek")
+    )
+    service._extract_memory_safe = AsyncMock()
+
+    app = FastAPI()
+    app.include_router(chat_router.router)
+    app.include_router(voice_router)
+    chat_router.set_chat_service(service)
+    app.dependency_overrides[get_voice_manager] = lambda: SimpleNamespace(tts_service=tts_service)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            # 1. History API returns the legacy message with lines=None and original whole-text + audio_url
+            hist_resp = await client.get("/api/chat/history", params={"session_id": "s_legacy_hist"})
+            assert hist_resp.status_code == 200, hist_resp.text
+            hist_msgs = hist_resp.json()["messages"]
+            legacy_out = next(m for m in hist_msgs if m["id"] == legacy_msg.id)
+            assert legacy_out["lines"] is None
+            assert legacy_out["content_chinese"] == "旧版第一句。旧版第二句。"
+            assert legacy_out["content_japanese"] == "旧版の一文目。旧版の二文目。"
+            assert legacy_out["audio_url"] == "/audio/legacy-whole.wav"
+
+            # 2. Default /api/chat/stream (no reply_format) replays legacy turn in lines format without rewriting DB row
+            stream_resp = await client.post("/api/chat/stream", json={
+                "prompt": "继续聊天",
+                "session_id": "s_legacy_hist",
+            })
+            assert stream_resp.status_code == 200, stream_resp.text
+            assistant_ctx = [m for m in captured_messages[0] if m.role == "assistant"]
+            assert len(assistant_ctx) == 1
+            replayed = json.loads(assistant_ctx[0].content)
+            assert [item["zh"] for item in replayed["lines"]] == ["旧版第一句。", "旧版第二句。"]
+            assert [item["ja"] for item in replayed["lines"]] == ["旧版の一文目。", "旧版の二文目。"]
+
+            async with get_db(db_file) as conn:
+                row_still_null = await (
+                    await conn.execute("SELECT lines_json FROM messages WHERE id=?", (legacy_msg.id,))
+                ).fetchone()
+                assert row_still_null["lines_json"] is None
+
+            # 3. Line audio regeneration on line 0 of the historical legacy message still works
+            regen_resp = await client.post("/api/voice/regenerate-line", json={
+                "session_id": "s_legacy_hist",
+                "message_id": legacy_msg.id,
+                "line_index": 0,
+                "text": "旧版の一文目。旧版の二文目。",
+                "voice_profile_id": profile.id,
+            })
+            assert regen_resp.status_code == 200, regen_resp.text
+            regen_data = regen_resp.json()
+            assert regen_data["persisted"] is True
+            assert regen_data["audio"]["status"] == "ready"
+            assert regen_data["audio"]["chunks"][0]["audio_url"].startswith("/audio/repair_")
+    finally:
+        chat_router.set_chat_service(None)
+        await service.aclose()
+        await scheduler.aclose()
+        await cache.aclose()
+        get_settings.cache_clear()

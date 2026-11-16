@@ -2,6 +2,8 @@
 Tests for FastAPI Core Application Routes, Health Telemetry, Static Fallback, and Chat History.
 """
 
+import re
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -85,3 +87,18 @@ class TestCoreMainAndHealthEndpoints:
             del_resp = await client.delete("/api/chat/history?session_id=test_hist_sess")
             assert del_resp.status_code == 200
             assert del_resp.json()["status"] == "cleared"
+
+    @pytest.mark.asyncio
+    async def test_static_ui_files_served(self):
+        app = create_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            r_root = await c.get("/")
+            assert r_root.status_code == 200
+            assert "Gal2Voice" in r_root.text
+
+            asset_names = re.findall(r'/static/assets/(index-[\w-]+\.(?:js|css))', r_root.text)
+            assert asset_names, "index.html must reference built /static/assets files"
+            for name in asset_names:
+                r_asset = await c.get(f"/static/assets/{name}")
+                assert r_asset.status_code == 200

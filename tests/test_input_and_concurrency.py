@@ -3,19 +3,27 @@ Tests for input validation, rate limiting integration, and DB concurrency fixes.
 """
 
 import asyncio
+from typing import AsyncIterator, List
 
 import httpx
+from httpx import ASGITransport, AsyncClient
 import pytest
 
+from galgame2voice.adapters.base import BaseLLMAdapter, ChatMessage, LLMResponse, TestResult
 from galgame2voice.main import create_app
 from galgame2voice.database.session import get_db
 from galgame2voice.database import crud
 from galgame2voice.database.models import (
     UserMemoryCreate, CharacterAffectionUpdate,
 )
+from galgame2voice.routers.chat import set_chat_service
+from galgame2voice.services.chat_service import ChatService
 from galgame2voice.services.gpt_sovits_client import (
-    validate_user_tts_options, resolve_tts_options,
+    GptSovitsClient,
+    validate_user_tts_options,
+    resolve_tts_options,
 )
+from galgame2voice.services.tts_service import TtsService
 
 
 @pytest.fixture
@@ -68,6 +76,61 @@ class TestInputValidation:
         assert resolved["speed_factor"] == 3.0
         assert resolved["top_k"] == 1
         assert resolved["temperature"] == 2.0
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_empty_prompt_validation(self):
+        app = create_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as c:
+            resp = await c.post("/api/chat/stream", json={"prompt": "  "})
+            assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_special_characters_and_html_injection_in_prompt(self, temp_db_path, mock_gpt_sovits, tmp_path):
+        class _SpecialCharsStreamingLLMAdapter(BaseLLMAdapter):
+            def __init__(self, chunks: List[str]):
+                super().__init__(api_key="sk-test", base_url="http://mock-llm")
+                self.chunks = chunks
+
+            async def chat(self, messages: List[ChatMessage], model: str, **kwargs) -> LLMResponse:
+                return LLMResponse(content="".join(self.chunks))
+
+            async def stream_chat(self, messages: List[ChatMessage], model: str, **kwargs) -> AsyncIterator[str]:
+                for c in self.chunks:
+                    await asyncio.sleep(0.001)
+                    yield c
+
+            async def test_connection(self, model=None) -> TestResult:
+                return TestResult(success=True, message="OK", latency_ms=1.0)
+
+            async def list_models(self) -> List[str]:
+                return ["adv-model"]
+
+        app = create_app()
+        client = GptSovitsClient(server=mock_gpt_sovits)
+        tts_service = TtsService(client=client, audio_dir=tmp_path)
+        chat_service = ChatService(tts_service=tts_service, db_path=temp_db_path)
+
+        adapter = _SpecialCharsStreamingLLMAdapter([
+            '{"chinese": "<script>alert(\'xss\')</script> & 特殊字符", "japanese": "<script>alert(\'xss\')</script> & 日本語"}'
+        ])
+
+        async def _mock_adapter(*args, **kwargs):
+            return (adapter, "adv-model")
+
+        chat_service._get_active_llm_adapter = _mock_adapter
+        set_chat_service(chat_service)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as c:
+            resp = await c.post("/api/chat/stream", json={
+                "prompt": "<script>alert('xss')</script> & 特殊字符 < > & \" '",
+                "session_id": "xss-test"
+            })
+            assert resp.status_code == 200
+            body = resp.text
+            assert "event: text" in body
+            assert "event: done" in body
 
 
 class TestMemoryUpsertConcurrency:

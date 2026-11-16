@@ -125,3 +125,35 @@ def test_streamed_reply_never_shows_or_saves_raw_json(raw, expected, chunk_size)
     shown, chinese, japanese, _ = _stream(raw, chunk_size)
     assert (chinese, japanese) == expected
     assert shown == chinese
+
+
+LINES = [
+    {"index": 900, "zh": '你好，"小猫"。\\路径\n下一句😀', "ja": 'こんにちは、猫です。次です。😀',
+     "emotion": "shy", "act": {"face": "smile", "motion": "nod", "blush": False}},
+    {"zh": "再见。", "ja": "さようなら。", "emotion": "cool", "act": {"fx": None}},
+]
+ZH = "".join(line["zh"] for line in LINES)
+JA = "".join(line["ja"] for line in LINES)
+
+
+def reply(lines=LINES, *, ascii=False):
+    return json.dumps({"tts": {"speed": 1.05, "temp": 0.95, "emotion": "gentle"}, "lines": lines}, ensure_ascii=ascii)
+
+
+@pytest.mark.parametrize("ascii", [False, True])
+@pytest.mark.parametrize(("prefix", "suffix"), [
+    ("", ""), ("```json\n", "\n```"), ("好的～\n", ""), ("说明\n```json\n", "\n```\n尾声不属于回复"),
+])
+def test_side_channel_at_every_split(ascii, prefix, suffix):
+    raw = prefix + reply(ascii=ascii) + suffix
+    for split in range(len(raw) + 1):
+        pipe = TextSegmentationPipeline()
+        shown = ""
+        for token in (raw[:split], raw[split:]):
+            delta, sentences, _ = pipe.feed_token(token)
+            shown += delta
+            assert sentences == []
+        zh, ja, rest, sentences, _ = pipe.finalize()
+        assert (zh, ja, shown + rest, sentences) == (ZH, JA, ZH, [])
+        assert [line["index"] for line in pipe.parser.normalized_lines()] == [0, 1]
+        assert pipe.parser.normalized_lines()[0]["act"] == LINES[0]["act"]

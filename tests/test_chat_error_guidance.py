@@ -5,11 +5,14 @@ import tempfile
 from unittest.mock import AsyncMock
 
 import httpx
+from httpx import ASGITransport, AsyncClient
 import pytest
 
 from galgame2voice.adapters.base import BaseLLMAdapter, MissingApiKeyError, TestResult
 from galgame2voice.adapters.registry import get_llm_adapter
 from galgame2voice.database.session import init_db
+from galgame2voice.main import create_app
+from galgame2voice.routers.chat import set_chat_service
 from galgame2voice.services.chat_service import ChatService
 from galgame2voice.services.audio_identity import AudioIdentity, VoicePreparation
 from galgame2voice.services.gpt_sovits_client import GptSovitsClient
@@ -140,3 +143,47 @@ async def test_chat_service_upstream_llm_timeout_handling(tmp_path):
             os.remove(db_path)
         except OSError:
             pass
+
+
+@pytest.mark.asyncio
+async def test_sse_stream_error_handling_when_llm_fails(temp_db_path, mock_gpt_sovits, tmp_path):
+    """
+    When LLM provider raises an exception, the SSE stream should emit
+    an `event: error` rather than crashing the application.
+    """
+    app = create_app()
+    client = GptSovitsClient(server=mock_gpt_sovits)
+    tts_service = TtsService(client=client, audio_dir=tmp_path)
+    chat_service = ChatService(tts_service=tts_service, db_path=temp_db_path)
+
+    class FailingLLM(BaseLLMAdapter):
+        async def chat(self, *args, **kwargs):
+            raise RuntimeError("LLM 429 Rate Limit")
+
+        async def stream_chat(self, *args, **kwargs):
+            raise RuntimeError("LLM 429 Rate Limit")
+            yield ""
+
+        async def test_connection(self, *args, **kwargs):
+            return TestResult(success=False, message="Error")
+
+        async def list_models(self):
+            return []
+
+    async def _mock_adapter(*args, **kwargs):
+        return (FailingLLM(api_key="", base_url=""), "mock")
+
+    chat_service._get_active_llm_adapter = _mock_adapter
+    set_chat_service(chat_service)
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as c:
+            resp = await c.post(
+                "/api/chat/stream",
+                json={"session_id": "test_err_sess", "prompt": "fail test", "stream": True},
+            )
+            assert resp.status_code == 200
+            body = resp.text
+            assert "event: error" in body or "error" in body.lower()
+    finally:
+        set_chat_service(None)
