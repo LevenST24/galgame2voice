@@ -42,7 +42,10 @@
   position: relative;
   width: calc(1920 * var(--u));
   height: calc(1080 * var(--u));
+  /* clip, not hidden: a hidden box still scrolls when something inside it is scrolled into view, and a sprite
+     larger than the stage gives it room to scroll. hidden stays as the fallback for browsers without clip. */
   overflow: hidden;
+  overflow: clip;
   background-color: #050d1a;
   box-shadow: 0 0 calc(40 * var(--u)) rgba(0, 0, 0, 0.9);
 }

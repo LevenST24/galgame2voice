@@ -44,6 +44,11 @@ test('stage keeps 16:9 geometry in a portrait viewport', () => {
   view.destroy();
 });
 
+test('stage content cannot be scrolled out of place', () => {
+  const css = readFileSync(new URL('../frontend/src/adv/adv.css', import.meta.url), 'utf8');
+  assert.match(css.match(/\.adv-stage \{[^}]*\}/)[0], /overflow: hidden;\s+overflow: clip;/);
+});
+
 function appFixture(t, reduced = false, costumeA = {}) {
   const doc = documentFixture(), clock = fakeClock(), events = new Map();
   const motionMedia = media(reduced);
