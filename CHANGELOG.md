@@ -5,6 +5,8 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [3.2.3] - 2026-11-17
 ### Fixed
 - 修复用兑换码「下载并导入」角色包后，列表里的「还可下载 N 次」仍是下载前的次数、要重新查询才更新的问题；现在下载结束后列表会自动刷新，次数用完的角色包不再显示。
 - 修复浏览器里还留着以前的对话、但这次安装还没有对应角色时（例如换了新的安装文件夹），标题画面「第一次使用」清单第三步「选一个角色」仍打勾、旁边却写着「还没有角色」的问题；现在只有对话绑定的角色确实已安装时，这一步才算完成。
@@ -108,7 +110,8 @@ All notable changes to galgame2voice are documented here. The format follows
 - 修复聊天输入框超过 4000 字发送时清空草稿且报错失真，以及打开设置中心时未立即停止首页正在播放的试听语音的问题。
 - 修复在输入框使用中文/日文输入法组字时按 Esc 取消候选词会直接关闭弹窗，以及在背景选择对话框按 Tab 或 Shift+Tab 时焦点跳出对话框的问题。
 
-[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.2...HEAD
+[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.3...HEAD
+[3.2.3]: https://github.com/LevenST24/galgame2voice/compare/v3.2.2...v3.2.3
 [3.2.2]: https://github.com/LevenST24/galgame2voice/compare/v3.2.1...v3.2.2
 [3.2.1]: https://github.com/LevenST24/galgame2voice/compare/v3.2.0...v3.2.1
 [3.2.0]: https://github.com/LevenST24/galgame2voice/releases/tag/v3.2.0
