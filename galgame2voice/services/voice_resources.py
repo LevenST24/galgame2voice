@@ -70,7 +70,7 @@ class VoiceResourceGuard:
         threshold = self.minimum_memory_gb()
         if free_gb is not None and free_gb < threshold:
             raise InsufficientMemoryError(
-                f'系统空闲内存不足（{free_gb:.1f} GB < {threshold:.1f} GB），'
+                f'系统空闲内存不足（{free_gb:.2f} GB < {threshold:.2f} GB），'
                 '加载新模型权重可能导致语音引擎崩溃。请关闭占内存的程序后重试。'
             )
         self.check_vram()

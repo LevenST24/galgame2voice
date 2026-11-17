@@ -152,6 +152,38 @@ async def test_voice_switch_existing_profile_low_memory_503_and_force_override(
 
 
 @pytest.mark.asyncio
+async def test_voice_switch_low_memory_error_keeps_two_decimal_places(
+    temp_db_path, mock_gpt_sovits, sample_voice_profile, monkeypatch
+):
+    """
+    When free RAM is 0.87 GB and threshold is 0.90 GB (15.0 * 0.06), 1-decimal
+    formatting renders both sides as '0.9 GB < 0.9 GB'. Error detail must show
+    two decimal places so the inequality stays visibly true.
+    """
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("GALGAME2VOICE_SKIP_MEM_CHECK", raising=False)
+    monkeypatch.delenv("GALGAME2VOICE_MIN_FREE_MEM_GB", raising=False)
+    monkeypatch.setattr("galgame2voice.services.voice_manager.get_system_memory_status", lambda: (15.0, 0.87))
+
+    manager = VoiceManager(gpt_sovits_client_or_server=mock_gpt_sovits, db_path=temp_db_path)
+    set_voice_manager(manager)
+
+    transport = ASGITransport(app=create_app())
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+        created = await client.post("/api/voice/profiles", json=sample_voice_profile)
+        assert created.status_code == 201, created.text
+        profile_id = created.json()["id"]
+
+        rejected = await client.post("/api/voice/switch", json={"profile_id": profile_id})
+
+    assert rejected.status_code == 503, rejected.text
+    detail = rejected.json()["detail"]
+    assert "系统空闲内存不足" in detail
+    assert "0.87 GB < 0.90 GB" in detail
+    assert mock_gpt_sovits.call_history == []
+
+
+@pytest.mark.asyncio
 async def test_concurrent_voice_switch_serialization_and_toctou_prevention(temp_db_path, mock_gpt_sovits, monkeypatch):
     """
     Simulates concurrent voice switch requests where memory is sufficient for the first
