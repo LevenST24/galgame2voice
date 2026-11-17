@@ -5,6 +5,8 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [3.2.2] - 2026-11-16
 ### Fixed
 - 修复使用立绘尺寸超出舞台的角色时，舞台内的元素一旦被滚动到可见位置（如辅助工具或脚本对回复框调用「滚动到可见」），整个舞台画面连同立绘、背景和对话框会一起向左上偏移并停在那里的问题；现在舞台内容不能再被滚动。
 - 修复全新安装、还没有任何角色时，标题画面「第一次使用」清单第三步仍写「从已安装的角色里挑一位」、按钮写「选择」，以及「角色与会话」里的首次使用提示把选文件夹说成点「导入角色包」的问题；现在没有角色时第三步提示先导入角色包或新建音色（按钮为「去导入」），提示文字与「导入角色包」（.zip）和「选择文件夹」两个按钮一致。
@@ -103,7 +105,8 @@ All notable changes to galgame2voice are documented here. The format follows
 - 修复聊天输入框超过 4000 字发送时清空草稿且报错失真，以及打开设置中心时未立即停止首页正在播放的试听语音的问题。
 - 修复在输入框使用中文/日文输入法组字时按 Esc 取消候选词会直接关闭弹窗，以及在背景选择对话框按 Tab 或 Shift+Tab 时焦点跳出对话框的问题。
 
-[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.1...HEAD
+[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.2...HEAD
+[3.2.2]: https://github.com/LevenST24/galgame2voice/compare/v3.2.1...v3.2.2
 [3.2.1]: https://github.com/LevenST24/galgame2voice/compare/v3.2.0...v3.2.1
 [3.2.0]: https://github.com/LevenST24/galgame2voice/releases/tag/v3.2.0
 
