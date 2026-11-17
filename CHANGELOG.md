@@ -5,6 +5,8 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fixed
+- 修复用兑换码「下载并导入」角色包后，列表里的「还可下载 N 次」仍是下载前的次数、要重新查询才更新的问题；现在下载结束后列表会自动刷新，次数用完的角色包不再显示。
 
 ## [3.2.2] - 2026-11-16
 ### Fixed
