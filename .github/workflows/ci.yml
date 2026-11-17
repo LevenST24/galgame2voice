@@ -167,7 +167,21 @@ jobs:
 
       - name: Frontend dependency audit
         working-directory: frontend
-        run: npm audit --audit-level=high
+        # Fails on any high or critical advisory except the allowlisted ones. GHSA-fc5q-39xc-vjpf (picomatch ReDoS)
+        # affects every picomatch version and has no fixed release yet. It reaches only vite's build-time globbing
+        # with patterns from our own config; the frontend has no runtime dependencies, so no npm package code ships
+        # in the app. Remove the id once `npm audit fix` can update picomatch.
+        run: |
+          npm audit --json > "$RUNNER_TEMP/npm-audit.json" || true
+          node -e '
+            const report = require(process.argv[1]);
+            const allow = new Set(["GHSA-fc5q-39xc-vjpf"]);
+            const bad = Object.entries(report.vulnerabilities || {}).flatMap(([name, v]) =>
+              v.via.filter((x) => typeof x === "object" && ["high", "critical"].includes(x.severity)
+                && !allow.has(x.url.split("/").pop())).map((x) => `${name}: ${x.title} ${x.url}`));
+            if (bad.length) { console.error(bad.join("\n")); process.exit(1); }
+            console.log("npm audit: no high or critical advisory outside the allowlist");
+          ' "$RUNNER_TEMP/npm-audit.json"
 
   frontend-build:
     runs-on: windows-latest
