@@ -5,6 +5,8 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fixed
+- 修复一句台词太长、对话框一行放不下而分成几页时，语音一口气读完整句，字幕却停在第一页、要点击才翻到后面内容的问题；现在语音读到哪一页的内容，字幕就自动翻到哪一页（按已播出的语音比例对应文字长度估算），点击仍可提前翻页，最后一页照旧等点击或 AUTO 再进入下一句。
 
 ## [3.2.4] - 2026-11-17
 ### Added

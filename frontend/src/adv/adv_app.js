@@ -163,6 +163,7 @@ export function mountAdv(dom, deps) {
       return result;
     },
     stop(options) { ++voiceSequence; audio.stopLine(destroyed ? { fadeMs: 0 } : options); textbox.setVoice({ active: false }); sprite.stopLipSync(); },
+    progress: () => audio.lineProgress?.() ?? null,
   };
   // 去设置 on a failed reply, in the textbox and in LOG: the same choice as the error toasts.
   const openErrorSettings = error => (needsModelSettings(error?.message, error?.code)

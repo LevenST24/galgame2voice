@@ -103,6 +103,23 @@ export class StreamAudioController {
   }
 
   /**
+   * 当前单句已经播出的比例（0–1），按音频时钟计算，暂停时不前进。
+   * 还有切片在下载或解码、总长未定时返回 null。
+   * @returns {number|null}
+   */
+  lineProgress() {
+    const line = this._linePlayState;
+    if (!line || line.settled || line.queue.length || !line.timeline.length) return null;
+    const now = this.ctx.currentTime;
+    let total = 0, played = 0;
+    for (const { startTime, duration } of line.timeline) {
+      total += duration;
+      played += Math.min(duration, Math.max(0, now - startTime));
+    }
+    return total > 0 ? played / total : null;
+  }
+
+  /**
    * 返回当前时域振幅均方根 (RMS)，用于驱动口型同步 (Lip Sync)。
    * 采样缓冲区复用，口型轮询每秒最多 30 次，不必每次分配。
    * @returns {number}
@@ -221,6 +238,7 @@ export class StreamAudioController {
       },
       queue: [],
       activeSources: [],
+      timeline: [],
       errors: [],
       playedCount: 0,
       totalChunks: chunks.length,
@@ -331,6 +349,7 @@ export class StreamAudioController {
 
         const entry = { source, chunkGain, startTime, duration };
         lineState.activeSources.push(entry);
+        lineState.timeline.push(entry);
         lineState.playedCount++;
 
         source.onended = () => {
