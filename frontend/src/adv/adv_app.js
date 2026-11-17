@@ -734,6 +734,8 @@ export function mountAdv(dom, deps) {
     syncBackground();
     if (changedCharacter) {
       pendingOutfit = null;
+      // A character imported after the list loaded can bring its own work's backgrounds.
+      if (mounted && character?.work && !works.some(entry => entry?.id === character.work)) loadBackgrounds();
       if (!switched) {
         const presentingTurn = turnId !== null && player.state !== 'input' && player.state !== 'error';
         if (!changedBinding && (controller.busy || presentingTurn)) {

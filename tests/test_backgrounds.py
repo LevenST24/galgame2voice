@@ -248,6 +248,20 @@ async def test_list_merges_multiple_work_packs(client, library):
     assert (await client.get(url)).content == b"beach-day"
 
 
+async def test_character_package_brings_backgrounds_the_library_lacks(client, library, tmp_path, monkeypatch):
+    characters = tmp_path / "characters"
+    for folder, work, image in (("甲", "beach", b"bundled-beach"), ("乙", "cafe", b"bundled-cafe")):
+        pack = write_pack(characters / folder, "background", [entry(variants={"day": "day.webp"})], declared_work=work)
+        (pack / "day.webp").write_bytes(image)
+    monkeypatch.setenv("CHARACTERS_DIR_NAME", str(characters))
+    get_settings.cache_clear()
+    body = (await client.get("/api/backgrounds", headers=AUTH)).json()
+    assert [w["id"] for w in body["works"]] == ["beach", "cafe"]
+    urls = {bg["key"]: bg["variants"]["day"] for bg in body["backgrounds"]}
+    assert (await client.get(urls["beach/stella"])).content == b"bundled-beach"
+    assert (await client.get(urls["cafe/stella"])).content == b"image-day", "the library pack wins"
+
+
 @pytest.mark.parametrize("kind", ["missing", "tampered", "unicode", "expiry-tampered", "version-tampered", "expired", "bad-exp", "path-tampered"])
 async def test_media_rejects_invalid_signatures(client, kind):
     path = "/api/media/background/cafe/stella/day"
