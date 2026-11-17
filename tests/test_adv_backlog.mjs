@@ -686,6 +686,67 @@ test('LOG: R, F5 and wheel open it; Esc closes it; wheel-down at bottom closes i
   assert.equal(h.app.backlog, null, 'Wheel down at bottom closes LOG');
 });
 
+test('closing the dialogue log by its close button does not advance a queued line', t => {
+  const h = setupApp(t, { voice: false, settings: { advTextIntervalMs: 0 } });
+  h.start('turn_close');
+  h.line(0, { zh: '电车已经开走了。', ja: '電車、行っちゃったね。' });
+  h.line(1, { zh: '……', ja: '……' });
+  const stage = h.app.stage.stage;
+  const shown = '「电车已经开走了。」';
+  const subShown = '「電車、行っちゃったね。」';
+  const primary = () => stage.querySelector('.adv-primary-text').textContent;
+  const subtitle = () => stage.querySelector('.adv-subtitle-text').textContent;
+  assert.equal(h.app.player.currentIndex, 0);
+  assert.equal(h.app.player.state, 'waiting_advance');
+  assert.equal(primary(), shown);
+  assert.equal(subtitle(), subShown);
+
+  let stageClicks = 0;
+  stage.addEventListener('click', () => { stageClicks += 1; });
+
+  stage.dispatchEvent({ type: 'wheel', deltaY: -100 });
+  assert.ok(h.app.backlog, 'wheel up opens the log');
+  assert.equal(h.app.player.state, 'suspended');
+  assert.equal(primary(), shown);
+  assert.equal(stageClicks, 0);
+
+  h.app.backlog.closeButton.click();
+  assert.equal(h.app.backlog, null, 'close button closes the log');
+  assert.equal(primary(), shown, 'closing the log stays on the current line');
+  assert.equal(subtitle(), subShown);
+  assert.equal(h.app.player.currentIndex, 0);
+  assert.equal(h.app.player.state, 'waiting_advance');
+  assert.equal(stageClicks, 0, 'the close click does not reach the stage');
+
+  stage.querySelector('.adv-qm-btn-log').click();
+  assert.ok(h.app.backlog, 'LOG button opens the log');
+  assert.equal(h.app.player.currentIndex, 0);
+  assert.equal(primary(), shown);
+  h.app.backlog.element.dispatchEvent({ type: 'keydown', key: 'Escape' });
+
+  stage.focus();
+  stage.dispatchEvent({ type: 'keydown', key: 'F5' });
+  assert.ok(h.app.backlog, 'F5 opens the log');
+  assert.equal(primary(), shown);
+  h.app.backlog.element.dispatchEvent({ type: 'keydown', key: 'Escape' });
+  assert.equal(h.app.backlog, null);
+  assert.equal(h.app.player.currentIndex, 0);
+
+  stage.dispatchEvent({ type: 'keydown', key: 'r' });
+  assert.ok(h.app.backlog, 'R opens the log');
+  assert.equal(primary(), shown);
+  const list = h.app.backlog.listElement;
+  list.scrollHeight = 200;
+  list.clientHeight = 100;
+  list.scrollTop = 100;
+  list.dispatchEvent({ type: 'wheel', deltaY: 50 });
+  assert.equal(h.app.backlog, null, 'wheel down at the bottom still closes the log');
+  assert.equal(h.app.player.currentIndex, 0);
+  assert.equal(h.app.player.state, 'waiting_advance');
+  assert.equal(primary(), shown);
+  assert.equal(subtitle(), subShown);
+});
+
 test('LOG: letter shortcuts are ignored inside editors', () => {
   const inInputCtx = { inInput: true, stageFocused: true, overlayOpen: false };
   assert.equal(decide({ type: 'keydown', key: 'r' }, inInputCtx), null);

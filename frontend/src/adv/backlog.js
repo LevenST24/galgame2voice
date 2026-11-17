@@ -802,7 +802,12 @@ export function createBacklog(container, deps = {}) {
     deps.onClose?.();
   }
 
-  closeBtn.onclick = handleClose;
+  closeBtn.onclick = event => {
+    // The log is gone once this runs, but the click still bubbles to the stage,
+    // which would read it as an advance.
+    event.stopPropagation();
+    handleClose();
+  };
 
   // Esc and focus trap
   function handleKeydown(e) {
