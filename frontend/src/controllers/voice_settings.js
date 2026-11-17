@@ -823,24 +823,32 @@ function handleRedeemCodeKeydown(event) {
   return queryRedeemCode();
 }
 
+async function fetchRedeemPackages(code) {
+  const data = await requestJson('/api/characters/redeem/list', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  }, { timeoutMs: 45000 });
+  return Array.isArray(data?.packages) ? data.packages : [];
+}
+
+function showRedeemPackages(packages) {
+  renderRedeemList(packages);
+  if (_dom.sVoiceRedeemStatus) {
+    _dom.sVoiceRedeemStatus.textContent = packages.length ? '' : '这个兑换码下没有可下载的角色包。';
+  }
+}
+
 async function queryRedeemCode() {
   const input = _dom.sVoiceRedeemCode;
   const code = String(input?.value || '').trim();
   if (!code) return showToast('请先粘贴兑换码', 'error');
   if (isImporting) return;
   try {
-    const data = await requestJson('/api/characters/redeem/list', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code }),
-    }, { timeoutMs: 45000 });
+    const packages = await fetchRedeemPackages(code);
     redeemCode = code;
-    const packages = Array.isArray(data?.packages) ? data.packages : [];
-    renderRedeemList(packages);
+    showRedeemPackages(packages);
     if (input) input.value = '';
-    if (_dom.sVoiceRedeemStatus) {
-      _dom.sVoiceRedeemStatus.textContent = packages.length ? '' : '这个兑换码下没有可下载的角色包。';
-    }
   } catch (err) {
     redeemCode = '';
     renderRedeemList([]);
@@ -861,6 +869,7 @@ async function pollRedeemStatus() {
 
 async function downloadRedeemPackage(pkg) {
   if (isImporting || !redeemCode || !pkg.id) return;
+  const code = redeemCode;
   setImportBusy(true);
   if (_dom.sVoiceRedeemStatus) {
     _dom.sVoiceRedeemStatus.textContent = formatRedeemProgress({
@@ -874,7 +883,7 @@ async function downloadRedeemPackage(pkg) {
   const post = (overwrite) => requestJson('/api/characters/redeem/download', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code: redeemCode, package_id: pkg.id, overwrite }),
+    body: JSON.stringify({ code, package_id: pkg.id, overwrite }),
   }, { timeoutMs: 0 });
   try {
     let data;
@@ -888,12 +897,20 @@ async function downloadRedeemPackage(pkg) {
     }
     await finishCharacterImport(data, pkg.name);
   } catch (err) {
-    if (err?.status === 409 && err?.data?.code === 'package_exists') return;
-    showToast(err?.message || '下载并导入失败，请重试。', 'error');
+    if (err?.status !== 409 || err?.data?.code !== 'package_exists') {
+      showToast(err?.message || '下载并导入失败，请重试。', 'error');
+    }
   } finally {
     clearInterval(timer);
     setImportBusy(false);
     if (_dom.sVoiceRedeemStatus) _dom.sVoiceRedeemStatus.textContent = '';
+  }
+  // The server counts the download even when the import fails or the overwrite is declined, so ask it again.
+  try {
+    const packages = await fetchRedeemPackages(code);
+    if (redeemCode === code) showRedeemPackages(packages);
+  } catch {
+    // Keep the shown list; querying the code again shows the current numbers.
   }
 }
 

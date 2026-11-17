@@ -74,7 +74,9 @@ globalThis.window = {
 const ok = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => data });
 globalThis.fetch = async (url, opts = {}) => {
   const u = String(url);
-  if (u.includes('/redeem/list')) return ok({ packages: [{ id: 'alice', name: '爱丽丝', size: 2048, remaining: 2 }] });
+  if (u.includes('/redeem/list')) {
+    return ok({ packages: [{ id: 'alice', name: '爱丽丝', size: 2048, remaining: downloads ? 1 : 2 }] });
+  }
   if (u.includes('/redeem/progress')) return ok({ phase: 'download', done, total, name: '爱丽丝' });
   if (u.includes('/redeem/download')) {
     bodies.push(JSON.parse(opts.body));
@@ -107,6 +109,7 @@ assert.equal(bodies[1].overwrite, true);
 assert.equal(bodies[0].code, code);
 assert.equal(dom.sVoice.value, '8');
 assert.equal(dom.sSystem.value, '你是爱丽丝');
+assert.equal(dom.sVoiceRedeemList.children[0].children[0].textContent, '爱丽丝 · 2.0 KB · 还可下载 1 次');
 
 globalThis.fetch = async (url) => (String(url).includes('/redeem/list') ? ok({ packages: [] }) : ok({}));
 dom.sVoiceRedeemCode.value = 'G2V1.empty-list-code';
