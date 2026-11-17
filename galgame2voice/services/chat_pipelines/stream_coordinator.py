@@ -36,6 +36,7 @@ from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.profiler import ChatTurnProfiler
 
 from .acting_menu import get_recent_pose, sanitize_act
+from .line_builder import make_line
 from .llm_pipeline import LlmStreamPipeline
 from .stream_persist_policy import (
     build_assistant_message_create,
@@ -348,7 +349,8 @@ class StreamCoordinator:
 
                     if not tts_pipe.is_vocal_sentence(sentence):
                         logger.debug("Skipping non-vocal sentence chunk: '%s'", sentence)
-                        self._settle_chunk(run, chunk_index)
+                        async with run.line_audio_lock:
+                            self._settle_chunk(run, chunk_index)
                         await self._try_emit_line_audio(run)
                         chunk_index += 1
                         continue
@@ -390,7 +392,7 @@ class StreamCoordinator:
                                 "index": chunk_index,
                                 "sentence": sentence,
                                 "error": err_str,
-                                **({"line": L} if line_item is not None else {}),
+                                **({"line": L} if L is not None else {}),
                             },
                         }, cancel_event, run.shutdown_event)
                     elif chunk_data:
@@ -420,10 +422,13 @@ class StreamCoordinator:
                         }, cancel_event, run.shutdown_event)
                     # Keep the chunk pending through event-queue backpressure:
                     # a producer must not enqueue line_audio ahead of audio_chunk.
-                    self._settle_chunk(
-                        run, chunk_index, chunk=chunk_data,
-                        error=err_str or ("TTS synthesis returned no audio" if not chunk_data else None),
-                    )
+                    # Share the line-audio lock with fallback binding so a chunk
+                    # cannot settle between "not yet settled" and its line assignment.
+                    async with run.line_audio_lock:
+                        self._settle_chunk(
+                            run, chunk_index, chunk=chunk_data,
+                            error=err_str or ("TTS synthesis returned no audio" if not chunk_data else None),
+                        )
                     await self._try_emit_line_audio(run)
                     chunk_index += 1
                 finally:
@@ -492,7 +497,7 @@ class StreamCoordinator:
                 state["status"] = status
             run.next_line_audio_index += 1
 
-    async def _publish_line(self, run: _StreamRun, line: dict[str, Any]) -> None:
+    async def _publish_line(self, run: _StreamRun, line: dict[str, Any]) -> bool:
         if "act" in line:
             line["act"] = sanitize_act(
                 line["act"],
@@ -504,9 +509,30 @@ class StreamCoordinator:
             if "pose" in line["act"]:
                 run.current_pose = line["act"]["pose"]
         run.lines.append(line)
-        await self._put_with_cancel(
+        return await self._put_with_cancel(
             run.event_queue, {"event": "line", "data": line}, run.cancel_event, run.shutdown_event,
         )
+
+    async def _publish_fallback_line(
+        self, run: _StreamRun, zh: str, ja: str, emotion: str | None,
+    ) -> bool:
+        """Publish one whole-reply line once its text is final, before TTS returns."""
+        if run.lines or (not zh.strip() and not ja.strip()):
+            return False
+        return await self._publish_line(run, make_line(0, zh, ja, emotion))
+
+    async def _bind_fallback_chunks(self, run: _StreamRun) -> None:
+        """Attach every whole-reply TTS chunk to presentation line 0."""
+        async with run.line_audio_lock:
+            state = self._line_audio_state(run, 0)
+            for idx in range(run.chunk_counter):
+                if run.chunk_line_map.get(idx) is not None:
+                    continue
+                run.chunk_line_map[idx] = 0
+                if run.chunk_results[idx]["settled"]:
+                    self._attach_chunk_result(run, idx, 0)
+                else:
+                    state["pending"] += 1
 
     async def _queue_lines(self, run: _StreamRun) -> None:
         """Publish completed lines before queueing one synthesis job per line."""
@@ -603,7 +629,13 @@ class StreamCoordinator:
                 if run.parser.line_scanner.format == "lines":
                     await self._queue_lines(run)
                 else:
+                    published = await self._publish_fallback_line(run, full_ch, full_ja, final_emo)
                     await self._queue_sentences(run, rem_sentences)
+                    if published and not (cancel_event and cancel_event.is_set()):
+                        await self._bind_fallback_chunks(run)
+                        async with run.line_audio_lock:
+                            self._line_audio_state(run, 0)["sealed"] = True
+                        await self._try_emit_line_audio(run)
         except Exception as exc:
             if getattr(exc, "is_truncation", False):
                 run.truncation_error = exc
@@ -1035,7 +1067,8 @@ class StreamCoordinator:
             async for event in self._pump_events(run):
                 if run.cancel_event and run.cancel_event.is_set():
                     break
-                if event.get("event") == "line":
+                # A non-lines fallback line is presentation-only. History keeps lines_json NULL.
+                if event.get("event") == "line" and run.parser.line_scanner.format == "lines":
                     run.announced_lines.append(event["data"])
                 yield event
 

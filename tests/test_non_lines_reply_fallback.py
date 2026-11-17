@@ -23,6 +23,7 @@ from galgame2voice.routers import chat as chat_router
 from galgame2voice.routers.voice import router as voice_router
 from galgame2voice.services.chat_pipelines.reply_contract import format_lines_turn
 from galgame2voice.services.chat_pipelines.stream_coordinator import StreamCoordinator
+from galgame2voice.services.chat_service import ChatService
 from galgame2voice.services.tts_cache_manager import TtsCacheManager
 from galgame2voice.services.tts_scheduler import TtsScheduler
 from galgame2voice.services.tts_service import TtsService
@@ -122,7 +123,14 @@ async def test_non_lines_completion_emits_null_lines_matching_database(
     )
 
     events = [event async for event in coordinator]
-    assert not any(e["event"] in {"line", "line_audio"} for e in events)
+    lines = [event["data"] for event in events if event["event"] == "line"]
+    assert len(lines) == 1
+    assert lines[0]["index"] == 0
+    assert lines[0]["zh"] == "早安。"
+    assert lines[0]["ja"] == "おはよう。"
+    assert lines[0]["act"] == {}
+    line_audio = [event["data"] for event in events if event["event"] == "line_audio"]
+    assert len(line_audio) == 1 and line_audio[0]["line"] == 0
     assert any(e["event"] == "audio_chunk" for e in events)
 
     done = events[-1]
@@ -282,6 +290,160 @@ async def test_non_lines_early_exit_emits_null_lines_matching_database(
         saved = (await crud.get_recent_messages(conn, "sess_early"))[-1]
         assert saved.role == "assistant"
         assert saved.lines is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case_id", "raw_reply", "chinese", "japanese"),
+    [
+        (
+            "legacy_json",
+            '{"tts": {"speed": 1.05, "temp": 0.95, "emotion": "happy"}, '
+            '"chinese": "早安。下次见。", "japanese": "おはよう。また今度。"}',
+            "早安。下次见。",
+            "おはよう。また今度。",
+        ),
+        (
+            "plain_text",
+            "中文：早安。下次见。\n日文：おはよう。また今度。",
+            "早安。下次见。",
+            "おはよう。また今度。",
+        ),
+        (
+            "truncated_json",
+            '{"tts": {"speed": 1.05, "temp": 0.95, "emotion": "happy"}, '
+            '"chinese": "早安。下次见。", "japanese": "おはよう。また今度。',
+            "早安。下次见。",
+            "おはよう。また今度。",
+        ),
+    ],
+)
+async def test_non_lines_reply_emits_line_before_hanging_tts_returns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case_id: str,
+    raw_reply: str,
+    chinese: str,
+    japanese: str,
+):
+    """The route asks for lines, but a non-lines reply must still publish its line before TTS returns."""
+    db_file = tmp_path / f"{case_id}.db"
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db_file))
+    monkeypatch.setenv("GALGAME2VOICE_CONSOLE_TOKEN", "test-console-token")
+    get_settings.cache_clear()
+    await init_db(db_file)
+
+    captured_messages: list = []
+    release = asyncio.Event()
+    entered = asyncio.Event()
+    returned: list[str] = []
+
+    async def stream_tokens(messages, *args, **kwargs):
+        captured_messages.append(list(messages))
+        yield raw_reply
+
+    async def synthesize(sentence, **kwargs):
+        entered.set()
+        if not release.is_set():
+            await release.wait()
+        returned.append(sentence)
+        path = audio_dir / f"{kwargs['filename_prefix']}.wav"
+        path.write_bytes(_make_pcm_wav(80))
+        return f"/audio/{path.name}", path, {}
+
+    service = ChatService(
+        db_path=db_file,
+        tts_service=SimpleNamespace(
+            audio_dir=audio_dir,
+            synthesize_to_file=synthesize,
+        ),
+    )
+    service._get_active_llm_adapter = AsyncMock(
+        return_value=(
+            SimpleNamespace(stream_chat=stream_tokens, api_key="sk-test", provider_type="custom"),
+            "mock-model",
+            "custom",
+        )
+    )
+    service._extract_memory_safe = AsyncMock()
+
+    events: list[dict] = []
+    line_seen = asyncio.Event()
+
+    async def drive() -> None:
+        async for event in service.stream_chat("你好", session_id=f"hang_{case_id}"):
+            if not isinstance(event, dict) or event.get("event") == ":keep-alive":
+                continue
+            events.append(event)
+            if event.get("event") == "line":
+                line_seen.set()
+
+    task = asyncio.create_task(drive())
+    try:
+        try:
+            await asyncio.wait_for(line_seen.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            release.set()
+            await asyncio.wait_for(task, timeout=20)
+            kinds = [event["event"] for event in events]
+            raise AssertionError(
+                "line event did not arrive while TTS synthesize_to_file was still blocked; "
+                f"events={kinds}"
+            ) from None
+        assert returned == [], "line event must be emitted before synthesize_to_file returns"
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=2)
+        except asyncio.TimeoutError:
+            raise AssertionError("voice synthesis was never started for the non-lines reply") from None
+        assert returned == [], "synthesize_to_file returned before the line event was observed"
+        release.set()
+        await asyncio.wait_for(task, timeout=20)
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await service.aclose()
+        get_settings.cache_clear()
+
+    lines = [event["data"] for event in events if event["event"] == "line"]
+    assert len(lines) == 1
+    line = lines[0]
+    assert line["index"] == 0
+    assert line["zh"] == chinese
+    assert line["ja"] == japanese
+    assert line["act"] == {}
+    assert isinstance(line["emotion"], str) and line["emotion"]
+    system_prompt = captured_messages[0][0].content
+    assert '"lines"' in system_prompt
+
+    audio = [event["data"] for event in events if event["event"] == "audio_chunk"]
+    assert len(audio) >= 2
+    assert all(item["line"] == 0 for item in audio)
+    line_audio = [event["data"] for event in events if event["event"] == "line_audio"]
+    assert line_audio == [{
+        "line": 0,
+        "status": "ready",
+        "chunks": [
+            {
+                "index": item["index"],
+                "line": 0,
+                "audio_url": item["audio_url"],
+                "sentence": item["sentence"],
+            }
+            for item in audio
+        ],
+    }]
+    done = events[-1]
+    assert done["event"] == "done"
+    assert done["data"]["lines"] is None
+    assert done["data"]["reply_format"] == "unknown"
+    async with get_db(db_file) as conn:
+        saved = (await crud.get_recent_messages(conn, f"hang_{case_id}"))[-1]
+    assert saved.role == "assistant"
+    assert saved.lines is None
 
 
 _LEGACY_LINES = [

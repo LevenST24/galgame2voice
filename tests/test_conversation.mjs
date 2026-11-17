@@ -14,6 +14,31 @@ function presentationEvents(app) {
 const finalLine = (index, status = 'ready') => ({ index, zh: `终稿第${index}句`, ja: `最終${index}。`,
   emotion: 'gentle', act: {}, audio: { status, chunks: status === 'ready' ? [{ index: 0, audio_url: `/audio/final${index}.wav` }] : [] } });
 
+test('final reply: non-lines line shown before audio stays off stored history', async () => {
+  const app = setup();
+  const events = presentationEvents(app);
+  app.conversation.send('旧格式迟到语音');
+  const request = app.stream.requests[0];
+  await request.event('line', {
+    index: 0, zh: '早安。下次见。', ja: 'おはよう。また今度。', emotion: 'happy', act: {},
+  });
+  assert.equal(events.filter(event => event.type === 'line').length, 1);
+  assert.equal(app.session.messages.filter(message => message.role === 'assistant').length, 0);
+  await request.event('line_audio', {
+    line: 0, status: 'ready',
+    chunks: [
+      { index: 0, line: 0, audio_url: '/audio/a.wav', sentence: 'おはよう。' },
+      { index: 1, line: 0, audio_url: '/audio/b.wav', sentence: 'また今度。' },
+    ],
+  });
+  await request.onEnd('早安。下次见。', {
+    japanese: 'おはよう。また今度。', lines: null, reply_format: 'unknown',
+  });
+  assert.equal(events.filter(event => event.type === 'line').length, 1);
+  assert.equal(app.session.messages.at(-1).lines, undefined);
+  assert.equal(events.at(-1).type, 'done');
+});
+
 test('final reply: whole-reply format reaches the stage without changing stored line identity', async () => {
   const app = setup(); app.session.settings.advReplyFormat = 'legacy';
   const events = presentationEvents(app);

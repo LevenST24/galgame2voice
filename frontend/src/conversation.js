@@ -234,7 +234,7 @@ export function createConversation({
       if (Array.isArray(meta.lines)) {
         message.lines = normalizeLines(meta.lines).sort((a, b) => a.index - b.index);
         assistantMessage.lines = message.lines;
-      } else if (current.hasReceivedLineEvents && assistantMessage.lines) {
+      } else if (current.hasReceivedLineEvents && assistantMessage.lines && meta.replyFormat !== 'unknown') {
         message.lines = assistantMessage.lines;
       }
 
