@@ -17,6 +17,9 @@ export const DEFAULT_SETTINGS = {
   primary: 'zh', // 'zh' | 'ja'
 };
 
+/** How often a page of a voiced line checks whether the voice has reached the next page. */
+const FOLLOW_POLL_MS = 100;
+
 /** States where the stage is showing or about to show a line of the current turn. */
 const PRESENTING_STATES = new Set(['waiting_line', 'waiting_audio', 'revealing', 'waiting_advance']);
 
@@ -25,7 +28,8 @@ const PRESENTING_STATES = new Set(['waiting_line', 'waiting_audio', 'revealing',
  *
  * @param {object} params
  * @param {object} params.clock { now(): number, setTimeout(fn, ms): id, clearTimeout(id) }
- * @param {object} params.voice { play(lineIndex, chunks): Promise<'ended'|'interrupted'|'failed'>, stop({ fadeMs }): void }
+ * @param {object} params.voice { play(lineIndex, chunks): Promise<'ended'|'interrupted'|'failed'>, stop({ fadeMs }): void,
+ *   progress?(): number|null } progress is the share of the playing line's voice already heard.
  * @param {object} [params.render] Render adapter (all methods optional)
  * @param {(line: object, primaryText: string) => string[]} [params.paginate] Split text into display pages
  * @param {object} [params.settings]
@@ -68,6 +72,7 @@ export function createLinePlayer({
   let audioWaitTimerId = null;
   let autoTimerId = null;
   let skipTimerId = null;
+  let followTimerId = null;
 
   // Event listeners
   const listeners = new Map();
@@ -121,6 +126,10 @@ export function createLinePlayer({
       clock.clearTimeout(skipTimerId);
       skipTimerId = null;
     }
+    if (followTimerId !== null) {
+      clock.clearTimeout(followTimerId);
+      followTimerId = null;
+    }
   }
 
   function getPagesForLine(line) {
@@ -147,6 +156,7 @@ export function createLinePlayer({
     };
     currentVoiceToken = token;
     voicePlaying = true;
+    followVoice();
 
     let playPromise;
     try {
@@ -163,6 +173,26 @@ export function createLinePlayer({
       .catch(() => {
         onVoiceEnd(token, 'failed');
       });
+  }
+
+  // A line wider than the text window is split into pages, but its voice is one
+  // recording. While it plays, turn to the next page once the voice has played
+  // that page's share of the text, so nobody has to click to keep up with it.
+  function followVoice() {
+    if (followTimerId !== null) {
+      clock.clearTimeout(followTimerId);
+      followTimerId = null;
+    }
+    if (!voicePlaying || skip || page >= pages.length - 1 || typeof voice?.progress !== 'function') return;
+    followTimerId = clock.setTimeout(() => {
+      followTimerId = null;
+      if (!voicePlaying || page >= pages.length - 1) return;
+      const heard = voice.progress();
+      const before = countGraphemes(pages.slice(0, page + 1).join(''));
+      if (state === 'waiting_advance' && !hidden && typeof heard === 'number'
+        && heard * countGraphemes(pages.join('')) >= before) advance();
+      followVoice();
+    }, FOLLOW_POLL_MS);
   }
 
   function onVoiceEnd(token, _result) {
@@ -875,6 +905,8 @@ export function createLinePlayer({
     let start = 0;
     page = pages.findIndex(text => { start += text.length; return start > offset; });
     if (page < 0) page = Math.max(0, pages.length - 1);
+    // A wider window can leave one page, a narrower one can need more.
+    if (voicePlaying) followVoice();
   }
 
   function isPresenting() {

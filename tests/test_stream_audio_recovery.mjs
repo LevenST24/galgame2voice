@@ -56,6 +56,21 @@ test('line start notification waits for audio data and fires once for the first 
   assert.equal(await pending, 'ended');
 });
 
+test('line progress follows the audio clock once every chunk is scheduled', async () => {
+  const p = player();
+  const pending = p.playLine(0, ['/progress-0.wav', '/progress-1.wav']);
+  assert.equal(p.lineProgress(), null, 'the length is unknown before the chunks are decoded');
+  await tick();
+  const [first, second] = p.ctx.sources;
+  p.ctx.currentTime = first.time + 0.5;
+  assert.equal(p.lineProgress(), 0.25);
+  p.ctx.currentTime = second.time + 1;
+  assert.equal(p.lineProgress(), 1);
+  p.ctx.sources.forEach(source => source.finish());
+  assert.equal(await pending, 'ended');
+  assert.equal(p.lineProgress(), null);
+});
+
 for (const state of ['running', 'suspended', 'interrupted']) {
   test(`line text waits for the audio clock while its context is ${state}`, async () => {
     const p = player({ fetchTimeoutMs: 500 });

@@ -381,6 +381,10 @@ line's voice end; this is the default and matches the plan's post-voice wait.
 With no voice, skipped/failed audio, or voice mode off, both use reveal end + D.
 For nonfinal display pages, use text timing; do not wait for/replay the full voice
 on every page. Voice-priority gates the final page on voice completion.
+A line's voice is one recording for all its pages, so while it plays, a nonfinal
+page also turns by itself once the voice has played that page's share of the
+line's graphemes, with or without AUTO. A click can still turn it earlier; the
+final page still waits for the reader or AUTO, and a hidden window does not turn.
 AUTO never sends player text and never proceeds through an error or token dialog.
 Manual advance resets the page timer; it does not silently enable AUTO.
 The notes' game defaults (2.00 seconds plus 25 units) are observations, not app defaults.

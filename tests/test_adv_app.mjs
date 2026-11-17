@@ -117,6 +117,27 @@ test('the audio start notification reaches the sentence player before revealing'
   assert.equal(h.app.player.state, 'revealing');
 });
 
+test('a line too wide for one row turns its pages as the voice reaches them', t => {
+  const h = setup(t); h.start();
+  for (const name of ['.adv-text-measurer', '.adv-subtitle-measurer']) {
+    const el = h.app.stage.stage.querySelector(name);
+    el.getBoundingClientRect = () => ({ width: el.textContent.length * 100, height: 46 });
+  }
+  let heard = null;
+  h.audio.lineProgress = () => heard;
+  h.line(0, { zh: '今天天气很好，我们一起去散步吧。', ja: '今日はいい天気ですね。' }); h.audioEvent();
+  h.clock.tick(1000);
+  assert.equal(h.app.player.page, 0);
+  heard = 0.3; h.clock.tick(200);
+  assert.equal(h.app.player.page, 0, 'the voice has not reached the second page yet');
+  heard = 0.5; h.clock.tick(1000);
+  assert.equal(h.app.player.page, 1);
+  assert.match(h.app.stage.stage.querySelector('.adv-primary-text').textContent, /散步/);
+  assert.equal(h.audio.stopped.length, 0, 'turning the page keeps the voice');
+  heard = 1; h.clock.tick(1000);
+  assert.equal(h.app.player.currentIndex, 0, 'the last page still waits for the reader');
+});
+
 test('timeout accepts late audio only on the current line and rejects old turn events', async t => {
   const h = setup(t, { settings: { advTextIntervalMs: 0, advAutoMode: 'normal' } }); h.start(); h.line(); h.line(1);
   h.clock.tick(1500); assert.equal(h.app.player.state, 'waiting_advance');
