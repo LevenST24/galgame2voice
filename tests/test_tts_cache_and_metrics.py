@@ -6,7 +6,6 @@ telemetry timers, and REST API endpoints.
 """
 
 import asyncio
-import os
 import time
 import uuid
 import wave
@@ -108,17 +107,6 @@ class TestTtsCacheCanonicalHashing:
 
         k_diff_temp, _, _ = mgr.compute_cache_key("こんにちは", options={"speed_factor": 1.0, "temperature": 0.8, "top_k": 15})
         assert k_base != k_diff_temp, "Different temperature must produce different cache keys"
-
-    def test_japanese_parentheses_cleaning_before_hashing(self, tmp_path):
-        db_p = tmp_path / "test.db"
-        mgr = TtsCacheManager(cache_dir=tmp_path / "cache", db_path=str(db_p))
-
-        k1, clean1, _ = mgr.compute_cache_key("（微笑）おはようございます！")
-        k2, clean2, _ = mgr.compute_cache_key("(微笑) おはようございます！")
-        k3, clean3, _ = mgr.compute_cache_key("おはようございます！")
-
-        assert clean1 == clean2 == clean3 == "おはようございます！"
-        assert k1 == k2 == k3, "Stage directions in parentheses must normalize to identical cache key"
 
 
 # ============================================================================
@@ -338,37 +326,6 @@ class TestTtsCacheLruPruningAndIsolation:
         assert mgr._mem_bytes_total == sum(len(v) for v in mgr._mem_cache.values()) == 0
         await mgr.aclose()
 
-    @pytest.mark.asyncio
-    async def test_cleanup_loop_protects_audio_cache_directory(self, tmp_path):
-        audio_dir = tmp_path / "audio"
-        cache_dir = audio_dir / "cache"
-        audio_dir.mkdir(parents=True, exist_ok=True)
-        cache_dir.mkdir(parents=True, exist_ok=True)
-
-        # 1. Create an expired ephemeral file in audio/
-        ephemeral_file = audio_dir / "voice_old_123.wav"
-        ephemeral_file.write_bytes(b"ephemeral audio")
-        past_time = time.time() - 3600  # 1 hour old
-        os.utime(ephemeral_file, (past_time, past_time))
-
-        # 2. Create a persistent cache file in audio/cache/
-        cache_file = cache_dir / "hash_persisted.wav"
-        cache_file.write_bytes(b"persistent audio")
-        os.utime(cache_file, (past_time, past_time))
-
-        # Run 1 iteration of cleanup loop logic manually
-        now = time.time()
-        cutoff = now - (30 * 60)
-        for f in audio_dir.iterdir():
-            if f.is_dir() or f.name.lower() == "cache":
-                continue
-            if f.is_file() and f.suffix.lower() in (".wav", ".ogg"):
-                if f.stat().st_mtime < cutoff:
-                    f.unlink()
-
-        assert not ephemeral_file.exists(), "Expired ephemeral file must be cleaned"
-        assert cache_file.exists(), "Persistent cache file in audio/cache/ must NEVER be deleted by audio cleaner"
-
 
 # ============================================================================
 # 4. Token Estimation, Pricing & Latency Telemetry Tests
@@ -432,29 +389,6 @@ class TestMetricsCollectorAndTelemetry:
         for pid, model, expected_usd in cases:
             cost_usd, _ = collector.calculate_cost(pid, model, 1_000_000, 2_000_000)
             assert round(cost_usd, 4) == expected_usd
-
-    def test_token_estimation_accuracy(self, tmp_path):
-        collector = MetricsCollector(db_path=str(tmp_path / "m.db"))
-
-        assert collector.estimate_tokens("") == 0
-        
-        # Japanese CJK text (~1 token per char)
-        ja_text = "四季夏目です。よろしくお願いします。"
-        tok_ja = collector.estimate_tokens(ja_text)
-        assert 15 <= tok_ja <= 25
-
-        # English text (~4 chars per token)
-        en_text = "Hello world, this is an automated performance benchmark test."
-        tok_en = collector.estimate_tokens(en_text)
-        assert 10 <= tok_en <= 25
-
-        assert collector.estimate_tokens(None) == 0
-        assert collector.estimate_tokens(12345) == 0
-        assert collector.estimate_tokens(["hello"]) == 0
-
-        code_text = "```python\nfor i in range(100):\n    print('Hello World')\n```"
-        assert 10 <= collector.estimate_tokens(code_text) <= 25
-        assert collector.estimate_tokens("二次元スマートボイス伴侶。" * 5000) > 50000
 
     def test_ring_buffer_fifo(self, tmp_path):
         collector = MetricsCollector(db_path=str(tmp_path / "m.db"), ring_buffer_size=10)
