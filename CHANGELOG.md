@@ -5,6 +5,8 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [3.2.5] - 2026-11-18
 ### Changed
 - 等待语音时，对话框不再把「语音准备中…点击可先看文字」当成一句台词、用大号强调色显示在对话框最下方；现在台词位置只显示和思考时一样的省略号，等待超过 3 秒才在字幕行淡出一行浅色小字「语音还在准备，点击可先看文字」。思考时的省略号也移到台词开始的位置。
 ### Fixed
@@ -118,7 +120,8 @@ All notable changes to galgame2voice are documented here. The format follows
 - 修复聊天输入框超过 4000 字发送时清空草稿且报错失真，以及打开设置中心时未立即停止首页正在播放的试听语音的问题。
 - 修复在输入框使用中文/日文输入法组字时按 Esc 取消候选词会直接关闭弹窗，以及在背景选择对话框按 Tab 或 Shift+Tab 时焦点跳出对话框的问题。
 
-[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.4...HEAD
+[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.5...HEAD
+[3.2.5]: https://github.com/LevenST24/galgame2voice/compare/v3.2.4...v3.2.5
 [3.2.4]: https://github.com/LevenST24/galgame2voice/compare/v3.2.3...v3.2.4
 [3.2.3]: https://github.com/LevenST24/galgame2voice/compare/v3.2.2...v3.2.3
 [3.2.2]: https://github.com/LevenST24/galgame2voice/compare/v3.2.1...v3.2.2
