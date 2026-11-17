@@ -137,6 +137,7 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
       ...(doneMeta?.telemetry ? { telemetry: doneMeta.telemetry } : {}),
       ...(Number.isFinite(doneMeta?.latency_ms) ? { latencyMs: doneMeta.latency_ms } : {}),
       lines: (doneMeta && Array.isArray(doneMeta.lines)) ? doneMeta.lines : null,
+      ...(typeof doneMeta?.reply_format === 'string' ? { replyFormat: doneMeta.reply_format } : {}),
     });
   };
 

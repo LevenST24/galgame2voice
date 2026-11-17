@@ -5,6 +5,9 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fixed
+- 修复模型没有按逐句台词格式回复（例如回了整段中文日文，或回复写到一半被截断）且语音合成迟迟不返回时，舞台对话框一直只有「……」、点一下也看不到台词的问题；现在回复文字一确定就先显示台词，语音还在准备时可以点击先看文字。
+
 
 ## [3.2.5] - 2026-11-18
 ### Changed
