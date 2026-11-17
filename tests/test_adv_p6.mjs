@@ -163,7 +163,8 @@ function setupApp(t, options = {}) {
     clock,
     getSession: () => active,
     voiceEnabled: () => false,
-    getCharacter: () => (options.characterWork ? { id: 'c', name: '角色', work: options.characterWork } : null),
+    getCharacter: options.getCharacter
+      || (() => (options.characterWork ? { id: 'c', name: '角色', work: options.characterWork } : null)),
     loadPortrait: null,
     ImageClass: imageFactory(doc, loads),
     raf: () => 0,
@@ -190,6 +191,7 @@ function setupApp(t, options = {}) {
     doc, dom, app, clock, loads, saves, sessions, controller, calls,
     get active() { return active; },
     switchSession: index => { active = sessions[index]; subscription?.(); },
+    notify: () => subscription?.(),
     sky: () => skyOf(app.stage.background),
     shown: () => shownOf(app.stage.background),
   };
@@ -818,6 +820,25 @@ test('adv wiring: an unset background shows the work default once the list arriv
   tiles[0].click();
   await flush(h.loads);
   assert.equal(h.shown()[0].src, resolveVariant(LIST[1], timeOfDay(new Date())).url, '自动 brings the default back');
+});
+
+test('adv wiring: a character from a work the list lacks reloads the backgrounds', async t => {
+  let character = { id: 'a', name: '甲', work: 'cafe' };
+  let data = { works: [WORKS[0]], backgrounds: LIST.slice(0, 2) };
+  const h = setupApp(t, { getCharacter: () => character, fetchBackgrounds: async () => data });
+  await microtasks();
+  character = { id: 'b', name: '乙', work: 'cafe' };
+  h.notify();
+  await microtasks();
+  assert.equal(h.calls.fetches, 1, 'a listed work keeps the list');
+  // A character imported later brings its own work's pack.
+  data = { works: WORKS, backgrounds: LIST };
+  character = { id: 'c', name: '丙', work: 'onsen' };
+  h.notify();
+  await microtasks();
+  await flush(h.loads);
+  assert.equal(h.calls.fetches, 2);
+  assert.equal(h.shown().at(-1).src, '/bg/onsen/night.png');
 });
 
 test('adv wiring: a failed background fetch leaves the sky and still offers the panel', async t => {

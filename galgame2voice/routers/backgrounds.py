@@ -24,7 +24,8 @@ MEDIA_TYPES = {".webp": "image/webp", ".png": "image/png", ".jpg": "image/jpeg",
 def list_backgrounds() -> dict:
     works = []
     backgrounds = []
-    for pack in load_background_packs(get_settings().backgrounds_dir):
+    settings = get_settings()
+    for pack in load_background_packs(settings.backgrounds_dir, settings.characters_dir):
         works.append({"id": pack.work, "name": pack.name, "default": pack.default_key})
         for background in pack.backgrounds:
             variants = {}
@@ -66,14 +67,14 @@ def get_media_background(
     ):
         raise HTTPException(403, "Forbidden")
 
-    root = get_settings().backgrounds_dir
-    pack = load_background_pack(root, work)
+    settings = get_settings()
+    pack = load_background_pack(settings.backgrounds_dir, work, settings.characters_dir)
     background = next((bg for bg in pack.backgrounds if bg.id == bg_id), None) if pack else None
     path = background.variants.get(variant) if background else None
     if path is None:
         raise HTTPException(404, "Background not found")
     try:
-        pack_root = (root / work).resolve()
+        pack_root = pack.folder.resolve()
         path = path.resolve()
         if not path.is_relative_to(pack_root) or not path.is_file():
             raise HTTPException(404, "Background not found")

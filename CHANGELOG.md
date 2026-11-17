@@ -5,6 +5,8 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Added
+- 角色包可以在自己的 `background` 文件夹里附带所属作品的背景包（格式与 `backgrounds/<作品>/` 相同）。`backgrounds` 里没有这个作品时就用角色包带的背景，所以新装的角色会直接显示所属作品的默认背景；导入后切到新角色时，舞台会自动重新读取背景列表，不用刷新页面。
 
 ## [3.2.3] - 2026-11-17
 ### Fixed

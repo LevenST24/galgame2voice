@@ -1,5 +1,10 @@
-"""Read the local background library, one pack per work, omitting bad packs and entries."""
+"""Read the local background library, one pack per work, omitting bad packs and entries.
 
+A character package may carry its work's pack in its own ``background`` folder; that copy is used
+when the library has no pack for the work.
+"""
+
+from contextlib import suppress
 from dataclasses import dataclass, field
 import json
 import logging
@@ -11,6 +16,7 @@ logger = logging.getLogger(__name__)
 BACKGROUND_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 BACKGROUND_VARIANTS = frozenset({"day", "evening", "night"})
 IMAGE_EXTENSIONS = frozenset({".webp", ".png", ".jpg", ".jpeg", ".avif"})
+BUNDLED_PACK_FOLDER = "background"
 
 
 @dataclass(frozen=True)
@@ -29,6 +35,7 @@ class Background:
 class BackgroundPack:
     work: str
     name: str
+    folder: Path
     backgrounds: list[Background] = field(default_factory=list)
     default: str | None = None
 
@@ -120,19 +127,49 @@ def _load_pack(pack_dir: Path, work: str) -> BackgroundPack | None:
             seen.add(bg_id)
     default = data.get("default")
     default = default if isinstance(default, str) and BACKGROUND_ID_RE.fullmatch(default) else None
-    return BackgroundPack(work, name, backgrounds, default)
+    return BackgroundPack(work, name, pack_dir, backgrounds, default)
 
 
-def load_background_pack(root: Path, work: str) -> BackgroundPack | None:
-    """One work's pack, without reading the others (the media route serves one file)."""
+def _declared_work(pack_dir: Path) -> str | None:
+    with suppress(OSError, ValueError, UnicodeError, RecursionError):
+        data = json.loads((pack_dir / "manifest.json").read_text(encoding="utf-8"))
+        work = data.get("work") if isinstance(data, dict) else None
+        if isinstance(work, str) and BACKGROUND_ID_RE.fullmatch(work):
+            return work
+    logger.warning("Skipping bundled background pack in %s", pack_dir)
+    return None
+
+
+def _bundled_packs(characters_root: Path | None, work: str | None = None):
+    """Packs in ``<character>/background`` folders, in folder order; ``work`` keeps only that work's."""
+    try:
+        children = sorted(characters_root.iterdir(), key=lambda child: child.name) if characters_root else []
+    except (OSError, ValueError):
+        return
+    for child in children:
+        folder = child / BUNDLED_PACK_FOLDER
+        if not (folder / "manifest.json").is_file():
+            continue
+        declared = _declared_work(folder)
+        if declared is not None and work in (None, declared):
+            pack = _load_pack(folder, declared)
+            if pack is not None and pack.backgrounds:
+                yield pack
+
+
+def load_background_pack(root: Path, work: str, characters_root: Path | None = None) -> BackgroundPack | None:
+    """One work's pack (the library's, else one a character bundles), without reading the others."""
     if not BACKGROUND_ID_RE.fullmatch(work):
         return None
     pack = _load_pack(root / work, work)
-    return pack if pack is not None and pack.backgrounds else None
+    if pack is not None and pack.backgrounds:
+        return pack
+    return next(_bundled_packs(characters_root, work), None)
 
 
-def load_background_packs(root: Path) -> list[BackgroundPack]:
-    """Load every ``<root>/<work_id>/manifest.json`` pack, skipping bad packs.
+def load_background_packs(root: Path, characters_root: Path | None = None) -> list[BackgroundPack]:
+    """Load every ``<root>/<work_id>/manifest.json`` pack, skipping bad packs, then the packs that
+    character folders bundle for works the library lacks.
 
     A missing library or unreadable directory is empty; a root-level
     ``manifest.json`` is no longer read.
@@ -140,10 +177,10 @@ def load_background_packs(root: Path) -> list[BackgroundPack]:
     try:
         children = sorted(root.iterdir(), key=lambda child: child.name)
     except FileNotFoundError:
-        return []
+        children = []
     except (OSError, ValueError):
         logger.warning("Cannot list backgrounds directory %s", root)
-        return []
+        children = []
     packs = []
     for child in children:
         if not child.is_dir():
@@ -155,4 +192,7 @@ def load_background_packs(root: Path) -> list[BackgroundPack]:
         pack = _load_pack(child, work)
         if pack is not None and pack.backgrounds:
             packs.append(pack)
-    return packs
+    for pack in _bundled_packs(characters_root):
+        if all(pack.work != have.work for have in packs):
+            packs.append(pack)
+    return sorted(packs, key=lambda pack: pack.work)
