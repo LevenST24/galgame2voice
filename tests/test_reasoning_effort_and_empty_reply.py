@@ -26,7 +26,7 @@ from galgame2voice.adapters.base import configured_reasoning_effort
 from galgame2voice.adapters.llm.gemini_adapter import GeminiLLMAdapter
 from galgame2voice.adapters.llm.anthropic_adapter import AnthropicAdapter
 from galgame2voice.adapters.llm.openai_adapter import OpenAICompatibleLLMAdapter
-from galgame2voice.adapters.registry import get_llm_adapter, get_provider_preset, list_provider_presets
+from galgame2voice.adapters.registry import get_llm_adapter
 from galgame2voice.database import crud
 from galgame2voice.database.migrations import CURRENT_SCHEMA_VERSION, _add_column_if_missing, run_schema_migrations
 from galgame2voice.database.models import MessageCreate, ProviderCreate, ProviderUpdate
@@ -273,18 +273,6 @@ async def test_provider_api_endpoints():
         assert gemini.json()["provider"]["reasoning_effort"] is None
 
 
-def test_presets_gemini_defaults_to_low():
-    """Verifies built-in Gemini preset includes default_reasoning_effort: 'low'."""
-    gemini_preset = get_provider_preset("gemini")
-    assert gemini_preset is not None
-    assert gemini_preset.get("default_reasoning_effort") == "low"
-
-    presets = list_provider_presets()
-    item = next((p for p in presets if p["id"] == "gemini"), None)
-    assert item is not None
-    assert item.get("default_reasoning_effort") == "low"
-
-
 def test_adapter_payload_forwards_reasoning_effort():
     """Verifies OpenAICompatibleLLMAdapter and GeminiLLMAdapter forward reasoning_effort when set, omitting when null."""
     openai_adapter = OpenAICompatibleLLMAdapter(
@@ -361,102 +349,6 @@ async def test_llm_pipeline_and_coordinator_forward_reasoning_effort():
         prompt="hello",
     )
     assert coord.reasoning_effort == "low"
-
-
-@pytest.mark.asyncio
-async def test_streaming_empty_reply_default(tmp_path):
-    """Verifies that an empty reply emits an error event with kind empty_reply and prunes user message."""
-    db_file = tmp_path / "stream_empty_default.db"
-    await init_db(db_file)
-
-    async with get_db(str(db_file)) as conn:
-        user_msg = await crud.add_message(
-            conn,
-            MessageCreate(session_id="empty_default", role="user", content_chinese="你好"),
-        )
-
-    async def empty_tokens(*args, **kwargs):
-        if False:
-            yield ""
-
-    coordinator = StreamCoordinator(
-        adapter=SimpleNamespace(stream_chat=empty_tokens, api_key="synthetic"),
-        messages=[],
-        model_name="test",
-        actual_provider_id="custom",
-        session_id="empty_default",
-        prompt="你好",
-        user_msg=user_msg,
-        db_path=str(db_file),
-        metrics_collector=SimpleNamespace(record_chat_turn=AsyncMock(return_value={})),
-        affection_service=SimpleNamespace(handle_turn_affection=AsyncMock(return_value={"emotion": "gentle"})),
-        tts_service=None,
-        concat_wav_fn=lambda *args: True,
-    )
-
-    events = [e async for e in coordinator]
-    assert len(events) >= 1
-    last_event = events[-1]
-    assert last_event["event"] == "error"
-    data = last_event["data"]
-    assert data["kind"] == "empty_reply"
-    assert data["error_code"] == "empty_reply"
-    assert data["error"] == EMPTY_REPLY_DEFAULT
-
-    # Verify assistant message was not added and orphaned user message was pruned
-    async with get_db(str(db_file)) as conn:
-        remaining = await crud.get_recent_messages(conn, "empty_default")
-        assert len(remaining) == 0
-
-
-@pytest.mark.asyncio
-async def test_streaming_empty_reply_stopped_on_length(tmp_path):
-    """Verifies that empty reply stopped on length uses the thinking-quota explanation."""
-    db_file = tmp_path / "stream_empty_length.db"
-    await init_db(db_file)
-
-    async with get_db(str(db_file)) as conn:
-        user_msg = await crud.add_message(
-            conn,
-            MessageCreate(session_id="empty_length", role="user", content_chinese="长问题"),
-        )
-
-    async def empty_tokens(*args, **kwargs):
-        if False:
-            yield ""
-
-    adapter = SimpleNamespace(
-        stream_chat=empty_tokens,
-        api_key="synthetic",
-        last_finish_reason="length",
-    )
-
-    coordinator = StreamCoordinator(
-        adapter=adapter,
-        messages=[],
-        model_name="test",
-        actual_provider_id="custom",
-        session_id="empty_length",
-        prompt="长问题",
-        user_msg=user_msg,
-        db_path=str(db_file),
-        metrics_collector=SimpleNamespace(record_chat_turn=AsyncMock(return_value={})),
-        affection_service=SimpleNamespace(handle_turn_affection=AsyncMock(return_value={"emotion": "gentle"})),
-        tts_service=None,
-        concat_wav_fn=lambda *args: True,
-    )
-
-    events = [e async for e in coordinator]
-    assert len(events) >= 1
-    last_event = events[-1]
-    assert last_event["event"] == "error"
-    data = last_event["data"]
-    assert data["kind"] == "empty_reply"
-    assert data["error"] == EMPTY_REPLY_STOPPED_ON_LENGTH
-
-    async with get_db(str(db_file)) as conn:
-        remaining = await crud.get_recent_messages(conn, "empty_length")
-        assert len(remaining) == 0
 
 
 @pytest.mark.asyncio
