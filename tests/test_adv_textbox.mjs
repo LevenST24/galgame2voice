@@ -221,6 +221,24 @@ test('textbox: thinking indicator shows character name and dots, hides on thinki
   assert.equal(dotsEl.classList.contains('is-hidden'), true);
 });
 
+test('textbox: a voice wait shows the dots, not a sentence, and a separate quiet note', () => {
+  const container = new FakeElement();
+  const tb = createTextbox(container, { getSettings: () => ({ primary: 'zh', subtitle: 'ja' }) });
+  tb.setSpeaker({ name: '菲莉', mode: 'character' });
+  tb.activate({ index: 0, zh: '你好。', ja: 'こんにちは。' });
+  tb.waitingForAudio(true);
+  const dots = container.querySelector('.adv-thinking-dots');
+  const note = container.querySelector('.adv-wait-hint');
+  assert.equal(dots.textContent, '……');
+  assert.equal(dots.classList.contains('is-hidden'), false);
+  assert.equal(note.classList.contains('is-hidden'), false);
+  tb.reveal('你好。');
+  assert.equal(dots.classList.contains('is-hidden'), true);
+  assert.equal(note.classList.contains('is-hidden'), true);
+  tb.thinking(true);
+  assert.equal(note.classList.contains('is-hidden'), true, 'the note is only for a voice wait');
+});
+
 test('textbox: player input behavior (Enter sends, Shift+Enter newline, IME guards, canSend disabled)', () => {
   const container = new FakeElement();
   const sent = [];
