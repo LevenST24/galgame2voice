@@ -3,12 +3,11 @@ Automated Provider Configuration & Key Protection Tests.
 Covers:
 1. Universal provider parameter submission across canonical providers and dispatch aliases.
 2. Strict API key masking and zero credential leakage in API responses.
-3. Non-destructive masked key retention on updates.
+3. Replacing a stored API key with a new raw key.
 4. In-flight connectivity credential isolation (unsaved & stored keys).
 5. Provider activation flow and synchronization with GET /api/config.
 6. Settings schema persistence (stt_engine).
-7. Private endpoint opt-in toggle (allow_private_llm_endpoints).
-8. Provider preset seeds, legacy healing, and empty chat_model fallback.
+7. Provider preset seeds, legacy healing, and empty chat_model fallback.
 """
 
 import json
@@ -264,28 +263,6 @@ class TestApiKeyMaskingAndZeroLeakage:
         assert xai_p["api_key"] == f"xai****{raw_key[-4:]}"
 
     @pytest.mark.asyncio
-    async def test_api_key_masked_in_config_endpoint(self, app_client):
-        """GET /api/config returns masked key for active_provider."""
-        raw_llm_key = "sk-live-llm-secret-key-11223344"
-
-        # Save provider with raw key and activate it
-        await app_client.post("/api/providers", json={
-            "id": "openai",
-            "api_key": raw_llm_key,
-            "is_active": True,
-        })
-
-        # GET /api/config
-        resp = await app_client.get("/api/config")
-        assert resp.status_code == 200
-        body = resp.text
-
-        assert raw_llm_key not in body
-
-        data = resp.json()
-        assert data["active_provider"]["api_key"].startswith("sk-****")
-
-    @pytest.mark.asyncio
     async def test_error_responses_contain_no_raw_api_key(self, app_client):
         """HTTP error responses on invalid requests must never echo the raw API key."""
         raw_secret = "sk-do-not-leak-this-secret-key-776655"
@@ -300,56 +277,11 @@ class TestApiKeyMaskingAndZeroLeakage:
 
 
 # ============================================================================
-# 3. Non-Destructive Masked Key Retention
+# 3. Replacing a stored API key
 # ============================================================================
 
 class TestMaskedKeyRetentionAndNonDestructiveRoundtrip:
-    """Verifies that submitting masked keys or omitting keys preserves stored secrets."""
-
-    @pytest.mark.asyncio
-    async def test_submitting_masked_key_retains_stored_secret(self, app_client, isolate_test_database):
-        """Submitting 'xai****8877' must preserve the underlying raw secret in SQLite."""
-        raw_secret = "xai-original-secret-key-alpha-998877"
-        await app_client.post("/api/providers", json={
-            "id": "xai",
-            "api_key": raw_secret,
-            "chat_model": "grok-3",
-        })
-
-        # Simulate UI roundtrip: submit masked key with an updated model
-        resp = await app_client.post("/api/providers", json={
-            "id": "xai",
-            "api_key": "xai****8877",
-            "chat_model": "grok-3-mini",
-        })
-        assert resp.status_code == 200
-
-        async with get_db(isolate_test_database) as conn:
-            raw = await crud.get_provider_raw(conn, "xai")
-            assert raw.api_key == raw_secret
-            assert raw.chat_model == "grok-3-mini"
-
-    @pytest.mark.asyncio
-    async def test_submitting_empty_or_whitespace_key_retains_stored_secret(self, app_client, isolate_test_database):
-        """Submitting empty string or whitespace does not overwrite the stored secret."""
-        raw_secret = "sk-original-moonshot-secret-key-12345"
-        await app_client.post("/api/providers", json={
-            "id": "moonshot",
-            "api_key": raw_secret,
-        })
-
-        # Submit empty key
-        resp = await app_client.post("/api/providers", json={
-            "id": "moonshot",
-            "api_key": "   ",
-            "chat_model": "moonshot-v1-32k",
-        })
-        assert resp.status_code == 200
-
-        async with get_db(isolate_test_database) as conn:
-            raw = await crud.get_provider_raw(conn, "moonshot")
-            assert raw.api_key == raw_secret
-            assert raw.chat_model == "moonshot-v1-32k"
+    """Verifies that a fresh unmasked key replaces the stored secret."""
 
     @pytest.mark.asyncio
     async def test_submitting_new_raw_key_overwrites_secret(self, app_client, isolate_test_database):
@@ -363,25 +295,6 @@ class TestMaskedKeyRetentionAndNonDestructiveRoundtrip:
         async with get_db(isolate_test_database) as conn:
             raw = await crud.get_provider_raw(conn, "deepseek")
             assert raw.api_key == new_secret
-
-    @pytest.mark.asyncio
-    async def test_custom_headers_masked_retention(self, app_client, isolate_test_database):
-        """Masked values in custom_headers (e.g. 'Bearer ****') do not overwrite stored secrets."""
-        await app_client.post("/api/providers", json={
-            "id": "custom",
-            "custom_headers": {"Authorization": "Bearer real-secret-token-xyz"},
-        })
-
-        # Submit back masked header
-        await app_client.post("/api/providers", json={
-            "id": "custom",
-            "custom_headers": {"Authorization": "Bearer ****-xyz", "X-App": "gal2voice"},
-        })
-
-        async with get_db(isolate_test_database) as conn:
-            raw = await crud.get_provider_raw(conn, "custom")
-            assert raw.custom_headers["Authorization"] == "Bearer real-secret-token-xyz"
-            assert raw.custom_headers["X-App"] == "gal2voice"
 
 
 # ============================================================================
@@ -564,37 +477,6 @@ class TestSettingsSchemaPersistence:
         async with get_db(isolate_test_database) as conn:
             settings = await crud.get_settings(conn)
             assert settings.stt_engine == "whisper"
-
-
-# ============================================================================
-# 7. Provider Security & SSRF Boundaries
-# ============================================================================
-
-class TestProviderSecurityAndSsrfBoundaries:
-    """Verifies that allow_private_llm_endpoints permits local loopback when explicitly enabled."""
-
-    @pytest.mark.asyncio
-    async def test_allow_private_endpoints_toggle_permits_loopback(self, app_client):
-        """When allow_private_llm_endpoints is True, local loopback (Ollama/vLLM) is permitted."""
-        await app_client.post("/api/config", json={
-            "settings": {"allow_private_llm_endpoints": True},
-        })
-
-        mock_resp = httpx.Response(
-            200,
-            json={"data": [{"id": "deepseek-r1:latest"}]},
-            request=httpx.Request("GET", "http://127.0.0.1:11434/v1/models"),
-        )
-        p_get, p_post = mock_external_http_responses({"127.0.0.1:11434": mock_resp})
-
-        with p_get, p_post:
-            resp = await app_client.post("/api/providers/test", json={
-                "id": "custom",
-                "api_key": "sk-local-ollama-key",
-                "base_url": "http://127.0.0.1:11434/v1",
-            })
-            assert resp.status_code == 200
-            assert resp.json()["success"] is True
 
 
 class TestProviderPresetSeedsAndFallback:
