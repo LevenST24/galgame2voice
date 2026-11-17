@@ -348,6 +348,18 @@ test('first use sends a user with no characters to import one, and offers a choi
   characters.push({ id: 7, name: '角色甲' }); h.notify(); await microtasks();
   assert.match(row(), /从已安装的角色里挑一位/); assert.equal(button(), '选择');
 });
+test('first use does not tick the character step for a character id kept from an earlier install', async t => {
+  const status = { modelLoaded: true, hasModel: false, model: { state: 'error', label: '未配置对话模型' }, engine: { state: 'unavailable' } };
+  const session = snapshot('a'); session.settings.voiceProfileId = 7;
+  const characters = [];
+  const h = await fixture(t, { status, sessions: [session], actions: { listCharacters: () => characters } });
+  const step = () => h.ui.element.querySelectorAll('.home-step')[2];
+  assert.equal(step().classList.contains('is-done'), false); assert.match(textTree(step()), /还没有角色/);
+  characters.push({ id: 9, name: '角色丙' }); h.notify(); await microtasks();
+  assert.equal(step().classList.contains('is-done'), false);
+  characters.push({ id: 7, name: '角色甲' }); h.notify(); await microtasks();
+  assert.equal(step().classList.contains('is-done'), true);
+});
 
 test('status colors/text, explanations, settings tabs, polling and disposal with fake clock', async t => {
   const h = await fixture(t);
