@@ -202,9 +202,21 @@
   line-height: calc(42 * var(--u));
 }
 
+/* The waiting marks share the text rows: the dots sit where the line will start,
+   the long-wait note in the subtitle row. */
 .adv-speech-view {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.adv-primary-text,
+.adv-thinking-dots {
+  grid-area: 1 / 1;
+}
+
+.adv-subtitle-text,
+.adv-wait-hint {
+  grid-area: 2 / 1;
 }
 
 .adv-speech-view.is-hidden {
@@ -263,6 +275,32 @@
 
 .adv-thinking-dots.is-hidden {
   display: none;
+}
+
+.adv-thinking-dots,
+.adv-wait-hint {
+  justify-self: start;
+  align-self: center;
+}
+
+/* Hidden for the first three seconds of a wait, then fades in. The wait is a delay, not part
+   of the duration: reduced motion shortens every animation's duration, not its delay. */
+.adv-wait-hint {
+  font-size: calc(24 * var(--u));
+  letter-spacing: calc(1 * var(--u));
+  color: rgba(255, 255, 255, 0.5);
+  white-space: nowrap;
+  pointer-events: none;
+  animation: adv-wait-hint-in 0.4s ease-out 3s both;
+}
+
+.adv-wait-hint.is-hidden {
+  display: none;
+}
+
+@keyframes adv-wait-hint-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 @keyframes adv-thinking-wave {

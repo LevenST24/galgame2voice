@@ -120,9 +120,17 @@ export function createTextbox(container, opts = {}) {
   thinkingDotsEl.setAttribute('aria-hidden', 'true');
   thinkingDotsEl.textContent = '……';
 
+  // While a line waits for its voice, the dots stay where the line will appear. This note
+  // sits in the subtitle row and only fades in (CSS) once the wait has lasted a few seconds.
+  const waitHintEl = document.createElement('span');
+  waitHintEl.className = 'adv-wait-hint is-hidden';
+  waitHintEl.setAttribute('aria-hidden', 'true');
+  waitHintEl.textContent = '语音还在准备，点击可先看文字';
+
   speechViewEl.appendChild(primaryTextEl);
   speechViewEl.appendChild(subtitleTextEl);
   speechViewEl.appendChild(thinkingDotsEl);
+  speechViewEl.appendChild(waitHintEl);
 
   // Player input view
   const inputWrapEl = document.createElement('div');
@@ -464,7 +472,7 @@ export function createTextbox(container, opts = {}) {
     speechViewEl.classList.remove('is-hidden');
     inputWrapEl.classList.add('is-hidden');
     errorWrapEl.classList.add('is-hidden');
-    thinkingDotsEl.classList.add('is-hidden');
+    waitingForAudio(false);
 
     const settings = getEffectiveSettings();
     const { primaryText, subText } = resolveLineTexts(line, settings);
@@ -485,7 +493,7 @@ export function createTextbox(container, opts = {}) {
 
     speechViewEl.classList.remove('is-hidden');
     inputWrapEl.classList.add('is-hidden');
-    thinkingDotsEl.classList.add('is-hidden');
+    waitingForAudio(false);
 
     // Subtitle rendering
     const settings = getEffectiveSettings();
@@ -554,6 +562,7 @@ export function createTextbox(container, opts = {}) {
       inputWrapEl.classList.add('is-hidden');
       primaryTextEl.textContent = '';
       subtitleTextEl.textContent = '';
+      waitHintEl.classList.add('is-hidden');
       thinkingDotsEl.classList.remove('is-hidden');
       if (currentSpeaker.mode === 'character') {
         updateSpeakerUI();
@@ -564,8 +573,8 @@ export function createTextbox(container, opts = {}) {
   }
 
   function waitingForAudio(on) {
-    thinkingDotsEl.textContent = on ? '语音准备中…点击可先看文字' : '……';
     thinkingDotsEl.classList.toggle('is-hidden', !on);
+    waitHintEl.classList.toggle('is-hidden', !on);
   }
 
   function enterInput({ canSend = true } = {}) {
