@@ -5,6 +5,8 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [3.2.4] - 2026-11-17
 ### Added
 - 角色包可以在自己的 `background` 文件夹里附带所属作品的背景包（格式与 `backgrounds/<作品>/` 相同）。`backgrounds` 里没有这个作品时就用角色包带的背景，所以新装的角色会直接显示所属作品的默认背景；导入后切到新角色时，舞台会自动重新读取背景列表，不用刷新页面。
 
@@ -112,7 +114,8 @@ All notable changes to galgame2voice are documented here. The format follows
 - 修复聊天输入框超过 4000 字发送时清空草稿且报错失真，以及打开设置中心时未立即停止首页正在播放的试听语音的问题。
 - 修复在输入框使用中文/日文输入法组字时按 Esc 取消候选词会直接关闭弹窗，以及在背景选择对话框按 Tab 或 Shift+Tab 时焦点跳出对话框的问题。
 
-[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.3...HEAD
+[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.4...HEAD
+[3.2.4]: https://github.com/LevenST24/galgame2voice/compare/v3.2.3...v3.2.4
 [3.2.3]: https://github.com/LevenST24/galgame2voice/compare/v3.2.2...v3.2.3
 [3.2.2]: https://github.com/LevenST24/galgame2voice/compare/v3.2.1...v3.2.2
 [3.2.1]: https://github.com/LevenST24/galgame2voice/compare/v3.2.0...v3.2.1
