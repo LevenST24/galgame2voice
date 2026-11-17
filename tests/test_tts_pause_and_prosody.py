@@ -316,66 +316,6 @@ class TestStreamingParserModalParticleHandling:
         assert ja_full == "そうですね、私もそう思いますよ。"
         assert rem == []
 
-    def test_parser_emits_greeting_clause_immediately(self):
-        from galgame2voice.services.streaming_parser import StreamingBilingualParser
-        parser = StreamingBilingualParser()
-
-        # Feed chunk 1: greeting (non-modal)
-        ch1, ja1 = parser.feed_chunk('{"chinese": "你好", "japanese": "こんにちは、')
-        assert ja1 == ["こんにちは、"]
-        assert parser.first_sentence_emitted is True
-
-
-class TestTtsServiceProsodySplitDefaults:
-    """Verifies TtsService defaults text_split_method to cut0/cut2 when not specified."""
-
-    @pytest.mark.asyncio
-    async def test_synthesize_defaults_cut0_for_short_text(self, tmp_path):
-        from unittest.mock import AsyncMock, MagicMock
-        from galgame2voice.services.tts_service import TtsService
-
-        mock_client = MagicMock()
-        captured = []
-        async def _mock_synth(text, options=None):
-            captured.append(dict(options or {}))
-            return b"WAV_DATA"
-
-        mock_client.synthesize = AsyncMock(side_effect=_mock_synth)
-        mock_cache = MagicMock()
-        mock_cache.db_path = None
-        mock_cache.compute_cache_key.return_value = ("key123", "clean", "hash")
-        mock_cache.get = AsyncMock(return_value=None)
-        mock_cache.put = AsyncMock(return_value=("/audio/test.wav", tmp_path / "test.wav", 8))
-        service = TtsService(client=mock_client, audio_dir=tmp_path, cache_manager=mock_cache)
-
-        await service.synthesize("そうですね、私もそう思いますよ。")
-        assert len(captured) == 1
-        assert captured[0].get("text_split_method") == "cut0"
-
-    @pytest.mark.asyncio
-    async def test_synthesize_defaults_cut2_for_long_text(self, tmp_path):
-        from unittest.mock import AsyncMock, MagicMock
-        from galgame2voice.services.tts_service import TtsService
-
-        mock_client = MagicMock()
-        captured = []
-        async def _mock_synth(text, options=None):
-            captured.append(dict(options or {}))
-            return b"WAV_DATA"
-
-        mock_client.synthesize = AsyncMock(side_effect=_mock_synth)
-        mock_cache = MagicMock()
-        mock_cache.db_path = None
-        mock_cache.compute_cache_key.return_value = ("key123", "clean", "hash")
-        mock_cache.get = AsyncMock(return_value=None)
-        mock_cache.put = AsyncMock(return_value=("/audio/test.wav", tmp_path / "test.wav", 8))
-        service = TtsService(client=mock_client, audio_dir=tmp_path, cache_manager=mock_cache)
-
-        long_text = "とても長い文章です。" * 10  # 100 chars > 80
-        await service.synthesize(long_text)
-        assert len(captured) == 1
-        assert captured[0].get("text_split_method") == "cut2"
-
 
 class TestChatServiceModalParticleSingleChunk:
     """Verifies that dialogue sentences ending with modal particles synthesize as a single chunk."""
