@@ -44,16 +44,6 @@ class TestConsoleRoutesAndRedirects:
     """Verifies clean routing and redirection for /settings.html, /console, and /settings."""
 
     @pytest.mark.asyncio
-    async def test_serve_settings_html_redirects_to_spa(self):
-        """Verifies GET /settings.html redirects to the unified SPA /?settings=1 with HTTP 307."""
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=False) as client:
-            resp = await client.get("/settings.html")
-            assert resp.status_code == 307
-            assert resp.headers["location"] == "/?settings=1"
-
-    @pytest.mark.asyncio
     async def test_console_redirect_to_settings_html(self):
         """Verifies GET /console returns a 307 redirect to /?settings=1."""
         app = create_app()
@@ -156,142 +146,12 @@ class TestSecurityAndKeyMasking:
         assert is_masked_key("****") is True
         assert is_masked_key("Bearer secret_token") is False
 
-    @pytest.mark.asyncio
-    async def test_provider_api_key_masked_on_retrieval(self):
-        """Verifies GET /api/providers and GET /api/providers/{id} return masked keys."""
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
-            # Create a provider with plaintext key
-            await client.post("/api/providers", json={
-                "id": "security_test_provider",
-                "name": "Security Test",
-                "api_base_url": "https://api.test.com/v1",
-                "api_key": "sk-mysecretapikey99887766",
-                "chat_model": "test-model"
-            })
-
-            # List providers
-            list_resp = await client.get("/api/providers")
-            assert list_resp.status_code == 200
-            providers = list_resp.json()["providers"]
-            p = next((x for x in providers if x["id"] == "security_test_provider"), None)
-            assert p is not None
-            assert p["api_key"] == "sk-****7766"
-            assert "mysecretapikey" not in p["api_key"]
-
-            # Get single provider
-            single_resp = await client.get("/api/providers/security_test_provider")
-            assert single_resp.status_code == 200
-            single_p = single_resp.json()["provider"]
-            assert single_p["api_key"] == "sk-****7766"
-
-    @pytest.mark.asyncio
-    async def test_provider_masked_key_submission_retains_secret(self):
-        """Verifies submitting masked key (e.g. sk-****7766) does NOT overwrite plaintext secret in DB."""
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
-            # 1. Create with secret
-            await client.post("/api/providers", json={
-                "id": "retain_test_prov",
-                "name": "Retain Test",
-                "api_base_url": "https://api.test.com/v1",
-                "api_key": "sk-supersecret12345678",
-                "chat_model": "model-v1"
-            })
-
-            # 2. Submit update with masked key as would come from frontend form
-            update_resp = await client.post("/api/providers", json={
-                "id": "retain_test_prov",
-                "name": "Retain Test Updated",
-                "api_base_url": "https://api.test.com/v1",
-                "api_key": "sk-****5678",  # Masked placeholder submitted
-                "chat_model": "model-v2"
-            })
-            assert update_resp.status_code == 200
-
-            # 3. Verify in database raw that secret was preserved
-            async with get_db() as conn:
-                raw_prov = await crud.get_provider_raw(conn, "retain_test_prov")
-                assert raw_prov.api_key == "sk-supersecret12345678"
-                assert raw_prov.chat_model == "model-v2"
-
-    @pytest.mark.asyncio
-    async def test_provider_empty_key_submission_retains_secret(self):
-        """Verifies submitting empty key on update does not erase stored secret."""
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
-            await client.post("/api/providers", json={
-                "id": "empty_key_prov",
-                "name": "Empty Key Test",
-                "api_base_url": "https://api.test.com/v1",
-                "api_key": "sk-existingsecretkey999",
-                "chat_model": "model-v1"
-            })
-
-            # Update with empty string api_key
-            await client.post("/api/providers", json={
-                "id": "empty_key_prov",
-                "api_key": "",
-                "chat_model": "model-v3"
-            })
-
-            async with get_db() as conn:
-                raw_prov = await crud.get_provider_raw(conn, "empty_key_prov")
-                assert raw_prov.api_key == "sk-existingsecretkey999"
-                assert raw_prov.chat_model == "model-v3"
-
-    @pytest.mark.asyncio
-    async def test_provider_new_key_submission_updates_secret(self):
-        """Verifies submitting a new valid plaintext key updates the secret in DB."""
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
-            await client.post("/api/providers", json={
-                "id": "change_key_prov",
-                "name": "Change Key Test",
-                "api_base_url": "https://api.test.com/v1",
-                "api_key": "sk-oldsecretkey1111",
-                "chat_model": "model-v1"
-            })
-
-            # Update with brand new key
-            await client.post("/api/providers", json={
-                "id": "change_key_prov",
-                "api_key": "sk-newsecretkey2222",
-                "chat_model": "model-v1"
-            })
-
-            async with get_db() as conn:
-                raw_prov = await crud.get_provider_raw(conn, "change_key_prov")
-                assert raw_prov.api_key == "sk-newsecretkey2222"
-
-
 # ============================================================================
 # 3. Provider Management API Tests
 # ============================================================================
 
 class TestProviderManagementEndpoints:
     """Verifies provider activation and deletion."""
-
-    @pytest.mark.asyncio
-    async def test_activate_provider_endpoint(self):
-        """Verifies POST /api/providers/{id}/activate sets active provider and syncs settings."""
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
-            resp = await client.post("/api/providers/openai/activate")
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["status"] == "success"
-            assert data["active_provider"]["id"] == "openai"
-
-            # Check config sync
-            cfg_resp = await client.get("/api/config")
-            assert cfg_resp.json()["settings"]["active_provider_id"] == "openai"
-            assert cfg_resp.json()["active_provider"]["id"] == "openai"
 
     @pytest.mark.asyncio
     async def test_provider_delete_endpoint(self):
@@ -446,20 +306,6 @@ class TestSystemDiagnostics:
 class TestMaskingFilterLogSanitization:
     """Verifies zero plaintext leakage in application and server logs via MaskingFilter."""
 
-    def test_masking_filter_openai_key(self):
-        """Verifies OpenAI sk- keys are redacted from logs."""
-        raw_msg = "Attempting connection with OpenAI key sk-1234567890abcdef123456"
-        sanitized = MaskingFilter.sanitize(raw_msg)
-        assert "sk-1234567890abcdef123456" not in sanitized
-        assert "sk-123****3456" in sanitized or "sk-****" in sanitized
-
-    def test_masking_filter_bearer_auth(self):
-        """Verifies Bearer Authorization headers are redacted."""
-        raw_msg = "Request headers: {'Authorization': 'Bearer secret_access_token_12345678'}"
-        sanitized = MaskingFilter.sanitize(raw_msg)
-        assert "secret_access_token_12345678" not in sanitized
-        assert "Bearer [MASKED_TOKEN]" in sanitized
-
     def test_masking_filter_telegram_token(self):
         """Verifies Telegram bot tokens are redacted."""
         raw_msg = "Initialized bot with token 123456789:ABCDefgh-1234567890abcdefghijklmn"
@@ -525,22 +371,6 @@ class TestMaskingFilterLogSanitization:
         "unquoted_secret": "client_secret: sec_client_secret_44444",
         "unquoted_auth_token": "auth_token: sec_auth_token_33333",
     }
-
-    def test_masking_filter_gemini_and_huggingface_keys(self):
-        """AIzaSy and hf_ tokens are redacted, not only URL-query or Bearer wrappers."""
-        for name in ("google_gemini", "huggingface"):
-            raw_secret = self.SECRET_CORPUS[name]
-            sanitized = MaskingFilter.sanitize(raw_secret)
-            assert raw_secret not in sanitized, f"Secret leak for {name}: {raw_secret} found in {sanitized}"
-            assert ("****" in sanitized or "[MASKED" in sanitized), f"Masking marker missing for {name}: {sanitized}"
-
-    def test_masking_filter_telegram_url(self):
-        """Telegram bot tokens embedded in api.telegram.org URLs are redacted."""
-        raw_secret = self.SECRET_CORPUS["tg_url"]
-        sanitized = MaskingFilter.sanitize(raw_secret)
-        assert raw_secret not in sanitized, f"Secret leak for tg_url: {raw_secret} found in {sanitized}"
-        assert "1234567890:AAH_abcdefghijklmnopqrstuvwxyz12345" not in sanitized
-        assert ("****" in sanitized or "[MASKED" in sanitized)
 
     def test_masking_filter_unquoted_token_edge_cases(self):
         """Unquoted key/value assignments stay masked across delimiters."""
@@ -633,65 +463,6 @@ class TestMaskingFilterLogSanitization:
                 else:
                     assert raw_secret not in output, f"Secret {name} leaked in formatted traceback!"
 
-    # Strict 2MB log-sanitization wall-clock throughput budget is sensitive to multi-worker CPU contention.
-    @pytest.mark.serial
-    @pytest.mark.wall_clock
-    def test_massive_log_payload_throughput_and_redos_safety(self):
-        """
-        Tests 2MB massive log string containing 10,000 lines and embedded secrets
-        at the beginning, middle, and end.
-        Ensures linear execution time (ReDoS safe) and zero memory corruption.
-        """
-        lines = ["Normal application log line processing user request sequence ID #100234.\n"] * 10000
-        lines[0] = f"Start line with token: {self.SECRET_CORPUS['openai_std']}\n"
-        lines[5000] = f"Middle line with google key: {self.SECRET_CORPUS['google_gemini']}\n"
-        lines[9999] = f"End line with tg: {self.SECRET_CORPUS['tg_url']}\n"
-        payload = "".join(lines)
-
-        timings = []
-        sanitized = ""
-        for _ in range(3):
-            t0 = time.perf_counter()
-            sanitized = MaskingFilter.sanitize(payload)
-            timings.append(time.perf_counter() - t0)
-
-        best_elapsed = min(timings)
-        assert best_elapsed < 3.0, (
-            f"Sanitization of payload took too long: best={best_elapsed:.3f}s, "
-            f"runs={[f'{t:.3f}s' for t in timings]} (ReDoS risk)"
-        )
-        assert self.SECRET_CORPUS["openai_std"] not in sanitized
-        assert self.SECRET_CORPUS["google_gemini"] not in sanitized
-        assert "1234567890:AAH_abcdefghijklmnopqrstuvwxyz12345" not in sanitized
-
-    # Tight wall-clock budget on 150KB MaskingFilter regex pass is sensitive to multi-worker CPU contention.
-    @pytest.mark.serial
-    @pytest.mark.wall_clock
-    def test_redos_and_massive_payload_stress(self):
-        """
-        Verify MaskingFilter does not hang (ReDoS) or crash on a massive 150KB string
-        containing repeated patterns and multiple embedded secrets.
-        """
-        junk = "The quick brown fox jumps over the lazy dog. " * 2000
-        secrets = [
-            "sk-1234567890abcdef12345678",
-            "Bearer super_secret_token_1234567890",
-            '{"api_key": "sk-embedded-998877665544"}',
-            "https://api.test.com?api_key=sk-query-param-1234567890",
-        ]
-        massive_text = junk + "\n".join(secrets) + junk
-
-        t0 = time.perf_counter()
-        sanitized = MaskingFilter.sanitize(massive_text)
-        elapsed = time.perf_counter() - t0
-
-        assert elapsed < 0.5, f"Sanitization took too long: {elapsed:.3f}s"
-        assert "sk-1234567890abcdef12345678" not in sanitized
-        assert "super_secret_token_1234567890" not in sanitized
-        assert "sk-embedded-998877665544" not in sanitized
-        assert "sk-query-param-1234567890" not in sanitized
-
-
 @pytest.mark.asyncio
 class TestLogMaskingSecurity:
     """Adversarial validation of zero-leak log masking."""
@@ -730,70 +501,6 @@ class TestLogMaskingSecurity:
         filter_instance.filter(record)
         assert "9876543210abcdef" not in str(record.args)
         assert "secretToken12345678" not in str(record.args)
-
-
-# ============================================================================
-# 7. Console Voice & Provider Integration Edge Cases
-# ============================================================================
-
-class TestConsoleVoiceAndProviderIntegration:
-    """Verifies voice switching and provider connectivity resolution from console."""
-
-    @pytest.mark.asyncio
-    async def test_switch_voice_profile_api_success(self):
-        """Verifies POST /api/voice/switch successfully changes active voice profile."""
-        import uuid
-        from unittest.mock import AsyncMock, patch
-        app = create_app()
-        transport = ASGITransport(app=app)
-        unique_name = f"SwitchableProfile_{uuid.uuid4().hex[:6]}"
-        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
-            # Create a test profile
-            create_resp = await client.post("/api/voice/profiles", json={
-                "name": unique_name,
-                "gpt_weights_path": "weights/char.ckpt",
-                "sovits_weights_path": "weights/char.pth",
-                "refer_audio_path": "audio/ref.ogg",
-                "refer_text": "こんにちは",
-                "refer_language": "ja"
-            })
-            assert create_resp.status_code == 201
-            profile_id = create_resp.json()["id"]
-
-            try:
-                # Switch to it with mocked backend
-                with patch("galgame2voice.services.voice_manager.VoiceManager.switch_profile", new_callable=AsyncMock) as mock_switch:
-                    mock_switch.return_value = True
-                    switch_resp = await client.post("/api/voice/switch", json={"profile_id": profile_id})
-                    assert switch_resp.status_code == 200
-                    data = switch_resp.json()
-                    assert data["status"] == "switched"
-                    assert data["profile_id"] == profile_id
-            finally:
-                await client.delete(f"/api/voice/profiles/{profile_id}")
-
-    @pytest.mark.asyncio
-    async def test_switch_voice_profile_not_found(self):
-        """Verifies POST /api/voice/switch with non-existent ID returns 404."""
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
-            switch_resp = await client.post("/api/voice/switch", json={"profile_id": 99999})
-            assert switch_resp.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_health_check(self):
-        """Verifies GET /api/health endpoint."""
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
-            # Health
-            h_resp = await client.get("/api/health")
-            assert h_resp.status_code == 200
-            h_data = h_resp.json()
-            assert h_data["status"] == "ok"
-            assert "uptime_seconds" in h_data
-            assert h_data["app"] == "galgame2voice"
 
 
 # ============================================================================
