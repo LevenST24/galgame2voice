@@ -5,10 +5,12 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
-### Fixed
-- 打开设置中心「长期记忆」时，开头把角色人设和音色都说成在当前会话里设置，改人设会让人以为只影响这一段对话；现在会写明人设在「角色与会话」里修改后对这个角色的所有会话生效，音色和语速按每段会话分别保存。
+
+## [3.2.8] - 2026-11-18
 ### Added
 - 打开设置中心的「长期记忆」页时，以前只有一段说明，看不到角色记住了什么，记错了也删不掉；现在会列出当前角色记住的称呼、喜好、讨厌、约定和身份，每条可以点两次删除。
+### Fixed
+- 打开设置中心「长期记忆」时，开头把角色人设和音色都说成在当前会话里设置，改人设会让人以为只影响这一段对话；现在会写明人设在「角色与会话」里修改后对这个角色的所有会话生效，音色和语速按每段会话分别保存。
 
 ## [3.2.7] - 2026-11-18
 ### Fixed
@@ -137,7 +139,8 @@ All notable changes to galgame2voice are documented here. The format follows
 - 修复聊天输入框超过 4000 字发送时清空草稿且报错失真，以及打开设置中心时未立即停止首页正在播放的试听语音的问题。
 - 修复在输入框使用中文/日文输入法组字时按 Esc 取消候选词会直接关闭弹窗，以及在背景选择对话框按 Tab 或 Shift+Tab 时焦点跳出对话框的问题。
 
-[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.7...HEAD
+[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.8...HEAD
+[3.2.8]: https://github.com/LevenST24/galgame2voice/compare/v3.2.7...v3.2.8
 [3.2.7]: https://github.com/LevenST24/galgame2voice/compare/v3.2.6...v3.2.7
 [3.2.6]: https://github.com/LevenST24/galgame2voice/compare/v3.2.5...v3.2.6
 [3.2.5]: https://github.com/LevenST24/galgame2voice/compare/v3.2.4...v3.2.5
