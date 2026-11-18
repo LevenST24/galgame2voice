@@ -156,7 +156,7 @@ export class MemorySettingsController {
     this._setError('');
     this._renderStatusText('正在读取记忆…');
 
-    // 服务端还没有这段会话时（尚未发过消息），用会话绑定的角色作提示。
+    // 聊天时每条消息都带着会话绑定的音色，服务端优先用它；读取记忆时也传过去，两边是同一个角色。
     const params = new URLSearchParams({ session_id: session.id });
     const hintCharacterId = session.settings.voiceProfileId;
     if (hintCharacterId) params.set('character_id', String(hintCharacterId));
