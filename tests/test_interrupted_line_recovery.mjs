@@ -39,6 +39,57 @@ function setupInterruptedTurn(sessionId = 's_interrupted_test') {
   return { session, stream, conversation };
 }
 
+function makeRepairReply(body, audioUrl, { persisted = body.message_id !== null, line = 0, voiceProfileId = 7 } = {}) {
+  return {
+    session_id: body.session_id,
+    message_id: body.message_id,
+    line_index: body.line_index,
+    voice_profile_id: body.voice_profile_id,
+    persisted,
+    audio: {
+      status: 'ready',
+      generated_at: Date.now(),
+      voice_profile_id: voiceProfileId,
+      voice_name: '当前角色',
+      chunks: [{ index: 0, line, audio_url: audioUrl, sentence: body.text }],
+    },
+  };
+}
+
+function setupRecovery(session, request, saveState = () => true) {
+  return createLineAudioRecovery({
+    getSession: () => session,
+    getVoiceProfiles: () => [{ id: 7, name: '当前角色' }],
+    saveState,
+    request,
+  });
+}
+
+async function runInterruptedTurn(conversation, stream, session, { prompt, userMessageId, zh, ja, reqIndex = 0 }) {
+  conversation.send(prompt);
+  await tick();
+  const req = stream.requests[reqIndex];
+  await req.event('turn_started', { session_id: session.id, user_message_id: userMessageId });
+  await req.event('line', { index: 0, zh, ja, emotion: 'neutral' });
+  conversation.stop();
+  for (let i = 0; i < 10 && conversation.busy; i++) await tick();
+}
+
+function makeFailedLineSession(id, messageId, zh, ja, extraMessage = {}) {
+  return {
+    id,
+    settings: { voiceProfileId: 7 },
+    messages: [{
+      id: messageId,
+      role: 'assistant',
+      content: zh,
+      japanese: ja,
+      ...extraMessage,
+      lines: [{ index: 0, zh, ja, emotion: 'neutral', audio: { status: 'failed', chunks: [] } }],
+    }],
+  };
+}
+
 test('interrupted reply with turn_started obtains real server ID via GET before recovery POST', async () => {
   const { session, stream, conversation } = setupInterruptedTurn();
 
@@ -70,47 +121,27 @@ test('interrupted reply with turn_started obtains real server ID via GET before 
   assert.equal(assistantMsg.serverUserMessageId, 101, 'assistant must record serverUserMessageId from turn_started');
 
   const networkCalls = [];
-  const repairReply = body => ({
-    session_id: body.session_id,
-    message_id: body.message_id,
-    line_index: body.line_index,
-    voice_profile_id: body.voice_profile_id,
-    persisted: body.message_id !== null,
-    audio: {
-      status: 'ready',
-      generated_at: Date.now(),
-      voice_profile_id: body.voice_profile_id,
-      voice_name: '当前角色',
-      chunks: [{ index: 0, line: body.line_index, audio_url: '/audio/repair_recovered01.wav', sentence: body.text }],
-    },
-  });
-
   let saves = 0;
-  const recover = createLineAudioRecovery({
-    getSession: () => session,
-    getVoiceProfiles: () => [{ id: 7, name: '当前角色' }],
-    saveState: () => { saves++; return true; },
-    request: async (url, options) => {
-      networkCalls.push({ url, options });
-      if (options.method === 'GET') {
-        const u = new URL(url, 'http://127.0.0.1');
-        assert.equal(u.pathname, '/api/chat/turn-reply');
-        assert.equal(u.searchParams.get('session_id'), session.id);
-        assert.equal(u.searchParams.get('user_message_id'), '101');
-        return {
-          status: 'ready',
-          session_id: session.id,
-          user_message_id: 101,
-          message_id: 202,
-        };
-      }
-      if (options.method === 'POST') {
-        const body = JSON.parse(options.body);
-        return repairReply(body);
-      }
-      throw new Error(`Unexpected request: ${options.method} ${url}`);
-    },
-  });
+  const recover = setupRecovery(session, async (url, options) => {
+    networkCalls.push({ url, options });
+    if (options.method === 'GET') {
+      const u = new URL(url, 'http://127.0.0.1');
+      assert.equal(u.pathname, '/api/chat/turn-reply');
+      assert.equal(u.searchParams.get('session_id'), session.id);
+      assert.equal(u.searchParams.get('user_message_id'), '101');
+      return {
+        status: 'ready',
+        session_id: session.id,
+        user_message_id: 101,
+        message_id: 202,
+      };
+    }
+    if (options.method === 'POST') {
+      const body = JSON.parse(options.body);
+      return makeRepairReply(body, '/audio/repair_recovered01.wav', { line: body.line_index, voiceProfileId: body.voice_profile_id });
+    }
+    throw new Error(`Unexpected request: ${options.method} ${url}`);
+  }, () => { saves++; return true; });
 
   const result = await recover({ messageId: assistantMsg.id, lineIndex: 0 });
 
@@ -128,33 +159,14 @@ test('interrupted reply with turn_started obtains real server ID via GET before 
 test('mocked server history page aligns with local message by serverMessageId to preserve repaired audio', async () => {
   const { session, stream, conversation } = setupInterruptedTurn();
 
-  conversation.send('提问');
-  await tick();
-  const req = stream.requests[0];
-  await req.event('turn_started', { session_id: session.id, user_message_id: 501 });
-  await req.event('line', { index: 0, zh: '第一句', ja: '一言目。', emotion: 'neutral' });
-  conversation.stop();
-  for (let i = 0; i < 10 && conversation.busy; i++) await tick();
+  await runInterruptedTurn(conversation, stream, session, { prompt: '提问', userMessageId: 501, zh: '第一句', ja: '一言目。' });
 
   const assistantMsg = session.messages.find(m => m.role === 'assistant');
-  const recover = createLineAudioRecovery({
-    getSession: () => session,
-    getVoiceProfiles: () => [{ id: 7, name: '当前角色' }],
-    saveState: () => true,
-    request: async (url, options) => {
-      if (options.method === 'GET') {
-        return { status: 'ready', session_id: session.id, user_message_id: 501, message_id: 601 };
-      }
-      const body = JSON.parse(options.body);
-      return {
-        session_id: body.session_id, message_id: body.message_id, line_index: body.line_index,
-        voice_profile_id: body.voice_profile_id, persisted: true,
-        audio: {
-          status: 'ready', generated_at: Date.now(), voice_profile_id: 7, voice_name: '当前角色',
-          chunks: [{ index: 0, line: 0, audio_url: '/audio/repair_persisted_page.wav', sentence: body.text }],
-        },
-      };
-    },
+  const recover = setupRecovery(session, async (_url, options) => {
+    if (options.method === 'GET') {
+      return { status: 'ready', session_id: session.id, user_message_id: 501, message_id: 601 };
+    }
+    return makeRepairReply(JSON.parse(options.body), '/audio/repair_persisted_page.wav');
   });
 
   await recover({ messageId: assistantMsg.id, lineIndex: 0 });
@@ -184,56 +196,32 @@ test('two consecutive turns with identical lines distinguish IDs by serverUserMe
   const { session, stream, conversation } = setupInterruptedTurn();
 
   // 第一轮
-  conversation.send('相同的用户输入');
-  await tick();
-  const req1 = stream.requests[0];
-  await req1.event('turn_started', { session_id: session.id, user_message_id: 111 });
-  await req1.event('line', { index: 0, zh: '相同台词', ja: '同じセリフ。', emotion: 'neutral' });
-  conversation.stop();
-  for (let i = 0; i < 10 && conversation.busy; i++) await tick();
+  await runInterruptedTurn(conversation, stream, session, { prompt: '相同的用户输入', userMessageId: 111, zh: '相同台词', ja: '同じセリフ。', reqIndex: 0 });
 
   const msg1 = session.messages.filter(m => m.role === 'assistant')[0];
   assert.equal(msg1.serverUserMessageId, 111);
 
   // 第二轮
-  conversation.send('相同的用户输入');
-  await tick();
-  const req2 = stream.requests[1];
-  await req2.event('turn_started', { session_id: session.id, user_message_id: 222 });
-  await req2.event('line', { index: 0, zh: '相同台词', ja: '同じセリフ。', emotion: 'neutral' });
-  conversation.stop();
-  for (let i = 0; i < 10 && conversation.busy; i++) await tick();
+  await runInterruptedTurn(conversation, stream, session, { prompt: '相同的用户输入', userMessageId: 222, zh: '相同台词', ja: '同じセリフ。', reqIndex: 1 });
 
   const msg2 = session.messages.filter(m => m.role === 'assistant')[1];
   assert.equal(msg2.serverUserMessageId, 222);
 
   const getQueries = [];
-  const recover = createLineAudioRecovery({
-    getSession: () => session,
-    getVoiceProfiles: () => [{ id: 7, name: '当前角色' }],
-    saveState: () => true,
-    request: async (url, options) => {
-      if (options.method === 'GET') {
-        const u = new URL(url, 'http://127.0.0.1');
-        const uid = Number(u.searchParams.get('user_message_id'));
-        getQueries.push(uid);
-        return {
-          status: 'ready',
-          session_id: session.id,
-          user_message_id: uid,
-          message_id: uid === 111 ? 333 : 444,
-        };
-      }
-      const body = JSON.parse(options.body);
+  const recover = setupRecovery(session, async (url, options) => {
+    if (options.method === 'GET') {
+      const u = new URL(url, 'http://127.0.0.1');
+      const uid = Number(u.searchParams.get('user_message_id'));
+      getQueries.push(uid);
       return {
-        session_id: body.session_id, message_id: body.message_id, line_index: body.line_index,
-        voice_profile_id: body.voice_profile_id, persisted: true,
-        audio: {
-          status: 'ready', generated_at: Date.now(), voice_profile_id: 7, voice_name: '当前角色',
-          chunks: [{ index: 0, line: 0, audio_url: `/audio/repair_${body.message_id}.wav`, sentence: body.text }],
-        },
+        status: 'ready',
+        session_id: session.id,
+        user_message_id: uid,
+        message_id: uid === 111 ? 333 : 444,
       };
-    },
+    }
+    const body = JSON.parse(options.body);
+    return makeRepairReply(body, `/audio/repair_${body.message_id}.wav`);
   });
 
   await recover({ messageId: msg1.id, lineIndex: 0 });
@@ -259,22 +247,9 @@ test('normal done reply with assistant ID does not perform GET lookup', async ()
   assert.equal(assistantMsg.serverMessageId, 999);
 
   const calls = [];
-  const recover = createLineAudioRecovery({
-    getSession: () => session,
-    getVoiceProfiles: () => [{ id: 7, name: '当前角色' }],
-    saveState: () => true,
-    request: async (url, options) => {
-      calls.push({ url, options });
-      const body = JSON.parse(options.body);
-      return {
-        session_id: body.session_id, message_id: body.message_id, line_index: body.line_index,
-        voice_profile_id: body.voice_profile_id, persisted: true,
-        audio: {
-          status: 'ready', generated_at: Date.now(), voice_profile_id: 7, voice_name: '当前角色',
-          chunks: [{ index: 0, line: 0, audio_url: '/audio/repair_done.wav', sentence: body.text }],
-        },
-      };
-    },
+  const recover = setupRecovery(session, async (url, options) => {
+    calls.push({ url, options });
+    return makeRepairReply(JSON.parse(options.body), '/audio/repair_done.wav');
   });
 
   await recover({ messageId: assistantMsg.id, lineIndex: 0 });
@@ -284,35 +259,12 @@ test('normal done reply with assistant ID does not perform GET lookup', async ()
 });
 
 test('browser-only imported message without server IDs preserves null POST without GET', async () => {
-  const session = {
-    id: 's_browser_only',
-    settings: { voiceProfileId: 7 },
-    messages: [{
-      id: 'm_imported_1',
-      role: 'assistant',
-      content: '导入消息',
-      japanese: 'インポート。',
-      lines: [{ index: 0, zh: '导入消息', ja: 'インポート。', emotion: 'neutral', audio: { status: 'failed', chunks: [] } }],
-    }],
-  };
+  const session = makeFailedLineSession('s_browser_only', 'm_imported_1', '导入消息', 'インポート。');
 
   const calls = [];
-  const recover = createLineAudioRecovery({
-    getSession: () => session,
-    getVoiceProfiles: () => [{ id: 7, name: '当前角色' }],
-    saveState: () => true,
-    request: async (url, options) => {
-      calls.push({ url, options });
-      const body = JSON.parse(options.body);
-      return {
-        session_id: body.session_id, message_id: body.message_id, line_index: body.line_index,
-        voice_profile_id: body.voice_profile_id, persisted: false,
-        audio: {
-          status: 'ready', generated_at: Date.now(), voice_profile_id: 7, voice_name: '当前角色',
-          chunks: [{ index: 0, line: 0, audio_url: '/audio/repair_local.wav', sentence: body.text }],
-        },
-      };
-    },
+  const recover = setupRecovery(session, async (url, options) => {
+    calls.push({ url, options });
+    return makeRepairReply(JSON.parse(options.body), '/audio/repair_local.wav', { persisted: false });
   });
 
   await recover({ messageId: 'm_imported_1', lineIndex: 0 });
@@ -352,33 +304,17 @@ test('portableSnapshot strictly strips serverUserMessageId and serverMessageId',
 });
 
 test('GET timeout does not produce a null POST and rejects with actionable error', async () => {
-  const session = {
-    id: 's_timeout_test',
-    settings: { voiceProfileId: 7 },
-    messages: [{
-      id: 'm_timeout',
-      role: 'assistant',
-      content: '超时测试',
-      japanese: 'タイムアウト。',
-      serverUserMessageId: 999,
-      lines: [{ index: 0, zh: '超时测试', ja: 'タイムアウト。', emotion: 'neutral', audio: { status: 'failed', chunks: [] } }],
-    }],
-  };
+  const session = makeFailedLineSession('s_timeout_test', 'm_timeout', '超时测试', 'タイムアウト。', { serverUserMessageId: 999 });
 
   const postCalls = [];
-  const recover = createLineAudioRecovery({
-    getSession: () => session,
-    getVoiceProfiles: () => [{ id: 7, name: '当前角色' }],
-    saveState: () => true,
-    request: async (url, options) => {
-      if (options.method === 'GET') {
-        const error = new Error('request timeout');
-        error.code = 'REQUEST_TIMEOUT';
-        throw error;
-      }
-      postCalls.push({ url, options });
-      throw new Error('POST should never be called when GET times out');
-    },
+  const recover = setupRecovery(session, async (url, options) => {
+    if (options.method === 'GET') {
+      const error = new Error('request timeout');
+      error.code = 'REQUEST_TIMEOUT';
+      throw error;
+    }
+    postCalls.push({ url, options });
+    throw new Error('POST should never be called when GET times out');
   });
 
   await assert.rejects(
@@ -412,14 +348,9 @@ test('conflicting turn_started events permanently mark the reply conflicted and 
   assert.equal(assistantMsg.turnConflict, true, 'must be permanently marked conflicted');
 
   const networkCalls = [];
-  const recover = createLineAudioRecovery({
-    getSession: () => session,
-    getVoiceProfiles: () => [{ id: 7, name: '当前角色' }],
-    saveState: () => true,
-    request: async (url, options) => {
-      networkCalls.push({ url, options });
-      throw new Error('No network call should be made for conflicted turns');
-    },
+  const recover = setupRecovery(session, async (url, options) => {
+    networkCalls.push({ url, options });
+    throw new Error('No network call should be made for conflicted turns');
   });
 
   // recovery 中文拒绝，不查询/POST 任一冲突身份，也不偷偷降级为 null POST
@@ -431,35 +362,19 @@ test('conflicting turn_started events permanently mark the reply conflicted and 
 });
 
 test('modifying serverUserMessageId during in-flight GET aborts recovery without ID writeback or POST', async () => {
-  const session = {
-    id: 's_mutate_test',
-    settings: { voiceProfileId: 7 },
-    messages: [{
-      id: 'm_mutate',
-      role: 'assistant',
-      content: '变更测试',
-      japanese: '変更。',
-      serverUserMessageId: 101,
-      lines: [{ index: 0, zh: '变更测试', ja: '変更。', emotion: 'neutral', audio: { status: 'failed', chunks: [] } }],
-    }],
-  };
+  const session = makeFailedLineSession('s_mutate_test', 'm_mutate', '变更测试', '変更。', { serverUserMessageId: 101 });
 
   const message = session.messages[0];
   let resolveGet;
   const getPromise = new Promise(resolve => { resolveGet = resolve; });
   const networkCalls = [];
 
-  const recover = createLineAudioRecovery({
-    getSession: () => session,
-    getVoiceProfiles: () => [{ id: 7, name: '当前角色' }],
-    saveState: () => true,
-    request: async (url, options) => {
-      networkCalls.push({ url, options });
-      if (options.method === 'GET') {
-        return getPromise;
-      }
-      return { session_id: session.id, message_id: 202, persisted: true };
-    },
+  const recover = setupRecovery(session, async (url, options) => {
+    networkCalls.push({ url, options });
+    if (options.method === 'GET') {
+      return getPromise;
+    }
+    return { session_id: session.id, message_id: 202, persisted: true };
   });
 
   const recoveryPromise = recover({ messageId: message.id, lineIndex: 0 });
