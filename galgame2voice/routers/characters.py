@@ -290,12 +290,14 @@ async def _get_memory_session(conn: aiosqlite.Connection, session_id: str | None
 async def list_character_memories_endpoint(
     session_id: str | None = Query(default=None, max_length=128, description="Current session ID"),
     character_id: int | None = Query(
-        default=None, ge=1, description="Character bound to a session the server has not stored yet"
+        default=None, ge=1, description="Voice profile the browser session is bound to (chat sends it, so it wins)"
     ),
 ) -> dict[str, Any]:
     async with get_db() as conn:
         session, user_id = await _get_memory_session(conn, session_id)
-        hinted = await crud.get_voice_profile(conn, character_id) if session is None and character_id else None
+        # Chat sends the browser's bound voice with every message and prefers it over the stored session
+        # (chat_service resolves request -> tts_options -> session), so the list follows the same order.
+        hinted = await crud.get_voice_profile(conn, character_id) if character_id else None
         profile = await _resolve_context_voice_profile(conn, session, None, active_profile=hinted)
         resolved_char_id = profile.id if profile else 1
         memories = await crud.list_character_memories(conn, user_id, resolved_char_id)
