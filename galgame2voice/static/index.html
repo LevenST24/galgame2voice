@@ -7,8 +7,8 @@
   <title>Gal2Voice · AI 多会话聊天</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%236c7ce0'/%3E%3Cpath d='M16 5l6 8.2c.9 1.2.7 2.6-.3 3.6L16 27l-5.7-10.2c-1-1-1.2-2.4-.3-3.6L16 5z' fill='%23ffffff'/%3E%3C/svg%3E" />
 
-  <script type="module" crossorigin src="/static/assets/index-ByNmToWc.js"></script>
-  <link rel="stylesheet" crossorigin href="/static/assets/index-CtZzVExB.css">
+  <script type="module" crossorigin src="/static/assets/index-D1MX7f37.js"></script>
+  <link rel="stylesheet" crossorigin href="/static/assets/index-I2Z_mEJ1.css">
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -469,7 +469,14 @@
         <!-- 选项卡 5: 记忆与人设 -->
         <div class="gtab-panel hidden" id="gp-memory">
           <div class="settings-intro"><h3>角色与记忆</h3><p>人设在「角色与会话」里修改，会写回角色包，对这个角色的所有会话生效；音色和语速按每段会话分别保存。</p></div>
-          <div class="settings-note"><strong>长期记忆已由系统管理</strong><p>系统会从对话中提取称呼等信息。当前版本暂不支持在这里手动修改全局昵称、记忆开关或默认人设。</p></div>
+          <section class="memory-panel" aria-labelledby="gMemoryTitle">
+            <div class="memory-panel-head">
+              <h4 id="gMemoryTitle">当前角色记住的事</h4>
+              <p class="memory-panel-note" id="gMemoryNote">这些是当前角色在所有对话里记住的关于你的事。删掉一条后，之后的回复不会再用到它。</p>
+            </div>
+            <p class="settings-error hidden" id="gMemoryError" role="status"></p>
+            <div class="memory-list" id="gMemoryList" aria-live="polite"></div>
+          </section>
           <button type="button" class="btn ghost" id="gOpenSessionSettings"><svg class="icon"><use href="#i-sliders"></use></svg>打开「角色与会话」</button>
         </div>
 

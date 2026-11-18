@@ -31,6 +31,8 @@ __all__ = [
     "create_memory",
     "get_memory",
     "list_memories",
+    "list_character_memories",
+    "delete_character_memory",
     "upsert_memory",
     "record_memory_recall_batch",
     "calculate_affection_level",
@@ -115,6 +117,43 @@ async def delete_memory_by_key(
             (user_id, character_id, fact_key),
         )
     return cursor.rowcount > 0
+
+
+async def list_character_memories(
+    conn: aiosqlite.Connection, user_id: str, character_id: int
+) -> list[UserMemoryResponse]:
+    """Lists memories belonging strictly to (user_id, character_id), newest first."""
+    conn.row_factory = aiosqlite.Row
+    cursor = await conn.execute(
+        "SELECT * FROM user_memories WHERE user_id = ? AND character_id = ? "
+        "ORDER BY updated_at DESC, id DESC;",
+        (user_id, character_id),
+    )
+    rows = await cursor.fetchall()
+    return [UserMemoryResponse(**dict(r)) for r in rows]
+
+
+async def delete_character_memory(
+    conn: aiosqlite.Connection, memory_id: int, user_id: str, character_id: int
+) -> bool:
+    """Deletes one memory owned by (user_id, character_id); deleting a nickname also clears it as custom_nickname."""
+    async with immediate_transaction(conn):
+        cursor = await conn.execute(
+            "SELECT category, fact_value FROM user_memories WHERE id = ? AND user_id = ? AND character_id = ?;",
+            (memory_id, user_id, character_id),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return False
+        category, fact_value = row[0], row[1]
+        await conn.execute("DELETE FROM user_memories WHERE id = ?;", (memory_id,))
+        if category == "nickname":
+            await conn.execute(
+                "UPDATE character_affection SET custom_nickname = NULL, updated_at = CURRENT_TIMESTAMP "
+                "WHERE user_id = ? AND character_id = ? AND custom_nickname = ?;",
+                (user_id, character_id, fact_value),
+            )
+        return True
 
 
 async def upsert_memory(conn: aiosqlite.Connection, memory: UserMemoryCreate) -> UserMemoryResponse | None:

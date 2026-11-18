@@ -27,6 +27,5 @@ test('memory page intro matches character-wide persona scope from 角色与会�
   assert.match(sentence, /人设[^。；]*角色包[^。；]*所有会话生效/);
   assert.match(sentence, /音色和语速按每段会话分别保存/);
 
-  assert.match(memory, /<strong>长期记忆已由系统管理<\/strong><p>系统会从对话中提取称呼等信息。当前版本暂不支持在这里手动修改全局昵称、记忆开关或默认人设。<\/p>/);
   assert.match(memory, /id="gOpenSessionSettings"[^>]*>[\s\S]*打开「角色与会话」<\/button>/);
 });

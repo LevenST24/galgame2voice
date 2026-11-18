@@ -1074,6 +1074,18 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
 .settings-note { background: var(--brand-soft); border: 1px solid var(--brand-line); border-radius: 12px; padding: 14px 16px; color: var(--brand-ink); }
 .settings-note strong { display: block; font-size: 13px; margin-bottom: 5px; }
 .settings-note p { color: var(--text-2); font-size: 12px; line-height: 1.75; }
+.memory-panel { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; background: var(--panel-soft); border: 1px solid var(--line); border-radius: 12px; }
+.memory-panel-head h4 { font-size: 14px; font-weight: 700; color: var(--text); }
+.memory-panel-note { margin-top: 4px; font-size: 12px; line-height: 1.7; color: var(--text-2); }
+.memory-list { display: flex; flex-direction: column; gap: 8px; }
+.memory-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+.memory-item-main { min-width: 0; font-size: 13px; line-height: 1.6; color: var(--text); overflow-wrap: anywhere; }
+.memory-item-cat { font-weight: 600; color: var(--brand-ink); }
+.memory-del { flex: none; min-height: 28px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--panel); color: var(--text-2); font-size: 12px; font-weight: 600; white-space: nowrap; transition: color 0.15s, background 0.15s, border-color 0.15s; }
+.memory-del:hover { color: var(--danger); background: var(--danger-soft); border-color: #f3c1c1; }
+.memory-del.si-del-confirm,
+.memory-del.si-del-confirm:hover { color: #fff; background: var(--danger); border-color: var(--danger); }
+.memory-empty { padding: 12px 14px; background: var(--panel); border: 1px dashed var(--line-2); border-radius: 10px; font-size: 12.5px; line-height: 1.7; color: var(--text-2); }
 .settings-error { color: var(--danger); background: var(--danger-soft); border-radius: 10px; padding: 12px 14px; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
 .settings-advanced { border: 1px solid var(--line); border-radius: 12px; }
 .settings-advanced > summary { padding: 14px 16px; cursor: pointer; color: var(--text-2); font-size: 13px; font-weight: 600; }
