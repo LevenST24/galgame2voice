@@ -295,20 +295,16 @@ for (const [label, profile, speed] of [
 }
 
 test('real startup wiring silences both startup switches and all-session entry retries with an ADV status action', async t => {
-  const { doc, root, toasts } = mountAdvDocument();
   // Fixed times keep 全部会话 in this order; times filled in at load can land a millisecond apart.
-  storedState.sessions = [{ id: 'startup_home', title: '假启动会话', updatedAt: 2000, settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: 1 },
+  const sessions = [{ id: 'startup_home', title: '假启动会话', updatedAt: 2000, settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: 1 },
     messages: [{ id: 'startup_msg', role: 'user', content: '你好' }] },
   { id: 'other_home', title: '另一个假会话', updatedAt: 1000, settings: { ...DEFAULT_SESSION_SETTINGS }, messages: [] }];
-  storedState.activeId = 'startup_home';
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify(storedState)]]);
-  globalThis.localStorage = { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) };
   let home, defer = true;
   const pending = [], switches = [];
-  globalThis.location = { origin: 'http://home.test' };
-  globalThis.window = { innerWidth: 1280, location: { search: '', hash: '' },
-    sessionStorage: { getItem: () => '', setItem() {} },
-    fetch: async (url, options = {}) => {
+  const { app, toasts } = await bootHomeVoiceApp(t, {
+    sessions, activeId: 'startup_home', assignHome: created => { home = created; },
+    beforeCleanup: async () => { defer = false; for (const finish of pending) finish(); await tick(); },
+    fetchImpl: async (url, options = {}) => {
       if (url === '/api/voice/profiles') return Response.json({ profiles: [{ id: 1, name: '甲', work: 'a' }], active_profile_id: 99 });
       if (url === '/api/voice/switch') {
         switches.push(JSON.parse(options.body).profile_id);
@@ -316,20 +312,7 @@ test('real startup wiring silences both startup switches and all-session entry r
         return defer ? new Promise(resolve => pending.push(() => resolve(failure()))) : failure();
       }
       return Response.json({ sessions: [], has_more: false, providers: [], backgrounds: [{ key: 'a/room', name: '房间', work: 'a' }] });
-    } };
-  globalThis.fetch = (...args) => window.fetch(...args);
-  await fetchVoiceProfiles();
-  const app = initApp({ dom: { advRoot: root }, renderSessionList() {}, showTitle: actions => {
-    home = createTitleScreen(app.adv.stage.overlay, { documentObj: doc, actions: {
-      ...actions, getStatus: async () => ({ modelLoaded: true, hasModel: true, model: { state: 'ok' }, engine: { state: 'unavailable' } }),
-    } }); home.open();
-  } });
-  t.after(async () => {
-    defer = false;
-    for (const finish of pending) finish(); await tick();
-    home?.destroy(); app.conversation.stop(); app.adv.unmount();
-    for (const toast of toasts.children) clearTimeout(toast._timer);
-    delete globalThis.document; delete globalThis.location;
+    },
   });
   await app.ready; await tick();
   assert.deepEqual(switches, [1], 'startup retries wait for the in-flight model load');
@@ -349,19 +332,14 @@ test('real startup wiring silences both startup switches and all-session entry r
 
 test('a startup voice switch that fails before home opens stays quiet', async t => {
   // The switch starts before the session sync, and a stopped engine answers at once.
-  const { doc, root, toasts } = mountAdvDocument();
-  storedState.sessions = [{ id: 'early_home', title: '假启动会话', settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: 1 },
+  const sessions = [{ id: 'early_home', title: '假启动会话', settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: 1 },
     messages: [{ id: 'early_msg', role: 'user', content: '你好' }] }];
-  storedState.activeId = 'early_home';
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify(storedState)]]);
-  globalThis.localStorage = { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) };
   let home, releaseSync;
   const syncGate = new Promise(resolve => { releaseSync = resolve; });
   const switches = [];
-  globalThis.location = { origin: 'http://home.test' };
-  globalThis.window = { innerWidth: 1280, location: { search: '', hash: '' },
-    sessionStorage: { getItem: () => '', setItem() {} },
-    fetch: async (url, options = {}) => {
+  const { app, toasts } = await bootHomeVoiceApp(t, {
+    sessions, activeId: 'early_home', assignHome: created => { home = created; },
+    fetchImpl: async (url, options = {}) => {
       if (url === '/api/voice/profiles') return Response.json({ profiles: [{ id: 1, name: '甲', work: 'a' }], active_profile_id: 99 });
       if (url === '/api/voice/switch') {
         switches.push(JSON.parse(options.body).profile_id);
@@ -369,18 +347,7 @@ test('a startup voice switch that fails before home opens stays quiet', async t 
       }
       if (String(url).startsWith('/api/chat/sessions')) await syncGate;
       return Response.json({ sessions: [], has_more: false, providers: [], backgrounds: [] });
-    } };
-  globalThis.fetch = (...args) => window.fetch(...args);
-  await fetchVoiceProfiles();
-  const app = initApp({ dom: { advRoot: root }, renderSessionList() {}, showTitle: actions => {
-    home = createTitleScreen(app.adv.stage.overlay, { documentObj: doc, actions: {
-      ...actions, getStatus: async () => ({ modelLoaded: true, hasModel: true, model: { state: 'ok' }, engine: { state: 'unavailable' } }),
-    } }); home.open();
-  } });
-  t.after(() => {
-    home?.destroy(); app.conversation.stop(); app.adv.unmount();
-    for (const toast of toasts.children) clearTimeout(toast._timer);
-    delete globalThis.document; delete globalThis.location;
+    },
   });
   for (let i = 0; i < 5; i++) await tick();
   assert.deepEqual(switches, [1]); assert.equal(home, undefined);
@@ -391,29 +358,14 @@ test('a startup voice switch that fails before home opens stays quiet', async t 
 });
 
 test('startup sync reloads session history when server has more messages than local copy (refresh keeps server reply)', async t => {
-  const session = localChatSession({
-    id: 's_refresh',
-    title: '晚上的对话',
-    updatedAt: 1_700_000_100_000,
+  const { session, doc, storage, app } = await bootActiveHistory(t, {
+    id: 's_refresh', title: '晚上的对话', updatedAt: 1_700_000_100_000,
     messages: [{ id: 'm_local_user', role: 'user', content: '今天去哪', ts: 1_700_000_100_000 }],
-  });
-  const server = chatServer(session, {
-    updated_at: '2024-06-01 00:00:02',
-    message_count: 2,
-    last_message: '去江边走走吧',
-  });
-  const { doc, storage, app } = await bootSyncedChat(t, {
-    sessions: [session],
-    activeId: session.id,
-    serverSessions: [server],
-    history: historyPayload(session, {
-      oldest_id: 10,
-      count: 2,
-      messages: [
-        { id: 10, role: 'user', content_chinese: '今天去哪', content_japanese: '', created_at: '2024-06-01 00:00:00' },
-        { id: 11, role: 'assistant', content_chinese: '去江边走走吧', content_japanese: '海辺へ', created_at: '2024-06-01 00:00:02' },
-      ],
-    }),
+    updated_at: '2024-06-01 00:00:02', message_count: 2, last_message: '去江边走走吧',
+    historyMessages: [
+      srv(10, 'user', '今天去哪'),
+      srv(11, 'assistant', '去江边走走吧', '海辺へ', '2024-06-01 00:00:02'),
+    ],
   });
 
   // 1. 断言首页最后一句包含服务端已保存的回复
@@ -514,32 +466,22 @@ test('startup sync resets messages of non-active session when server has more me
 });
 
 test('startup sync failure retains local messages in memory and storage, and retrying reloads server reply', async t => {
-  const session = localChatSession({
-    id: 's_fail_then_retry',
-    title: '网络抖动的对话',
-    updatedAt: 1_700_000_100_000,
-    messages: [{ id: 'm_local_user', role: 'user', content: '今天去哪', ts: 1_700_000_100_000 }],
-  });
-  const server = chatServer(session, {
-    updated_at: '2024-06-01 00:00:02',
-    message_count: 2,
-    last_message: '去江边走走吧',
-  });
   let historyShouldFail = true;
-  const { storage, app } = await bootSyncedChat(t, {
-    sessions: [session],
-    activeId: session.id,
-    serverSessions: [server],
-    history() {
-      if (historyShouldFail) throw new Error('网络连接超时');
-      return historyPayload(session, {
-        oldest_id: 10,
-        count: 2,
-        messages: [
-          { id: 10, role: 'user', content_chinese: '今天去哪', content_japanese: '', created_at: '2024-06-01 00:00:00' },
-          { id: 11, role: 'assistant', content_chinese: '去江边走走吧', content_japanese: '海辺へ', created_at: '2024-06-01 00:00:02' },
-        ],
-      });
+  const { session, storage, app } = await bootActiveHistory(t, {
+    id: 's_fail_then_retry', title: '网络抖动的对话', updatedAt: 1_700_000_100_000,
+    messages: [{ id: 'm_local_user', role: 'user', content: '今天去哪', ts: 1_700_000_100_000 }],
+    updated_at: '2024-06-01 00:00:02', message_count: 2, last_message: '去江边走走吧',
+    prepareHistory(built) {
+      return () => {
+        if (historyShouldFail) throw new Error('网络连接超时');
+        return historyPayload(built, {
+          oldest_id: 10, count: 2,
+          messages: [
+            srv(10, 'user', '今天去哪'),
+            srv(11, 'assistant', '去江边走走吧', '海辺へ', '2024-06-01 00:00:02'),
+          ],
+        });
+      };
     },
   });
 
@@ -571,52 +513,20 @@ test('startup sync failure retains local messages in memory and storage, and ret
 });
 
 test('startup sync correctly pairs voiceKey when earlier of duplicate messages had voice', async t => {
-  const session = localChatSession({
-    id: 's_voice_duplicate',
-    title: '重复消息的对话',
-    updatedAt: 1_700_000_200_000,
+  const { session, storage } = await bootActiveHistory(t, {
+    id: 's_voice_duplicate', title: '重复消息的对话', updatedAt: 1_700_000_200_000,
     messages: [
-      {
-        id: 'm_user_1',
-        role: 'user',
-        content: '今天去哪',
-        voiceKey: 'user_m_user_1',
-        dur: 2.0,
-        ts: 1_700_000_100_000,
-      },
-      {
-        id: 'm_assistant_1',
-        role: 'assistant',
-        content: '去公园吧',
-        ts: 1_700_000_150_000,
-      },
-      {
-        id: 'm_user_2',
-        role: 'user',
-        content: '今天去哪',
-        ts: 1_700_000_200_000,
-      },
+      localMsg('m_user_1', 'user', '今天去哪', { voiceKey: 'user_m_user_1', dur: 2.0, ts: 1_700_000_100_000 }),
+      localMsg('m_assistant_1', 'assistant', '去公园吧', { ts: 1_700_000_150_000 }),
+      localMsg('m_user_2', 'user', '今天去哪', { ts: 1_700_000_200_000 }),
     ],
-  });
-  const server = chatServer(session, {
-    updated_at: '2024-06-01 00:00:03',
-    message_count: 4,
-    last_message: '不是刚去过公园吗',
-  });
-  const { storage } = await bootSyncedChat(t, {
-    sessions: [session],
-    activeId: session.id,
-    serverSessions: [server],
-    history: historyPayload(session, {
-      oldest_id: 10,
-      count: 4,
-      messages: [
-        { id: 10, role: 'user', content_chinese: '今天去哪', content_japanese: '', created_at: '2024-06-01 00:00:00' },
-        { id: 11, role: 'assistant', content_chinese: '去公园吧', content_japanese: '', created_at: '2024-06-01 00:00:01' },
-        { id: 12, role: 'user', content_chinese: '今天去哪', content_japanese: '', created_at: '2024-06-01 00:00:02' },
-        { id: 13, role: 'assistant', content_chinese: '不是刚去过公园吗', content_japanese: '', created_at: '2024-06-01 00:00:03' },
-      ],
-    }),
+    updated_at: '2024-06-01 00:00:03', message_count: 4, last_message: '不是刚去过公园吗',
+    historyMessages: [
+      srv(10, 'user', '今天去哪'),
+      srv(11, 'assistant', '去公园吧', '', '2024-06-01 00:00:01'),
+      srv(12, 'user', '今天去哪', '', '2024-06-01 00:00:02'),
+      srv(13, 'assistant', '不是刚去过公园吗', '', '2024-06-01 00:00:03'),
+    ],
   });
 
   const activeSession = storedActive();
@@ -632,25 +542,14 @@ test('startup sync correctly pairs voiceKey when earlier of duplicate messages h
 });
 
 test('title screen excerpt presents server last_message when multi-turn session is behind server', async t => {
-  const session = localChatSession({
-    id: 's_multiturn_behind',
-    title: '多轮会话',
-    updatedAt: 1_700_000_200_000,
+  const { session, doc, app } = await bootActiveHistory(t, {
+    id: 's_multiturn_behind', title: '多轮会话', updatedAt: 1_700_000_200_000,
     messages: [
       { id: 'm_1', role: 'user', content: '第一问' },
       { id: 'm_2', role: 'assistant', content: '第一答' },
       { id: 'm_3', role: 'user', content: '第二问' },
     ],
-  });
-  const server = chatServer(session, {
-    updated_at: '2024-06-01 00:00:03',
-    message_count: 4,
-    last_message: '第二答',
-  });
-  const { doc, app } = await bootSyncedChat(t, {
-    sessions: [session],
-    activeId: session.id,
-    serverSessions: [server],
+    updated_at: '2024-06-01 00:00:03', message_count: 4, last_message: '第二答',
     history() { throw new Error('网络连接超时'); },
   });
 
@@ -667,48 +566,19 @@ test('title screen excerpt presents server last_message when multi-turn session 
 });
 
 test('startup sync preserves voiceKey on message with matching server ID when server has duplicate text', async t => {
-  const session = localChatSession({
-    id: 's_voice_id_pair',
-    title: '录音按ID配对',
-    updatedAt: 1_700_000_100_000,
+  await bootActiveHistory(t, {
+    id: 's_voice_id_pair', title: '录音按ID配对', updatedAt: 1_700_000_100_000,
     messages: [
-      {
-        id: 'm_10',
-        serverMessageId: 10,
-        role: 'user',
-        content: '今天去哪',
-        voiceKey: 'user_m_10',
-        dur: 2.5,
-        ts: 1_700_000_100_000,
-      },
-      {
-        id: 'm_11',
-        serverMessageId: 11,
-        role: 'assistant',
-        content: '去公园吧',
-        ts: 1_700_000_150_000,
-      },
+      storedLine('m_10', 10, 'user', '今天去哪', { voiceKey: 'user_m_10', dur: 2.5, ts: 1_700_000_100_000 }),
+      storedLine('m_11', 11, 'assistant', '去公园吧', { ts: 1_700_000_150_000 }),
     ],
-  });
-  const server = chatServer(session, {
-    updated_at: '2024-06-01 00:00:03',
-    message_count: 4,
-    last_message: '不是刚去过公园吗',
-  });
-  await bootSyncedChat(t, {
-    sessions: [session],
-    activeId: session.id,
-    serverSessions: [server],
-    history: historyPayload(session, {
-      oldest_id: 10,
-      count: 4,
-      messages: [
-        { id: 10, role: 'user', content_chinese: '今天去哪', content_japanese: '', created_at: '2024-06-01 00:00:00' },
-        { id: 11, role: 'assistant', content_chinese: '去公园吧', content_japanese: '', created_at: '2024-06-01 00:00:01' },
-        { id: 12, role: 'user', content_chinese: '今天去哪', content_japanese: '', created_at: '2024-06-01 00:00:02' },
-        { id: 13, role: 'assistant', content_chinese: '不是刚去过公园吗', content_japanese: '', created_at: '2024-06-01 00:00:03' },
-      ],
-    }),
+    updated_at: '2024-06-01 00:00:03', message_count: 4, last_message: '不是刚去过公园吗',
+    historyMessages: [
+      srv(10, 'user', '今天去哪'),
+      srv(11, 'assistant', '去公园吧', '', '2024-06-01 00:00:01'),
+      srv(12, 'user', '今天去哪', '', '2024-06-01 00:00:02'),
+      srv(13, 'assistant', '不是刚去过公园吗', '', '2024-06-01 00:00:03'),
+    ],
   });
 
   const activeSession = storedActive();
@@ -721,44 +591,17 @@ test('startup sync preserves voiceKey on message with matching server ID when se
 });
 
 test('startup sync pulls history and retains failed question at end when server adds message after retention', async t => {
-  const session = localChatSession({
-    id: 's_failed_retained_more',
-    title: '失败消息保留后服务端再多一条',
-    updatedAt: 1_700_000_100_000,
+  const { session, storage, app } = await bootActiveHistory(t, {
+    id: 's_failed_retained_more', title: '失败消息保留后服务端再多一条', updatedAt: 1_700_000_100_000,
     messages: [
       { id: 'm_1', serverMessageId: 1, role: 'user', content: '第一问', ts: 1_700_000_050_000 },
       { id: 'm_2', serverMessageId: 2, role: 'assistant', content: '第一答', ts: 1_700_000_080_000 },
       { id: 'm_3', serverMessageId: 3, role: 'user', content: '第二问', ts: 1_700_000_085_000 },
       { id: 'm_4', serverMessageId: 4, role: 'assistant', content: '第二答', ts: 1_700_000_090_000 },
-      {
-        id: 'm_local_failed',
-        role: 'user',
-        content: '失败的问题',
-        failed: { error: '网络连接失败', code: 'NETWORK_ERROR' },
-        ts: 1_700_000_100_000,
-      },
+      localMsg('m_local_failed', 'user', '失败的问题', { failed: { error: '网络连接失败', code: 'NETWORK_ERROR' }, ts: 1_700_000_100_000 }),
     ],
-  });
-  const server = chatServer(session, {
-    updated_at: '2024-06-01 00:00:04',
-    message_count: 5,
-    last_message: '第三问',
-  });
-  const { storage, app } = await bootSyncedChat(t, {
-    sessions: [session],
-    activeId: session.id,
-    serverSessions: [server],
-    history: historyPayload(session, {
-      oldest_id: 1,
-      count: 5,
-      messages: [
-        { id: 1, role: 'user', content_chinese: '第一问', content_japanese: '', created_at: '2024-06-01 00:00:00' },
-        { id: 2, role: 'assistant', content_chinese: '第一答', content_japanese: '', created_at: '2024-06-01 00:00:01' },
-        { id: 3, role: 'user', content_chinese: '第二问', content_japanese: '', created_at: '2024-06-01 00:00:02' },
-        { id: 4, role: 'assistant', content_chinese: '第二答', content_japanese: '', created_at: '2024-06-01 00:00:03' },
-        { id: 5, role: 'user', content_chinese: '第三问', content_japanese: '', created_at: '2024-06-01 00:00:04' },
-      ],
-    }),
+    updated_at: '2024-06-01 00:00:04', message_count: 5, last_message: '第三问',
+    historyMessages: qaHistory(['第一问', '第一答', '第二问', '第二答', '第三问']),
   });
 
   const activeSession = storedActive();
@@ -785,34 +628,14 @@ test('startup sync pulls history and retains failed question at end when server 
 });
 
 test('startup sync discards interrupted partial assistant reply and retains complete server reply without duplication', async t => {
-  const session = localChatSession({
-    id: 's_interrupted_assistant',
-    title: '打断的半截回复',
-    updatedAt: 1_700_000_100_000,
+  await bootActiveHistory(t, {
+    id: 's_interrupted_assistant', title: '打断的半截回复', updatedAt: 1_700_000_100_000,
     messages: [
       { id: 'm_1', serverMessageId: 1, role: 'user', content: '今天去哪', ts: 1_700_000_050_000 },
       { id: 'm_stream_interrupted', role: 'assistant', content: '去公园', ts: 1_700_000_080_000 },
     ],
-  });
-  const server = chatServer(session, {
-    updated_at: '2024-06-01 00:00:03',
-    message_count: 4,
-    last_message: '明天下午两点',
-  });
-  await bootSyncedChat(t, {
-    sessions: [session],
-    activeId: session.id,
-    serverSessions: [server],
-    history: historyPayload(session, {
-      oldest_id: 1,
-      count: 4,
-      messages: [
-        { id: 1, role: 'user', content_chinese: '今天去哪', content_japanese: '', created_at: '2024-06-01 00:00:00' },
-        { id: 2, role: 'assistant', content_chinese: '去公园散步吧，天气很好。', content_japanese: '', created_at: '2024-06-01 00:00:01' },
-        { id: 3, role: 'user', content_chinese: '什么时候去', content_japanese: '', created_at: '2024-06-01 00:00:02' },
-        { id: 4, role: 'assistant', content_chinese: '明天下午两点', content_japanese: '', created_at: '2024-06-01 00:00:03' },
-      ],
-    }),
+    updated_at: '2024-06-01 00:00:03', message_count: 4, last_message: '明天下午两点',
+    historyMessages: qaHistory(['今天去哪', '去公园散步吧，天气很好。', '什么时候去', '明天下午两点']),
   });
 
   const activeSession = storedActive();
@@ -833,13 +656,7 @@ test('startup sync keeps the cached failed question when it is retried while his
     messages: [
       { id: 'm_1', serverMessageId: 1, role: 'user', content: '第一问', ts: 1_700_000_050_000 },
       { id: 'm_2', serverMessageId: 2, role: 'assistant', content: '第一答', ts: 1_700_000_080_000 },
-      {
-        id: 'm_local_failed',
-        role: 'user',
-        content: '失败的问题',
-        failed: { error: '网络连接失败', code: 'NETWORK_ERROR' },
-        ts: 1_700_000_100_000,
-      },
+      localMsg('m_local_failed', 'user', '失败的问题', { failed: { error: '网络连接失败', code: 'NETWORK_ERROR' }, ts: 1_700_000_100_000 }),
     ],
   });
   const server = chatServer(session, {
@@ -869,14 +686,7 @@ test('startup sync keeps the cached failed question when it is retried while his
       markHistoryHung();
       await historyGate;
       return Response.json(historyPayload(session, {
-        oldest_id: 1,
-        count: 4,
-        messages: [
-          { id: 1, role: 'user', content_chinese: '第一问', content_japanese: '', created_at: '2024-06-01 00:00:00' },
-          { id: 2, role: 'assistant', content_chinese: '第一答', content_japanese: '', created_at: '2024-06-01 00:00:01' },
-          { id: 3, role: 'user', content_chinese: '第二问', content_japanese: '', created_at: '2024-06-01 00:00:02' },
-          { id: 4, role: 'assistant', content_chinese: '第二答', content_japanese: '', created_at: '2024-06-01 00:00:03' },
-        ],
+        oldest_id: 1, count: 4, messages: qaHistory(['第一问', '第一答', '第二问', '第二答']),
       }));
     }
     if (target.includes('/api/chat/stream')) return openChatStream(target, options, streamRequests, { events: true });
@@ -1159,19 +969,155 @@ async function bootSessionSync(t, { session, server, postHandler = null }) {
   return { live, stored, saves };
 }
 
-test('startup sync keeps newer local session settings and posts them', async t => {
+function srv(id, role, content_chinese, content_japanese = '', created_at = '2024-06-01 00:00:00') {
+  return { id, role, content_chinese, content_japanese, created_at };
+}
+
+function qaHistory(lines) {
+  return lines.map((content_chinese, idx) => srv(
+    idx + 1, idx % 2 ? 'assistant' : 'user', content_chinese, '', `2024-06-01 00:00:0${idx}`,
+  ));
+}
+
+function localMsg(id, role, content, extra) {
+  return { id, role, content, ...extra };
+}
+
+function storedLine(id, serverMessageId, role, content, extra) {
+  return { id, serverMessageId, role, content, ...extra };
+}
+
+function twoTurnSession({ id, title, updatedAt, lastLine, user, assistant }) {
+  return localChatSession({
+    id, title, updatedAt, ...(lastLine != null ? { lastLine } : {}),
+    messages: [
+      { id: user.id, serverMessageId: user.serverMessageId, role: 'user', content: user.content, ts: user.ts },
+      { id: assistant.id, serverMessageId: assistant.serverMessageId, role: 'assistant', content: assistant.content, ts: assistant.ts },
+    ],
+  });
+}
+
+function fastapiDetail(type, field, msg, ctx) {
+  const item = { type, loc: ['body', field], msg };
+  if (ctx) item.ctx = ctx;
+  return { detail: [item] };
+}
+
+function playerSettings(advPlayerName, advWindowOpacity, temperature) {
+  return { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName, advWindowOpacity, temperature };
+}
+
+function settingsSyncFixture({
+  id, updatedAt, unconfirmedSettingsVersion, messages,
+  localName, localOpacity, localTemp,
+  serverUpdatedAt, serverName, serverOpacity, serverTemp,
+}) {
   const session = {
-    id: 's_settings_local', title: '晚上的对话', createdAt: 1_700_000_000_000, updatedAt: 1_800_000_000_000,
-    unconfirmedSettingsVersion: 1,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName: '小明', advWindowOpacity: 40, temperature: 0.2 },
-    messages: [{ id: 'm_keep', role: 'user', content: '只改了设置', ts: 1 }],
+    id, title: '晚上的对话', createdAt: 1_700_000_000_000, updatedAt,
+    ...(unconfirmedSettingsVersion != null ? { unconfirmedSettingsVersion } : {}),
+    settings: playerSettings(localName, localOpacity, localTemp),
+    messages: messages ?? [{ id: 'm_keep', role: 'user', content: '只改了设置', ts: 1 }],
   };
   const server = {
     id: session.id, title: session.title, voice_profile_id: null,
-    created_at: '2024-01-01 00:00:00', updated_at: '2024-01-01 00:00:01',
-    message_count: 1, last_message: '只改了设置',
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName: '我', advWindowOpacity: 75, temperature: 0.7 },
+    created_at: '2024-01-01 00:00:00', updated_at: serverUpdatedAt,
+    message_count: session.messages.length, last_message: session.messages.at(-1).content,
+    settings: playerSettings(serverName, serverOpacity, serverTemp),
   };
+  return { session, server };
+}
+
+function emptySessionHistory(target) {
+  const sid = new URL(String(target), 'http://127.0.0.1:8000').searchParams.get('session_id') || '';
+  return historyPayload(sid, { oldest_id: null, count: 0, messages: [] });
+}
+
+function numberedWindow(startId, length, kind, assistantIf, overrides = {}) {
+  return Array.from({ length }, (_, idx) => {
+    const id = startId + idx;
+    if (overrides[id]) return overrides[id];
+    const isAssistant = assistantIf(id);
+    const text = isAssistant ? `服务端回复 #${id}` : `历史提问 #${id}`;
+    const role = isAssistant ? 'assistant' : 'user';
+    if (kind === 'local') {
+      return { id: `m_${id}`, serverMessageId: id, role, content: text, ts: 1_700_000_000_000 + idx * 1000 };
+    }
+    return { id, role, content_chinese: text, content_japanese: '', created_at: '2024-06-01 00:00:00' };
+  });
+}
+
+// One local session, its server row, then the same startup boot as bootSyncedChat.
+async function bootActiveHistory(t, spec) {
+  const session = localChatSession({
+    id: spec.id,
+    title: spec.title,
+    updatedAt: spec.updatedAt,
+    ...spec.extra,
+    messages: spec.messages,
+  });
+  const server = chatServer(session, {
+    updated_at: spec.updated_at,
+    message_count: spec.message_count,
+    last_message: spec.last_message,
+  });
+  let history = spec.history;
+  if (spec.prepareHistory) history = spec.prepareHistory(session);
+  else if (spec.historyMessages) {
+    history = historyPayload(session, {
+      has_more: spec.has_more,
+      oldest_id: spec.historyMessages[0].id,
+      count: spec.historyMessages.length,
+      messages: spec.historyMessages,
+    });
+  }
+  const booted = await bootSyncedChat(t, {
+    sessions: spec.extraSessions ? [session, ...spec.extraSessions] : [session],
+    activeId: session.id,
+    serverSessions: [server],
+    mode: spec.mode,
+    fallback: spec.fallback,
+    routes: spec.routes,
+    beforeBoot: spec.beforeBoot,
+    onCleanup: spec.onCleanup,
+    history,
+  });
+  return { session, server, ...booted };
+}
+
+async function bootHomeVoiceApp(t, { sessions, activeId, fetchImpl, assignHome, beforeCleanup }) {
+  const { doc, root, toasts } = mountAdvDocument();
+  storedState.sessions = sessions;
+  storedState.activeId = activeId;
+  const storage = new Map([['gal2voice.chat.v1', JSON.stringify(storedState)]]);
+  globalThis.localStorage = { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) };
+  globalThis.location = { origin: 'http://home.test' };
+  globalThis.window = { innerWidth: 1280, location: { search: '', hash: '' },
+    sessionStorage: { getItem: () => '', setItem() {} }, fetch: fetchImpl };
+  globalThis.fetch = (...args) => window.fetch(...args);
+  await fetchVoiceProfiles();
+  let home;
+  const app = initApp({ dom: { advRoot: root }, renderSessionList() {}, showTitle: actions => {
+    home = createTitleScreen(app.adv.stage.overlay, { documentObj: doc, actions: {
+      ...actions, getStatus: async () => ({ modelLoaded: true, hasModel: true, model: { state: 'ok' }, engine: { state: 'unavailable' } }),
+    } });
+    assignHome(home);
+    home.open();
+  } });
+  t.after(async () => {
+    if (beforeCleanup) await beforeCleanup();
+    home?.destroy(); app.conversation.stop(); app.adv.unmount();
+    for (const toast of toasts.children) clearTimeout(toast._timer);
+    delete globalThis.document; delete globalThis.location;
+  });
+  return { doc, root, toasts, storage, app };
+}
+
+test('startup sync keeps newer local session settings and posts them', async t => {
+  const { session, server } = settingsSyncFixture({
+    id: 's_settings_local', updatedAt: 1_800_000_000_000, unconfirmedSettingsVersion: 1,
+    localName: '小明', localOpacity: 40, localTemp: 0.2,
+    serverUpdatedAt: '2024-01-01 00:00:01', serverName: '我', serverOpacity: 75, serverTemp: 0.7,
+  });
   const { live, stored, saves } = await bootSessionSync(t, { session, server });
   assert.equal(live.settings.advPlayerName, '小明');
   assert.equal(live.settings.advWindowOpacity, 40);
@@ -1191,17 +1137,11 @@ test('startup sync keeps newer local session settings and posts them', async t =
 });
 
 test('startup sync applies newer server session settings', async t => {
-  const session = {
-    id: 's_settings_server', title: '晚上的对话', createdAt: 1_700_000_000_000, updatedAt: 1_700_000_000_000,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName: '我', advWindowOpacity: 75, temperature: 0.7 },
-    messages: [{ id: 'm_keep', role: 'user', content: '只改了设置', ts: 1 }],
-  };
-  const server = {
-    id: session.id, title: session.title, voice_profile_id: null,
-    created_at: '2024-01-01 00:00:00', updated_at: '2024-06-01 00:00:02',
-    message_count: 1, last_message: '只改了设置',
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName: '小明', advWindowOpacity: 40, temperature: 0.2 },
-  };
+  const { session, server } = settingsSyncFixture({
+    id: 's_settings_server', updatedAt: 1_700_000_000_000,
+    localName: '我', localOpacity: 75, localTemp: 0.7,
+    serverUpdatedAt: '2024-06-01 00:00:02', serverName: '小明', serverOpacity: 40, serverTemp: 0.2,
+  });
   const { live, stored, saves } = await bootSessionSync(t, { session, server });
   const serverUpdatedAt = serverTimestamp(server.updated_at);
   assert.equal(live.settings.advPlayerName, '小明');
@@ -1216,22 +1156,15 @@ test('startup sync applies newer server session settings', async t => {
 });
 
 test('startup sync applies server session settings when local session has newer reply timestamp but no unconfirmed settings', async t => {
-  const session = {
-    id: 's_reply_newer_than_server', title: '晚上的对话', createdAt: 1_700_000_000_000,
-    updatedAt: 1_800_000_000_000,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName: '我', advWindowOpacity: 75, temperature: 0.7 },
+  const { session, server } = settingsSyncFixture({
+    id: 's_reply_newer_than_server', updatedAt: 1_800_000_000_000,
+    localName: '我', localOpacity: 75, localTemp: 0.7,
+    serverUpdatedAt: '2024-01-01 00:00:01', serverName: '小明', serverOpacity: 40, serverTemp: 0.2,
     messages: [
       { id: 'm_user', role: 'user', content: '你好', ts: 1_700_000_000_000 },
       { id: 'm_assistant', role: 'assistant', content: '你好！', ts: 1_800_000_000_000 },
     ],
-  };
-  const server = {
-    id: session.id, title: session.title, voice_profile_id: null,
-    created_at: '2024-01-01 00:00:00',
-    updated_at: '2024-01-01 00:00:01',
-    message_count: 2, last_message: '你好！',
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName: '小明', advWindowOpacity: 40, temperature: 0.2 },
-  };
+  });
   const { live, stored, saves } = await bootSessionSync(t, { session, server });
   const serverUpdatedAt = serverTimestamp(server.updated_at);
   assert.equal(live.settings.advPlayerName, '小明', '服务端新设置必须胜出');
@@ -1246,18 +1179,11 @@ test('startup sync applies server session settings when local session has newer 
 });
 
 test('startup sync retains unconfirmed settings flag in storage when follow-up post fails', async t => {
-  const session = {
-    id: 's_settings_fail', title: '晚上的对话', createdAt: 1_700_000_000_000, updatedAt: 1_800_000_000_000,
-    unconfirmedSettingsVersion: 1,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName: '小明', advWindowOpacity: 40, temperature: 0.2 },
-    messages: [{ id: 'm_keep', role: 'user', content: '只改了设置', ts: 1 }],
-  };
-  const server = {
-    id: session.id, title: session.title, voice_profile_id: null,
-    created_at: '2024-01-01 00:00:00', updated_at: '2024-01-01 00:00:01',
-    message_count: 1, last_message: '只改了设置',
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName: '我', advWindowOpacity: 75, temperature: 0.7 },
-  };
+  const { session, server } = settingsSyncFixture({
+    id: 's_settings_fail', updatedAt: 1_800_000_000_000, unconfirmedSettingsVersion: 1,
+    localName: '小明', localOpacity: 40, localTemp: 0.2,
+    serverUpdatedAt: '2024-01-01 00:00:01', serverName: '我', serverOpacity: 75, serverTemp: 0.7,
+  });
   const { live, stored, saves } = await bootSessionSync(t, {
     session,
     server,
@@ -1440,93 +1366,36 @@ test('ADV player input: textarea has maxLength 4000 and sending > 4000 chars tri
 });
 
 test('getErrorMessage: FastAPI 422 prompt validation errors return specific character length / empty guidance', () => {
-  const longError = {
-    detail: [
-      {
-        type: 'string_too_long',
-        loc: ['body', 'prompt'],
-        msg: 'String should have at most 4000 characters',
-        ctx: { max_length: 4000 },
-      },
-    ],
-  };
+  const longError = fastapiDetail('string_too_long', 'prompt', 'String should have at most 4000 characters', { max_length: 4000 });
   assert.equal(getErrorMessage(longError, 'HTTP 422'), '单次发送内容不能超过 4000 字，请删减后再发送。');
 
-  const shortError = {
-    detail: [
-      {
-        type: 'string_too_short',
-        loc: ['body', 'prompt'],
-        msg: 'String should have at least 1 characters',
-        ctx: { min_length: 1 },
-      },
-    ],
-  };
+  const shortError = fastapiDetail('string_too_short', 'prompt', 'String should have at least 1 characters', { min_length: 1 });
   assert.equal(getErrorMessage(shortError, 'HTTP 422'), '请输入要发送的对话内容。');
 
-  const otherError = {
-    detail: [
-      {
-        type: 'greater_than_equal',
-        loc: ['body', 'temperature'],
-        msg: 'Input should be greater than or equal to 0',
-      },
-    ],
-  };
+  const otherError = fastapiDetail('greater_than_equal', 'temperature', 'Input should be greater than or equal to 0');
   assert.equal(getErrorMessage(otherError, 'HTTP 422'), '配置不完整或数值超出范围，请检查填写内容后重新保存。');
 
-  const systemPromptError = {
-    detail: [
-      {
-        type: 'string_too_long',
-        loc: ['body', 'system_prompt'],
-        msg: 'String should have at most 4000 characters',
-        ctx: { max_length: 4000 },
-      },
-    ],
-  };
+  const systemPromptError = fastapiDetail('string_too_long', 'system_prompt', 'String should have at most 4000 characters', { max_length: 4000 });
   assert.equal(getErrorMessage(systemPromptError, 'HTTP 422'), '配置不完整或数值超出范围，请检查填写内容后重新保存。');
 });
 
 test('startup sync marks unanswered user prompt as failed when pruned by server and preserves retry and sync baseline', async t => {
-  const session = localChatSession({
-    id: 's_unanswered_pruned',
-    title: '未获回复会话',
-    updatedAt: 1_700_000_100_000,
+  const remSession = localChatSession({
+    id: 's_unpersisted_rem', title: '未落盘本地会话', updatedAt: 1_700_000_100_000,
+    messages: [localMsg('m_rem_unanswered', 'user', '新会话未收到回复提问', { ts: 1_700_000_100_000 })],
+  });
+  const streamRequests = [];
+  const { session, server, doc, root, storage, app } = await bootActiveHistory(t, {
+    id: 's_unanswered_pruned', title: '未获回复会话', updatedAt: 1_700_000_100_000,
     messages: [
       { id: 'm_1', serverMessageId: 1, role: 'user', content: '第一问', ts: 1_700_000_050_000 },
       { id: 'm_2', serverMessageId: 2, role: 'assistant', content: '第一答', ts: 1_700_000_080_000 },
-      {
-        id: 'm_unanswered',
-        role: 'user',
-        content: '首字返回前刷新的提问',
-        ts: 1_700_000_100_000,
-      },
+      localMsg('m_unanswered', 'user', '首字返回前刷新的提问', { ts: 1_700_000_100_000 }),
     ],
-  });
-  const remSession = localChatSession({
-    id: 's_unpersisted_rem',
-    title: '未落盘本地会话',
-    updatedAt: 1_700_000_100_000,
-    messages: [
-      {
-        id: 'm_rem_unanswered',
-        role: 'user',
-        content: '新会话未收到回复提问',
-        ts: 1_700_000_100_000,
-      },
-    ],
-  });
-  const server = chatServer(session, {
     updated_at: '2024-06-01 00:00:02',
     message_count: 2, // 服务端物理清理了孤立提问，故 message_count 小于本地 messages.length (3)
     last_message: '第一答',
-  });
-  const streamRequests = [];
-  const { doc, root, storage, app } = await bootSyncedChat(t, {
-    sessions: [session, remSession],
-    activeId: session.id,
-    serverSessions: [server],
+    extraSessions: [remSession],
     routes(target, options) {
       if (target.includes('/api/chat/stream')) return openChatStream(target, options, streamRequests, { events: true });
     },
@@ -1590,11 +1459,7 @@ test('startup sync marks unanswered user prompt as failed when pruned by server 
       return Response.json(historyPayload(session, {
         oldest_id: 1,
         count: 3,
-        messages: [
-          { id: 1, role: 'user', content_chinese: '第一问', content_japanese: '', created_at: '2024-06-01 00:00:00' },
-          { id: 2, role: 'assistant', content_chinese: '第一答', content_japanese: '', created_at: '2024-06-01 00:00:01' },
-          { id: 3, role: 'user', content_chinese: '其他页面新增的第三问', content_japanese: '', created_at: '2024-06-01 00:00:02' },
-        ],
+        messages: qaHistory(['第一问', '第一答', '其他页面新增的第三问']),
       }));
     }
     return startupApiFallback(target);
@@ -1618,25 +1483,12 @@ test('startup sync marks unanswered user prompt as failed when pruned by server 
 });
 
 test('startup sync does not mark user prompt failed when server count covers local messages', async t => {
-  const session = localChatSession({
-    id: 's_equal_count',
-    title: '已落盘提问',
-    updatedAt: 1_700_000_100_000,
-    messages: [
-      { id: 'm_1', role: 'user', content: '提问', ts: 1_700_000_050_000 },
-    ],
-  });
-  const server = chatServer(session, {
-    updated_at: '2024-06-01 00:00:02',
-    message_count: 1, // server.message_count >= local.messages.length (1 >= 1)
-    last_message: '提问',
-  });
-  await bootSyncedChat(t, {
-    sessions: [session],
-    activeId: session.id,
-    serverSessions: [server],
-    mode: 'window',
-    fallback: { providers: 'empty' },
+  // server.message_count >= local.messages.length (1 >= 1)
+  await bootActiveHistory(t, {
+    id: 's_equal_count', title: '已落盘提问', updatedAt: 1_700_000_100_000,
+    messages: [{ id: 'm_1', role: 'user', content: '提问', ts: 1_700_000_050_000 }],
+    updated_at: '2024-06-01 00:00:02', message_count: 1, last_message: '提问',
+    mode: 'window', fallback: { providers: 'empty' },
   });
 
   const activeSession = storedActive();
@@ -1787,25 +1639,15 @@ test('chat stream request omits fixed tts sliders in adaptive voice mode and tra
 });
 
 test('startup sync clears cached messages for both active and inactive sessions when server message_count is 0', async t => {
-  const tg1001 = localChatSession({
-    id: 'tg_1001',
-    title: 'Telegram 会话 1',
-    updatedAt: 1_700_000_200_000,
-    lastLine: '旧回复 1',
-    messages: [
-      { id: 'm_1', serverMessageId: 1, role: 'user', content: '旧提问 1', ts: 1_700_000_100_000 },
-      { id: 'm_2', serverMessageId: 2, role: 'assistant', content: '旧回复 1', ts: 1_700_000_200_000 },
-    ],
+  const tg1001 = twoTurnSession({
+    id: 'tg_1001', title: 'Telegram 会话 1', updatedAt: 1_700_000_200_000, lastLine: '旧回复 1',
+    user: { id: 'm_1', serverMessageId: 1, content: '旧提问 1', ts: 1_700_000_100_000 },
+    assistant: { id: 'm_2', serverMessageId: 2, content: '旧回复 1', ts: 1_700_000_200_000 },
   });
-  const tg1002 = localChatSession({
-    id: 'tg_1002',
-    title: 'Telegram 会话 2',
-    updatedAt: 1_700_000_150_000,
-    lastLine: '旧回复 2',
-    messages: [
-      { id: 'm_3', serverMessageId: 3, role: 'user', content: '旧提问 2', ts: 1_700_000_120_000 },
-      { id: 'm_4', serverMessageId: 4, role: 'assistant', content: '旧回复 2', ts: 1_700_000_150_000 },
-    ],
+  const tg1002 = twoTurnSession({
+    id: 'tg_1002', title: 'Telegram 会话 2', updatedAt: 1_700_000_150_000, lastLine: '旧回复 2',
+    user: { id: 'm_3', serverMessageId: 3, content: '旧提问 2', ts: 1_700_000_120_000 },
+    assistant: { id: 'm_4', serverMessageId: 4, content: '旧回复 2', ts: 1_700_000_150_000 },
   });
   const serverSessions = [
     chatServer(tg1001, { updated_at: '2024-06-01 00:00:10', message_count: 0, last_message: '' }),
@@ -1817,10 +1659,7 @@ test('startup sync clears cached messages for both active and inactive sessions 
     serverSessions,
     mode: 'window',
     fallback: { providers: 'empty' },
-    history(target) {
-      const sid = new URL(String(target), 'http://127.0.0.1:8000').searchParams.get('session_id') || '';
-      return historyPayload(sid, { oldest_id: null, count: 0, messages: [] });
-    },
+    history: emptySessionHistory,
   });
 
   assert.deepEqual(storedSession('tg_1001').messages, [], '激活会话 tg_1001 内存中的旧消息应已清空');
@@ -1850,34 +1689,20 @@ test('startup sync clears cached messages for both active and inactive sessions 
 });
 
 test('switching to a session cleared on server empties cached messages via loadSessionHistory', async t => {
-  const activeSession = localChatSession({
-    id: 's_active_keep',
-    title: '当前对话',
-    updatedAt: 1_700_000_300_000,
-    messages: [
-      { id: 'm_1', serverMessageId: 1, role: 'user', content: '保留问', ts: 1_700_000_100_000 },
-      { id: 'm_2', serverMessageId: 2, role: 'assistant', content: '保留答', ts: 1_700_000_200_000 },
-    ],
+  const activeSession = twoTurnSession({
+    id: 's_active_keep', title: '当前对话', updatedAt: 1_700_000_300_000,
+    user: { id: 'm_1', serverMessageId: 1, content: '保留问', ts: 1_700_000_100_000 },
+    assistant: { id: 'm_2', serverMessageId: 2, content: '保留答', ts: 1_700_000_200_000 },
   });
-  const tgLess = localChatSession({
-    id: 'tg_less_cleared',
-    title: '服务端少于本地后清空',
-    updatedAt: 1_700_000_200_000,
-    lastLine: '旧答 A',
-    messages: [
-      { id: 'm_10', serverMessageId: 10, role: 'user', content: '旧问 A', ts: 1_700_000_100_000 },
-      { id: 'm_11', serverMessageId: 11, role: 'assistant', content: '旧答 A', ts: 1_700_000_200_000 },
-    ],
+  const tgLess = twoTurnSession({
+    id: 'tg_less_cleared', title: '服务端少于本地后清空', updatedAt: 1_700_000_200_000, lastLine: '旧答 A',
+    user: { id: 'm_10', serverMessageId: 10, content: '旧问 A', ts: 1_700_000_100_000 },
+    assistant: { id: 'm_11', serverMessageId: 11, content: '旧答 A', ts: 1_700_000_200_000 },
   });
-  const tgMore = localChatSession({
-    id: 'tg_more_cleared',
-    title: '运行期清空对话',
-    updatedAt: 1_700_000_150_000,
-    lastLine: '旧答 B',
-    messages: [
-      { id: 'm_20', serverMessageId: 20, role: 'user', content: '旧问 B', ts: 1_700_000_100_000 },
-      { id: 'm_21', serverMessageId: 21, role: 'assistant', content: '旧答 B', ts: 1_700_000_150_000 },
-    ],
+  const tgMore = twoTurnSession({
+    id: 'tg_more_cleared', title: '运行期清空对话', updatedAt: 1_700_000_150_000, lastLine: '旧答 B',
+    user: { id: 'm_20', serverMessageId: 20, content: '旧问 B', ts: 1_700_000_100_000 },
+    assistant: { id: 'm_21', serverMessageId: 21, content: '旧答 B', ts: 1_700_000_150_000 },
   });
   const serverSessions = [
     chatServer(activeSession, { updated_at: '2024-06-01 00:00:10', message_count: 2, last_message: '保留答' }),
@@ -1890,11 +1715,8 @@ test('switching to a session cleared on server empties cached messages via loadS
     serverSessions,
     mode: 'window',
     fallback: { providers: 'empty' },
-    history(target) {
-      const sid = new URL(String(target), 'http://127.0.0.1:8000').searchParams.get('session_id') || '';
-      // 会话已在运行期被清空，返回空历史列表
-      return historyPayload(sid, { oldest_id: null, count: 0, messages: [] });
-    },
+    // 会话已在运行期被清空，返回空历史列表
+    history: emptySessionHistory,
   });
 
   await app.switchSession('tg_more_cleared');
@@ -1950,10 +1772,7 @@ test('startup sync with server message_count 0 preserves local starter GREETING 
     activeId: unansweredOnlySession.id,
     serverSessions,
     mode: 'window',
-    history(target) {
-      const sid = new URL(String(target), 'http://127.0.0.1:8000').searchParams.get('session_id') || '';
-      return historyPayload(sid, { oldest_id: null, count: 0, messages: [] });
-    },
+    history: emptySessionHistory,
     routes(target, options) {
       if (target.includes('/api/chat/stream')) return openChatStream(target, options, streamRequests);
     },
@@ -1999,66 +1818,34 @@ test('startup sync with server message_count 0 preserves local starter GREETING 
 for (const totalServerMessages of [150, 101]) {
   test(`startup sync preserves unanswered local prompt and enables retry when server has ${totalServerMessages} messages (>100)`, async t => {
     const oldestWindowId = totalServerMessages - 100 + 1;
-    const serverWindow = Array.from({ length: 100 }, (_, idx) => {
-      const id = oldestWindowId + idx;
-      const isAssistant = (totalServerMessages - id) % 2 === 0;
-      return {
-        id,
-        role: isAssistant ? 'assistant' : 'user',
-        content_chinese: isAssistant ? `服务端回复 #${id}` : `历史提问 #${id}`,
-        content_japanese: '',
-        created_at: '2024-06-01 00:00:00',
-      };
-    });
-
-    const localCachedWindow = serverWindow.map((bm, idx) => ({
-      id: `m_${bm.id}`,
-      serverMessageId: bm.id,
-      role: bm.role,
-      content: bm.content_chinese,
-      ts: 1_700_000_000_000 + idx * 1000,
-    }));
+    const assistantIf = id => (totalServerMessages - id) % 2 === 0;
+    const serverWindow = numberedWindow(oldestWindowId, 100, 'server', assistantIf);
     const unansweredId = `m_local_unanswered_${totalServerMessages}`;
     const unansweredPrompt = '刷新前刚发出的长会话提问';
-
-    const session = localChatSession({
+    let historyFetches = 0;
+    const streamRequests = [];
+    const { session, doc, storage, app } = await bootActiveHistory(t, {
       id: `s_long_unanswered_${totalServerMessages}`,
       title: '超百条长会话',
       updatedAt: 1_700_000_999_000,
-      hasMoreHistory: true,
-      oldestMessageId: oldestWindowId,
+      extra: { hasMoreHistory: true, oldestMessageId: oldestWindowId },
       messages: [
-        ...localCachedWindow,
-        {
-          id: unansweredId,
-          role: 'user',
-          content: unansweredPrompt,
-          voiceKey: `user_${unansweredId}`,
-          dur: 1.6,
-          ts: 1_700_000_999_000,
-        },
+        ...numberedWindow(oldestWindowId, 100, 'local', assistantIf),
+        localMsg(unansweredId, 'user', unansweredPrompt, {
+          voiceKey: `user_${unansweredId}`, dur: 1.6, ts: 1_700_000_999_000,
+        }),
       ],
-    });
-    const server = chatServer(session, {
       updated_at: '2024-06-01 00:10:00',
       message_count: totalServerMessages,
       last_message: `服务端回复 #${totalServerMessages}`,
-    });
-    let historyFetches = 0;
-    const streamRequests = [];
-    const { doc, storage, app } = await bootSyncedChat(t, {
-      sessions: [session],
-      activeId: session.id,
-      serverSessions: [server],
       mode: 'window',
-      history() {
-        historyFetches += 1;
-        return historyPayload(session, {
-          has_more: true,
-          oldest_id: oldestWindowId,
-          count: serverWindow.length,
-          messages: serverWindow,
-        });
+      prepareHistory(built) {
+        return () => {
+          historyFetches += 1;
+          return historyPayload(built, {
+            has_more: true, oldest_id: oldestWindowId, count: serverWindow.length, messages: serverWindow,
+          });
+        };
       },
       routes(target, options) {
         if (target.includes('/api/chat/stream')) return openChatStream(target, options, streamRequests);
@@ -2096,72 +1883,22 @@ for (const totalServerMessages of [150, 101]) {
 }
 
 test('startup sync in >100 message session merges answered local prompt without duplication or false failure', async t => {
-  const initialWindow = Array.from({ length: 100 }, (_, idx) => {
-    const id = 51 + idx;
-    const isAssistant = id % 2 === 0;
-    return {
-      id: `m_${id}`,
-      serverMessageId: id,
-      role: isAssistant ? 'assistant' : 'user',
-      content: isAssistant ? `服务端回复 #${id}` : `历史提问 #${id}`,
-      ts: 1_700_000_000_000 + idx * 1000,
-    };
-  });
-
   const answeredPrompt = '刷新期间已完成回复的提问';
   const answeredReply = '服务端已生成的第152条回复';
-  const session = localChatSession({
-    id: 's_long_already_answered',
-    title: '超百条已完成问答会话',
-    updatedAt: 1_700_000_999_000,
-    hasMoreHistory: true,
-    oldestMessageId: 51,
+  const { app } = await bootActiveHistory(t, {
+    id: 's_long_already_answered', title: '超百条已完成问答会话', updatedAt: 1_700_000_999_000,
+    extra: { hasMoreHistory: true, oldestMessageId: 51 },
     messages: [
-      ...initialWindow,
-      {
-        id: 'm_local_already_answered',
-        role: 'user',
-        content: answeredPrompt,
-        voiceKey: 'user_m_local_already_answered',
-        dur: 2.4,
-        ts: 1_700_000_999_000,
-      },
+      ...numberedWindow(51, 100, 'local', id => id % 2 === 0),
+      localMsg('m_local_already_answered', 'user', answeredPrompt, {
+        voiceKey: 'user_m_local_already_answered', dur: 2.4, ts: 1_700_000_999_000,
+      }),
     ],
-  });
-
-  const serverWindow = Array.from({ length: 100 }, (_, idx) => {
-    const id = 53 + idx;
-    if (id === 151) {
-      return { id: 151, role: 'user', content_chinese: answeredPrompt, content_japanese: '', created_at: '2024-06-01 00:10:01' };
-    }
-    if (id === 152) {
-      return { id: 152, role: 'assistant', content_chinese: answeredReply, content_japanese: '返答152', created_at: '2024-06-01 00:10:02' };
-    }
-    const isAssistant = id % 2 === 0;
-    return {
-      id,
-      role: isAssistant ? 'assistant' : 'user',
-      content_chinese: isAssistant ? `服务端回复 #${id}` : `历史提问 #${id}`,
-      content_japanese: '',
-      created_at: '2024-06-01 00:00:00',
-    };
-  });
-
-  const server = chatServer(session, {
-    updated_at: '2024-06-01 00:10:02',
-    message_count: 152,
-    last_message: answeredReply,
-  });
-  const { app } = await bootSyncedChat(t, {
-    sessions: [session],
-    activeId: session.id,
-    serverSessions: [server],
-    mode: 'window',
-    history: historyPayload(session, {
-      has_more: true,
-      oldest_id: 53,
-      count: 100,
-      messages: serverWindow,
+    updated_at: '2024-06-01 00:10:02', message_count: 152, last_message: answeredReply,
+    mode: 'window', has_more: true,
+    historyMessages: numberedWindow(53, 100, 'server', id => id % 2 === 0, {
+      151: srv(151, 'user', answeredPrompt, '', '2024-06-01 00:10:01'),
+      152: srv(152, 'assistant', answeredReply, '返答152', '2024-06-01 00:10:02'),
     }),
   });
 
@@ -2186,49 +1923,25 @@ test('startup sync in >100 message session merges answered local prompt without 
 });
 
 test('startup sync merges answered local prompt even when previously marked failed without duplication', async t => {
-  const initialMessages = [
-    { id: 'm_10', serverMessageId: 10, role: 'assistant', content: '之前历史消息', ts: 1_700_000_000_000 },
-  ];
   const newPrompt = '你好';
   const newReply = '我在';
-  const session = localChatSession({
-    id: 's_failed_prompt_reconcile',
-    title: '断连失败提问配对会话',
-    updatedAt: 1_700_000_999_000,
-    messages: [
-      ...initialMessages,
-      {
-        id: 'm_local_failed_prompt',
-        role: 'user',
-        content: newPrompt,
-        failed: { error: '对话已中断，未收到回复', code: 'cancelled' },
-        voiceKey: 'user_m_local_failed_prompt',
-        dur: 1.5,
-        ts: 1_700_000_999_000,
-      },
-    ],
-  });
-  const serverMessages = [
-    { id: 10, role: 'assistant', content_chinese: '之前历史消息', content_japanese: '', created_at: '2024-06-01 00:00:00' },
-    { id: 11, role: 'user', content_chinese: newPrompt, content_japanese: '', created_at: '2024-06-01 00:10:01' },
-    { id: 12, role: 'assistant', content_chinese: newReply, content_japanese: '返答12', created_at: '2024-06-01 00:10:02' },
-  ];
-  const server = chatServer(session, {
-    updated_at: '2024-06-01 00:10:02',
-    message_count: 3,
-    last_message: newReply,
-  });
   const fakeAudioBlob = { url: 'blob:http://localhost/fake_user_voice', dur: 1.5 };
-  const { app } = await bootSyncedChat(t, {
-    sessions: [session],
-    activeId: session.id,
-    serverSessions: [server],
+  const { app } = await bootActiveHistory(t, {
+    id: 's_failed_prompt_reconcile', title: '断连失败提问配对会话', updatedAt: 1_700_000_999_000,
+    messages: [
+      { id: 'm_10', serverMessageId: 10, role: 'assistant', content: '之前历史消息', ts: 1_700_000_000_000 },
+      localMsg('m_local_failed_prompt', 'user', newPrompt, {
+        failed: { error: '对话已中断，未收到回复', code: 'cancelled' },
+        voiceKey: 'user_m_local_failed_prompt', dur: 1.5, ts: 1_700_000_999_000,
+      }),
+    ],
+    updated_at: '2024-06-01 00:10:02', message_count: 3, last_message: newReply,
     mode: 'window',
-    history: historyPayload(session, {
-      oldest_id: 10,
-      count: serverMessages.length,
-      messages: serverMessages,
-    }),
+    historyMessages: [
+      srv(10, 'assistant', '之前历史消息'),
+      srv(11, 'user', newPrompt, '', '2024-06-01 00:10:01'),
+      srv(12, 'assistant', newReply, '返答12', '2024-06-01 00:10:02'),
+    ],
     beforeBoot() { audioStore.set('m_local_failed_prompt', fakeAudioBlob); },
     onCleanup() { audioStore.delete('m_local_failed_prompt'); audioStore.delete('m_11'); },
   });
@@ -2256,46 +1969,22 @@ test('startup sync merges answered local prompt even when previously marked fail
 
 test('startup sync preserves failed local prompt at end when content matches earlier history but server has no new messages', async t => {
   const repeatedPrompt = '重复历史提问';
-  const initialMessages = [
-    { id: 'm_1', serverMessageId: 1, role: 'user', content: repeatedPrompt, ts: 1_700_000_000_000 },
-    { id: 'm_2', serverMessageId: 2, role: 'assistant', content: '历史回复', ts: 1_700_000_001_000 },
-  ];
-  const session = localChatSession({
-    id: 's_failed_prompt_same_as_history',
-    title: '历史同文未发送成功会话',
-    updatedAt: 1_700_000_999_000,
+  const { app } = await bootActiveHistory(t, {
+    id: 's_failed_prompt_same_as_history', title: '历史同文未发送成功会话', updatedAt: 1_700_000_999_000,
     messages: [
-      ...initialMessages,
-      {
-        id: 'm_local_failed_tail',
-        role: 'user',
-        content: repeatedPrompt,
+      { id: 'm_1', serverMessageId: 1, role: 'user', content: repeatedPrompt, ts: 1_700_000_000_000 },
+      { id: 'm_2', serverMessageId: 2, role: 'assistant', content: '历史回复', ts: 1_700_000_001_000 },
+      localMsg('m_local_failed_tail', 'user', repeatedPrompt, {
         failed: { error: '网络超时，发送失败', code: 'timeout' },
-        voiceKey: 'user_m_local_failed_tail',
-        dur: 2.0,
-        ts: 1_700_000_999_000,
-      },
+        voiceKey: 'user_m_local_failed_tail', dur: 2.0, ts: 1_700_000_999_000,
+      }),
     ],
-  });
-  const serverMessages = [
-    { id: 1, role: 'user', content_chinese: repeatedPrompt, content_japanese: '', created_at: '2024-06-01 00:00:00' },
-    { id: 2, role: 'assistant', content_chinese: '历史回复', content_japanese: '', created_at: '2024-06-01 00:00:01' },
-  ];
-  const server = chatServer(session, {
-    updated_at: '2024-06-01 00:00:01',
-    message_count: 2,
-    last_message: '历史回复',
-  });
-  const { app } = await bootSyncedChat(t, {
-    sessions: [session],
-    activeId: session.id,
-    serverSessions: [server],
+    updated_at: '2024-06-01 00:00:01', message_count: 2, last_message: '历史回复',
     mode: 'window',
-    history: historyPayload(session, {
-      oldest_id: 1,
-      count: serverMessages.length,
-      messages: serverMessages,
-    }),
+    historyMessages: [
+      srv(1, 'user', repeatedPrompt),
+      srv(2, 'assistant', '历史回复', '', '2024-06-01 00:00:01'),
+    ],
   });
 
   const activeSession = storedActive();
@@ -2308,55 +1997,26 @@ test('startup sync preserves failed local prompt at end when content matches ear
 });
 
 test('startup sync reconciles multiple unpersisted failed prompts correctly when only a subset was persisted on server', async t => {
-  const initialMessages = [
-    { id: 'm_10', serverMessageId: 10, role: 'assistant', content: '之前历史消息', ts: 1_700_000_000_000 },
-  ];
-  const session = localChatSession({
-    id: 's_multi_failed_prompts',
-    title: '多条失败提问部分落库会话',
-    updatedAt: 1_700_000_999_000,
+  const { app } = await bootActiveHistory(t, {
+    id: 's_multi_failed_prompts', title: '多条失败提问部分落库会话', updatedAt: 1_700_000_999_000,
     messages: [
-      ...initialMessages,
-      {
-        id: 'm_local_failed_1',
-        role: 'user',
-        content: '第一条提问已落库',
+      { id: 'm_10', serverMessageId: 10, role: 'assistant', content: '之前历史消息', ts: 1_700_000_000_000 },
+      localMsg('m_local_failed_1', 'user', '第一条提问已落库', {
         failed: { error: '流式断开', code: 'cancelled' },
-        voiceKey: 'user_m_local_failed_1',
-        dur: 1.2,
-        ts: 1_700_000_998_000,
-      },
-      {
-        id: 'm_local_failed_2',
-        role: 'user',
-        content: '第二条提问未落库',
+        voiceKey: 'user_m_local_failed_1', dur: 1.2, ts: 1_700_000_998_000,
+      }),
+      localMsg('m_local_failed_2', 'user', '第二条提问未落库', {
         failed: { error: '网络中断', code: 'timeout' },
-        voiceKey: 'user_m_local_failed_2',
-        dur: 2.1,
-        ts: 1_700_000_999_000,
-      },
+        voiceKey: 'user_m_local_failed_2', dur: 2.1, ts: 1_700_000_999_000,
+      }),
     ],
-  });
-  const serverMessages = [
-    { id: 10, role: 'assistant', content_chinese: '之前历史消息', content_japanese: '', created_at: '2024-06-01 00:00:00' },
-    { id: 11, role: 'user', content_chinese: '第一条提问已落库', content_japanese: '', created_at: '2024-06-01 00:10:01' },
-    { id: 12, role: 'assistant', content_chinese: '第一条回复', content_japanese: '返答12', created_at: '2024-06-01 00:10:02' },
-  ];
-  const server = chatServer(session, {
-    updated_at: '2024-06-01 00:10:02',
-    message_count: 3,
-    last_message: '第一条回复',
-  });
-  const { app } = await bootSyncedChat(t, {
-    sessions: [session],
-    activeId: session.id,
-    serverSessions: [server],
+    updated_at: '2024-06-01 00:10:02', message_count: 3, last_message: '第一条回复',
     mode: 'window',
-    history: historyPayload(session, {
-      oldest_id: 10,
-      count: serverMessages.length,
-      messages: serverMessages,
-    }),
+    historyMessages: [
+      srv(10, 'assistant', '之前历史消息'),
+      srv(11, 'user', '第一条提问已落库', '', '2024-06-01 00:10:01'),
+      srv(12, 'assistant', '第一条回复', '返答12', '2024-06-01 00:10:02'),
+    ],
   });
 
   const activeSession = storedActive();
