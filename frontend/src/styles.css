@@ -170,6 +170,18 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 }
 .session-item:hover .si-del, .session-item:focus-within .si-del { opacity: 1; }
 .si-del:hover { color: var(--danger); background: var(--danger-soft); }
+.si-del.si-del-confirm,
+.si-del.si-del-confirm:hover {
+  opacity: 1;
+  width: auto;
+  min-width: 28px;
+  padding: 0 8px;
+  color: #fff;
+  background: var(--danger);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
 
 .sidebar-foot {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
