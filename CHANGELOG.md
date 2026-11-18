@@ -5,6 +5,9 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fixed
+- 修复发出一句话后模型一直不回答或连接提前断开、舞台上一个字都没出现时，提示仍写「已保留收到的内容」的问题；现在会写明没有收到回复，已收到过台词时仍提示台词留在记录里。
+
 
 ## [3.2.6] - 2026-11-18
 ### Fixed

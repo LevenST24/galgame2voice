@@ -93,6 +93,22 @@ async function chatScenario(chunks, { hang = false, cancel = false, status = 200
   assert.equal(result.meta.error, null); assert.match(result.meta.audioError, /启动引擎/); passed++;
 }
 {
+  // No text, line, or message arrived. The stage must not claim that content was kept.
+  const timeout = await chatScenario([], { hang: true });
+  assert.equal(timeout.text, '');
+  assert.equal(timeout.meta.cancelled, false);
+  assert.equal(timeout.meta.errorCode, 'stream_idle_timeout');
+  assert.equal(timeout.meta.error, '回复等待超时，没有收到回复。请在「设置中心」检查网络、模型与语音服务，稍后重新发送上一条消息。');
+  const closed = await chatScenario([]);
+  assert.equal(closed.text, '');
+  assert.equal(closed.meta.cancelled, false);
+  assert.equal(closed.meta.error, '回复连接提前结束，没有收到回复。请检查服务与网络，稍后重新发送上一条消息。');
+  const kept = await chatScenario(['event: text\ndata: {"delta_chinese":"半句"}\n\n'], { hang: true });
+  assert.equal(kept.text, '半句');
+  assert.equal(kept.meta.error, '回复等待超时，已收到的台词保留在 LOG 里。请在「设置中心」检查网络、模型与语音服务。');
+  passed++;
+}
+{
   const states = [{ state: 'starting', ready: false }, { state: 'ready', ready: true }];
   globalThis.fetch = async () => response(states.shift());
   assert.equal((await waitForEngine({ intervalMs: 1 })).ready, true); passed++;
