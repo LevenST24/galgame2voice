@@ -68,20 +68,12 @@ def isolated_launcher_env(tmp_path, monkeypatch):
         get_settings.cache_clear()
 
 
-def test_public_bind_without_auth_fails_safety_guard_even_with_early_cache_warmup(
-    isolated_launcher_env, monkeypatch
-):
-    """Early get_settings() warmup must not cause 0.0.0.0 without auth to bypass security check."""
-    # Step 1: Simulate early cache warmup (e.g. from early import or ensure_gpt_sovits_running)
-    early_settings = get_settings()
-    assert early_settings.host == "127.0.0.1"
-
-    # Mock socket reservation so we never bind real 0.0.0.0
+def _setup_mock_uvicorn(monkeypatch, sockname):
+    """Mock socket reservation and uvicorn.Server.run to capture settings and lifespan safety."""
     mock_socket = MagicMock()
-    mock_socket.getsockname.return_value = ("0.0.0.0", 8080)
+    mock_socket.getsockname.return_value = sockname
     monkeypatch.setattr(run_server, "reserve_available_socket", lambda port, host=None: mock_socket)
 
-    # Intercept uvicorn.Server.run to execute actual lifespan safety guard
     captured = {}
 
     def simulate_uvicorn_run(*args, **kwargs):
@@ -97,6 +89,18 @@ def test_public_bind_without_auth_fails_safety_guard_even_with_early_cache_warmu
     server.run.side_effect = simulate_uvicorn_run
     monkeypatch.setattr(uvicorn, "Config", MagicMock())
     monkeypatch.setattr(uvicorn, "Server", lambda config: server)
+    return captured
+
+
+def test_public_bind_without_auth_fails_safety_guard_even_with_early_cache_warmup(
+    isolated_launcher_env, monkeypatch
+):
+    """Early get_settings() warmup must not cause 0.0.0.0 without auth to bypass security check."""
+    # Step 1: Simulate early cache warmup (e.g. from early import or ensure_gpt_sovits_running)
+    early_settings = get_settings()
+    assert early_settings.host == "127.0.0.1"
+
+    captured = _setup_mock_uvicorn(monkeypatch, ("0.0.0.0", 8080))
 
     # Step 2: Launch with --host 0.0.0.0 and default auth (auth_disabled=True)
     # The safety guard must reject the startup with exit code 1 and a fatal error.
@@ -121,21 +125,7 @@ def test_cli_host_overrides_stale_high_priority_env_alias(
     # Enable auth so the non-loopback bind is legally allowed
     monkeypatch.setenv("GALGAME2VOICE_AUTH_DISABLED", "0")
 
-    mock_socket = MagicMock()
-    mock_socket.getsockname.return_value = ("0.0.0.0", 8080)
-    monkeypatch.setattr(run_server, "reserve_available_socket", lambda port, host=None: mock_socket)
-
-    captured = {}
-
-    def simulate_uvicorn_run(*args, **kwargs):
-        settings = get_settings()
-        captured["settings"] = settings
-        _init_logging_and_safety(settings)
-
-    server = MagicMock(started=True)
-    server.run.side_effect = simulate_uvicorn_run
-    monkeypatch.setattr(uvicorn, "Config", MagicMock())
-    monkeypatch.setattr(uvicorn, "Server", lambda config: server)
+    captured = _setup_mock_uvicorn(monkeypatch, ("0.0.0.0", 8080))
 
     with pytest.raises(SystemExit) as exc:
         run_server.main(["--no-engine", "--no-browser", "--host", "0.0.0.0", "--port", "8080"])
@@ -151,21 +141,7 @@ def test_loopback_default_bind_passes_safety_check(
     isolated_launcher_env, monkeypatch
 ):
     """Default loopback host (127.0.0.1) with auth_disabled passes safety checks cleanly."""
-    mock_socket = MagicMock()
-    mock_socket.getsockname.return_value = ("127.0.0.1", 8080)
-    monkeypatch.setattr(run_server, "reserve_available_socket", lambda port, host=None: mock_socket)
-
-    captured = {}
-
-    def simulate_uvicorn_run(*args, **kwargs):
-        settings = get_settings()
-        captured["settings"] = settings
-        _init_logging_and_safety(settings)
-
-    server = MagicMock(started=True)
-    server.run.side_effect = simulate_uvicorn_run
-    monkeypatch.setattr(uvicorn, "Config", MagicMock())
-    monkeypatch.setattr(uvicorn, "Server", lambda config: server)
+    captured = _setup_mock_uvicorn(monkeypatch, ("127.0.0.1", 8080))
 
     with pytest.raises(SystemExit) as exc:
         run_server.main(["--no-engine", "--no-browser", "--host", "127.0.0.1", "--port", "8080"])
@@ -180,21 +156,7 @@ def test_non_loopback_with_auth_enabled_passes_safety_check(
     """Non-loopback host (0.0.0.0) with auth enabled (GALGAME2VOICE_AUTH_DISABLED=0) is allowed."""
     monkeypatch.setenv("GALGAME2VOICE_AUTH_DISABLED", "0")
 
-    mock_socket = MagicMock()
-    mock_socket.getsockname.return_value = ("0.0.0.0", 8080)
-    monkeypatch.setattr(run_server, "reserve_available_socket", lambda port, host=None: mock_socket)
-
-    captured = {}
-
-    def simulate_uvicorn_run(*args, **kwargs):
-        settings = get_settings()
-        captured["settings"] = settings
-        _init_logging_and_safety(settings)
-
-    server = MagicMock(started=True)
-    server.run.side_effect = simulate_uvicorn_run
-    monkeypatch.setattr(uvicorn, "Config", MagicMock())
-    monkeypatch.setattr(uvicorn, "Server", lambda config: server)
+    captured = _setup_mock_uvicorn(monkeypatch, ("0.0.0.0", 8080))
 
     with pytest.raises(SystemExit) as exc:
         run_server.main(["--no-engine", "--no-browser", "--host", "0.0.0.0", "--port", "8080"])
@@ -207,22 +169,7 @@ def test_fallback_port_is_reflected_in_settings(
     isolated_launcher_env, monkeypatch
 ):
     """When preferred port is occupied, the resolved fallback port is visible in Settings."""
-    mock_socket = MagicMock()
-    # Preferred was 8080, but fallback resolved to 8081
-    mock_socket.getsockname.return_value = ("127.0.0.1", 8081)
-    monkeypatch.setattr(run_server, "reserve_available_socket", lambda port, host=None: mock_socket)
-
-    captured = {}
-
-    def simulate_uvicorn_run(*args, **kwargs):
-        settings = get_settings()
-        captured["settings"] = settings
-        _init_logging_and_safety(settings)
-
-    server = MagicMock(started=True)
-    server.run.side_effect = simulate_uvicorn_run
-    monkeypatch.setattr(uvicorn, "Config", MagicMock())
-    monkeypatch.setattr(uvicorn, "Server", lambda config: server)
+    captured = _setup_mock_uvicorn(monkeypatch, ("127.0.0.1", 8081))
 
     with pytest.raises(SystemExit) as exc:
         run_server.main(["--no-engine", "--no-browser", "--host", "127.0.0.1", "--port", "8080"])
