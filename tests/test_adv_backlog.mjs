@@ -17,21 +17,39 @@ import { audioStore } from '../frontend/src/voice.js';
 import { fakeDocument, fakeClock, Element, microtasks } from './helpers/adv_dom.mjs';
 import { fakeChatStream, tick } from './helpers/chat_stream.mjs';
 
+function setupBacklog(t, sessionOrGetter, options = {}) {
+  const doc = fakeDocument(), root = doc.createElement('div');
+  doc.body.appendChild(root);
+  const getSession = typeof sessionOrGetter === 'function' ? sessionOrGetter : () => sessionOrGetter;
+  const log = createBacklog(root, {
+    getSession,
+    getSettings: () => DEFAULT_SESSION_SETTINGS,
+    getCharacter: () => ({ name: '角色' }),
+    voiceEnabled: () => true,
+    ...options,
+  });
+  if (t) t.after(() => log.destroy());
+  return { doc, root, log };
+}
+
+function makeLine(index, zh, ja, { emotion = 'neutral', act = {}, status = 'ready', url, chunkIndex = 0, line = index, sentence, chunks, ...audioExtra } = {}) {
+  const resolvedChunks = chunks ?? (url ? [{ index: chunkIndex, line, audio_url: url, ...(sentence !== undefined ? { sentence } : {}) }] : []);
+  return { index, zh, ja, emotion, act, audio: { status, chunks: resolvedChunks, ...audioExtra } };
+}
+
 test('LOG replays legacy assistant audio and failed player recordings through the shared playback service', t => {
-  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
   const calls = [], now = Date.now();
   const session = { id: 'legacy', messages: [
     { id: 'a', role: 'assistant', content: '旧格式中文', japanese: '日本語', ts: now, audioUrls: ['/audio/cache/old.wav'] },
     { id: 'u', role: 'user', content: '失败录音', dur: 3, voiceKey: 'recording', failed: { error: '离线' } },
   ] };
   let voice = true;
-  const log = createBacklog(root, { getSession: () => session, getSettings: () => DEFAULT_SESSION_SETTINGS,
-    getCharacter: () => ({ name: '角色' }), voiceEnabled: () => voice, wallNow: () => now,
+  const { log } = setupBacklog(t, session, {
+    voiceEnabled: () => voice, wallNow: () => now,
     stopOtherVoice: () => calls.push('stop'),
     audio: { stopLine() {}, playLine: async (_idx, _chunks, opts) => { calls.push(opts.msgId); return 'ended'; } },
     playUserVoice: msg => calls.push(msg.id),
   });
-  t.after(() => log.destroy());
   log.element.querySelector('.adv-log-replay-btn').click(); assert.equal(calls.at(-1), 'a');
   log.element.querySelector('.adv-log-user-recording-btn').click(); assert.equal(calls.at(-1), 'u');
   voice = false; log.renderAll(); assert.equal(log.element.querySelector('.adv-log-replay-btn').disabled, true);
@@ -244,8 +262,8 @@ test('LOG: entries for lines, legacy and user messages, and subtitle settings', 
       role: 'assistant',
       ts: now - 500,
       lines: [
-        { index: 0, zh: '第一句中文', ja: '第一句日文', emotion: 'gentle', act: {}, audio: { status: 'ready', chunks: [{ index: 0, line: 0, audio_url: '/0.wav' }] } },
-        { index: 1, zh: '第二句中文', ja: '第二句日文', emotion: 'happy', act: {}, audio: { status: 'ready', chunks: [{ index: 1, line: 1, audio_url: '/1.wav' }] } },
+        makeLine(0, '第一句中文', '第一句日文', { emotion: 'gentle', url: '/0.wav' }),
+        makeLine(1, '第二句中文', '第二句日文', { emotion: 'happy', chunkIndex: 1, url: '/1.wav' }),
       ],
     },
     {
@@ -340,7 +358,7 @@ test('LOG: subtitle none setting hides subtitle line', (t) => {
       id: 'm1',
       role: 'assistant',
       ts: h.getWallTime(),
-      lines: [{ index: 0, zh: '中文内容', ja: '日本語', emotion: 'gentle', act: {}, audio: { status: 'skipped', chunks: [] } }],
+      lines: [makeLine(0, '中文内容', '日本語', { emotion: 'gentle', status: 'skipped' })],
     },
   ];
   h.app.action('log');
@@ -571,7 +589,6 @@ test('LOG: a live turn updates an open LOG through done and through cancelled', 
 });
 
 test('LOG: the presented turn lists only the lines the stage has shown', (t) => {
-  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
   const now = 1700000000000;
   const line = (index) => ({
     index, zh: `第${index}句`, ja: '',
@@ -592,12 +609,7 @@ test('LOG: the presented turn lists only the lines the stage has shown', (t) => 
   const emit = (type, event) => { for (const fn of [...listeners.get(type) || []]) fn(event); };
 
   let hidden = { messageIds: ['live'], after: 0 };
-  const log = createBacklog(root, {
-    controller, audio: { stopLine() {} }, getSession: () => session,
-    getSettings: () => DEFAULT_SESSION_SETTINGS, getCharacter: () => ({ name: '角色' }),
-    getHiddenFrom: () => hidden,
-  });
-  t.after(() => log.destroy());
+  const { log } = setupBacklog(t, session, { controller, audio: { stopLine() {} }, getHiddenFrom: () => hidden });
 
   const texts = (msgId) => [...log.element.querySelectorAll('.adv-log-entry')]
     .filter(el => el.classList.contains('is-assistant') && el.dataset.msgId === msgId)
@@ -1067,9 +1079,6 @@ test('LOG disables the current replay button if a load fails across done reconci
 });
 
 test('LOG re-render during line regeneration keeps cancel and shows the result on the rebuilt entry', async t => {
-  const doc = fakeDocument();
-  const root = doc.createElement('div');
-  doc.body.appendChild(root);
   const session = {
     id: 's_regen',
     settings: { voiceProfileId: 7 },
@@ -1077,14 +1086,7 @@ test('LOG re-render during line regeneration keeps cancel and shows the result o
       id: 'm_1',
       role: 'assistant',
       ts: Date.now(),
-      lines: [0, 1].map(index => ({
-        index,
-        zh: index === 0 ? '第一句' : '早上好',
-        ja: index === 0 ? 'いち。' : 'おはよう。',
-        emotion: 'neutral',
-        act: {},
-        audio: { status: 'failed', chunks: [] },
-      })),
+      lines: [0, 1].map(index => makeLine(index, index === 0 ? '第一句' : '早上好', index === 0 ? 'いち。' : 'おはよう。', { status: 'failed' })),
     }],
   };
   const calls = [];
@@ -1105,17 +1107,14 @@ test('LOG re-render during line regeneration keeps cancel and shows the result o
       return promise;
     },
   });
-  const log = createBacklog(root, {
-    getSession: () => session,
+  const { log } = setupBacklog(t, session, {
     getSettings: () => session.settings,
     getCharacter: () => ({ id: 7, name: '角色A' }),
     getRecoveryVoice: () => ({ id: 7, name: '角色A' }),
-    voiceEnabled: () => true,
     audio: { stopLine() {}, async playLine() { return 'ended'; } },
     regenerateLineAudio: recover,
     wallNow: () => now,
   });
-  t.after(() => log.destroy());
 
   const entry = lineIndex => [...log.element.querySelectorAll('.adv-log-entry')]
     .find(el => el.dataset.lineIndex === String(lineIndex));
@@ -1185,7 +1184,6 @@ test('LOG re-render during line regeneration keeps cancel and shows the result o
 
 test('double-clicking 用当前音色重新生成 does not cancel, and 取消生成 says the old audio was kept', async t => {
   for (const mode of ['line', 'legacy']) {
-    const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
     let now = 8 * 86400000 + 1000;
     const originalAudio = { status: 'failed', chunks: [] };
     const session = {
@@ -1223,16 +1221,13 @@ test('double-clicking 用当前音色重新生成 does not cancel, and 取消生
         });
       },
     });
-    const log = createBacklog(root, {
-      getSession: () => session,
+    const { log } = setupBacklog(t, session, {
       getSettings: () => session.settings,
       getCharacter: () => ({ id: 7, name: '角色A' }),
       getRecoveryVoice: () => ({ id: 7, name: '角色A' }),
-      voiceEnabled: () => true,
       regenerateLineAudio: recover,
       wallNow: () => now,
     });
-    t.after(() => log.destroy());
 
     const button = () => log.element.querySelector('.adv-log-regenerate-btn');
     const status = () => log.element.querySelector('.adv-log-audio-status');
@@ -1424,7 +1419,6 @@ test('a fresh LOG line stays replayable when loading fails and disables only con
 });
 
 test('LOG legacy repair validation and guidance: missing voice, missing japanese, overlong japanese', t => {
-  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
   const now = Date.now();
   let chosen = 0;
   let voice = null;
@@ -1433,17 +1427,12 @@ test('LOG legacy repair validation and guidance: missing voice, missing japanese
     { id: 'm_no_ja', role: 'assistant', content: '中文', japanese: '   ', ts: now - 8 * 86400000 },
     { id: 'm_overlong', role: 'assistant', content: '中文', japanese: 'あ'.repeat(2001), ts: now - 8 * 86400000 },
   ] };
-  const log = createBacklog(root, {
-    getSession: () => session,
-    getSettings: () => DEFAULT_SESSION_SETTINGS,
-    getCharacter: () => ({ name: '角色' }),
-    voiceEnabled: () => true,
+  const { log } = setupBacklog(t, session, {
     wallNow: () => now,
     getRecoveryVoice: () => voice,
     onChooseVoice: () => { chosen++; },
     regenerateLineAudio: async () => {},
   });
-  t.after(() => log.destroy());
 
   const entries = log.element.querySelectorAll('.adv-log-entry.is-legacy');
 
@@ -1471,20 +1460,18 @@ test('LOG legacy repair validation and guidance: missing voice, missing japanese
 
 test('LOG legacy repaired line playback outcomes: retryable network and timeout remain replayable; only confirmed failed disables replay', async t => {
   for (const outcome of ['ended', 'failed', 'network', 'timeout']) {
-    const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
     const message = { id: `m_rep_${outcome}`, serverMessageId: 42, role: 'assistant', content: '旧中文', japanese: 'こんにちは。',
       ts: Date.now() - 9 * 86400000, audioUrls: ['/audio/old.wav'] };
     const session = { id: `sess_${outcome}`, settings: { voiceProfileId: 7 }, messages: [message] };
     const audio = { status: 'ready', generated_at: Date.now(), voice_profile_id: 7,
       chunks: [{ index: 0, line: 0, audio_url: '/audio/repair_probe.wav', sentence: message.japanese }] };
     const canonical = { index: 0, zh: message.content, ja: message.japanese, emotion: 'neutral', act: {}, audio };
-    const log = createBacklog(root, {
-      getSession: () => session, getSettings: () => ({ voiceEnabled: true }), voiceEnabled: () => true,
+    const { log } = setupBacklog(t, session, {
+      getSettings: () => ({ voiceEnabled: true }),
       getRecoveryVoice: () => ({ id: 7, name: '当前音色' }),
       audio: { stopLine() {}, async playLine() { return outcome; } },
       regenerateLineAudio: async () => { message.lines = [canonical]; return { line: canonical, audio, persisted: true, saved: true }; },
     });
-    t.after(() => log.destroy());
 
     await log.element.querySelector('.adv-log-regenerate-btn').onclick({ stopPropagation() {} });
     const replay = log.element.querySelector('.adv-log-replay-btn');
@@ -1503,17 +1490,14 @@ test('LOG legacy repaired line playback outcomes: retryable network and timeout 
 });
 
 test('LOG chunk-only legacy audio remains playable when fresh, and confirmed failure exposes repair action', async t => {
-  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
   const now = Date.now();
   const message = { id: 'm_chunk_fresh', role: 'assistant', content: '旧中文', japanese: 'こんにちは。', ts: now,
     audioChunks: [{ index: 0, url: '/audio/fresh-chunk.wav', sentence: 'こんにちは。' }] };
   const session = { id: 'chunk-fresh-session', settings: { voiceProfileId: 7 }, messages: [message] };
   let playLineCalled = false;
   let playOutcome = 'failed';
-  const log = createBacklog(root, {
-    getSession: () => session,
+  const { log } = setupBacklog(t, session, {
     getSettings: () => ({ voiceEnabled: true }),
-    voiceEnabled: () => true,
     wallNow: () => now,
     getRecoveryVoice: () => ({ id: 7, name: '当前音色' }),
     audio: {
@@ -1527,7 +1511,6 @@ test('LOG chunk-only legacy audio remains playable when fresh, and confirmed fai
     },
     regenerateLineAudio: async () => {},
   });
-  t.after(() => log.destroy());
 
   const replay = log.element.querySelector('.adv-log-replay-btn');
   const regenBtn = log.element.querySelector('.adv-log-regenerate-btn');
@@ -1543,7 +1526,6 @@ test('LOG chunk-only legacy audio remains playable when fresh, and confirmed fai
 });
 
 test('LOG assistant message with explicit empty lines array preserves text and audio but hides repair button', t => {
-  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
   const now = Date.now();
   const message = {
     id: 'm_explicit_empty',
@@ -1555,14 +1537,11 @@ test('LOG assistant message with explicit empty lines array preserves text and a
     audioUrls: ['/audio/old.wav'],
   };
   const session = { id: 'empty-lines-sess', settings: { voiceProfileId: 7 }, messages: [message] };
-  const log = createBacklog(root, {
-    getSession: () => session,
+  const { log } = setupBacklog(t, session, {
     getSettings: () => ({ voiceEnabled: true }),
-    voiceEnabled: () => true,
     getRecoveryVoice: () => ({ id: 7, name: '当前音色' }),
     regenerateLineAudio: async () => {},
   });
-  t.after(() => log.destroy());
 
   const entry = log.element.querySelector('.adv-log-entry.is-legacy');
   assert.ok(entry, 'entry is rendered');
@@ -1575,7 +1554,6 @@ test('LOG assistant message with explicit empty lines array preserves text and a
 });
 
 test('a line or welcome message with noVoice flag does not render 语音 or 重新生成 buttons in LOG', () => {
-  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
   const now = Date.now();
   const session = {
     id: 's_no_voice',
@@ -1604,11 +1582,7 @@ test('a line or welcome message with noVoice flag does not render 语音 or 重�
     ],
   };
 
-  const log = createBacklog(root, {
-    getSession: () => session,
-    getSettings: () => DEFAULT_SESSION_SETTINGS,
-    getCharacter: () => ({ name: '角色' }),
-    voiceEnabled: () => true,
+  const { log } = setupBacklog(null, session, {
     wallNow: () => now,
     getRecoveryVoice: () => ({ id: 1, name: '当前音色' }),
     regenerateLineAudio: async () => ({ persisted: true }),
@@ -1787,34 +1761,9 @@ test('LOG replay of line voice, legacy voice, and user recording keeps an in-fli
         japanese: '一句目。二句目。三句目。',
         ts: now - 1000,
         lines: [
-          {
-            index: 0,
-            zh: '第一句。',
-            ja: '一句目。',
-            emotion: 'gentle',
-            act: {},
-            audio: {
-              status: 'ready',
-              generated_at: now - 1000,
-              chunks: [{ index: 0, line: 0, audio_url: '/audio/cache/line0.wav', sentence: '一句目。' }],
-            },
-          },
-          {
-            index: 1,
-            zh: '第二句。',
-            ja: '二句目。',
-            emotion: 'gentle',
-            act: {},
-            audio: { status: 'failed', chunks: [] },
-          },
-          {
-            index: 2,
-            zh: '第三句。',
-            ja: '三句目。',
-            emotion: 'gentle',
-            act: {},
-            audio: { status: 'failed', chunks: [] },
-          },
+          makeLine(0, '第一句。', '一句目。', { emotion: 'gentle', url: '/audio/cache/line0.wav', sentence: '一句目。', generated_at: now - 1000 }),
+          makeLine(1, '第二句。', '二句目。', { emotion: 'gentle', status: 'failed' }),
+          makeLine(2, '第三句。', '三句目。', { emotion: 'gentle', status: 'failed' }),
         ],
       },
     ],
@@ -1998,9 +1947,6 @@ test('LOG replay of line voice, legacy voice, and user recording keeps an in-fli
 });
 
 test('LOG partial failed voice exposes playable audio, partial failure note and regenerate button, recovering cleanly on success', async t => {
-  const doc = fakeDocument();
-  const root = doc.createElement('div');
-  doc.body.appendChild(root);
   const now = Date.now();
 
   const session = {
@@ -2012,29 +1958,19 @@ test('LOG partial failed voice exposes playable audio, partial failure note and 
       content: '完整中文内容。',
       japanese: '一部失敗した日本語。',
       ts: now,
-      lines: [{
-        index: 0,
-        zh: '完整中文内容。',
-        ja: '一部失敗した日本語。',
-        emotion: 'neutral',
-        act: {},
-        audio: {
-          status: 'failed',
-          error: 'TTS generation timeout midway',
-          voiceProfileId: 1,
-          chunks: [{ subIndex: 0, audioUrl: '/a.wav' }],
-        },
-      }],
+      lines: [makeLine(0, '完整中文内容。', '一部失敗した日本語。', {
+        status: 'failed',
+        error: 'TTS generation timeout midway',
+        voiceProfileId: 1,
+        chunks: [{ subIndex: 0, audioUrl: '/a.wav' }],
+      })],
     }],
   };
 
   let regenerated = false;
   let voiceOn = true;
   let playedChunks = null;
-  const log = createBacklog(root, {
-    getSession: () => session,
-    getSettings: () => DEFAULT_SESSION_SETTINGS,
-    getCharacter: () => ({ name: '角色' }),
+  const { log } = setupBacklog(t, session, {
     voiceEnabled: () => voiceOn,
     wallNow: () => now,
     getRecoveryVoice: () => ({ id: 1, name: '当前音色' }),
@@ -2063,7 +1999,6 @@ test('LOG partial failed voice exposes playable audio, partial failure note and 
       };
     },
   });
-  t.after(() => log.destroy());
 
   let entry = log.element.querySelector('.adv-log-entry.is-assistant');
   assert.ok(entry, 'assistant line entry should exist');
@@ -2138,7 +2073,6 @@ test('LOG partial failed voice exposes playable audio, partial failure note and 
 
 test('LOG replay clears regeneration feedback for lines and legacy entries after ended or interrupted, but restores on blocked', async t => {
   for (const mode of ['lines', 'legacy']) {
-    const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
     const now = Date.now();
     const session = {
       id: `s_replay_clear_${mode}`,
@@ -2147,9 +2081,8 @@ test('LOG replay clears regeneration feedback for lines and legacy entries after
         id: 'msg1',
         role: 'assistant',
         lines: [
-          { index: 0, zh: '第一句', ja: '一番目。', emotion: 'neutral', act: {}, audio: { status: 'failed', chunks: [] } },
-          { index: 1, zh: '第二句', ja: '二番目。', emotion: 'neutral', act: {},
-            audio: { status: 'ready', chunks: [{ index: 0, line: 1, audio_url: '/audio/2.wav', sentence: '二番目。' }] } },
+          makeLine(0, '第一句', '一番目。', { status: 'failed' }),
+          makeLine(1, '第二句', '二番目。', { url: '/audio/2.wav', sentence: '二番目。' }),
         ],
       }] : [
         { id: 'msg_leg_1', role: 'assistant', content: '旧中文1', japanese: '旧日本語1。', ts: now - 8 * 86400000, audioUrls: ['/audio/old1.wav'] },
@@ -2160,11 +2093,7 @@ test('LOG replay clears regeneration feedback for lines and legacy entries after
     let playLineResult = 'ended';
     let onStopLine = null;
     const played = [];
-    const log = createBacklog(root, {
-      getSession: () => session,
-      getSettings: () => DEFAULT_SESSION_SETTINGS,
-      getCharacter: () => ({ name: '角色' }),
-      voiceEnabled: () => true,
+    const { log } = setupBacklog(t, session, {
       wallNow: () => now,
       getRecoveryVoice: () => ({ id: 1, name: '当前音色' }),
       regenerateLineAudio: async ({ messageId, lineIndex }) => {
@@ -2178,10 +2107,7 @@ test('LOG replay clears regeneration feedback for lines and legacy entries after
         }
         const msg = session.messages.find(m => m.id === messageId);
         const url = messageId === 'msg_leg_1' ? '/api/tts/audio/repaired_leg_1.wav' : `/audio/repaired_${messageId}.wav`;
-        const repaired = {
-          index: 0, zh: msg.content, ja: msg.japanese, emotion: 'neutral', act: {},
-          audio: { status: 'ready', generated_at: now, chunks: [{ index: 0, line: 0, audio_url: url, sentence: msg.japanese }] },
-        };
+        const repaired = makeLine(0, msg.content, msg.japanese, { url, sentence: msg.japanese, generated_at: now });
         if (messageId === 'msg_leg_1') msg.lines = [repaired];
         return { line: repaired, audio: repaired.audio, remoteUpdated: false, persisted: true, saved: true };
       },
@@ -2193,7 +2119,6 @@ test('LOG replay clears regeneration feedback for lines and legacy entries after
         },
       },
     });
-    t.after(() => log.destroy());
 
     const getEntry = key => [...log.element.querySelectorAll('.adv-log-entry.is-assistant')]
       .find(el => (mode === 'lines' ? el.dataset.lineIndex === String(key) : el.dataset.msgId === String(key)));
@@ -2279,39 +2204,20 @@ test('LOG replay clears regeneration feedback for lines and legacy entries after
 });
 
 test('LOG replay ending while the same line is actively regenerating does not clear the regeneration progress note', async t => {
-  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
   const now = Date.now();
   const session = {
     id: 's_active_regen_replay',
     settings: { voiceProfileId: 1 },
-    messages: [
-      {
-        id: 'msg_active',
-        role: 'assistant',
-        lines: [
-          {
-            index: 0,
-            zh: '部分台词',
-            ja: '一部台詞。',
-            emotion: 'neutral',
-            act: {},
-            audio: {
-              status: 'failed',
-              chunks: [{ index: 0, line: 0, audio_url: '/audio/part0.wav', sentence: '一部台詞。' }],
-            },
-          },
-        ],
-      },
-    ],
+    messages: [{
+      id: 'msg_active',
+      role: 'assistant',
+      lines: [makeLine(0, '部分台词', '一部台詞。', { status: 'failed', url: '/audio/part0.wav', sentence: '一部台詞。' })],
+    }],
   };
 
   let resolvePlay;
   let resolveRegen;
-  const log = createBacklog(root, {
-    getSession: () => session,
-    getSettings: () => DEFAULT_SESSION_SETTINGS,
-    getCharacter: () => ({ name: '角色' }),
-    voiceEnabled: () => true,
+  const { log } = setupBacklog(t, session, {
     wallNow: () => now,
     getRecoveryVoice: () => ({ id: 1, name: '当前音色' }),
     regenerateLineAudio: async () => new Promise(r => { resolveRegen = r; }),
@@ -2322,7 +2228,6 @@ test('LOG replay ending while the same line is actively regenerating does not cl
       },
     },
   });
-  t.after(() => log.destroy());
 
   const entry = log.element.querySelector('.adv-log-entry.is-assistant');
   const replayBtn = entry.querySelector('.adv-log-replay-btn');
@@ -2414,8 +2319,8 @@ test('LOG: replaying line voice, legacy voice (before and after repair), or user
       role: 'assistant',
       ts: now - 1000,
       lines: [
-        { index: 0, zh: '台词0', ja: '台詞0。', emotion: 'neutral', act: {}, audio: { status: 'ready', chunks: [{ index: 0, line: 0, audio_url: '/audio/line0.wav' }] } },
-        { index: 1, zh: '台词1', ja: '台詞1。', emotion: 'neutral', act: {}, audio: { status: 'ready', chunks: [{ index: 0, line: 1, audio_url: '/audio/line1.wav' }] } },
+        makeLine(0, '台词0', '台詞0。', { url: '/audio/line0.wav' }),
+        makeLine(1, '台词1', '台詞1。', { url: '/audio/line1.wav' }),
       ],
     },
     legacyMsg,
@@ -2557,16 +2462,7 @@ test('LOG: user recording re-render before setPlaying(true), and line audio fail
       id: 'm_fail',
       role: 'assistant',
       ts: now - 1000,
-      lines: [
-        {
-          index: 0,
-          zh: '失败台词',
-          ja: '失敗。',
-          emotion: 'neutral',
-          act: {},
-          audio: { status: 'ready', chunks: [{ index: 0, line: 0, audio_url: '/audio/fail.wav' }] },
-        },
-      ],
+      lines: [makeLine(0, '失败台词', '失敗。', { url: '/audio/fail.wav' })],
     },
   ];
 
