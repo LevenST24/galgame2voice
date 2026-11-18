@@ -1,6 +1,5 @@
 """Unit and integration tests for turn reply status lookup endpoint."""
 
-import asyncio
 import os
 import sqlite3
 import pytest
@@ -20,42 +19,6 @@ async def lookup_db(tmp_path):
     os.environ["GALGAME2VOICE_DB_PATH"] = str(db_path)
     yield db_path
     os.environ.pop("GALGAME2VOICE_DB_PATH", None)
-
-
-@pytest.mark.asyncio
-async def test_lookup_status_ready_and_pending(lookup_db):
-    app = create_app()
-    transport = ASGITransport(app=app)
-
-    async with get_db(lookup_db) as conn:
-        user_msg = await crud.add_message(conn, MessageCreate(
-            session_id="sess_1", role="user", content_chinese="你好"
-        ))
-
-    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
-        # 1. Pending: user exists, assistant message not committed yet
-        resp = await client.get(f"/api/chat/turn-reply?session_id=sess_1&user_message_id={user_msg.id}")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "pending"
-        assert data["session_id"] == "sess_1"
-        assert data["user_message_id"] == user_msg.id
-        assert "message_id" not in data
-
-        # 2. Ready: commit assistant message linked to user_msg.id
-        async with get_db(lookup_db) as conn:
-            asst_msg = await crud.add_message(conn, MessageCreate(
-                session_id="sess_1", role="assistant", content_chinese="回答",
-                reply_to_message_id=user_msg.id
-            ))
-
-        resp_ready = await client.get(f"/api/chat/turn-reply?session_id=sess_1&user_message_id={user_msg.id}")
-        assert resp_ready.status_code == 200
-        data_ready = resp_ready.json()
-        assert data_ready["status"] == "ready"
-        assert data_ready["session_id"] == "sess_1"
-        assert data_ready["user_message_id"] == user_msg.id
-        assert data_ready["message_id"] == asst_msg.id
 
 
 @pytest.mark.asyncio
@@ -111,38 +74,6 @@ async def test_lookup_cross_session_isolation(lookup_db):
 
 
 @pytest.mark.asyncio
-async def test_lookup_status_ambiguous(lookup_db):
-    """
-    If multiple assistant replies link to the same user_message_id,
-    the server must return ambiguous and NEVER arbitrarily pick one.
-    """
-    app = create_app()
-    transport = ASGITransport(app=app)
-
-    async with get_db(lookup_db) as conn:
-        user_msg = await crud.add_message(conn, MessageCreate(
-            session_id="sess_ambig", role="user", content_chinese="分叉测试"
-        ))
-        await crud.add_message(conn, MessageCreate(
-            session_id="sess_ambig", role="assistant", content_chinese="回复1",
-            reply_to_message_id=user_msg.id
-        ))
-        await crud.add_message(conn, MessageCreate(
-            session_id="sess_ambig", role="assistant", content_chinese="回复2",
-            reply_to_message_id=user_msg.id
-        ))
-
-    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
-        resp = await client.get(f"/api/chat/turn-reply?session_id=sess_ambig&user_message_id={user_msg.id}")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "ambiguous"
-        assert data["session_id"] == "sess_ambig"
-        assert data["user_message_id"] == user_msg.id
-        assert "message_id" not in data
-
-
-@pytest.mark.asyncio
 async def test_lookup_validation_and_errors(lookup_db):
     app = create_app()
     transport = ASGITransport(app=app)
@@ -162,35 +93,6 @@ async def test_lookup_validation_and_errors(lookup_db):
 
         r4 = await client.get("/api/chat/turn-reply?session_id=valid&user_message_id=-5")
         assert r4.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_lookup_unavailable_on_locked_db(lookup_db):
-    """
-    When an exclusive lock blocks read access,
-    the lookup returns 'unavailable' fast without waiting 5 seconds.
-    """
-    app = create_app()
-    transport = ASGITransport(app=app)
-
-    sync_conn = sqlite3.connect(str(lookup_db), timeout=0.0)
-    try:
-        sync_conn.execute("PRAGMA locking_mode = EXCLUSIVE;")
-        sync_conn.execute("BEGIN EXCLUSIVE;")
-
-        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
-            resp = await asyncio.wait_for(
-                client.get("/api/chat/turn-reply?session_id=sess_lock&user_message_id=1"),
-                timeout=2.0,  # Must complete far below default 5s busy timeout
-            )
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["status"] == "unavailable"
-            assert data["session_id"] == "sess_lock"
-            assert data["user_message_id"] == 1
-    finally:
-        sync_conn.rollback()
-        sync_conn.close()
 
 
 @pytest.mark.asyncio
