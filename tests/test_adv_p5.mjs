@@ -14,6 +14,20 @@ import { DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL } from '../frontend/src/store.
 // tests/test_sprite_layers.mjs.
 // ---------------------------------------------------------------------------
 
+const DEFAULT_GEOM = {
+  crop: { left: 100, top: 50, width: 800, height: 1600 },
+  faceRect: { x: 300, y: 100, width: 400, height: 400 },
+  headAnchor: { x: 500, y: 120 },
+};
+
+function makeCostume(id, name, icon) {
+  return { id, name, icon, ...DEFAULT_GEOM };
+}
+
+function makeLook(pose, outfit, body, defaultFace, faces, extra = {}) {
+  return { pose, outfit, body, ...DEFAULT_GEOM, defaultFace, ...extra, faces };
+}
+
 function createV3TestPayload() {
   return {
     version: 3,
@@ -23,22 +37,8 @@ function createV3TestPayload() {
     defaultPose: 'pose1',
     default_pose: 'pose1',
     costumes: [
-      {
-        id: 'uniform',
-        name: 'School Uniform',
-        icon: '🎒',
-        crop: { left: 100, top: 50, width: 800, height: 1600 },
-        faceRect: { x: 300, y: 100, width: 400, height: 400 },
-        headAnchor: { x: 500, y: 120 },
-      },
-      {
-        id: 'casual',
-        name: 'Casual Clothes',
-        icon: '👗',
-        crop: { left: 100, top: 50, width: 800, height: 1600 },
-        faceRect: { x: 300, y: 100, width: 400, height: 400 },
-        headAnchor: { x: 500, y: 120 },
-      },
+      makeCostume('uniform', 'School Uniform', '🎒'),
+      makeCostume('casual', 'Casual Clothes', '👗'),
     ],
     faces: {
       smile: { label: 'Smile', primary: 'gentle', emotion: 'gentle' },
@@ -86,17 +86,12 @@ function createV3TestPayload() {
       fx_sweat: { canvas: 'base', file: '/art/common/sweat.webp', rect: { x: 320, y: 120, width: 80, height: 80 }, z: 30 },
     },
     looks: {
-      'pose1/uniform': {
-        pose: 'pose1',
-        outfit: 'uniform',
-        body: ['under_layer', 'body_u1', 'top_layer'],
-        crop: { left: 100, top: 50, width: 800, height: 1600 },
-        faceRect: { x: 300, y: 100, width: 400, height: 400 },
-        headAnchor: { x: 500, y: 120 },
-        defaultFace: 'smile',
-        blush: ['blush_l'],
-        fx: { sweat: ['fx_sweat'] },
-        faces: {
+      'pose1/uniform': makeLook(
+        'pose1',
+        'uniform',
+        ['under_layer', 'body_u1', 'top_layer'],
+        'smile',
+        {
           smile: {
             label: 'Smile',
             layers: ['face_smile'],
@@ -129,31 +124,14 @@ function createV3TestPayload() {
             blink: { closed: 'smile_blink_closed' },
           },
         },
-      },
-      'pose2/uniform': {
-        pose: 'pose2',
-        outfit: 'uniform',
-        body: ['body_u2'],
-        crop: { left: 100, top: 50, width: 800, height: 1600 },
-        faceRect: { x: 300, y: 100, width: 400, height: 400 },
-        headAnchor: { x: 500, y: 120 },
-        defaultFace: 'u2_smile',
-        faces: {
-          u2_smile: { label: 'U2 Smile', layers: ['face_u2_smile'] },
-        },
-      },
-      'pose1/casual': {
-        pose: 'pose1',
-        outfit: 'casual',
-        body: ['body_c1'],
-        crop: { left: 100, top: 50, width: 800, height: 1600 },
-        faceRect: { x: 300, y: 100, width: 400, height: 400 },
-        headAnchor: { x: 500, y: 120 },
-        defaultFace: 'c1_smile',
-        faces: {
-          c1_smile: { label: 'C1 Smile', layers: ['face_c1_smile'] },
-        },
-      },
+        { blush: ['blush_l'], fx: { sweat: ['fx_sweat'] } }
+      ),
+      'pose2/uniform': makeLook('pose2', 'uniform', ['body_u2'], 'u2_smile', {
+        u2_smile: { label: 'U2 Smile', layers: ['face_u2_smile'] },
+      }),
+      'pose1/casual': makeLook('pose1', 'casual', ['body_c1'], 'c1_smile', {
+        c1_smile: { label: 'C1 Smile', layers: ['face_c1_smile'] },
+      }),
     },
     expression_sets: {
       gentle: [{ id: 'smile', strength: 2 }],

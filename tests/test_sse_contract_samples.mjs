@@ -15,13 +15,12 @@ function formatSseFrame(sample) {
   return `event: ${sample.event}\ndata: ${JSON.stringify(sample.data)}\n\n`;
 }
 
-function createSseFetch(sseSamples) {
-  const encoder = new TextEncoder();
+function createRawByteStreamFetch(byteChunks) {
   return async () => {
     const stream = new ReadableStream({
       start(controller) {
-        for (const sample of sseSamples) {
-          controller.enqueue(encoder.encode(formatSseFrame(sample)));
+        for (const chunk of byteChunks) {
+          controller.enqueue(chunk);
         }
         controller.close();
       },
@@ -31,6 +30,45 @@ function createSseFetch(sseSamples) {
       headers: { 'Content-Type': 'text/event-stream' },
     });
   };
+}
+
+function createSseFetch(sseSamples) {
+  const encoder = new TextEncoder();
+  return createRawByteStreamFetch(sseSamples.map((sample) => encoder.encode(formatSseFrame(sample))));
+}
+
+function resolveContractIdentity(response, onAttempt, overrides = {}) {
+  return resolveTurnReplyIdentity({
+    sessionId: 'sess_contract_1',
+    userMessageId: 101,
+    maxAttempts: 3,
+    delayMs: 5,
+    ...overrides,
+    request: async () => {
+      onAttempt();
+      return structuredClone(response);
+    },
+  });
+}
+
+async function runStreamChat({ prompt, sessionId, fetch, onChunk }) {
+  const events = [];
+  const audioCalls = [];
+  const textDeltas = [];
+  const end = await new Promise((resolve) => {
+    streamChat({
+      prompt,
+      sessionId,
+      fetch,
+      onEvent: (type, payload) => events.push({ type, payload }),
+      onAudio: (url, idx, sentence) => audioCalls.push({ url, idx, sentence }),
+      onChunk: onChunk || ((_acc, delta) => {
+        if (delta) textDeltas.push(delta);
+      }),
+      onEnd: (acc, meta) => resolve({ acc, meta }),
+    });
+  });
+  return { events, audioCalls, textDeltas, end };
 }
 
 function setupConversationHarness(sseSamples, sessionId = 'sess_contract_1') {
@@ -196,14 +234,7 @@ test('turn-reply contract: resolveTurnReplyIdentity and createLineAudioRecovery 
 
   // 1. ready: resolves immediately and pairs with createLineAudioRecovery
   let readyAttempts = 0;
-  const readyResult = await resolveTurnReplyIdentity({
-    sessionId: 'sess_contract_1',
-    userMessageId: 101,
-    request: async () => {
-      readyAttempts++;
-      return structuredClone(responses.ready);
-    },
-  });
+  const readyResult = await resolveContractIdentity(responses.ready, () => readyAttempts++);
   assert.equal(readyAttempts, 1);
   assert.equal(readyResult.status, 'ready');
   assert.equal(readyResult.messageId, 102);
@@ -261,16 +292,7 @@ test('turn-reply contract: resolveTurnReplyIdentity and createLineAudioRecovery 
   // 2. pending: retries up to maxAttempts, or succeeds when transitioning to ready
   let pendingAttempts = 0;
   await assert.rejects(
-    resolveTurnReplyIdentity({
-      sessionId: 'sess_contract_1',
-      userMessageId: 101,
-      maxAttempts: 3,
-      delayMs: 5,
-      request: async () => {
-        pendingAttempts++;
-        return structuredClone(responses.pending);
-      },
-    }),
+    resolveContractIdentity(responses.pending, () => pendingAttempts++),
     /中断回复尚未就绪/
   );
   assert.equal(pendingAttempts, 3);
@@ -278,16 +300,7 @@ test('turn-reply contract: resolveTurnReplyIdentity and createLineAudioRecovery 
   // 3. unavailable: retries up to maxAttempts, or succeeds when transitioning to ready
   let unavailableAttempts = 0;
   await assert.rejects(
-    resolveTurnReplyIdentity({
-      sessionId: 'sess_contract_1',
-      userMessageId: 101,
-      maxAttempts: 3,
-      delayMs: 5,
-      request: async () => {
-        unavailableAttempts++;
-        return structuredClone(responses.unavailable);
-      },
-    }),
+    resolveContractIdentity(responses.unavailable, () => unavailableAttempts++),
     /服务暂不可读/
   );
   assert.equal(unavailableAttempts, 3);
@@ -295,16 +308,7 @@ test('turn-reply contract: resolveTurnReplyIdentity and createLineAudioRecovery 
   // 4. gone: gives up immediately on first attempt without retry
   let goneAttempts = 0;
   await assert.rejects(
-    resolveTurnReplyIdentity({
-      sessionId: 'sess_contract_1',
-      userMessageId: 999,
-      maxAttempts: 3,
-      delayMs: 5,
-      request: async () => {
-        goneAttempts++;
-        return structuredClone(responses.gone);
-      },
-    }),
+    resolveContractIdentity(responses.gone, () => goneAttempts++, { userMessageId: 999 }),
     /已被删除或清空/
   );
   assert.equal(goneAttempts, 1);
@@ -312,16 +316,7 @@ test('turn-reply contract: resolveTurnReplyIdentity and createLineAudioRecovery 
   // 5. ambiguous: gives up immediately on first attempt without retry
   let ambiguousAttempts = 0;
   await assert.rejects(
-    resolveTurnReplyIdentity({
-      sessionId: 'sess_contract_1',
-      userMessageId: 101,
-      maxAttempts: 3,
-      delayMs: 5,
-      request: async () => {
-        ambiguousAttempts++;
-        return structuredClone(responses.ambiguous);
-      },
-    }),
+    resolveContractIdentity(responses.ambiguous, () => ambiguousAttempts++),
     /多条匹配/
   );
   assert.equal(ambiguousAttempts, 1);
@@ -508,57 +503,26 @@ test('edge_cases contract: missing_fields, id_conflict, out_of_order, duplicate,
     assert.equal(assistantMsg.content, contract.sse_events.done_complete.data.chinese);
 
     // Direct streamChat verification for unknown event
-    const directEvents = [];
     const fetch = createSseFetch([
       { event: unknown_sse_event.event, data: unknown_sse_event.data },
       contract.sse_events.done_complete,
     ]);
-    await new Promise((resolve) => {
-      streamChat({
-        prompt: '直接流测试',
-        sessionId: 'sess_contract_1',
-        fetch,
-        onEvent: (type, payload) => directEvents.push({ type, payload }),
-        onEnd: () => resolve(),
-      });
+    const { events: directEvents } = await runStreamChat({
+      prompt: '直接流测试',
+      sessionId: 'sess_contract_1',
+      fetch,
     });
     assert.equal(directEvents.some((e) => e.type === unknown_sse_event.event), true);
 
     // Unknown turn-reply status gives up immediately on attempt 1
     let mysteryAttempts = 0;
     await assert.rejects(
-      resolveTurnReplyIdentity({
-        sessionId: 'sess_contract_1',
-        userMessageId: 101,
-        maxAttempts: 3,
-        delayMs: 5,
-        request: async () => {
-          mysteryAttempts++;
-          return structuredClone(unknown_turn_reply_status.response);
-        },
-      }),
+      resolveContractIdentity(unknown_turn_reply_status.response, () => mysteryAttempts++),
       new RegExp(unknown_turn_reply_status.expected.error_substring)
     );
     assert.equal(mysteryAttempts, unknown_turn_reply_status.expected.attempts);
   }
 });
-
-function createRawByteStreamFetch(byteChunks) {
-  return async () => {
-    const stream = new ReadableStream({
-      start(controller) {
-        for (const chunk of byteChunks) {
-          controller.enqueue(chunk);
-        }
-        controller.close();
-      },
-    });
-    return new Response(stream, {
-      status: 200,
-      headers: { 'Content-Type': 'text/event-stream' },
-    });
-  };
-}
 
 test('SSE parser: omits event header after named event resets to default text frame', async () => {
   const encoder = new TextEncoder();
@@ -569,21 +533,14 @@ test('SSE parser: omits event header after named event resets to default text fr
     'event: done\ndata: {"chinese":"早安。","japanese":"おはよう。","session_id":"sess_m1"}\n\n',
   ].join('');
 
-  const eventsA = [];
-  const audioCallsA = [];
   const textChunksA = [];
-  const endA = await new Promise((resolve) => {
-    streamChat({
-      prompt: '早安',
-      sessionId: 'sess_m1',
-      fetch: createRawByteStreamFetch([encoder.encode(rawStandardFrames)]),
-      onEvent: (type, payload) => eventsA.push({ type, payload }),
-      onAudio: (url, idx, sentence) => audioCallsA.push({ url, idx, sentence }),
-      onChunk: (acc, delta) => {
-        if (delta) textChunksA.push({ acc, delta });
-      },
-      onEnd: (acc, meta) => resolve({ acc, meta }),
-    });
+  const { events: eventsA, audioCalls: audioCallsA, end: endA } = await runStreamChat({
+    prompt: '早安',
+    sessionId: 'sess_m1',
+    fetch: createRawByteStreamFetch([encoder.encode(rawStandardFrames)]),
+    onChunk: (acc, delta) => {
+      if (delta) textChunksA.push({ acc, delta });
+    },
   });
 
   assert.equal(eventsA.filter((e) => e.type === 'audio_chunk').length, 1);
@@ -602,19 +559,10 @@ test('SSE parser: omits event header after named event resets to default text fr
     'event: done\ndata: {"chinese":"早安。再会。","japanese":"おはよう。","session_id":"sess_m1_b"}\n\n',
   ].join('');
 
-  const eventsB = [];
-  const textDeltasB = [];
-  const endB = await new Promise((resolve) => {
-    streamChat({
-      prompt: '早安',
-      sessionId: 'sess_m1_b',
-      fetch: createRawByteStreamFetch([encoder.encode(rawImmediateAndEmptyReset)]),
-      onEvent: (type, payload) => eventsB.push({ type, payload }),
-      onChunk: (_acc, delta) => {
-        if (delta) textDeltasB.push(delta);
-      },
-      onEnd: (acc, meta) => resolve({ acc, meta }),
-    });
+  const { events: eventsB, textDeltas: textDeltasB, end: endB } = await runStreamChat({
+    prompt: '早安',
+    sessionId: 'sess_m1_b',
+    fetch: createRawByteStreamFetch([encoder.encode(rawImmediateAndEmptyReset)]),
   });
 
   assert.equal(eventsB.filter((e) => e.type === 'audio_chunk').length, 1, 'audio_chunk must fire only once');
@@ -641,21 +589,10 @@ test('SSE parser: tolerates variable colon whitespace, CRLF line endings, and sp
     splitChunks.push(fullBytes.subarray(offset, offset + 7));
   }
 
-  const events = [];
-  const audioCalls = [];
-  const textDeltas = [];
-  const end = await new Promise((resolve) => {
-    streamChat({
-      prompt: '测试CRLF与分片',
-      sessionId: 'sess_m1_crlf',
-      fetch: createRawByteStreamFetch(splitChunks),
-      onEvent: (type, payload) => events.push({ type, payload }),
-      onAudio: (url, idx, sentence) => audioCalls.push({ url, idx, sentence }),
-      onChunk: (_acc, delta) => {
-        if (delta) textDeltas.push(delta);
-      },
-      onEnd: (acc, meta) => resolve({ acc, meta }),
-    });
+  const { events, audioCalls, textDeltas, end } = await runStreamChat({
+    prompt: '测试CRLF与分片',
+    sessionId: 'sess_m1_crlf',
+    fetch: createRawByteStreamFetch(splitChunks),
   });
 
   assert.equal(events.length, 2);
@@ -709,9 +646,7 @@ test('error diagnostics: formats summary_zh/action_zh, kept-lines notice, HTTP d
     const fetch = row.status
       ? async () => new Response(JSON.stringify(row.payload), { status: row.status, headers: { 'Content-Type': 'application/json' } })
       : createSseFetch(row.events);
-    const meta = await new Promise((resolve) => {
-      streamChat({ prompt: '诊断测试', sessionId: 'sess_diag', fetch, onEnd: (_acc, m) => resolve(m) });
-    });
+    const { end: { meta } } = await runStreamChat({ prompt: '诊断测试', sessionId: 'sess_diag', fetch });
     assert.equal(meta.error, row.expectedError);
     assert.equal(meta.errorCode, row.expectedCode);
   }

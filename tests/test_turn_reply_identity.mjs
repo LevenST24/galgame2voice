@@ -19,6 +19,30 @@ function resolveIdentity(overrides = {}) {
   });
 }
 
+function resolveStatus(status, onAttempt, overrides = {}) {
+  return resolveIdentity({
+    maxAttempts: 3,
+    ...overrides,
+    request: async () => {
+      onAttempt();
+      return turnReply(status);
+    },
+  });
+}
+
+async function resolveAfterRetry(transientStatus, messageId) {
+  let attempts = 0;
+  const result = await resolveIdentity({
+    delayMs: 10,
+    request: async () => {
+      attempts++;
+      if (attempts < 2) return turnReply(transientStatus);
+      return turnReply('ready', { message_id: messageId });
+    },
+  });
+  return { attempts, result };
+}
+
 test('resolveTurnReplyIdentity: returns messageId on ready with matching keys', async () => {
   const calls = [];
   const result = await resolveIdentity({
@@ -34,15 +58,7 @@ test('resolveTurnReplyIdentity: returns messageId on ready with matching keys', 
 });
 
 test('resolveTurnReplyIdentity: pending retries until ready within budget', async () => {
-  let attempts = 0;
-  const result = await resolveIdentity({
-    delayMs: 10,
-    request: async () => {
-      attempts++;
-      if (attempts < 2) return turnReply('pending');
-      return turnReply('ready', { message_id: 202 });
-    },
-  });
+  const { attempts, result } = await resolveAfterRetry('pending', 202);
 
   assert.equal(attempts, 2);
   assert.equal(result.status, 'ready');
@@ -52,14 +68,7 @@ test('resolveTurnReplyIdentity: pending retries until ready within budget', asyn
 test('resolveTurnReplyIdentity: pending times out with Chinese message after max 3 attempts', async () => {
   let attempts = 0;
   await assert.rejects(
-    resolveIdentity({
-      maxAttempts: 3,
-      delayMs: 5,
-      request: async () => {
-        attempts++;
-        return turnReply('pending');
-      },
-    }),
+    resolveStatus('pending', () => attempts++, { delayMs: 5 }),
     /中断回复尚未就绪，原记录已保留，请稍后重试。/
   );
 
@@ -67,15 +76,7 @@ test('resolveTurnReplyIdentity: pending times out with Chinese message after max
 });
 
 test('resolveTurnReplyIdentity: unavailable retries within budget', async () => {
-  let attempts = 0;
-  const result = await resolveIdentity({
-    delayMs: 10,
-    request: async () => {
-      attempts++;
-      if (attempts === 1) return turnReply('unavailable');
-      return turnReply('ready', { message_id: 303 });
-    },
-  });
+  const { attempts, result } = await resolveAfterRetry('unavailable', 303);
 
   assert.equal(attempts, 2);
   assert.equal(result.status, 'ready');
@@ -85,13 +86,7 @@ test('resolveTurnReplyIdentity: unavailable retries within budget', async () => 
 test('resolveTurnReplyIdentity: gone immediately stops without retry', async () => {
   let attempts = 0;
   await assert.rejects(
-    resolveIdentity({
-      maxAttempts: 3,
-      request: async () => {
-        attempts++;
-        return turnReply('gone');
-      },
-    }),
+    resolveStatus('gone', () => attempts++),
     /已被删除或清空/
   );
 
@@ -101,13 +96,7 @@ test('resolveTurnReplyIdentity: gone immediately stops without retry', async () 
 test('resolveTurnReplyIdentity: ambiguous immediately stops without retry', async () => {
   let attempts = 0;
   await assert.rejects(
-    resolveIdentity({
-      maxAttempts: 3,
-      request: async () => {
-        attempts++;
-        return turnReply('ambiguous');
-      },
-    }),
+    resolveStatus('ambiguous', () => attempts++),
     /多条匹配/
   );
 

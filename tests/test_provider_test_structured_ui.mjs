@@ -3,7 +3,8 @@ import { test } from 'node:test';
 
 import { fakeDocument } from './helpers/adv_dom.mjs';
 
-function setupController(t, onTestFetch) {
+async function runProviderTestFailure(t, { ok, status, provider, ...payload }) {
+  const { createProviderSettingsController } = await import('../frontend/src/controllers/provider_settings.js');
   const previousDocument = globalThis.document;
   const previousFetch = globalThis.fetch;
   const d = fakeDocument();
@@ -13,69 +14,50 @@ function setupController(t, onTestFetch) {
   toastRoot.id = 'toastRoot';
   d.body.appendChild(toastRoot);
 
-  globalThis.fetch = async (url, options = {}) => {
-    if (url === '/api/providers/test') {
-      return onTestFetch(url, options);
-    }
-    return {
-      ok: true,
-      status: 200,
-      json: async () => ({ providers: [], presets: [] }),
-    };
-  };
+  globalThis.fetch = async (url) => (
+    url === '/api/providers/test'
+      ? { ok, status, json: async () => ({ success: false, error: payload.error_title, ...payload }) }
+      : { ok: true, status: 200, json: async () => ({ providers: [], presets: [] }) }
+  );
 
-  const dom = {
-    gProvider: d.createElement('select'),
-    gBaseUrl: d.createElement('input'),
-    gChatModel: d.createElement('input'),
-    gChatModelSelect: d.createElement('select'),
-    gReasoningEffort: d.createElement('input'),
-    gProviderDesc: d.createElement('div'),
-    gApiKey: d.createElement('input'),
-    gProviderTest: d.createElement('button'),
-    gProviderActivate: d.createElement('button'),
-    gProviderTestResult: d.createElement('div'),
-    gTestResultTitle: d.createElement('div'),
-    gTestResultLatency: d.createElement('div'),
-    gTestResultBody: d.createElement('div'),
-  };
+  const dom = Object.fromEntries([
+    ['gProvider', 'select'], ['gBaseUrl', 'input'], ['gChatModel', 'input'],
+    ['gChatModelSelect', 'select'], ['gReasoningEffort', 'input'], ['gProviderDesc', 'div'],
+    ['gApiKey', 'input'], ['gProviderTest', 'button'], ['gProviderActivate', 'button'],
+    ['gProviderTestResult', 'div'], ['gTestResultTitle', 'div'], ['gTestResultLatency', 'div'],
+    ['gTestResultBody', 'div'],
+  ].map(([k, tag]) => [k, d.createElement(tag)]));
   dom.gProviderTestResult.className = 'test-result-box hidden';
 
+  const controller = createProviderSettingsController(dom, {});
   t.after(() => {
+    controller.dispose();
     for (const toast of toastRoot.children) clearTimeout(toast._timer);
     globalThis.fetch = previousFetch;
     globalThis.document = previousDocument;
   });
 
-  return { dom, toastRoot };
-}
-
-test('ProviderSettingsController displays structured error_title and diagnostic directly on test failure', async (t) => {
-  const { createProviderSettingsController } = await import('../frontend/src/controllers/provider_settings.js');
-  const { dom, toastRoot } = setupController(t, async () => ({
-    ok: true,
-    status: 200,
-    json: async () => ({
-      success: false,
-      error_code: 'QUOTA_EXCEEDED',
-      error_title: '后端结构化标题：账户可用余额不足',
-      diagnostic: '后端结构化建议：请前往控制台充值后重试。',
-      status_code: 402,
-      error: '后端结构化标题：账户可用余额不足',
-      message: 'HTTP 402 (req_28401)',
-    }),
-  }));
-
-  const controller = createProviderSettingsController(dom, {});
-  t.after(() => controller.dispose());
-
   await controller.loadProviders();
-  dom.gProvider.value = 'deepseek';
+  dom.gProvider.value = provider;
   controller.onProviderChange();
   dom.gApiKey.value = 'sk-test-key';
 
   dom.gProviderTest.click();
   await new Promise((resolve) => setImmediate(resolve));
+  return { dom, toastRoot };
+}
+
+test('ProviderSettingsController displays structured error_title and diagnostic directly on test failure', async (t) => {
+  const { dom, toastRoot } = await runProviderTestFailure(t, {
+    ok: true,
+    status: 200,
+    provider: 'deepseek',
+    error_code: 'QUOTA_EXCEEDED',
+    error_title: '后端结构化标题：账户可用余额不足',
+    diagnostic: '后端结构化建议：请前往控制台充值后重试。',
+    status_code: 402,
+    message: 'HTTP 402 (req_28401)',
+  });
 
   assert.equal(dom.gTestResultTitle.textContent, '后端结构化标题：账户可用余额不足');
   assert.equal(dom.gTestResultBody.textContent, '后端结构化建议：请前往控制台充值后重试。');
@@ -85,31 +67,16 @@ test('ProviderSettingsController displays structured error_title and diagnostic 
 });
 
 test('ProviderSettingsController preserves structured error_title and diagnostic on non-2xx response', async (t) => {
-  const { createProviderSettingsController } = await import('../frontend/src/controllers/provider_settings.js');
-  const { dom } = setupController(t, async () => ({
+  const { dom } = await runProviderTestFailure(t, {
     ok: false,
     status: 502,
-    json: async () => ({
-      success: false,
-      error_code: 'BAD_GATEWAY',
-      error_title: '后端非2xx标题：网关连接异常',
-      diagnostic: '后端非2xx建议：请检查反向代理源站状态。',
-      status_code: 502,
-      error: '后端非2xx标题：网关连接异常',
-      message: 'Bad Gateway',
-    }),
-  }));
-
-  const controller = createProviderSettingsController(dom, {});
-  t.after(() => controller.dispose());
-
-  await controller.loadProviders();
-  dom.gProvider.value = 'openai';
-  controller.onProviderChange();
-  dom.gApiKey.value = 'sk-test-key';
-
-  dom.gProviderTest.click();
-  await new Promise((resolve) => setImmediate(resolve));
+    provider: 'openai',
+    error_code: 'BAD_GATEWAY',
+    error_title: '后端非2xx标题：网关连接异常',
+    diagnostic: '后端非2xx建议：请检查反向代理源站状态。',
+    status_code: 502,
+    message: 'Bad Gateway',
+  });
 
   assert.equal(dom.gTestResultTitle.textContent, '后端非2xx标题：网关连接异常');
   assert.equal(dom.gTestResultBody.textContent, '后端非2xx建议：请检查反向代理源站状态。');
