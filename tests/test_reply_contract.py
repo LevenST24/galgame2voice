@@ -49,6 +49,47 @@ HEAD_OLD_CONTRACT_ADDITION = (
 )
 
 
+def _stored_line(index: int, zh: str, ja: str, emotion: str, act: dict, audio_status: str = "ready") -> dict:
+    return {
+        "index": index,
+        "zh": zh,
+        "ja": ja,
+        "emotion": emotion,
+        "act": act,
+        "audio": {"status": audio_status, "chunks": []},
+    }
+
+
+def _assistant_turn(zh: str, ja: str, emotion: str, lines: list[dict] | None = None) -> SessionTurn:
+    return SessionTurn(
+        role="assistant",
+        content_chinese=zh,
+        content_japanese=ja,
+        emotion=emotion,
+        lines=lines,
+    )
+
+
+async def _build_ctx(db_path, session_id: str, **kwargs):
+    sm = SessionManager(db_path)
+    async with get_db(db_path) as conn:
+        return await build_chat_context(
+            conn=conn,
+            session_id=session_id,
+            user_prompt="你好",
+            session_manager=sm,
+            memory_service=None,
+            **kwargs,
+        )
+
+
+def _patch_portrait(monkeypatch, portrait: dict, get_char=None) -> None:
+    package = SimpleNamespace(folder=Path("synthetic-pack"))
+    manager = SimpleNamespace(get_character=get_char or (lambda name: package))
+    monkeypatch.setattr(context_builder, "get_character_manager", lambda: manager)
+    monkeypatch.setattr(context_builder, "load_portrait_manifest", lambda folder: portrait)
+
+
 class TestRenderLinesContract:
     @pytest.mark.parametrize("faces", [["微笑", "生气"], []])
     def test_multiple_poses_are_optional_named_choices(self, faces):
@@ -152,22 +193,8 @@ class TestStripOldFormatBlock:
 class TestFormatLinesTurn:
     def test_stored_lines_are_replayed_without_index_or_audio(self):
         lines = [
-            {
-                "index": 0,
-                "zh": "早上好。",
-                "ja": "おはよう。",
-                "emotion": "happy",
-                "act": {"face": "微笑", "motion": "nod"},
-                "audio": {"status": "ready", "chunks": []},
-            },
-            {
-                "index": 1,
-                "zh": "再见。",
-                "ja": "さようなら。",
-                "emotion": "gentle",
-                "act": {},
-                "audio": {"status": "skipped", "chunks": []},
-            },
+            _stored_line(0, "早上好。", "おはよう。", "happy", {"face": "微笑", "motion": "nod"}, "ready"),
+            _stored_line(1, "再见。", "さようなら。", "gentle", {}, "skipped"),
         ]
 
         raw = format_lines_turn(
@@ -212,14 +239,7 @@ class TestFormatLinesTurn:
 class TestDefaultAndOldAliasUseLinesMode:
     def test_format_llm_messages_uses_lines_turn_by_default_and_for_old_alias(self, temp_db_path):
         sm = SessionManager(temp_db_path)
-        history = [
-            SessionTurn(
-                role="assistant",
-                content_chinese="早上好呀",
-                content_japanese="おはようございます",
-                emotion="shy",
-            )
-        ]
+        history = [_assistant_turn("早上好呀", "おはようございます", "shy")]
 
         expected = [
             {"role": "system", "content": "你是测试角色。"},
@@ -242,7 +262,6 @@ class TestDefaultAndOldAliasUseLinesMode:
 
     @pytest.mark.asyncio
     async def test_build_chat_context_uses_lines_contract_by_default_and_for_old_alias(self, temp_db_path):
-        sm = SessionManager(temp_db_path)
         profile = SimpleNamespace(
             id=1,
             name="测试角色",
@@ -250,26 +269,10 @@ class TestDefaultAndOldAliasUseLinesMode:
         )
         session = SimpleNamespace(user_id="user-1")
 
-        async with get_db(temp_db_path) as conn:
-            default_messages = await build_chat_context(
-                conn=conn,
-                session_id="lines-default",
-                user_prompt="你好",
-                session_manager=sm,
-                memory_service=None,
-                active_profile=profile,
-                session=session,
-            )
-            old_alias_messages = await build_chat_context(
-                conn=conn,
-                session_id="lines-old-alias",
-                user_prompt="你好",
-                session_manager=sm,
-                memory_service=None,
-                active_profile=profile,
-                session=session,
-                reply_format="old",
-            )
+        default_messages = await _build_ctx(temp_db_path, "lines-default", active_profile=profile, session=session)
+        old_alias_messages = await _build_ctx(
+            temp_db_path, "lines-old-alias", active_profile=profile, session=session, reply_format="old"
+        )
 
         expected_system = "你是测试角色。\n\n" + render_lines_contract(None)
         for messages in (default_messages, old_alias_messages):
@@ -287,19 +290,14 @@ class TestLinesModeWiring:
             "faces": {"smile": {"label": "微笑", "blush": None}},
         }
         package = SimpleNamespace(folder=Path("synthetic-pack"))
-        manager = SimpleNamespace(get_character=lambda name: package if name == "测试角色" else None)
-        monkeypatch.setattr(context_builder, "get_character_manager", lambda: manager)
-        monkeypatch.setattr(context_builder, "load_portrait_manifest", lambda folder: portrait)
+        _patch_portrait(monkeypatch, portrait, lambda name: package if name == "测试角色" else None)
 
         assert context_builder._build_acting_menu("测试角色") == build_acting_menu(portrait)
         assert context_builder._build_acting_menu("不存在的角色") is None
 
     def test_helper_builds_the_menu_for_the_selected_outfit(self, monkeypatch):
-        package = SimpleNamespace(folder=Path("synthetic-pack"))
-        manager = SimpleNamespace(get_character=lambda name: package)
         outfits = []
-        monkeypatch.setattr(context_builder, "get_character_manager", lambda: manager)
-        monkeypatch.setattr(context_builder, "load_portrait_manifest", lambda folder: {})
+        _patch_portrait(monkeypatch, {})
         monkeypatch.setattr(context_builder, "build_acting_menu", lambda portrait, outfit=None: outfits.append(outfit) or MENU)
 
         assert context_builder._build_acting_menu("测试角色", "casual") == MENU
@@ -307,7 +305,6 @@ class TestLinesModeWiring:
 
     @pytest.mark.asyncio
     async def test_build_chat_context_lines_mode_replaces_the_old_block(self, temp_db_path, monkeypatch):
-        sm = SessionManager(temp_db_path)
         prompt = (
             "你是合成测试角色，说话温柔。\n\n"
             + SYNTHETIC_TEMPLATE_SECTION
@@ -318,18 +315,14 @@ class TestLinesModeWiring:
         outfits = []
         monkeypatch.setattr(context_builder, "_build_acting_menu", lambda name, outfit=None: outfits.append(outfit) or MENU)
 
-        async with get_db(temp_db_path) as conn:
-            messages = await build_chat_context(
-                conn=conn,
-                session_id="lines-mode",
-                user_prompt="你好",
-                session_manager=sm,
-                memory_service=None,
-                active_profile=profile,
-                session=session,
-                reply_format="lines",
-                outfit="casual",
-            )
+        messages = await _build_ctx(
+            temp_db_path,
+            "lines-mode",
+            active_profile=profile,
+            session=session,
+            reply_format="lines",
+            outfit="casual",
+        )
 
         assert outfits == ["casual"]
         assert messages.menu == MENU
@@ -342,42 +335,27 @@ class TestLinesModeWiring:
 
     @pytest.mark.asyncio
     async def test_build_chat_context_lines_mode_without_a_menu(self, temp_db_path, monkeypatch):
-        sm = SessionManager(temp_db_path)
         session = SimpleNamespace(user_id="user-1", voice_profile_id=None)
         monkeypatch.setattr(context_builder, "_build_acting_menu", lambda name, outfit=None: None)
 
-        async with get_db(temp_db_path) as conn:
-            messages = await build_chat_context(
-                conn=conn,
-                session_id="lines-mode-no-menu",
-                user_prompt="你好",
-                session_manager=sm,
-                memory_service=None,
-                system_prompt_override="你是测试角色。",
-                session=session,
-                reply_format="lines",
-            )
+        messages = await _build_ctx(
+            temp_db_path,
+            "lines-mode-no-menu",
+            system_prompt_override="你是测试角色。",
+            session=session,
+            reply_format="lines",
+        )
 
         assert messages[0].content == "你是测试角色。\n\n" + render_lines_contract(None)
 
     def test_format_llm_messages_lines_mode_replays_stored_lines(self, temp_db_path):
         sm = SessionManager(temp_db_path)
         history = [
-            SessionTurn(
-                role="assistant",
-                content_chinese="早上好呀",
-                content_japanese="おはようございます",
-                emotion="happy",
-                lines=[
-                    {
-                        "index": 0,
-                        "zh": "早上好呀",
-                        "ja": "おはようございます",
-                        "emotion": "happy",
-                        "act": {"face": "微笑"},
-                        "audio": {"status": "ready", "chunks": []},
-                    }
-                ],
+            _assistant_turn(
+                "早上好呀",
+                "おはようございます",
+                "happy",
+                lines=[_stored_line(0, "早上好呀", "おはようございます", "happy", {"face": "微笑"})],
             )
         ]
 
@@ -393,14 +371,7 @@ class TestLinesModeWiring:
 
     def test_format_llm_messages_lines_mode_rebuilds_a_turn_without_lines(self, temp_db_path):
         sm = SessionManager(temp_db_path)
-        history = [
-            SessionTurn(
-                role="assistant",
-                content_chinese="你好。再见。",
-                content_japanese="こんにちは。さようなら。",
-                emotion="gentle",
-            )
-        ]
+        history = [_assistant_turn("你好。再见。", "こんにちは。さようなら。", "gentle")]
 
         messages = sm.format_llm_messages(
             "测试角色", history, system_template="你是{character_name}。", reply_format="lines"
@@ -415,16 +386,7 @@ class TestLinesModeWiring:
         db_path = tmp_path / "lines-history.db"
         await init_db(db_path)
         sm = SessionManager(db_path)
-        stored = [
-            {
-                "index": 0,
-                "zh": "你好。",
-                "ja": "こんにちは。",
-                "emotion": "happy",
-                "act": {"face": "微笑"},
-                "audio": {"status": "ready", "chunks": []},
-            }
-        ]
+        stored = [_stored_line(0, "你好。", "こんにちは。", "happy", {"face": "微笑"})]
         await sm.add_turn("lines-history", "user", "你好。", "")
         await sm.add_turn("lines-history", "assistant", "你好。", "こんにちは。", lines=stored)
 

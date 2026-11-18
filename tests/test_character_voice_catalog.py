@@ -70,6 +70,42 @@ def _create_dummy_voice_assets(root: Path, slug: str) -> tuple[str, str, str]:
     return str(gpt_path), str(sovits_path), str(wav_path)
 
 
+async def _init_isolated_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, db_path: str) -> None:
+    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
+    get_settings.cache_clear()
+    await init_db(db_path)
+
+
+def _app_http() -> AsyncClient:
+    return AsyncClient(
+        transport=ASGITransport(app=create_app(), raise_app_exceptions=False),
+        base_url="http://127.0.0.1:8080",
+        timeout=15.0,
+    )
+
+
+async def _create_voice_profile(
+    http: AsyncClient,
+    name: str,
+    assets: tuple[str, str, str],
+    prompt_text: str,
+    *,
+    is_default: bool = False,
+):
+    gpt_path, sovits_path, wav_path = assets
+    payload = {
+        "name": name,
+        "gpt_weights_path": gpt_path,
+        "sovits_weights_path": sovits_path,
+        "ref_audio_path": wav_path,
+        "prompt_text": prompt_text,
+        "prompt_lang": "ja",
+    }
+    if is_default:
+        payload["is_default"] = True
+    return await http.post("/api/voice/profiles", json=payload)
+
+
 @pytest.mark.asyncio
 async def test_delete_voice_profile_during_warmup_cancels_probe_and_never_resurrects_active_profile(
     tmp_path: Path,
@@ -77,9 +113,7 @@ async def test_delete_voice_profile_during_warmup_cancels_probe_and_never_resurr
     mock_gpt_sovits,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
-    get_settings.cache_clear()
-    await init_db(isolate_test_database)
+    await _init_isolated_env(monkeypatch, tmp_path, isolate_test_database)
 
     scheduler = tts_scheduler.TtsScheduler()
     monkeypatch.setattr(tts_scheduler, "get_tts_scheduler", lambda: scheduler)
@@ -95,39 +129,16 @@ async def test_delete_voice_profile_during_warmup_cancels_probe_and_never_resurr
         AsyncMock(return_value={"connected": True}),
     )
 
-    gpt_fb, sovits_fb, wav_fb = _create_dummy_voice_assets(tmp_path, "fallback")
-    gpt_p1, sovits_p1, wav_p1 = _create_dummy_voice_assets(tmp_path, "target_p1")
-    gpt_p2, sovits_p2, wav_p2 = _create_dummy_voice_assets(tmp_path, "target_p2")
+    assets_fb = _create_dummy_voice_assets(tmp_path, "fallback")
+    assets_p1 = _create_dummy_voice_assets(tmp_path, "target_p1")
+    assets_p2 = _create_dummy_voice_assets(tmp_path, "target_p2")
 
-    app = create_app()
-    transport = ASGITransport(app=app, raise_app_exceptions=False)
     try:
-        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080", timeout=15.0) as http:
-            fb_res = await http.post(
-                "/api/voice/profiles",
-                json={
-                    "name": "FallbackDefault",
-                    "gpt_weights_path": gpt_fb,
-                    "sovits_weights_path": sovits_fb,
-                    "ref_audio_path": wav_fb,
-                    "prompt_text": "fallback",
-                    "prompt_lang": "ja",
-                    "is_default": True,
-                },
-            )
+        async with _app_http() as http:
+            fb_res = await _create_voice_profile(http, "FallbackDefault", assets_fb, "fallback", is_default=True)
             assert fb_res.status_code == 201, fb_res.text
 
-            p1_res = await http.post(
-                "/api/voice/profiles",
-                json={
-                    "name": "WarmupTargetP1",
-                    "gpt_weights_path": gpt_p1,
-                    "sovits_weights_path": sovits_p1,
-                    "ref_audio_path": wav_p1,
-                    "prompt_text": "target p1",
-                    "prompt_lang": "ja",
-                },
-            )
+            p1_res = await _create_voice_profile(http, "WarmupTargetP1", assets_p1, "target p1")
             assert p1_res.status_code == 201, p1_res.text
             p1_id = p1_res.json()["id"]
 
@@ -209,17 +220,7 @@ async def test_delete_voice_profile_during_warmup_cancels_probe_and_never_resurr
                 "check_health",
                 AsyncMock(return_value={"connected": True}),
             )
-            p2_res = await http.post(
-                "/api/voice/profiles",
-                json={
-                    "name": "WarmupTargetP2",
-                    "gpt_weights_path": gpt_p2,
-                    "sovits_weights_path": sovits_p2,
-                    "ref_audio_path": wav_p2,
-                    "prompt_text": "target p2",
-                    "prompt_lang": "ja",
-                },
-            )
+            p2_res = await _create_voice_profile(http, "WarmupTargetP2", assets_p2, "target p2")
             assert p2_res.status_code == 201, p2_res.text
             p2_id = p2_res.json()["id"]
             async with get_db(isolate_test_database) as conn:
@@ -257,41 +258,17 @@ async def test_delete_voice_profile_unbinds_session_settings_json_voice_profile_
     isolate_test_database: str,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
-    get_settings.cache_clear()
-    await init_db(isolate_test_database)
+    await _init_isolated_env(monkeypatch, tmp_path, isolate_test_database)
 
-    gpt_p1, sovits_p1, wav_p1 = _create_dummy_voice_assets(tmp_path, "sess_p1")
-    gpt_p2, sovits_p2, wav_p2 = _create_dummy_voice_assets(tmp_path, "sess_p2")
+    assets_p1 = _create_dummy_voice_assets(tmp_path, "sess_p1")
+    assets_p2 = _create_dummy_voice_assets(tmp_path, "sess_p2")
 
-    app = create_app()
-    transport = ASGITransport(app=app, raise_app_exceptions=False)
-    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080", timeout=15.0) as http:
-        p1_res = await http.post(
-            "/api/voice/profiles",
-            json={
-                "name": "SessionVoiceOne",
-                "gpt_weights_path": gpt_p1,
-                "sovits_weights_path": sovits_p1,
-                "ref_audio_path": wav_p1,
-                "prompt_text": "p1",
-                "prompt_lang": "ja",
-            },
-        )
+    async with _app_http() as http:
+        p1_res = await _create_voice_profile(http, "SessionVoiceOne", assets_p1, "p1")
         assert p1_res.status_code == 201, p1_res.text
         p1_id = p1_res.json()["id"]
 
-        p2_res = await http.post(
-            "/api/voice/profiles",
-            json={
-                "name": "SessionVoiceTwo",
-                "gpt_weights_path": gpt_p2,
-                "sovits_weights_path": sovits_p2,
-                "ref_audio_path": wav_p2,
-                "prompt_text": "p2",
-                "prompt_lang": "ja",
-            },
-        )
+        p2_res = await _create_voice_profile(http, "SessionVoiceTwo", assets_p2, "p2")
         assert p2_res.status_code == 201, p2_res.text
         p2_id = p2_res.json()["id"]
 
@@ -354,9 +331,7 @@ async def test_update_persona_never_exposes_dirty_manifest_on_disk_during_or_aft
     isolate_test_database: str,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
-    get_settings.cache_clear()
-    await init_db(isolate_test_database)
+    await _init_isolated_env(monkeypatch, tmp_path, isolate_test_database)
 
     CharacterManager.reset_instance()
     try:
@@ -365,9 +340,7 @@ async def test_update_persona_never_exposes_dirty_manifest_on_disk_during_or_aft
         original_bytes = manifest_path.read_bytes()
         original_prompt = json.loads(original_bytes.decode("utf-8"))["system_prompt"]
 
-        app = create_app()
-        transport = ASGITransport(app=app, raise_app_exceptions=False)
-        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080", timeout=15.0) as http:
+        async with _app_http() as http:
             scan_res = await http.post("/api/characters/rescan")
             assert scan_res.status_code == 200, scan_res.text
             profiles = (await http.get("/api/voice/profiles")).json()["profiles"]

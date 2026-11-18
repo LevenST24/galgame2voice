@@ -52,6 +52,25 @@ def _create_synthetic_wav(
     return path
 
 
+def _discover_temp_character(
+    tmp_path: Path,
+    folder: str,
+    manifest_data: dict,
+    wavs: dict[str, float] | None = None,
+):
+    char_dir = tmp_path / folder
+    char_dir.mkdir(parents=True, exist_ok=True)
+    if wavs:
+        refs_dir = char_dir / "refs"
+        refs_dir.mkdir(parents=True, exist_ok=True)
+        for fname, duration in wavs.items():
+            _create_synthetic_wav(refs_dir / fname, duration_sec=duration)
+    (char_dir / "manifest.json").write_text(json.dumps(manifest_data), encoding="utf-8")
+    mgr = CharacterManager(tmp_path)
+    discovered = mgr.discover_characters()
+    return mgr, discovered
+
+
 # ============================================================================
 # 1. Manifest Schema Validation Tests
 # ============================================================================
@@ -109,18 +128,6 @@ def test_manifest_schema_missing_required():
 
 def test_character_manager_duration_validation(tmp_path):
     """Test that audios outside [3.0, 10.0] are rejected and flagged in validation_errors."""
-    char_dir = tmp_path / "test_char"
-    char_dir.mkdir(parents=True)
-    refs_dir = char_dir / "refs"
-    refs_dir.mkdir(parents=True)
-
-    # Audio 1: valid 4.0s
-    _create_synthetic_wav(refs_dir / "valid.wav", duration_sec=4.0)
-    # Audio 2: too short 2.0s
-    _create_synthetic_wav(refs_dir / "too_short.wav", duration_sec=2.0)
-    # Audio 3: too long 12.0s
-    _create_synthetic_wav(refs_dir / "too_long.wav", duration_sec=12.0)
-
     manifest_data = {
         "id": "test_duration",
         "name": "Duration Test Char",
@@ -132,10 +139,12 @@ def test_character_manager_duration_validation(tmp_path):
             "missing": {"audio": "refs/not_exists.wav", "text": "Missing"},
         },
     }
-    (char_dir / "manifest.json").write_text(json.dumps(manifest_data), encoding="utf-8")
-
-    mgr = CharacterManager(tmp_path)
-    mgr.discover_characters()
+    mgr, _ = _discover_temp_character(
+        tmp_path,
+        "test_char",
+        manifest_data,
+        {"valid.wav": 4.0, "too_short.wav": 2.0, "too_long.wav": 12.0},
+    )
     pkg = mgr.get_character("test_duration")
 
     assert pkg is not None
@@ -193,12 +202,6 @@ def test_resolve_emotion_reference_dynamic():
 
 def test_character_manager_resolve_fallback(tmp_path):
     """Test fallback to gentle when specific emotion is missing."""
-    char_dir = tmp_path / "fallback_char"
-    char_dir.mkdir(parents=True)
-    refs_dir = char_dir / "refs"
-    refs_dir.mkdir(parents=True)
-    _create_synthetic_wav(refs_dir / "gentle.wav", duration_sec=4.0)
-
     manifest_data = {
         "id": "fallback_char",
         "name": "Fallback Char",
@@ -206,10 +209,7 @@ def test_character_manager_resolve_fallback(tmp_path):
             "gentle": {"audio": "refs/gentle.wav", "text": "Default Gentle Text"},
         },
     }
-    (char_dir / "manifest.json").write_text(json.dumps(manifest_data), encoding="utf-8")
-
-    mgr = CharacterManager(tmp_path)
-    mgr.discover_characters()
+    mgr, _ = _discover_temp_character(tmp_path, "fallback_char", manifest_data, {"gentle.wav": 4.0})
 
     # Requesting 'happy' which is not in manifest should fall back to 'gentle'
     res = mgr.resolve_emotion_audio_path("fallback_char", "happy")
@@ -293,8 +293,6 @@ def test_character_manager_lazy_discovery():
 
 def test_character_manager_path_traversal_rejection(tmp_path):
     """Verifies that character packages containing directory traversal payloads are rejected."""
-    bad_dir = tmp_path / "bad_char"
-    bad_dir.mkdir()
     manifest_data = {
         "id": "bad_traversal",
         "name": "Bad Traversal Char",
@@ -306,10 +304,7 @@ def test_character_manager_path_traversal_rejection(tmp_path):
             }
         },
     }
-    (bad_dir / "manifest.json").write_text(json.dumps(manifest_data), encoding="utf-8")
-
-    mgr = CharacterManager(tmp_path)
-    mgr.discover_characters()
+    mgr, _ = _discover_temp_character(tmp_path, "bad_char", manifest_data)
     pkg = mgr.get_character("bad_traversal")
     assert pkg is not None
     assert pkg.is_valid is False
@@ -411,9 +406,7 @@ def test_character_manager_discovers_all_eight_characters():
 def test_character_manager_rejects_duplicate_audio_md5(tmp_path):
     """Verifies that CharacterManager marks package invalid if two emotions share identical MD5 or file."""
     import shutil
-    char_dir = tmp_path / "dup_char"
-    char_dir.mkdir(parents=True)
-    refs_dir = char_dir / "refs"
+    refs_dir = tmp_path / "dup_char" / "refs"
     refs_dir.mkdir(parents=True)
 
     # Create synthetic WAV and duplicate it
@@ -428,10 +421,7 @@ def test_character_manager_rejects_duplicate_audio_md5(tmp_path):
             "shy": {"audio": "refs/audio2.wav", "text": "Shy Text with same audio"},
         },
     }
-    (char_dir / "manifest.json").write_text(json.dumps(manifest_data), encoding="utf-8")
-
-    mgr = CharacterManager(tmp_path)
-    discovered = mgr.discover_characters()
+    mgr, discovered = _discover_temp_character(tmp_path, "dup_char", manifest_data)
     assert len(discovered) == 0, "Package with duplicate audio MD5 must not be considered valid"
     pkg = mgr.get_character("dup_char")
     assert pkg is not None
@@ -555,35 +545,14 @@ def test_character_switch_api_all_characters_and_aliases():
     with patch("galgame2voice.services.voice_manager.VoiceManager.switch_profile", new_callable=AsyncMock) as mock_switch:
         mock_switch.return_value = True
 
-        test_cases = [
-            ("四季夏目", 200),
-            ("natsume", 200),
-            ("明月栞那", 200),
-            ("kanna", 200),
-            ("西园寺风莉", 200),
-            ("kazari", 200),
-            ("三司绫濑", 200),
-            ("ayase", 200),
-            ("二条院羽月", 200),
-            ("hazuki", 200),
-            ("在原七海", 200),
-            ("nanami", 200),
-            ("常陆茉子", 200),
-            ("mako", 200),
-            ("丛雨", 200),
-            ("murasame", 200),
-            ("白雪乃爱", 200),
-            ("noa", 200),
-            ("谷风天音", 200),
-            ("amane", 200),
-            ("小云雀来海", 200),
-            ("kurumi", 200),
-            ("星河辉耶", 200),
-            ("kaguya", 200),
-            ("高楯欧丽叶", 200),
-            ("orie", 200),
-            ("nonexistent_heroine", 404),
-        ]
+        expected_ok = (
+            "四季夏目", "natsume", "明月栞那", "kanna", "西园寺风莉", "kazari",
+            "三司绫濑", "ayase", "二条院羽月", "hazuki", "在原七海", "nanami",
+            "常陆茉子", "mako", "丛雨", "murasame", "白雪乃爱", "noa",
+            "谷风天音", "amane", "小云雀来海", "kurumi", "星河辉耶", "kaguya",
+            "高楯欧丽叶", "orie",
+        )
+        test_cases = [(q, 200) for q in expected_ok] + [("nonexistent_heroine", 404)]
 
         for char_query, expected_status in test_cases:
             resp = client.post("/api/characters/switch", json={"character_name": char_query})

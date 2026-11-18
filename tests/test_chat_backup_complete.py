@@ -12,11 +12,31 @@ from galgame2voice.database.session import get_db, init_db, immediate_transactio
 from galgame2voice.main import create_app
 
 
-@pytest.mark.asyncio
-async def test_complete_backup_restores_unloaded_history_and_original_dates(tmp_path, monkeypatch):
-    db = tmp_path / "backup.db"
+async def _init_backup_db(tmp_path, monkeypatch, filename: str):
+    db = tmp_path / filename
     monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db))
     await init_db(db)
+    return db
+
+
+def _app_client() -> AsyncClient:
+    return AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080")
+
+
+def _backup_line(index: int, zh: str, ja: str, emotion: str, act: dict) -> dict:
+    return {
+        "index": index,
+        "zh": zh,
+        "ja": ja,
+        "emotion": emotion,
+        "act": act,
+        "audio": {"status": "skipped", "chunks": []},
+    }
+
+
+@pytest.mark.asyncio
+async def test_complete_backup_restores_unloaded_history_and_original_dates(tmp_path, monkeypatch):
+    db = await _init_backup_db(tmp_path, monkeypatch, "backup.db")
     async with get_db(db) as conn, immediate_transaction(conn):
         await conn.executemany(
             "INSERT INTO sessions(id, title, settings_json) VALUES (?, ?, ?)",
@@ -26,7 +46,7 @@ async def test_complete_backup_restores_unloaded_history_and_original_dates(tmp_
             "INSERT INTO messages(session_id, role, content_chinese, content_japanese, created_at) VALUES (?, ?, ?, ?, ?)",
             [("s_000", "user", f"消息 {index}", "日本語", "2024-03-02 01:02:03.456") for index in range(601)],
         )
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
+    async with _app_client() as client:
         pages = [(await client.get(f"/api/chat/sessions?limit=200&offset={offset}")).json() for offset in (0, 200)]
         assert pages[0]["has_more"] is True and pages[1]["has_more"] is False
         assert len({s["id"] for page in pages for s in page["sessions"]}) == 205
@@ -55,14 +75,12 @@ async def test_complete_backup_restores_unloaded_history_and_original_dates(tmp_
 @pytest.mark.asyncio
 async def test_oversize_backup_fails_explicitly_instead_of_truncating(tmp_path, monkeypatch):
     from galgame2voice.services import chat_backup
-    db = tmp_path / "size.db"
-    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db))
+    db = await _init_backup_db(tmp_path, monkeypatch, "size.db")
     monkeypatch.setattr(chat_backup, "MAX_MESSAGES", 1)
-    await init_db(db)
     async with get_db(db) as conn:
         for text in ("保留第一句", "保留第二句"):
             await crud.add_message(conn, MessageCreate(session_id="s_full", role="user", content_chinese=text))
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
+    async with _app_client() as client:
         response = await client.get("/api/chat/export")
         assert response.status_code == 413
         assert "data" in response.json()["detail"]
@@ -74,15 +92,13 @@ async def test_removed_reply_format_setting_is_omitted_from_export_and_import(tm
     from galgame2voice.services.chat_backup import SESSION_SETTINGS
 
     assert "advReplyFormat" not in SESSION_SETTINGS
-    db = tmp_path / "reply-format.db"
-    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db))
-    await init_db(db)
+    db = await _init_backup_db(tmp_path, monkeypatch, "reply-format.db")
     async with get_db(db) as conn, immediate_transaction(conn):
         await conn.execute(
             "INSERT INTO sessions(id, title, settings_json) VALUES (?, ?, ?)",
             ("s_format", "逐句", json.dumps({"advReplyFormat": "legacy", "temperature": 0.8, "apiKey": "secret"})),
         )
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
+    async with _app_client() as client:
         backup = (await client.get("/api/chat/export")).json()
         session = next(s for s in backup["sessions"] if s["id"] == "s_format")
         assert "advReplyFormat" not in session["settings"]
@@ -144,15 +160,12 @@ async def test_failed_delete_keeps_both_history_and_audio(tmp_path, monkeypatch)
 
 @pytest.mark.asyncio
 async def test_imported_lines_round_trip_through_history_and_export(tmp_path, monkeypatch):
-    db = tmp_path / "import-lines.db"
-    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db))
-    await init_db(db)
-    lines = [{"index": 0, "zh": "你好", "ja": "こんにちは", "emotion": "happy",
-              "act": {"face": "smile"}, "audio": {"status": "skipped", "chunks": []}}]
+    await _init_backup_db(tmp_path, monkeypatch, "import-lines.db")
+    lines = [_backup_line(0, "你好", "こんにちは", "happy", {"face": "smile"})]
     payload = {"sessions": [{"id": "s_import_lines", "title": "逐句", "messages": [
         {"role": "assistant", "content": "你好", "japanese": "こんにちは", "lines": lines}
     ]}]}
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
+    async with _app_client() as client:
         response = await client.post("/api/chat/import", json=payload)
         assert response.status_code == 200, response.text
         history = (await client.get("/api/chat/history?session_id=s_import_lines")).json()
@@ -163,106 +176,20 @@ async def test_imported_lines_round_trip_through_history_and_export(tmp_path, mo
 
 @pytest.mark.asyncio
 async def test_import_sanitizes_invalid_act_values_without_dropping_lines(tmp_path, monkeypatch):
-    db = tmp_path / "import-invalid-act.db"
-    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db))
-    await init_db(db)
-    imported_lines = [
-        {
-            "index": 0,
-            "zh": "早上好。",
-            "ja": "おはよう。",
-            "emotion": "happy",
-            "act": {
-                "face": "smile",
-                "pose": "stand",
-                "motion": "wave",
-                "blush": True,
-                "fx": "sparkle",
-                "extra": "ignored",
-            },
-            "audio": {"status": "skipped", "chunks": []},
-        },
-        {
-            "index": 1,
-            "zh": "今天天气真好。",
-            "ja": "いい天気だね。",
-            "emotion": "gentle",
-            "act": {"face": None, "motion": ""},
-            "audio": {"status": "skipped", "chunks": []},
-        },
-        {
-            "index": 2,
-            "zh": "我们出发吧。",
-            "ja": "出かけよう。",
-            "emotion": "cool",
-            "act": {
-                "face": "",
-                "pose": 42,
-                "motion": "nod",
-                "blush": False,
-                "fx": "unknown_fx",
-            },
-            "audio": {"status": "skipped", "chunks": []},
-        },
-        {
-            "index": 3,
-            "zh": "请多指教。",
-            "ja": "よろしくね。",
-            "emotion": "shy",
-            "act": {"face": 123, "pose": None, "motion": None, "blush": 0, "fx": ""},
-            "audio": {"status": "skipped", "chunks": []},
-        },
-        {
-            "index": 4,
-            "zh": "走吧。",
-            "ja": "行こう。",
-            "emotion": "happy",
-            "act": {"face": "wink", "pose": "", "motion": [], "blush": None, "fx": None},
-            "audio": {"status": "skipped", "chunks": []},
-        },
+    await _init_backup_db(tmp_path, monkeypatch, "import-invalid-act.db")
+    samples = [
+        ("早上好。", "おはよう。", "happy",
+         {"face": "smile", "pose": "stand", "motion": "wave", "blush": True, "fx": "sparkle", "extra": "ignored"},
+         {"face": "smile", "pose": "stand", "blush": True, "fx": "sparkle"}),
+        ("今天天气真好。", "いい天気だね。", "gentle", {"face": None, "motion": ""}, {}),
+        ("我们出发吧。", "出かけよう。", "cool",
+         {"face": "", "pose": 42, "motion": "nod", "blush": False, "fx": "unknown_fx"},
+         {"motion": "nod", "blush": False}),
+        ("请多指教。", "よろしくね。", "shy", {"face": 123, "pose": None, "motion": None, "blush": 0, "fx": ""}, {}),
+        ("走吧。", "行こう。", "happy", {"face": "wink", "pose": "", "motion": [], "blush": None, "fx": None}, {"face": "wink"}),
     ]
-    expected_lines = [
-        {
-            "index": 0,
-            "zh": "早上好。",
-            "ja": "おはよう。",
-            "emotion": "happy",
-            "act": {"face": "smile", "pose": "stand", "blush": True, "fx": "sparkle"},
-            "audio": {"status": "skipped", "chunks": []},
-        },
-        {
-            "index": 1,
-            "zh": "今天天气真好。",
-            "ja": "いい天気だね。",
-            "emotion": "gentle",
-            "act": {},
-            "audio": {"status": "skipped", "chunks": []},
-        },
-        {
-            "index": 2,
-            "zh": "我们出发吧。",
-            "ja": "出かけよう。",
-            "emotion": "cool",
-            "act": {"motion": "nod", "blush": False},
-            "audio": {"status": "skipped", "chunks": []},
-        },
-        {
-            "index": 3,
-            "zh": "请多指教。",
-            "ja": "よろしくね。",
-            "emotion": "shy",
-            "act": {},
-            "audio": {"status": "skipped", "chunks": []},
-        },
-        {
-            "index": 4,
-            "zh": "走吧。",
-            "ja": "行こう。",
-            "emotion": "happy",
-            "act": {"face": "wink"},
-            "audio": {"status": "skipped", "chunks": []},
-        },
-    ]
+    imported_lines = [_backup_line(i, zh, ja, emo, raw_act) for i, (zh, ja, emo, raw_act, _) in enumerate(samples)]
+    expected_lines = [_backup_line(i, zh, ja, emo, clean_act) for i, (zh, ja, emo, _, clean_act) in enumerate(samples)]
     payload = {
         "sessions": [
             {
@@ -280,7 +207,7 @@ async def test_import_sanitizes_invalid_act_values_without_dropping_lines(tmp_pa
             }
         ]
     }
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
+    async with _app_client() as client:
         response = await client.post("/api/chat/import", json=payload)
         assert response.status_code == 200, response.text
         history = (await client.get("/api/chat/history", params={"session_id": "s_import_invalid_act"})).json()
