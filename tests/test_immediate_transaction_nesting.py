@@ -17,33 +17,33 @@ from galgame2voice.database.models import MessageCreate
 from galgame2voice.database.session import get_db, immediate_transaction, init_db
 
 
+async def _init_test_db(tmp_path, filename: str) -> str:
+    db_path = str(tmp_path / filename)
+    await init_db(db_path)
+    return db_path
+
+
+async def _seed_messages(conn, session_id: str, *items: tuple[str, str]):
+    await crud.get_or_create_session(conn, session_id)
+    return [
+        await crud.add_message(
+            conn,
+            MessageCreate(session_id=session_id, role=role, content_chinese=content),
+        )
+        for role, content in items
+    ]
+
+
 class TestDeleteMessageTransactionIsolation:
     """Verifies crud.delete_message transaction isolation and savepoint reentrancy."""
 
     @pytest.mark.asyncio
     async def test_delete_message_nested_reentrant_savepoint_execution(self, tmp_path):
         """crud.delete_message called inside an existing transaction must run via nested savepoints."""
-        db_path = str(tmp_path / "test_del_reentrant.db")
-        await init_db(db_path)
+        db_path = await _init_test_db(tmp_path, "test_del_reentrant.db")
 
         async with get_db(db_path) as conn:
-            await crud.get_or_create_session(conn, "sess_del_nested")
-            msg1 = await crud.add_message(
-                conn,
-                MessageCreate(
-                    session_id="sess_del_nested",
-                    role="user",
-                    content_chinese="消息一",
-                ),
-            )
-            msg2 = await crud.add_message(
-                conn,
-                MessageCreate(
-                    session_id="sess_del_nested",
-                    role="assistant",
-                    content_chinese="消息二",
-                ),
-            )
+            msg1, msg2 = await _seed_messages(conn, "sess_del_nested", ("user", "消息一"), ("assistant", "消息二"))
             assert await crud.count_session_messages(conn, "sess_del_nested") == 2
 
             # Outer immediate_transaction
@@ -66,19 +66,10 @@ class TestDeleteMessageTransactionIsolation:
     @pytest.mark.asyncio
     async def test_delete_message_outer_rollback_preserves_message(self, tmp_path):
         """When an outer transaction fails and rolls back, deletion inside savepoint is undone."""
-        db_path = str(tmp_path / "test_del_rollback.db")
-        await init_db(db_path)
+        db_path = await _init_test_db(tmp_path, "test_del_rollback.db")
 
         async with get_db(db_path) as conn:
-            await crud.get_or_create_session(conn, "sess_rollback")
-            msg = await crud.add_message(
-                conn,
-                MessageCreate(
-                    session_id="sess_rollback",
-                    role="user",
-                    content_chinese="待保护消息",
-                ),
-            )
+            (msg,) = await _seed_messages(conn, "sess_rollback", ("user", "待保护消息"))
             assert await crud.count_session_messages(conn, "sess_rollback") == 1
 
             # Outer transaction with simulated failure after delete_message
@@ -96,8 +87,7 @@ class TestDeleteMessageTransactionIsolation:
     @pytest.mark.asyncio
     async def test_delete_message_concurrent_write_stress(self, tmp_path):
         """Adversarial stress: concurrent writers adding and deleting messages via immediate_transaction."""
-        db_path = str(tmp_path / "test_concurrent_del.db")
-        await init_db(db_path)
+        db_path = await _init_test_db(tmp_path, "test_concurrent_del.db")
 
         num_workers = 12
         session_id = "sess_stress"
@@ -129,15 +119,10 @@ class TestDeleteMessageTransactionIsolation:
     @pytest.mark.asyncio
     async def test_concurrent_burst_deleting_same_message(self, tmp_path):
         """Twenty tasks delete one message id. The row is gone and none of the tasks raise."""
-        db_path = str(tmp_path / "same_msg_race.db")
-        await init_db(db_path)
+        db_path = await _init_test_db(tmp_path, "same_msg_race.db")
 
         async with get_db(db_path) as conn:
-            await crud.get_or_create_session(conn, "race_session")
-            msg = await crud.add_message(
-                conn,
-                MessageCreate(session_id="race_session", role="user", content_chinese="race_target"),
-            )
+            (msg,) = await _seed_messages(conn, "race_session", ("user", "race_target"))
             msg_id = msg.id
 
         async def worker():
@@ -152,18 +137,13 @@ class TestDeleteMessageTransactionIsolation:
     @pytest.mark.asyncio
     async def test_deeply_nested_savepoints_and_partial_rollback(self, tmp_path):
         """An inner failure restores only the inner deletes. The outer delete stays committed."""
-        db_path = str(tmp_path / "deep_nest.db")
-        await init_db(db_path)
+        db_path = await _init_test_db(tmp_path, "deep_nest.db")
 
         async with get_db(db_path) as conn:
-            await crud.get_or_create_session(conn, "sess_nest")
-            created_ids = []
-            for i in range(8):
-                m = await crud.add_message(
-                    conn,
-                    MessageCreate(session_id="sess_nest", role="user", content_chinese=f"nest_msg_{i}"),
-                )
-                created_ids.append(m.id)
+            created_ids = [
+                m.id
+                for m in await _seed_messages(conn, "sess_nest", *(("user", f"nest_msg_{i}") for i in range(8)))
+            ]
 
             async def recursive_step(level: int):
                 if level == 8:
@@ -194,8 +174,7 @@ class TestDeleteMessageTransactionIsolation:
     @pytest.mark.asyncio
     async def test_concurrent_connections_burst_load(self, tmp_path):
         """Twenty workers each keep the odd messages. Integrity stays ok and 80 rows remain."""
-        db_path = str(tmp_path / "burst_load.db")
-        await init_db(db_path)
+        db_path = await _init_test_db(tmp_path, "burst_load.db")
 
         session_id = "sess_burst"
 
@@ -227,15 +206,10 @@ class TestDeleteMessageTransactionIsolation:
         """Cancellation during begin, lock retry, and the body restores depth and the row."""
         import sqlite3
 
-        db_path = str(tmp_path / "cancel_tx.db")
-        await init_db(db_path)
+        db_path = await _init_test_db(tmp_path, "cancel_tx.db")
 
         async with get_db(db_path) as conn:
-            await crud.get_or_create_session(conn, "sess_cancel")
-            msg = await crud.add_message(
-                conn,
-                MessageCreate(session_id="sess_cancel", role="user", content_chinese="cancel_me"),
-            )
+            (msg,) = await _seed_messages(conn, "sess_cancel", ("user", "cancel_me"))
 
             async def cancel_at_begin():
                 async with immediate_transaction(conn):
@@ -306,10 +280,9 @@ class TestImmediateTransactionSafety:
 
     async def test_immediate_transaction_nested_in_active_transaction(self, tmp_path):
         """Nested immediate_transaction should not fail with 'cannot start transaction'."""
-        db_file = tmp_path / "nested_tx.db"
-        await init_db(str(db_file))
+        db_file = await _init_test_db(tmp_path, "nested_tx.db")
 
-        async with get_db(str(db_file)) as conn:
+        async with get_db(db_file) as conn:
             # Simulate an existing deferred transaction
             await conn.execute("INSERT INTO settings (id, active_provider_id) VALUES (1, 'deepseek') ON CONFLICT(id) DO UPDATE SET active_provider_id='deepseek';")
             assert conn.in_transaction or getattr(getattr(conn, "_conn", None), "in_transaction", False)
@@ -319,7 +292,7 @@ class TestImmediateTransactionSafety:
                 await conn.execute("UPDATE settings SET active_provider_id='openai' WHERE id=1;")
 
         # Verify change was committed
-        async with get_db(str(db_file)) as conn:
+        async with get_db(db_file) as conn:
             cur = await conn.execute("SELECT active_provider_id FROM settings WHERE id=1;")
             row = await cur.fetchone()
             assert row[0] == "openai"

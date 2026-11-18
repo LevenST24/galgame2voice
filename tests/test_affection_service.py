@@ -20,6 +20,18 @@ def affection_service(isolate_test_database):
     return AffectionService(db_path=isolate_test_database)
 
 
+async def _set_score_and_increment(
+    conn, user_id: str, initial_score: int, delta_points: int = 1, daily_limit: int = 100
+):
+    await crud.update_character_affection(
+        conn, user_id=user_id, character_id=1,
+        updates=CharacterAffectionUpdate(affection_score=initial_score),
+    )
+    return await crud.increment_affection(
+        conn, user_id=user_id, character_id=1, delta_points=delta_points, daily_limit=daily_limit,
+    )
+
+
 class TestAffectionLevelAndScoring:
     def test_calculate_turn_points(self, affection_service):
         # Base point
@@ -180,46 +192,22 @@ class TestAffectionTurnHandlingAndDailyCap:
     @pytest.mark.asyncio
     async def test_all_five_level_up_transitions(self, isolate_test_database):
         async with get_db(isolate_test_database) as conn:
-            await crud.update_character_affection(
-                conn, user_id="u_tier", character_id=1,
-                updates=CharacterAffectionUpdate(affection_score=19),
-            )
-            aff, _gain, level_up = await crud.increment_affection(
-                conn, user_id="u_tier", character_id=1, delta_points=1, daily_limit=100,
-            )
+            aff, _gain, level_up = await _set_score_and_increment(conn, "u_tier", 19)
             assert aff.affection_score == 20
             assert aff.affection_level == 2
             assert level_up is True
 
-            await crud.update_character_affection(
-                conn, user_id="u_tier", character_id=1,
-                updates=CharacterAffectionUpdate(affection_score=39),
-            )
-            aff, _gain, level_up = await crud.increment_affection(
-                conn, user_id="u_tier", character_id=1, delta_points=1, daily_limit=100,
-            )
+            aff, _gain, level_up = await _set_score_and_increment(conn, "u_tier", 39)
             assert aff.affection_score == 40
             assert aff.affection_level == 3
             assert level_up is True
 
-            await crud.update_character_affection(
-                conn, user_id="u_tier", character_id=1,
-                updates=CharacterAffectionUpdate(affection_score=59),
-            )
-            aff, _gain, level_up = await crud.increment_affection(
-                conn, user_id="u_tier", character_id=1, delta_points=1, daily_limit=100,
-            )
+            aff, _gain, level_up = await _set_score_and_increment(conn, "u_tier", 59)
             assert aff.affection_score == 60
             assert aff.affection_level == 4
             assert level_up is True
 
-            await crud.update_character_affection(
-                conn, user_id="u_tier", character_id=1,
-                updates=CharacterAffectionUpdate(affection_score=79),
-            )
-            aff, _gain, level_up = await crud.increment_affection(
-                conn, user_id="u_tier", character_id=1, delta_points=1, daily_limit=100,
-            )
+            aff, _gain, level_up = await _set_score_and_increment(conn, "u_tier", 79)
             assert aff.affection_score == 80
             assert aff.affection_level == 5
             assert level_up is True
@@ -227,13 +215,7 @@ class TestAffectionTurnHandlingAndDailyCap:
     @pytest.mark.asyncio
     async def test_score_max_cap_at_100(self, isolate_test_database):
         async with get_db(isolate_test_database) as conn:
-            await crud.update_character_affection(
-                conn, user_id="u_cap", character_id=1,
-                updates=CharacterAffectionUpdate(affection_score=98),
-            )
-            aff, gain, _level_up = await crud.increment_affection(
-                conn, user_id="u_cap", character_id=1, delta_points=10, daily_limit=100,
-            )
+            aff, gain, _level_up = await _set_score_and_increment(conn, "u_cap", 98, delta_points=10)
             assert aff.affection_score == 100
             assert gain == 10
             assert aff.affection_level == 5

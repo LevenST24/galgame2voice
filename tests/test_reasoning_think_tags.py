@@ -11,11 +11,32 @@ from galgame2voice.utils.japanese_phonetics import (
 )
 
 
+_REAL_LINES = '{"lines": [{"zh": "正式台词", "ja": "本番のセリフ", "emotion": "happy"}]}'
+
+
 def _parse_reply(raw_text):
     parser = StreamingBilingualParser()
     parser.feed_chunk(raw_text)
     zh, ja, _ = parser.finalize()
     return zh, ja, parser
+
+
+def _stream_reply(*chunks):
+    parser = StreamingBilingualParser()
+    deltas = []
+    for chunk in chunks:
+        delta, _ = parser.feed_chunk(chunk)
+        if delta:
+            deltas.append(delta)
+    zh, ja, _ = parser.finalize()
+    return "".join(deltas), zh, ja, parser
+
+
+def _scan_reply(*chunks):
+    scanner = LineScanner()
+    for chunk in chunks:
+        scanner.feed(chunk)
+    return scanner.finish()
 
 
 def test_line_scanner_ignores_draft_json_in_think_block():
@@ -37,17 +58,12 @@ def test_line_scanner_ignores_draft_json_in_think_block():
 
 
 def test_line_scanner_streaming_with_think_block():
-    chunks = [
+    scanned = _scan_reply(
         "<thi",
         'nk>Let me format {"lines": [{"zh": "草稿"}]}',
         "</think>\n",
-        '{"lines": [{"zh": "正式台词", "ja": "本番のセリフ", "emotion": "happy"}]}',
-    ]
-    scanner = LineScanner()
-    all_emitted = []
-    for c in chunks:
-        all_emitted.extend(scanner.feed(c))
-    scanned = scanner.finish()
+        _REAL_LINES,
+    )
 
     assert scanned.format == "lines"
     assert len(scanned.lines) == 1
@@ -71,21 +87,13 @@ def test_streaming_parser_lines_with_think_draft():
 
 
 def test_streaming_parser_streaming_lines_with_think_draft():
-    chunks = [
+    emitted_text, zh, ja, _ = _stream_reply(
         "<think>Let me format ",
         '{"lines": [{"zh": "草稿", "ja": "下書き"}]}',
         "</think>\n",
-        '{"lines": [{"zh": "正式台词", "ja": "本番のセリフ", "emotion": "happy"}]}',
-    ]
-    parser = StreamingBilingualParser()
-    deltas = []
-    for chunk in chunks:
-        delta, _ = parser.feed_chunk(chunk)
-        if delta:
-            deltas.append(delta)
-    zh, ja, remaining = parser.finalize()
+        _REAL_LINES,
+    )
 
-    emitted_text = "".join(deltas)
     assert "<think>" not in emitted_text
     assert "草稿" not in emitted_text
     assert "正式台词" in emitted_text
@@ -105,22 +113,14 @@ def test_streaming_parser_prose_with_think_brackets():
 
 
 def test_streaming_parser_streaming_prose_with_think_brackets():
-    chunks = [
+    emitted_text, zh, ja, _ = _stream_reply(
         "<think>先想一下",
         "怎么回答【テスト】",
         "</think>",
         "笨蛋，别突然凑过来啦！真是拿你没办法呢！",
         "【バカ、急に近づかないでよ！】",
-    ]
-    parser = StreamingBilingualParser()
-    deltas = []
-    for chunk in chunks:
-        delta, _ = parser.feed_chunk(chunk)
-        if delta:
-            deltas.append(delta)
-    zh, ja, remaining = parser.finalize()
+    )
 
-    emitted_text = "".join(deltas)
     assert "<think>" not in emitted_text
     assert "先想一下" not in emitted_text
     assert "テスト" not in emitted_text
@@ -133,22 +133,14 @@ def test_streaming_parser_streaming_prose_with_think_brackets():
 
 def test_streaming_parser_short_prose_with_think_brackets_stream_deltas():
     # Exactly from prompt: test chunked feed with shorter text
-    chunks = [
+    emitted_text, zh, ja, _ = _stream_reply(
         "<think>先想一下",
         "怎么回答【テスト】",
         "</think>",
         "笨蛋，别突然凑过来啦！",
         "【バカ、急に近づかないでよ！】",
-    ]
-    parser = StreamingBilingualParser()
-    deltas = []
-    for chunk in chunks:
-        delta, _ = parser.feed_chunk(chunk)
-        if delta:
-            deltas.append(delta)
-    zh, ja, remaining = parser.finalize()
+    )
 
-    emitted_text = "".join(deltas)
     assert "<think>" not in emitted_text
     assert "先想一下" not in emitted_text
     assert "<think>" not in zh
@@ -239,13 +231,10 @@ def test_closing_tag_with_whitespace_and_prose():
 
 def test_line_scanner_long_attributes_exceeding_64_chars():
     long_attr_tag = "<think model='deepseek-r1-distill-qwen-32b-custom-very-long-attribute-name-here-1234567890'>"
-    text = (
+    res = _scan_reply(
         f'{long_attr_tag}Let me draft {{"lines": [{{"zh": "草稿", "ja": "下書き"}}]}}</think>\n'
-        '{"lines": [{"zh": "正式台词", "ja": "本番のセリフ", "emotion": "happy"}]}'
+        f'{_REAL_LINES}'
     )
-    scanner = LineScanner()
-    scanner.feed(text)
-    res = scanner.finish()
     assert res.format == "lines"
     assert len(res.lines) == 1
     assert res.lines[0].zh == "正式台词"
@@ -259,9 +248,7 @@ def test_nested_thinking_tags_in_scanner_and_parser():
         'more outer thought with {"lines": [{"zh": "draft2"}]}</think>\n'
         '{"lines": [{"zh": "真正的台词", "ja": "本当のセリフ", "emotion": "gentle"}]}'
     )
-    scanner = LineScanner()
-    scanner.feed(text)
-    res = scanner.finish()
+    res = _scan_reply(text)
     assert res.format == "lines"
     assert len(res.lines) == 1
     assert res.lines[0].zh == "真正的台词"
@@ -308,9 +295,7 @@ def test_self_closing_think_tags_in_scanner_and_parser():
         '<reasoning />{"lines": [{"zh": "你好", "ja": "こんにちは"}]}',
     ]
     for text in variants:
-        scanner = LineScanner()
-        scanner.feed(text)
-        scanned = scanner.finish()
+        scanned = _scan_reply(text)
         assert scanned.format == "lines"
         assert scanned.truncated is False
         assert len(scanned.lines) == 1
@@ -328,9 +313,7 @@ def test_self_closing_nested_inside_think_block():
         '<think>外层思考开始 <thought id="t1" /> 外层思考结束</think>\n'
         '{"lines": [{"zh": "正式台词", "ja": "本番セリフ"}]}'
     )
-    scanner = LineScanner()
-    scanner.feed(text)
-    scanned = scanner.finish()
+    scanned = _scan_reply(text)
     assert scanned.format == "lines"
     assert scanned.truncated is False
     assert len(scanned.lines) == 1
@@ -364,30 +347,18 @@ def test_non_tag_trailing_angle_bracket():
     assert parser.lines_truncated is False
 
 
-_REAL_LINES = '{"lines": [{"zh": "正式台词", "ja": "本番のセリフ", "emotion": "happy"}]}'
-
-
 def test_line_scanner_ignores_draft_json_in_thinking_tag_split_across_chunks():
-    chunks = ["<thinki", 'ng>Let me format {"lines": [{"zh": "草稿"}]}', "</thinki", "ng>\n", _REAL_LINES]
-    scanner = LineScanner()
-    for c in chunks:
-        scanner.feed(c)
-    scanned = scanner.finish()
+    scanned = _scan_reply("<thinki", 'ng>Let me format {"lines": [{"zh": "草稿"}]}', "</thinki", "ng>\n", _REAL_LINES)
 
     assert scanned.truncated is False
     assert [line.zh for line in scanned.lines] == ["正式台词"]
 
 
 def test_streaming_parser_strips_thinking_tag_from_deltas_and_result():
-    parser = StreamingBilingualParser()
-    deltas = []
-    for chunk in ["<thinking>Let me format ", '{"lines": [{"zh": "草稿", "ja": "下書き"}]}', "</thinking>\n", _REAL_LINES]:
-        delta, _ = parser.feed_chunk(chunk)
-        if delta:
-            deltas.append(delta)
-    zh, ja, _ = parser.finalize()
+    emitted, zh, ja, parser = _stream_reply(
+        "<thinking>Let me format ", '{"lines": [{"zh": "草稿", "ja": "下書き"}]}', "</thinking>\n", _REAL_LINES
+    )
 
-    emitted = "".join(deltas)
     assert "草稿" not in emitted and "thinking" not in emitted
     assert zh == "正式台词"
     assert ja == "本番のセリフ"
