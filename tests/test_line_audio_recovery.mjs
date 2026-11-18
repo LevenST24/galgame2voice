@@ -11,6 +11,23 @@ import { fakeChatStream, tick } from './helpers/chat_stream.mjs';
 import { fakeDocument, microtasks } from './helpers/adv_dom.mjs';
 
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
+
+function trackConflictRequest(calls, {
+  onHistory,
+  conflictMessage = '这句已有其他音频修复结果，未覆盖现有音频，请重新打开 LOG 检查。',
+  unexpected = url => `Unexpected request: ${url}`,
+} = {}) {
+  return async (url, options = {}) => {
+    calls.push({ url, options });
+    if (url === '/api/voice/regenerate-line') {
+      const error = new Error(conflictMessage);
+      error.status = 409;
+      throw error;
+    }
+    if (onHistory && url.startsWith('/api/chat/history')) return onHistory();
+    throw new Error(unexpected(url));
+  };
+}
 function fixture(request) {
   const old = Date.now() - 9 * 86400000;
   const message = { id: 'm_local', serverMessageId: 42, role: 'assistant', content: '原中文', japanese: '全文日文', ts: old,
@@ -319,31 +336,22 @@ test('when another tab already repaired a line, receiving 409 fetches the latest
     getSession: () => f.session,
     getVoiceProfiles: () => [{ id: 7, name: '当前角色' }],
     saveState: () => { f.savesCount++; return true; },
-    request: async (url, options = {}) => {
-      calls.push({ url, options });
-      if (url === '/api/voice/regenerate-line') {
-        const error = new Error('这句已有其他音频修复结果，未覆盖现有音频，请重新打开 LOG 检查。');
-        error.status = 409;
-        throw error;
-      }
-      if (url.startsWith('/api/chat/history')) {
-        return {
-          session_id: f.session.id,
-          count: 1,
-          has_more: false,
-          oldest_id: 42,
-          messages: [{
-            id: 42,
-            role: 'assistant',
-            lines: [
-              { index: 0, zh: '原中文0', ja: '日本語0。', emotion: 'neutral', act: {}, audio: { status: 'failed', chunks: [] } },
-              { index: 1, zh: '原中文1', ja: '日本語1。', emotion: 'neutral', act: {}, audio: remoteRepairedAudio },
-            ],
-          }],
-        };
-      }
-      throw new Error(`Unexpected request: ${url}`);
-    },
+    request: trackConflictRequest(calls, {
+      onHistory: () => ({
+        session_id: f.session.id,
+        count: 1,
+        has_more: false,
+        oldest_id: 42,
+        messages: [{
+          id: 42,
+          role: 'assistant',
+          lines: [
+            { index: 0, zh: '原中文0', ja: '日本語0。', emotion: 'neutral', act: {}, audio: { status: 'failed', chunks: [] } },
+            { index: 1, zh: '原中文1', ja: '日本語1。', emotion: 'neutral', act: {}, audio: remoteRepairedAudio },
+          ],
+        }],
+      }),
+    }),
   });
 
   const f = backlogFixture(t, recover);
@@ -404,29 +412,20 @@ test('when remote repair succeeds but saveState returns false, surfaces local ca
     getSession: () => f.session,
     getVoiceProfiles: () => [{ id: 7, name: '当前角色' }],
     saveState: () => false,
-    request: async (url, options = {}) => {
-      calls.push({ url, options });
-      if (url === '/api/voice/regenerate-line') {
-        const error = new Error('这句已有其他音频修复结果，未覆盖现有音频，请重新打开 LOG 检查。');
-        error.status = 409;
-        throw error;
-      }
-      if (url.startsWith('/api/chat/history')) {
-        return {
-          session_id: f.session.id,
-          count: 1,
-          messages: [{
-            id: 42,
-            role: 'assistant',
-            lines: [
-              { index: 0, zh: '原中文0', ja: '日本語0。', emotion: 'neutral', act: {}, audio: { status: 'failed', chunks: [] } },
-              { index: 1, zh: '原中文1', ja: '日本語1。', emotion: 'neutral', act: {}, audio: remoteRepairedAudio },
-            ],
-          }],
-        };
-      }
-      throw new Error(`Unexpected request: ${url}`);
-    },
+    request: trackConflictRequest(calls, {
+      onHistory: () => ({
+        session_id: f.session.id,
+        count: 1,
+        messages: [{
+          id: 42,
+          role: 'assistant',
+          lines: [
+            { index: 0, zh: '原中文0', ja: '日本語0。', emotion: 'neutral', act: {}, audio: { status: 'failed', chunks: [] } },
+            { index: 1, zh: '原中文1', ja: '日本語1。', emotion: 'neutral', act: {}, audio: remoteRepairedAudio },
+          ],
+        }],
+      }),
+    }),
   });
 
   const f = backlogFixture(t, recover);
@@ -506,21 +505,15 @@ for (const tc of invalidRemoteCases) {
       getSession: () => session,
       getVoiceProfiles: () => [{ id: 7, name: '当前角色' }],
       saveState: () => { saves++; return true; },
-      request: async (url, options = {}) => {
-        calls.push({ url, options });
-        if (url === '/api/voice/regenerate-line') {
-          const err = new Error('这句已有其他音频修复结果，未覆盖现有音频，请重新打开 LOG 检查。');
-          err.status = 409;
-          throw err;
-        }
-        if (url.startsWith('/api/chat/history')) {
+      request: trackConflictRequest(calls, {
+        unexpected: url => `Unexpected ${url}`,
+        onHistory: () => {
           const valid = makeValidRemoteSnapshot(session.id, 42, 1, '日本語1。', 7);
           const outcome = tc.mutate(structuredClone(valid));
           if (outcome.error) throw outcome.error;
           return outcome.data;
-        }
-        throw new Error(`Unexpected ${url}`);
-      },
+        },
+      }),
     });
 
     await assert.rejects(
@@ -547,15 +540,10 @@ test('409 on an unpersisted local line does not make a history GET and surfaces 
     getSession: () => session,
     getVoiceProfiles: () => [{ id: 7, name: '当前角色' }],
     saveState: () => true,
-    request: async (url, options = {}) => {
-      calls.push({ url, options });
-      if (url === '/api/voice/regenerate-line') {
-        const err = new Error('单句冲突');
-        err.status = 409;
-        throw err;
-      }
-      throw new Error(`Unexpected ${url}`);
-    },
+    request: trackConflictRequest(calls, {
+      conflictMessage: '单句冲突',
+      unexpected: url => `Unexpected ${url}`,
+    }),
   });
 
   await assert.rejects(
@@ -604,18 +592,10 @@ for (const change of lateChangeCases) {
       getVoiceProfiles: () => [{ id: 7, name: '当前角色' }, { id: 9, name: '新角色' }],
       saveState: () => { saves++; return true; },
       isSessionDeleting: () => deleting,
-      request: async (url, options = {}) => {
-        calls.push({ url, options });
-        if (url === '/api/voice/regenerate-line') {
-          const err = new Error('这句已有其他音频修复结果，未覆盖现有音频，请重新打开 LOG 检查。');
-          err.status = 409;
-          throw err;
-        }
-        if (url.startsWith('/api/chat/history')) {
-          return gate.promise;
-        }
-        throw new Error(`Unexpected ${url}`);
-      },
+      request: trackConflictRequest(calls, {
+        unexpected: url => `Unexpected ${url}`,
+        onHistory: () => gate.promise,
+      }),
     });
 
     const pending = recover({ messageId: message.id, lineIndex: 0, signal: controller.signal });

@@ -178,14 +178,39 @@ function fixture(t) {
   return { dom, toasts };
 }
 
+function activeOpenaiProviders() {
+  return {
+    providers: [
+      { id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o', api_base_url: 'https://api.openai.com/v1' },
+    ],
+    presets: [],
+  };
+}
+
+function installPrivateFetch({ onTest, onPost, configSettings }) {
+  globalThis.fetch = async (url, options = {}) => {
+    if (onTest && url.includes('/api/providers/test')) return onTest(url, options);
+    if (onPost && options.method === 'POST') return onPost(url, options);
+    if (url === '/api/providers') return response(activeOpenaiProviders());
+    if (url === '/api/config') return response({ status: 'ok', settings: configSettings });
+    return response({});
+  };
+}
+
+async function openLoadedSettings(t, { loadConfig = false } = {}) {
+  const loaded = fixture(t);
+  openModal(loaded.dom.globalModal);
+  await loadProviders();
+  if (loadConfig) await loadGlobalConfig();
+  return loaded;
+}
+
 test('active cloud provider without a key is marked unusable', async t => {
   globalThis.fetch = async (url) => response(url === '/api/providers' ? {
     providers: [{ id: 'deepseek', name: 'DeepSeek', is_active: true, chat_model: 'deepseek-chat', api_key: '' }],
     presets: [], builtin_presets: [],
   } : { status: 'ok', settings: {} });
-  const { dom } = fixture(t);
-  openModal(dom.globalModal);
-  await loadProviders();
+  const { dom } = await openLoadedSettings(t);
   const selected = dom.gProvider.children.find((opt) => opt.value === 'deepseek');
   assert.equal(dom.gProviderActiveBadge.textContent, '未填密钥');
   assert.match(selected.textContent, /未填密钥/);
@@ -200,9 +225,7 @@ test('missing key tip links to provider API key page and clears on configured or
     ],
     presets: [], builtin_presets: [],
   } : { status: 'ok', settings: {} });
-  const { dom } = fixture(t);
-  openModal(dom.globalModal);
-  await loadProviders();
+  const { dom } = await openLoadedSettings(t);
   assert.match(dom.gApiKeyTip.textContent, /^还没有填写密钥。/);
   const links = dom.gApiKeyTip.children.filter((c) => c.tag === 'a');
   assert.equal(links.length, 1);
@@ -220,29 +243,15 @@ test('missing key tip links to provider API key page and clears on configured or
 
 test('blocks handleProviderTest locally for custom provider with loopback or private URLs when gAllowPrivateEndpoints is unchecked', async t => {
   const testRequests = [];
-  globalThis.fetch = async (url, options = {}) => {
-    if (url.includes('/api/providers/test')) {
+  installPrivateFetch({
+    onTest: (url, options) => {
       testRequests.push({ url, body: JSON.parse(options.body) });
       return response({ success: false, error: 'HTTP 400 private endpoint forbidden' }, 400);
-    }
-    if (url === '/api/providers') {
-      return response({
-        providers: [
-          { id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o', api_base_url: 'https://api.openai.com/v1' },
-        ],
-        presets: [],
-      });
-    }
-    if (url === '/api/config') {
-      return response({ status: 'ok', settings: { allow_private_llm_endpoints: false } });
-    }
-    return response({});
-  };
+    },
+    configSettings: { allow_private_llm_endpoints: false },
+  });
 
-  const { dom, toasts } = fixture(t);
-  openModal(dom.globalModal);
-  await loadProviders();
-  await loadGlobalConfig();
+  const { dom, toasts } = await openLoadedSettings(t, { loadConfig: true });
 
   assert.equal(dom.gAllowPrivateEndpoints.checked, false);
 
@@ -301,31 +310,17 @@ test('blocks handleProviderTest locally for custom provider with loopback or pri
 
 test('blocks handleActivateProvider locally when gAllowPrivateEndpoints is unchecked', async t => {
   const writeRequests = [];
-  globalThis.fetch = async (url, options = {}) => {
-    if (options.method === 'POST') {
+  installPrivateFetch({
+    onPost: (url, options) => {
       writeRequests.push({ url, body: JSON.parse(options.body) });
       return response({
         provider: { id: 'custom', name: '自定义模型', api_base_url: 'http://127.0.0.1:11434/v1', chat_model: 'qwen3:latest', is_active: true },
       });
-    }
-    if (url === '/api/providers') {
-      return response({
-        providers: [
-          { id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o', api_base_url: 'https://api.openai.com/v1' },
-        ],
-        presets: [],
-      });
-    }
-    if (url === '/api/config') {
-      return response({ status: 'ok', settings: { allow_private_llm_endpoints: false, speed_factor: 1 } });
-    }
-    return response({});
-  };
+    },
+    configSettings: { allow_private_llm_endpoints: false, speed_factor: 1 },
+  });
 
-  const { dom, toasts } = fixture(t);
-  openModal(dom.globalModal);
-  await loadProviders();
-  await loadGlobalConfig();
+  const { dom, toasts } = await openLoadedSettings(t, { loadConfig: true });
 
   dom.gProvider.value = '__custom__';
   onProviderChange();
@@ -345,32 +340,18 @@ test('blocks handleActivateProvider locally when gAllowPrivateEndpoints is unche
 
 test('footer saveGlobalConfig saves global config without saving private custom draft or prompting private endpoint toggle', async t => {
   const writeRequests = [];
-  globalThis.fetch = async (url, options = {}) => {
-    if (options.method === 'POST') {
+  installPrivateFetch({
+    onPost: (url, options) => {
       writeRequests.push({ url, body: JSON.parse(options.body) });
       return response({
         status: 'ok',
         settings: { allow_private_llm_endpoints: false, audio_retention_minutes: 60 },
       });
-    }
-    if (url === '/api/providers') {
-      return response({
-        providers: [
-          { id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o', api_base_url: 'https://api.openai.com/v1' },
-        ],
-        presets: [],
-      });
-    }
-    if (url === '/api/config') {
-      return response({ status: 'ok', settings: { allow_private_llm_endpoints: false, audio_retention_minutes: 30 } });
-    }
-    return response({});
-  };
+    },
+    configSettings: { allow_private_llm_endpoints: false, audio_retention_minutes: 30 },
+  });
 
-  const { dom, toasts } = fixture(t);
-  openModal(dom.globalModal);
-  await loadProviders();
-  await loadGlobalConfig();
+  const { dom, toasts } = await openLoadedSettings(t, { loadConfig: true });
 
   dom.gProvider.value = '__custom__';
   onProviderChange();
@@ -401,9 +382,7 @@ test('footer saveGlobalConfig saves global config without saving private custom 
 test('checking gAllowPrivateEndpoints dismisses interception box and allows requests, while public custom URLs are never blocked', async t => {
   const requests = [];
   let allowPrivateSaved = false;
-  let storedProviders = [
-    { id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o', api_base_url: 'https://api.openai.com/v1' },
-  ];
+  let storedProviders = activeOpenaiProviders().providers;
 
   globalThis.fetch = async (url, options = {}) => {
     const method = options.method || 'GET';
@@ -448,10 +427,7 @@ test('checking gAllowPrivateEndpoints dismisses interception box and allows requ
     return response({});
   };
 
-  const { dom } = fixture(t);
-  openModal(dom.globalModal);
-  await loadProviders();
-  await loadGlobalConfig();
+  const { dom } = await openLoadedSettings(t, { loadConfig: true });
 
   // 1. Public custom endpoint works even when gAllowPrivateEndpoints is unchecked
   dom.gProvider.value = 'custom';
