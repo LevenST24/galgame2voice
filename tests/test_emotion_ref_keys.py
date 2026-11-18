@@ -39,30 +39,107 @@ def _same_path(p1: str | Path, p2: str | Path) -> bool:
     return Path(p1).resolve() == Path(p2).resolve()
 
 
-def _install_test_character(root: Path) -> Path:
-    pkg = root / "characters" / "testchar"
+def _setup_env(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("GALGAME2VOICE_SKIP_MEM_CHECK", "1")
+    get_settings.cache_clear()
+    CharacterManager.reset_instance()
+
+
+def _create_character_package(
+    root: Path,
+    char_id: str,
+    name: str,
+    emotions: dict[str, dict],
+    *,
+    system_prompt: str | None = None,
+) -> Path:
+    pkg = root / "characters" / char_id
     pkg.mkdir(parents=True, exist_ok=True)
     (pkg / "gpt.ckpt").write_bytes(b"synthetic gpt model marker")
     (pkg / "sovits.pth").write_bytes(b"synthetic sovits model marker")
-    _make_wav(pkg / "gentle.wav", amplitude=500, duration_s=4.0)
-    _make_wav(pkg / "happy.wav", amplitude=1000, duration_s=4.0)
-    _make_wav(pkg / "sad.wav", amplitude=1500, duration_s=4.0)
+    manifest_emotions = {}
+    for idx, (emo, cfg) in enumerate(emotions.items(), start=1):
+        audio = cfg["audio"]
+        _make_wav(
+            pkg / audio,
+            amplitude=cfg.get("amplitude", idx * 500),
+            duration_s=cfg.get("duration_s", 4.0),
+        )
+        manifest_emotions[emo] = {
+            "audio": audio,
+            "text": cfg["text"],
+            "lang": cfg.get("lang", "ja"),
+        }
+    manifest = {
+        "id": char_id,
+        "name": name,
+        "gpt_weights": "gpt.ckpt",
+        "sovits_weights": "sovits.pth",
+        "emotions": manifest_emotions,
+    }
+    if system_prompt is not None:
+        manifest["system_prompt"] = system_prompt
     (pkg / "manifest.json").write_text(
-        json.dumps({
-            "id": "testchar",
-            "name": "TestChar",
-            "gpt_weights": "gpt.ckpt",
-            "sovits_weights": "sovits.pth",
-            "system_prompt": "测试角色人设",
-            "emotions": {
-                "gentle": {"audio": "gentle.wav", "text": "温柔台词", "lang": "ja"},
-                "happy": {"audio": "happy.wav", "text": "开心台词", "lang": "ja"},
-                "sad": {"audio": "sad.wav", "text": "悲伤台词", "lang": "ja"},
-            },
-        }, ensure_ascii=False),
+        json.dumps(manifest, ensure_ascii=False),
         encoding="utf-8",
     )
     return pkg
+
+
+def _install_test_character(root: Path) -> Path:
+    return _create_character_package(
+        root,
+        "testchar",
+        "TestChar",
+        {
+            "gentle": {"audio": "gentle.wav", "text": "温柔台词", "lang": "ja"},
+            "happy": {"audio": "happy.wav", "text": "开心台词", "lang": "ja"},
+            "sad": {"audio": "sad.wav", "text": "悲伤台词", "lang": "ja"},
+        },
+        system_prompt="测试角色人设",
+    )
+
+
+async def _create_profile(
+    db_path: str,
+    pkg: Path,
+    name: str,
+    ref_audio_name: str,
+    prompt_text: str,
+    *,
+    set_active: bool = False,
+):
+    await init_db(db_path)
+    async with get_db(db_path) as conn:
+        profile = await crud.create_voice_profile(
+            conn,
+            VoiceProfileCreate(
+                name=name,
+                gpt_weights_path=str((pkg / "gpt.ckpt").resolve()),
+                sovits_weights_path=str((pkg / "sovits.pth").resolve()),
+                ref_audio_path=str((pkg / ref_audio_name).resolve()),
+                prompt_text=prompt_text,
+                prompt_lang="ja",
+                is_default=True,
+            ),
+        )
+        if set_active:
+            await crud.set_active_voice_profile(conn, profile.id)
+    return profile
+
+
+async def _resolve_profile_context(
+    tmp_path: Path,
+    pkg: Path,
+    name: str,
+    ref_audio_name: str,
+    prompt_text: str,
+):
+    db_path = str(tmp_path / "test.db")
+    profile = await _create_profile(db_path, pkg, name, ref_audio_name, prompt_text)
+    resolver = VoiceProfileResolver()
+    return await resolver.resolve_context(db_path=db_path, profile_id=profile.id)
 
 
 class MockEngine:
@@ -96,10 +173,7 @@ class MockEngine:
 
 @pytest.mark.asyncio
 async def test_ai_adaptive_voice_switches_emotion_references(tmp_path, monkeypatch):
-    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setenv("GALGAME2VOICE_SKIP_MEM_CHECK", "1")
-    get_settings.cache_clear()
-    CharacterManager.reset_instance()
+    _setup_env(tmp_path, monkeypatch)
 
     pkg = _install_test_character(tmp_path)
     gentle_wav = str((pkg / "gentle.wav").resolve())
@@ -107,22 +181,7 @@ async def test_ai_adaptive_voice_switches_emotion_references(tmp_path, monkeypat
     sad_wav = str((pkg / "sad.wav").resolve())
 
     db_path = str(tmp_path / "test.db")
-    await init_db(db_path)
-
-    async with get_db(db_path) as conn:
-        profile = await crud.create_voice_profile(
-            conn,
-            VoiceProfileCreate(
-                name="TestChar",
-                gpt_weights_path=str((pkg / "gpt.ckpt").resolve()),
-                sovits_weights_path=str((pkg / "sovits.pth").resolve()),
-                ref_audio_path=gentle_wav,
-                prompt_text="温柔台词",
-                prompt_lang="ja",
-                is_default=True,
-            ),
-        )
-        await crud.set_active_voice_profile(conn, profile.id)
+    profile = await _create_profile(db_path, pkg, "TestChar", "gentle.wav", "温柔台词", set_active=True)
 
     engine = MockEngine()
     client = GptSovitsClient(server=engine)
@@ -223,35 +282,14 @@ async def test_ai_adaptive_voice_switches_emotion_references(tmp_path, monkeypat
 
 @pytest.mark.asyncio
 async def test_resolved_voice_context_emotions_and_synonyms(tmp_path, monkeypatch):
-    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setenv("GALGAME2VOICE_SKIP_MEM_CHECK", "1")
-    get_settings.cache_clear()
-    CharacterManager.reset_instance()
+    _setup_env(tmp_path, monkeypatch)
 
     pkg = _install_test_character(tmp_path)
     gentle_wav = str((pkg / "gentle.wav").resolve())
     happy_wav = str((pkg / "happy.wav").resolve())
     sad_wav = str((pkg / "sad.wav").resolve())
 
-    db_path = str(tmp_path / "test.db")
-    await init_db(db_path)
-
-    async with get_db(db_path) as conn:
-        profile = await crud.create_voice_profile(
-            conn,
-            VoiceProfileCreate(
-                name="TestChar",
-                gpt_weights_path=str((pkg / "gpt.ckpt").resolve()),
-                sovits_weights_path=str((pkg / "sovits.pth").resolve()),
-                ref_audio_path=gentle_wav,
-                prompt_text="温柔台词",
-                prompt_lang="ja",
-                is_default=True,
-            ),
-        )
-
-    resolver = VoiceProfileResolver()
-    ctx = await resolver.resolve_context(db_path=db_path, profile_id=profile.id)
+    ctx = await _resolve_profile_context(tmp_path, pkg, "TestChar", "gentle.wav", "温柔台词")
     assert ctx is not None
 
     # Exact canonical keys in emotions_map
@@ -287,52 +325,15 @@ async def test_resolved_voice_context_emotions_and_synonyms(tmp_path, monkeypatc
 @pytest.mark.asyncio
 async def test_all_valid_emotions_resolution(tmp_path, monkeypatch):
     """Verifies that all 7 VALID_EMOTIONS are resolved without duplicates or omissions."""
-    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setenv("GALGAME2VOICE_SKIP_MEM_CHECK", "1")
-    get_settings.cache_clear()
-    CharacterManager.reset_instance()
+    _setup_env(tmp_path, monkeypatch)
 
-    pkg_dir = tmp_path / "characters" / "fullchar"
-    pkg_dir.mkdir(parents=True, exist_ok=True)
-    (pkg_dir / "gpt.ckpt").write_bytes(b"synthetic gpt model marker")
-    (pkg_dir / "sovits.pth").write_bytes(b"synthetic sovits model marker")
+    emotions_dict = {
+        emo: {"audio": f"{emo}.wav", "text": f"{emo} prompt", "lang": "ja", "amplitude": idx * 200}
+        for idx, emo in enumerate(sorted(VALID_EMOTIONS), start=1)
+    }
+    pkg_dir = _create_character_package(tmp_path, "fullchar", "FullChar", emotions_dict)
 
-    emotions_dict = {}
-    for idx, emo in enumerate(sorted(VALID_EMOTIONS), start=1):
-        wav_path = pkg_dir / f"{emo}.wav"
-        _make_wav(wav_path, amplitude=idx * 200, duration_s=4.0)
-        emotions_dict[emo] = {"audio": f"{emo}.wav", "text": f"{emo} prompt", "lang": "ja"}
-
-    (pkg_dir / "manifest.json").write_text(
-        json.dumps({
-            "id": "fullchar",
-            "name": "FullChar",
-            "gpt_weights": "gpt.ckpt",
-            "sovits_weights": "sovits.pth",
-            "emotions": emotions_dict,
-        }, ensure_ascii=False),
-        encoding="utf-8",
-    )
-
-    db_path = str(tmp_path / "test.db")
-    await init_db(db_path)
-
-    async with get_db(db_path) as conn:
-        profile = await crud.create_voice_profile(
-            conn,
-            VoiceProfileCreate(
-                name="FullChar",
-                gpt_weights_path=str((pkg_dir / "gpt.ckpt").resolve()),
-                sovits_weights_path=str((pkg_dir / "sovits.pth").resolve()),
-                ref_audio_path=str((pkg_dir / "gentle.wav").resolve()),
-                prompt_text="gentle prompt",
-                prompt_lang="ja",
-                is_default=True,
-            ),
-        )
-
-    resolver = VoiceProfileResolver()
-    ctx = await resolver.resolve_context(db_path=db_path, profile_id=profile.id)
+    ctx = await _resolve_profile_context(tmp_path, pkg_dir, "FullChar", "gentle.wav", "gentle prompt")
     assert ctx is not None
 
     # All 7 VALID_EMOTIONS must be in ctx.emotions, exactly 7 entries (no duplicate keys)
@@ -349,53 +350,20 @@ async def test_all_valid_emotions_resolution(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_manifest_custom_emotions_resolution(tmp_path, monkeypatch):
     """Verifies that custom manifest emotions (and unmapped keys like yandere) resolve properly and are not shadowed by gentle."""
-    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setenv("GALGAME2VOICE_SKIP_MEM_CHECK", "1")
-    get_settings.cache_clear()
-    CharacterManager.reset_instance()
+    _setup_env(tmp_path, monkeypatch)
 
-    pkg_dir = tmp_path / "characters" / "customchar"
-    pkg_dir.mkdir(parents=True, exist_ok=True)
-    (pkg_dir / "gpt.ckpt").write_bytes(b"synthetic gpt model marker")
-    (pkg_dir / "sovits.pth").write_bytes(b"synthetic sovits model marker")
-    _make_wav(pkg_dir / "gentle.wav", amplitude=500, duration_s=4.0)
-    _make_wav(pkg_dir / "yandere.wav", amplitude=1000, duration_s=4.0)
-    _make_wav(pkg_dir / "custom_mood.wav", amplitude=1500, duration_s=4.0)
-
-    (pkg_dir / "manifest.json").write_text(
-        json.dumps({
-            "id": "customchar",
-            "name": "CustomChar",
-            "gpt_weights": "gpt.ckpt",
-            "sovits_weights": "sovits.pth",
-            "emotions": {
-                "gentle": {"audio": "gentle.wav", "text": "gentle text", "lang": "ja"},
-                "yandere": {"audio": "yandere.wav", "text": "yandere text", "lang": "ja"},
-                "custom_mood": {"audio": "custom_mood.wav", "text": "custom mood text", "lang": "ja"},
-            },
-        }, ensure_ascii=False),
-        encoding="utf-8",
+    pkg_dir = _create_character_package(
+        tmp_path,
+        "customchar",
+        "CustomChar",
+        {
+            "gentle": {"audio": "gentle.wav", "text": "gentle text", "lang": "ja"},
+            "yandere": {"audio": "yandere.wav", "text": "yandere text", "lang": "ja"},
+            "custom_mood": {"audio": "custom_mood.wav", "text": "custom mood text", "lang": "ja"},
+        },
     )
 
-    db_path = str(tmp_path / "test.db")
-    await init_db(db_path)
-
-    async with get_db(db_path) as conn:
-        profile = await crud.create_voice_profile(
-            conn,
-            VoiceProfileCreate(
-                name="CustomChar",
-                gpt_weights_path=str((pkg_dir / "gpt.ckpt").resolve()),
-                sovits_weights_path=str((pkg_dir / "sovits.pth").resolve()),
-                ref_audio_path=str((pkg_dir / "gentle.wav").resolve()),
-                prompt_text="gentle text",
-                prompt_lang="ja",
-                is_default=True,
-            ),
-        )
-
-    resolver = VoiceProfileResolver()
-    ctx = await resolver.resolve_context(db_path=db_path, profile_id=profile.id)
+    ctx = await _resolve_profile_context(tmp_path, pkg_dir, "CustomChar", "gentle.wav", "gentle text")
     assert ctx is not None
 
     # gentle, yandere, and custom_mood must all be resolved
@@ -417,53 +385,20 @@ async def test_manifest_custom_emotions_resolution(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_conflicting_aliases_same_canonical_archetype(tmp_path, monkeypatch):
     """Verifies that if both canonical emotion (happy) and alias (joy) exist in manifest, only one entry is stored in emotions_map."""
-    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setenv("GALGAME2VOICE_SKIP_MEM_CHECK", "1")
-    get_settings.cache_clear()
-    CharacterManager.reset_instance()
+    _setup_env(tmp_path, monkeypatch)
 
-    pkg_dir = tmp_path / "characters" / "aliaschar"
-    pkg_dir.mkdir(parents=True, exist_ok=True)
-    (pkg_dir / "gpt.ckpt").write_bytes(b"synthetic gpt model marker")
-    (pkg_dir / "sovits.pth").write_bytes(b"synthetic sovits model marker")
-    _make_wav(pkg_dir / "gentle.wav", amplitude=500, duration_s=4.0)
-    _make_wav(pkg_dir / "happy_long.wav", amplitude=1000, duration_s=6.0)
-    _make_wav(pkg_dir / "joy_short.wav", amplitude=1500, duration_s=4.0)
-
-    (pkg_dir / "manifest.json").write_text(
-        json.dumps({
-            "id": "aliaschar",
-            "name": "AliasChar",
-            "gpt_weights": "gpt.ckpt",
-            "sovits_weights": "sovits.pth",
-            "emotions": {
-                "gentle": {"audio": "gentle.wav", "text": "gentle text", "lang": "ja"},
-                "happy": {"audio": "happy_long.wav", "text": "canonical happy text", "lang": "ja"},
-                "joy": {"audio": "joy_short.wav", "text": "alias joy text", "lang": "ja"},
-            },
-        }, ensure_ascii=False),
-        encoding="utf-8",
+    pkg_dir = _create_character_package(
+        tmp_path,
+        "aliaschar",
+        "AliasChar",
+        {
+            "gentle": {"audio": "gentle.wav", "text": "gentle text", "lang": "ja"},
+            "happy": {"audio": "happy_long.wav", "text": "canonical happy text", "lang": "ja", "duration_s": 6.0},
+            "joy": {"audio": "joy_short.wav", "text": "alias joy text", "lang": "ja"},
+        },
     )
 
-    db_path = str(tmp_path / "test.db")
-    await init_db(db_path)
-
-    async with get_db(db_path) as conn:
-        profile = await crud.create_voice_profile(
-            conn,
-            VoiceProfileCreate(
-                name="AliasChar",
-                gpt_weights_path=str((pkg_dir / "gpt.ckpt").resolve()),
-                sovits_weights_path=str((pkg_dir / "sovits.pth").resolve()),
-                ref_audio_path=str((pkg_dir / "gentle.wav").resolve()),
-                prompt_text="gentle text",
-                prompt_lang="ja",
-                is_default=True,
-            ),
-        )
-
-    resolver = VoiceProfileResolver()
-    ctx = await resolver.resolve_context(db_path=db_path, profile_id=profile.id)
+    ctx = await _resolve_profile_context(tmp_path, pkg_dir, "AliasChar", "gentle.wav", "gentle text")
     assert ctx is not None
 
     # Exactly one entry for happy canonical archetype
@@ -486,26 +421,17 @@ def test_fallback_first_available_emotion_preserves_identity_when_no_gentle(tmp_
     (e.g. 'happy') and returns the real fallback audio path, prompt text/lang, and matched emotion 'happy'
     (instead of hardcoded 'gentle').
     """
-    pkg_dir = tmp_path / "characters" / "nogentlechar"
-    pkg_dir.mkdir(parents=True, exist_ok=True)
-    (pkg_dir / "gpt.ckpt").write_bytes(b"synthetic gpt model marker")
-    (pkg_dir / "sovits.pth").write_bytes(b"synthetic sovits model marker")
-    happy_wav = _make_wav(pkg_dir / "happy.wav", amplitude=1000, duration_s=4.0)
-    sad_wav = _make_wav(pkg_dir / "sad.wav", amplitude=1500, duration_s=4.0)
-
-    (pkg_dir / "manifest.json").write_text(
-        json.dumps({
-            "id": "nogentlechar",
-            "name": "NoGentleChar",
-            "gpt_weights": "gpt.ckpt",
-            "sovits_weights": "sovits.pth",
-            "emotions": {
-                "happy": {"audio": "happy.wav", "text": "开心台词", "lang": "ja"},
-                "sad": {"audio": "sad.wav", "text": "悲伤台词", "lang": "ja"},
-            },
-        }, ensure_ascii=False),
-        encoding="utf-8",
+    pkg_dir = _create_character_package(
+        tmp_path,
+        "nogentlechar",
+        "NoGentleChar",
+        {
+            "happy": {"audio": "happy.wav", "text": "开心台词", "lang": "ja", "amplitude": 1000},
+            "sad": {"audio": "sad.wav", "text": "悲伤台词", "lang": "ja", "amplitude": 1500},
+        },
     )
+    happy_wav = pkg_dir / "happy.wav"
+    sad_wav = pkg_dir / "sad.wav"
 
     mgr = CharacterManager(tmp_path / "characters")
     mgr.discover_characters()
