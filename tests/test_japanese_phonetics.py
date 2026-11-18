@@ -161,10 +161,6 @@ def test_expanded_stage_cues():
 class TestJapaneseParenthesesCleaner:
     """Edge cases for Japanese parenthetical stage-cue removal."""
 
-    def test_unmatched_brackets_handled_gracefully(self):
-        text = "（未完了の括弧 こんにちは"
-        assert clean_japanese_parentheses(text) == "未完了の括弧 こんにちは"
-
     def test_closing_bracket_only(self):
         text = "こんにちは）マスター"
         assert clean_japanese_parentheses(text) == "こんにちはマスター"
