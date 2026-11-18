@@ -5,11 +5,10 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [3.2.7] - 2026-11-18
+### Fixed
 - 修复发出一句话后模型一直不回答或连接提前断开、舞台上一个字都没出现时，提示仍写「已保留收到的内容」的问题；现在会写明没有收到回复，已收到过台词时仍提示台词留在记录里。
-
-
-### Fixed
-### Fixed
 - 修复会话列表里点垃圾桶会立刻删掉整段对话，删掉正在看的那一段后只提示「对话已删除」、看不出还停在哪一段的问题；现在第一次点击只变成「确认删除」，几秒内再点一次才删除，删掉当前对话且还有其他对话时会写明现在显示的是哪一段。
 
 ## [3.2.6] - 2026-11-18
@@ -134,7 +133,8 @@ All notable changes to galgame2voice are documented here. The format follows
 - 修复聊天输入框超过 4000 字发送时清空草稿且报错失真，以及打开设置中心时未立即停止首页正在播放的试听语音的问题。
 - 修复在输入框使用中文/日文输入法组字时按 Esc 取消候选词会直接关闭弹窗，以及在背景选择对话框按 Tab 或 Shift+Tab 时焦点跳出对话框的问题。
 
-[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.6...HEAD
+[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.7...HEAD
+[3.2.7]: https://github.com/LevenST24/galgame2voice/compare/v3.2.6...v3.2.7
 [3.2.6]: https://github.com/LevenST24/galgame2voice/compare/v3.2.5...v3.2.6
 [3.2.5]: https://github.com/LevenST24/galgame2voice/compare/v3.2.4...v3.2.5
 [3.2.4]: https://github.com/LevenST24/galgame2voice/compare/v3.2.3...v3.2.4
