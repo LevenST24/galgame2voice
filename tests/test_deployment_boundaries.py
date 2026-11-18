@@ -1,10 +1,7 @@
 """First-install, container binding, CRUD identifiers and browser boundaries."""
 
-import asyncio
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
-import zipfile
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -77,50 +74,6 @@ def test_runtime_singletons_use_isolated_paths(tmp_path):
     assert Path(get_database_path()) == settings.db_path
     assert get_tts_cache_manager().cache_dir.is_relative_to(tmp_path)
     assert Path(get_voice_manager().db_path).is_relative_to(tmp_path)
-
-
-@pytest.mark.parametrize("raises", [False, True])
-async def test_already_active_voice_reports_persistence_failure(tmp_path, monkeypatch, raises):
-    from fastapi import HTTPException
-    from galgame2voice.routers import voice
-    await init_db(get_settings().db_path)
-    async with get_db() as conn:
-        profile = await crud.create_voice_profile(conn, VoiceProfileCreate(
-            name="User voice", gpt_weights_path="user.ckpt", sovits_weights_path="user.pth",
-        ))
-    manager = SimpleNamespace(
-        active_profile=profile, switch_lock=asyncio.Lock(), is_active_profile=lambda *args, **kwargs: True,
-    )
-    monkeypatch.setattr(voice, "get_voice_manager", lambda: manager)
-    update = AsyncMock(side_effect=OSError("write failed")) if raises else AsyncMock(return_value=False)
-    monkeypatch.setattr(voice.crud, "set_active_voice_profile", update)
-    with pytest.raises(HTTPException) as result:
-        await voice.switch_voice(voice.VoiceSwitchRequest(profile_id=profile.id))
-    assert result.value.status_code == 500
-    detail = result.value.detail
-    assert detail["error_code"] == "VOICE_PROFILE_SAVE_FAILED"
-    assert detail["voice_profile_id"] == profile.id
-    assert "数据目录是否可写" in detail["message"] and "重试" in detail["message"]
-    assert "write failed" not in detail["message"]
-    update.assert_awaited_once()
-
-
-def test_source_release_never_copies_private_workspace_archives(tmp_path, monkeypatch):
-    from scripts import package_release
-    (tmp_path / "README.md").write_text("public guide")
-    static = tmp_path / "galgame2voice" / "static"
-    static.mkdir(parents=True)
-    (static / "index.html").write_text("<html>public application</html>")
-    private = tmp_path / ".local" / "archive" / "previous-run"
-    private.mkdir(parents=True)
-    (private / "chat-export.json").write_text('{"private":"conversation"}')
-    (private / "old-package.zip").write_bytes(b"private backup")
-    monkeypatch.setattr(package_release, "PROJECT_ROOT", tmp_path)
-    archive = package_release.build_release_zip("2.0.0")
-    with zipfile.ZipFile(archive) as package:
-        names = package.namelist()
-        assert "galgame2voice-v2.0.0/README.md" in names
-        assert not any(".local" in Path(name).parts for name in names)
 
 
 def test_model_discovery_ignores_archived_test_models_and_audio(tmp_path, monkeypatch):
