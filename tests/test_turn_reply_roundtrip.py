@@ -284,7 +284,15 @@ async def test_turn_reply_repair_roundtrip_business_contract(tmp_path, monkeypat
                 (session_id,),
             )
             (total_count,) = await cur_count.fetchone()
-            assert total_count == 204, f"Expected 204 messages in DB, got {total_count}"
+            if total_count != 204:
+                # Seen twice on CI (203 rows); report which rows exist and what the driver saw.
+                cur_new = await conn.execute(
+                    "SELECT id, role, reply_to_message_id FROM messages WHERE session_id = ? AND id > 202 ORDER BY id",
+                    (session_id,),
+                )
+                new_rows = [tuple(row) for row in await cur_new.fetchall()]
+                pytest.fail(f"Expected 204 messages in DB, got {total_count}; rows after the baseline: {new_rows}; "
+                            f"driver result: {node_result}; driver log tail: {stderr_text[-3000:]}")
 
             cur_msgs = await conn.execute(query_baseline, (session_id,))
             all_messages = [dict(r) for r in await cur_msgs.fetchall()]
