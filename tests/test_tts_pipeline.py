@@ -46,25 +46,28 @@ def test_is_vocal_sentence_action_cues_and_punctuation():
     assert TtsStreamPipeline.is_vocal_sentence("（小声で）「おはよう」") is True
 
 
-@pytest.mark.asyncio
-async def test_streaming_pipeline_skips_stage_direction_with_punctuation(tmp_path: Path):
-    """When a line contains only stage directions followed by punctuation (e.g. （ため息）……),
-
-    the streaming coordinator must treat it as non-vocal, not dispatch tts_service.synthesize_to_file,
-    and record status='skipped' rather than 'failed'.
-    """
-    database = tmp_path / "test_vocal.db"
+async def _run_streaming_turn(
+    tmp_path: Path,
+    *,
+    db_name: str,
+    session_id: str,
+    prompt: str,
+    token_chunks: tuple[str, ...],
+    mock_synthesize: AsyncMock,
+    emotion: str,
+) -> tuple[Path, list[dict]]:
+    database = tmp_path / db_name
     await init_db(database)
     async with get_db(database) as conn:
         user_msg = await crud.add_message(
             conn,
-            MessageCreate(session_id="vocal_session", role="user", content_chinese="……"),
+            MessageCreate(session_id=session_id, role="user", content_chinese=prompt),
         )
 
     async def tokens(*args, **kwargs):
-        yield '{"lines": [{"zh": "（叹气）……", "ja": "（ため息）……", "emotion": "sad", "act": {}}]}'
+        for chunk in token_chunks:
+            yield chunk
 
-    mock_synthesize = AsyncMock(side_effect=ValueError("Text is empty after cleaning stage directions"))
     tts = SimpleNamespace(
         audio_dir=tmp_path,
         synthesize_to_file=mock_synthesize,
@@ -75,13 +78,13 @@ async def test_streaming_pipeline_skips_stage_direction_with_punctuation(tmp_pat
         messages=[],
         model_name="test_model",
         actual_provider_id="synthetic_provider",
-        session_id="vocal_session",
-        prompt="……",
+        session_id=session_id,
+        prompt=prompt,
         user_msg=user_msg,
         tts_service=tts,
         db_path=str(database),
         metrics_collector=SimpleNamespace(record_chat_turn=AsyncMock(return_value={})),
-        affection_service=SimpleNamespace(handle_turn_affection=AsyncMock(return_value={"emotion": "sad"})),
+        affection_service=SimpleNamespace(handle_turn_affection=AsyncMock(return_value={"emotion": emotion})),
         concat_wav_fn=lambda *args: True,
         cancel_event=None,
         reply_format="lines",
@@ -98,6 +101,27 @@ async def test_streaming_pipeline_skips_stage_direction_with_punctuation(tmp_pat
                 break
     finally:
         await asyncio.wait_for(stream.aclose(), timeout=3.0)
+
+    return database, events
+
+
+@pytest.mark.asyncio
+async def test_streaming_pipeline_skips_stage_direction_with_punctuation(tmp_path: Path):
+    """When a line contains only stage directions followed by punctuation (e.g. （ため息）……),
+
+    the streaming coordinator must treat it as non-vocal, not dispatch tts_service.synthesize_to_file,
+    and record status='skipped' rather than 'failed'.
+    """
+    mock_synthesize = AsyncMock(side_effect=ValueError("Text is empty after cleaning stage directions"))
+    database, events = await _run_streaming_turn(
+        tmp_path,
+        db_name="test_vocal.db",
+        session_id="vocal_session",
+        prompt="……",
+        token_chunks=('{"lines": [{"zh": "（叹气）……", "ja": "（ため息）……", "emotion": "sad", "act": {}}]}',),
+        mock_synthesize=mock_synthesize,
+        emotion="sad",
+    )
 
     # 1. Synthesize must NOT be called for non-vocal stage direction with ellipsis
     assert mock_synthesize.call_count == 0, f"synthesize_to_file was unexpectedly called {mock_synthesize.call_count} times"
@@ -131,54 +155,21 @@ async def test_streaming_pipeline_mixed_vocal_and_non_vocal_lines(tmp_path: Path
 
     non-vocal lines are skipped while vocal lines are synthesized in proper sequence.
     """
-    database = tmp_path / "test_mixed.db"
-    await init_db(database)
-    async with get_db(database) as conn:
-        user_msg = await crud.add_message(
-            conn,
-            MessageCreate(session_id="mixed_session", role="user", content_chinese="你好"),
-        )
-
-    async def tokens(*args, **kwargs):
-        yield '{"lines": ['
-        yield '{"zh": "（叹气）……", "ja": "（ため息）……", "emotion": "sad", "act": {}},'
-        yield '{"zh": "早上好。", "ja": "（微笑む）おはよう。", "emotion": "happy", "act": {}}'
-        yield ']}'
-
     mock_synthesize = AsyncMock(return_value=("/audio/cache/line1.wav", tmp_path / "line1.wav", 512))
-    tts = SimpleNamespace(
-        audio_dir=tmp_path,
-        synthesize_to_file=mock_synthesize,
-    )
-
-    coord = StreamCoordinator(
-        adapter=SimpleNamespace(stream_chat=tokens, api_key="synthetic_key"),
-        messages=[],
-        model_name="test_model",
-        actual_provider_id="synthetic_provider",
+    database, events = await _run_streaming_turn(
+        tmp_path,
+        db_name="test_mixed.db",
         session_id="mixed_session",
         prompt="你好",
-        user_msg=user_msg,
-        tts_service=tts,
-        db_path=str(database),
-        metrics_collector=SimpleNamespace(record_chat_turn=AsyncMock(return_value={})),
-        affection_service=SimpleNamespace(handle_turn_affection=AsyncMock(return_value={"emotion": "happy"})),
-        concat_wav_fn=lambda *args: True,
-        cancel_event=None,
-        reply_format="lines",
+        token_chunks=(
+            '{"lines": [',
+            '{"zh": "（叹气）……", "ja": "（ため息）……", "emotion": "sad", "act": {}},',
+            '{"zh": "早上好。", "ja": "（微笑む）おはよう。", "emotion": "happy", "act": {}}',
+            "]}",
+        ),
+        mock_synthesize=mock_synthesize,
+        emotion="happy",
     )
-
-    stream = coord.stream()
-    events = []
-    try:
-        while True:
-            try:
-                ev = await asyncio.wait_for(stream.__anext__(), timeout=3.0)
-                events.append(ev)
-            except StopAsyncIteration:
-                break
-    finally:
-        await asyncio.wait_for(stream.aclose(), timeout=3.0)
 
     # 1. Synthesize must be called ONLY once (for line 1: （微笑む）おはよう。)
     assert mock_synthesize.call_count == 1

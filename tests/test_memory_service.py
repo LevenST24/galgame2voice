@@ -254,43 +254,25 @@ class TestMemoryRAGRetrieval:
         user_id = "test_player_rag"
         char_id = 1
 
+        seed_memories = [
+            ("nickname", "player_name", "昂晴", 1.0),
+            ("identity", "occupation", "语言学系大学生", 1.0),
+            ("preference", "like_sweet_coffee", "喜欢在咖啡里加两包糖和牛奶", 0.9),
+            ("preference", "like_gaming", "喜欢在周末打格斗游戏", 0.8),
+        ]
         async with get_db(isolate_test_database) as conn:
-            # Seed anchor memory
-            await crud.create_memory(conn, UserMemoryCreate(
-                user_id=user_id,
-                character_id=char_id,
-                category="nickname",
-                fact_key="player_name",
-                fact_value="昂晴",
-                confidence=1.0
-            ))
-            # Seed identity memory
-            await crud.create_memory(conn, UserMemoryCreate(
-                user_id=user_id,
-                character_id=char_id,
-                category="identity",
-                fact_key="occupation",
-                fact_value="语言学系大学生",
-                confidence=1.0
-            ))
-            # Seed coffee preference
-            await crud.create_memory(conn, UserMemoryCreate(
-                user_id=user_id,
-                character_id=char_id,
-                category="preference",
-                fact_key="like_sweet_coffee",
-                fact_value="喜欢在咖啡里加两包糖和牛奶",
-                confidence=0.9
-            ))
-            # Seed irrelevant memory
-            await crud.create_memory(conn, UserMemoryCreate(
-                user_id=user_id,
-                character_id=char_id,
-                category="preference",
-                fact_key="like_gaming",
-                fact_value="喜欢在周末打格斗游戏",
-                confidence=0.8
-            ))
+            for category, fact_key, fact_value, confidence in seed_memories:
+                await crud.create_memory(
+                    conn,
+                    UserMemoryCreate(
+                        user_id=user_id,
+                        character_id=char_id,
+                        category=category,
+                        fact_key=fact_key,
+                        fact_value=fact_value,
+                        confidence=confidence,
+                    ),
+                )
 
         # Query about coffee
         retrieved = await memory_service.retrieve_relevant_memories(
