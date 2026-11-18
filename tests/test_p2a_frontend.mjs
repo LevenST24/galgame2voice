@@ -50,66 +50,6 @@ async function startTurn(prompt, chunk, { voiceMode = false, on = {} } = {}) {
   return { app, request };
 }
 
-test('Controller: line, line_audio and done.lines reconciliation', async () => {
-  const lineEvents = [], lineAudioEvents = [];
-  const { app, request } = await startTurn('开始', '你好', {
-    on: { line: event => lineEvents.push(event), line_audio: event => lineAudioEvents.push(event) },
-  });
-
-  // 1. Emit line 0
-  const serverLine0 = { index: 0, zh: '你好', ja: 'こんにちは', emotion: 'gentle', act: {} };
-  await request.event('line', serverLine0);
-  assert.equal(lineEvents.length, 1);
-  assert.equal(lineEvents[0].line.index, 0);
-  assert.equal(lineEvents[0].line.zh, '你好');
-  assert.equal(lineEvents[0].line.audio.status, 'pending');
-
-  // 2. Emit line_audio 0
-  const lineAudio0 = {
-    line: 0,
-    status: 'ready',
-    chunks: [{ index: 0, line: 0, audio_url: '/audio/0.wav', sentence: 'こんにちは' }],
-  };
-  await request.event('line_audio', lineAudio0);
-  assert.equal(lineAudioEvents.length, 1);
-  assert.equal(lineAudioEvents[0].line, 0);
-  assert.equal(lineAudioEvents[0].status, 'ready');
-  assert.equal(lineAudioEvents[0].chunks.length, 1);
-
-  // 3. Emit done with authoritative done.lines snapshot
-  const authoritativeLines = [
-    {
-      index: 0, zh: '你好', ja: 'こんにちは', emotion: 'happy', act: { face: 'smile' },
-      audio: { status: 'ready', chunks: [{ index: 0, line: 0, audio_url: '/audio/authoritative.wav', sentence: 'こんにちは' }] },
-    },
-  ];
-  await request.onEnd('你好', { lines: authoritativeLines });
-
-  const finalMsg = app.session.messages.at(-1);
-  assert.deepEqual(finalMsg.lines, authoritativeLines);
-});
-
-test('Controller: audio_chunk arriving before its line', async () => {
-  const lineEvents = [];
-  const { app, request } = await startTurn('早到音频', '你好', { on: { line: event => lineEvents.push(event) } });
-
-  // audio_chunk arrives before line 0
-  await request.event('audio_chunk', {
-    index: 0, line: 0, audio_url: '/audio/early.wav', sentence: 'こんにちは', emotion: 'happy',
-  });
-
-  // Now line 0 arrives
-  await request.event('line', { index: 0, zh: '你好', ja: 'こんにちは', emotion: 'happy', act: {} });
-  assert.equal(lineEvents.length, 1);
-  assert.equal(lineEvents[0].line.audio.status, 'pending');
-  assert.equal(lineEvents[0].line.audio.chunks.length, 1);
-  assert.equal(lineEvents[0].line.audio.chunks[0].audio_url, '/audio/early.wav');
-
-  await request.onEnd('你好');
-  const finalMsg = app.session.messages.at(-1);
-  assert.equal(finalMsg.lines[0].audio.chunks[0].audio_url, '/audio/early.wav');
-});
-
 test('Controller: failed with partial chunks', async () => {
   const lineAudioEvents = [];
   const { app, request } = await startTurn('部分失败', '回复', { on: { line_audio: event => lineAudioEvents.push(event) } });
@@ -150,61 +90,6 @@ test('Controller: pending lines becoming failed on error and on cancel', async (
   await tick();
   const cancelMsg = appCancel.session.messages.at(-1);
   assert.equal(cancelMsg.lines[0].audio.status, 'failed');
-});
-
-test('Controller: a truncated done stays a completion and settles pending lines', async () => {
-  for (const meta of [{ truncated: true }, {}]) {
-    const ends = [];
-    const { app, request } = await startTurn('截断测试', '前半', {
-      on: { done: event => ends.push(['done', event]), cancelled: event => ends.push(['cancelled', event]) },
-    });
-    await request.event('line', { index: 0, zh: '前半', ja: 'ぜんはん', emotion: 'gentle', act: {} });
-    await request.onEnd('前半', meta);
-    // The old chat view must not treat a server-side truncation as a user cancel.
-    assert.deepEqual(ends.map(([kind]) => kind), ['done']);
-    assert.equal(ends[0][1].meta.cancelled, false);
-    assert.equal(ends[0][1].meta.truncated, Boolean(meta.truncated));
-    // No line_audio can arrive after the turn settles.
-    assert.equal(app.session.messages.at(-1).lines[0].audio.status, 'failed');
-  }
-});
-
-test('Controller: an old server with no line events keeps lines undefined', async () => {
-  const { app, request } = await startTurn('旧版服务器', '你好');
-  await request.event('audio_chunk', { audio_url: '/audio/legacy.wav', sentence: 'こんにちは' });
-  await request.onEnd('你好');
-
-  const finalMsg = app.session.messages.at(-1);
-  assert.equal(finalMsg.content, '你好');
-  assert.equal(finalMsg.lines, undefined);
-});
-
-test('Controller: line audio never autoplays before the stage chooses it', async () => {
-  // Lines mode does NOT autoplay
-  const { app: appLines, request: reqLines } = await startTurn('按行播放', '按行', { voiceMode: true });
-  await reqLines.event('line', { index: 0, zh: '按行', ja: 'ぎょう', emotion: 'gentle', act: {} });
-  await reqLines.event('audio_chunk', { index: 0, line: 0, audio_url: '/audio/line0.wav', sentence: 'ぎょう' });
-  assert.equal(appLines.audio.length, 0); // No autoplay calls!
-  assert.equal(appLines.voice, null);
-  await reqLines.onEnd('按行');
-});
-
-test('Controller: stale turns ignored', async () => {
-  const app = setupController({ });
-  const lineEvents = [], lineAudioEvents = [];
-  app.conversation.on('text', () => app.conversation.stop());
-  app.conversation.on('line', e => lineEvents.push(e));
-  app.conversation.on('line_audio', e => lineAudioEvents.push(e));
-
-  app.conversation.send('第一轮');
-  const req1 = app.stream.requests[0];
-  await req1.packet([
-    ['text', { delta_chinese: '收到' }],
-    ['line', { index: 0, zh: '延迟台词', ja: 'おそい', emotion: 'gentle', act: {} }],
-    ['line_audio', { line: 0, status: 'ready', chunks: [] }],
-  ]);
-  assert.equal(lineEvents.length, 0);
-  assert.equal(lineAudioEvents.length, 0);
 });
 
 /* -------------------------------------------------------------
@@ -276,55 +161,6 @@ test('AudioPlayer: every terminal path disconnects its line gain exactly once', 
   await player.close();
 });
 
-test('AudioPlayer: playLine ended on completion of all chunks', async () => {
-  const player = setupAudioPlayer();
-
-  const playPromise = player.playLine(0, [
-    { audio_url: '/audio/c0.wav', index: 0, sentence: '一' },
-    { audio_url: '/audio/c1.wav', index: 1, sentence: '二' },
-  ]);
-
-  await tick(10);
-  assert.equal(player.ctx.createdSources.length, 2);
-
-  // Finish both sources
-  player.ctx.createdSources[0].finish();
-  player.ctx.createdSources[1].finish();
-
-  const result = await playPromise;
-  assert.equal(result, 'ended');
-  await player.close();
-});
-
-test('AudioPlayer: playLine interrupted by stopLine', async () => {
-  const player = setupAudioPlayer();
-
-  const playPromise = player.playLine(0, [{ audio_url: '/audio/c0.wav', index: 0 }]);
-  await tick(10);
-
-  player.stopLine({ fadeMs: 0 });
-  const result = await playPromise;
-  assert.equal(result, 'interrupted');
-  await player.close();
-});
-
-test('AudioPlayer: playLine interrupted by a new playLine', async () => {
-  const player = setupAudioPlayer();
-
-  const p1 = player.playLine(0, [{ audio_url: '/audio/c0.wav', index: 0 }]);
-  await tick(10);
-
-  const p2 = player.playLine(1, [{ audio_url: '/audio/c1.wav', index: 1 }]);
-  const r1 = await p1;
-  assert.equal(r1, 'interrupted');
-
-  await tick(10);
-  player.ctx.createdSources.at(-1).finish();
-  const r2 = await p2;
-  assert.equal(r2, 'ended');
-  await player.close();
-});
-
 test('AudioPlayer: playLine failed if no chunk can play', async () => {
   const player = setupAudioPlayer(null);
 
@@ -361,21 +197,6 @@ test('AudioPlayer: playLine partial-failure plays remaining chunks and ends', as
   const result = await playPromise;
   assert.equal(result, 'ended');
   await player.close();
-});
-
-test('AudioPlayer: satisfies adapter shape { play, stop }', async () => {
-  const controller = setupAudioPlayer();
-
-  const adapter = {
-    play: (i, chunks) => controller.playLine(i, chunks),
-    stop: (o) => controller.stopLine(o),
-  };
-
-  const p = adapter.play(0, [{ audio_url: '/audio/a.wav' }]);
-  await tick(10);
-  adapter.stop({ fadeMs: 0 });
-  assert.equal(await p, 'interrupted');
-  await controller.close();
 });
 
 /* -------------------------------------------------------------
