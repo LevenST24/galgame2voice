@@ -15,7 +15,151 @@ from test_audio_cache_recovery_browser import AudioRecoveryHandler
 from test_home_layout_browser import browser_path, make_layout_server, run_layout_browser
 
 
-SCRIPT = """
+def _page_setup_js():
+    click = """\
+  const click = selector => {
+    const el = document.querySelector(selector), r = el?.getBoundingClientRect();
+    const hit = r && document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    if (!el || el.disabled || el.hidden || el.closest('[inert]') || !r.width || !r.height || !el.contains(hit))
+      throw new Error('Unreachable control ' + selector + ' hit=' + hit?.className);
+    el.click();
+  };"""
+    recover = """\
+  const recover = createLineAudioRecovery({
+    getSession: () => session,
+    getVoiceProfiles: () => [{ id: 7, name: '当前测试音色' }],
+    saveState: () => { saves++; return true; },
+  });"""
+    backlog_options = """\
+    getSession: () => session,
+    getSettings: () => session.settings,
+    getCharacter: () => ({ id: 7, name: '当前测试音色' }),
+    getRecoveryVoice: () => ({ id: 7, name: '当前测试音色' }),
+    voiceEnabled: () => true,
+    regenerateLineAudio: recover,
+    audio: player,
+    onClose: () => log.destroy(),"""
+    return click, recover, backlog_options
+
+
+_CLICK_JS, _RECOVER_JS, _BACKLOG_OPTIONS_JS = _page_setup_js()
+
+
+def _fill_page_js(source):
+    return (source
+            .replace("__CLICK__", _CLICK_JS)
+            .replace("__RECOVER__", _RECOVER_JS)
+            .replace("__BACKLOG_OPTIONS__", _BACKLOG_OPTIONS_JS))
+
+
+def _send_body(handler, status, content_type, body):
+    handler.send_response(status)
+    handler.send_header("Content-Type", content_type)
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def _ready_line_audio(sentence):
+    return {
+        "status": "ready",
+        "generated_at": int(time.time() * 1000),
+        "voice_profile_id": 7,
+        "voice_name": "当前测试音色",
+        "chunks": [{
+            "index": 0,
+            "line": 0,
+            "audio_url": "/audio/repair_browser.wav",
+            "sentence": sentence,
+        }],
+    }
+
+
+def _regen_response(body, audio, session_default, message_id):
+    return json.dumps({
+        "session_id": body.get("session_id", session_default),
+        "message_id": message_id,
+        "line_index": 0,
+        "voice_profile_id": 7,
+        "audio": audio,
+        "persisted": True,
+    }, ensure_ascii=False).encode("utf-8")
+
+
+def _silent_wav_bytes():
+    output = io.BytesIO()
+    with wave.open(output, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(8000)
+        audio.writeframes(b"\x20\x03" * 800)
+    return output.getvalue()
+
+
+def _module_case(script):
+    return (
+        '<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/frontend/src/styles.css">'
+        '<link rel="stylesheet" href="/frontend/src/adv/adv.css">'
+        '<link rel="stylesheet" href="/frontend/src/adv/app.css">'
+        '<body><div id="fixture-root"></div>'
+        f'<script type="module">{script}</script></body>'
+    ).encode()
+
+
+def _stop_layout_server(server, ready, worker, *events):
+    ready.set()
+    for event in events:
+        event.set()
+    server.shutdown()
+    server.server_close()
+    worker.join(timeout=2)
+
+
+def _run_iframe_repair(tmp_path, width, height, mode, script_source, screenshot, *, track_requests=False):
+    executable = browser_path()
+    if not executable:
+        pytest.skip("LOG repair needs an installed Chromium browser")
+    wav_bytes = _silent_wav_bytes()
+    script = script_source.replace("__MODE__", json.dumps(mode)).replace(
+        "__WAV__", json.dumps(base64.b64encode(wav_bytes).decode()),
+    )
+    case = _module_case(script)
+    page = (
+        f'<body style="margin:0"><iframe src="/case" style="border:0;width:{width}px;height:{height}px"></iframe>'
+        '<img src="/hold-image" hidden></body>'
+    ).encode()
+    ready, result = threading.Event(), {}
+    shared_requests = None
+    kwargs = {"page": page, "case": case, "ready": ready, "result": result}
+    if track_requests:
+        shared_requests = {
+            "missing_audio_gets": [],
+            "repair_audio_gets": [],
+            "regen_posts": [],
+        }
+        kwargs["wav_bytes"] = wav_bytes
+        kwargs["shared_requests"] = shared_requests
+    server = make_layout_server(partial(LineRecoveryHandler, **kwargs))
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        rendered = run_layout_browser([
+            executable, "--headless", "--no-sandbox", "--disable-gpu", "--mute-audio",
+            "--autoplay-policy=no-user-gesture-required", "--no-first-run", "--disable-sync",
+            "--no-proxy-server", "--disable-background-networking", "--disable-extensions",
+            f"--user-data-dir={tmp_path / 'browser'}", f"--window-size={max(600, width + 100)},{height + 100}",
+            "--dump-dom", f"--screenshot={tmp_path / screenshot}", f"http://127.0.0.1:{server.server_port}/",
+        ], reset=lambda: (ready.clear(), result.clear()))
+    finally:
+        _stop_layout_server(server, ready, worker)
+    (tmp_path / "rendered.html").write_bytes(rendered.stdout)
+    (tmp_path / "browser.log").write_bytes(rendered.stderr)
+    if track_requests:
+        return rendered, result, shared_requests
+    return rendered, result
+
+
+SCRIPT = _fill_page_js("""
 import {createStage} from '/frontend/src/adv/stage.js';
 import {createBacklog} from '/frontend/src/adv/backlog.js';
 import {createLineAudioRecovery} from '/frontend/src/controllers/line_audio_recovery.js';
@@ -48,13 +192,7 @@ try {
   log=createBacklog(stage.overlay,{getSession:()=>session,getSettings:()=>session.settings,getCharacter:()=>({id:7,name:'当前测试音色'}),
     getRecoveryVoice:()=>({id:7,name:'当前测试音色'}),voiceEnabled:()=>true,regenerateLineAudio:recover,audio:player,onClose:()=>log.destroy()});
   await document.fonts.ready;await wait();
-  const click=selector=>{
-    const el=document.querySelector(selector),r=el?.getBoundingClientRect();
-    const hit=r&&document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);
-    if(!el||el.disabled||el.hidden||el.closest('[inert]')||!r.width||!r.height||!el.contains(hit))
-      throw new Error('Unreachable control '+selector+' hit='+hit?.className);
-    el.click();
-  };
+__CLICK__
   result.namedVoice=document.querySelector('.adv-log-regenerate-btn').title;
   click('.adv-log-regenerate-btn');await until(()=>posts.length===1);
   if(mode==='cancel'){
@@ -77,7 +215,7 @@ try {
 finally{if(mode==='cancel')log?.destroy();await player.close();}
 const output=document.createElement('pre');output.id='line-recovery-result';output.hidden=true;output.textContent=JSON.stringify(result);parent.document.body.append(output);
 await nativeFetch('/result',{method:'POST',body:JSON.stringify(result)});
-"""
+""")
 
 
 class LineRecoveryHandler(AudioRecoveryHandler):
@@ -101,11 +239,7 @@ class LineRecoveryHandler(AudioRecoveryHandler):
         elif parsed.path == "/audio/repair_browser.wav":
             if "repair_audio_gets" in self.shared_requests:
                 self.shared_requests["repair_audio_gets"].append(self.path)
-            self.send_response(200)
-            self.send_header("Content-Type", "audio/wav")
-            self.send_header("Content-Length", str(len(self.wav_bytes)))
-            self.end_headers()
-            self.wfile.write(self.wav_bytes)
+            _send_body(self, 200, "audio/wav", self.wav_bytes)
         else:
             super().do_GET()
 
@@ -116,31 +250,9 @@ class LineRecoveryHandler(AudioRecoveryHandler):
             body = json.loads(self.rfile.read(length).decode("utf-8"))
             if "regen_posts" in self.shared_requests:
                 self.shared_requests["regen_posts"].append(body)
-            audio = {
-                "status": "ready",
-                "generated_at": int(time.time() * 1000),
-                "voice_profile_id": 7,
-                "voice_name": "当前测试音色",
-                "chunks": [{
-                    "index": 0,
-                    "line": 0,
-                    "audio_url": "/audio/repair_browser.wav",
-                    "sentence": body.get("text", "こんにちは。"),
-                }],
-            }
-            resp_bytes = json.dumps({
-                "session_id": body.get("session_id", "repair-browser-legacy"),
-                "message_id": body.get("message_id", 42),
-                "line_index": 0,
-                "voice_profile_id": 7,
-                "audio": audio,
-                "persisted": True,
-            }, ensure_ascii=False).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(resp_bytes)))
-            self.end_headers()
-            self.wfile.write(resp_bytes)
+            audio = _ready_line_audio(body.get("text", "こんにちは。"))
+            resp_bytes = _regen_response(body, audio, "repair-browser-legacy", body.get("message_id", 42))
+            _send_body(self, 200, "application/json; charset=utf-8", resp_bytes)
         else:
             super().do_POST()
 
@@ -149,40 +261,7 @@ class LineRecoveryHandler(AudioRecoveryHandler):
 @pytest.mark.parametrize("width,height", [(1280, 900)])
 @pytest.mark.parametrize("mode", ["success", "cancel"])
 def test_log_line_repair_is_reachable_and_owned(tmp_path, width, height, mode):
-    executable = browser_path()
-    if not executable:
-        pytest.skip("LOG repair needs an installed Chromium browser")
-    output = io.BytesIO()
-    with wave.open(output, "wb") as audio:
-        audio.setnchannels(1)
-        audio.setsampwidth(2)
-        audio.setframerate(8000)
-        audio.writeframes(b"\x20\x03" * 800)
-    script = SCRIPT.replace("__MODE__", json.dumps(mode)).replace("__WAV__", json.dumps(base64.b64encode(output.getvalue()).decode()))
-    case = ('<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/frontend/src/styles.css">'
-            '<link rel="stylesheet" href="/frontend/src/adv/adv.css"><link rel="stylesheet" href="/frontend/src/adv/app.css">'
-            '<body><div id="fixture-root"></div>'
-            f'<script type="module">{script}</script></body>').encode()
-    page = (f'<body style="margin:0"><iframe src="/case" style="border:0;width:{width}px;height:{height}px"></iframe>'
-            '<img src="/hold-image" hidden></body>').encode()
-    ready, result = threading.Event(), {}
-    server = make_layout_server(partial(LineRecoveryHandler, page=page, case=case, ready=ready, result=result))
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        rendered = run_layout_browser([
-            executable, "--headless", "--no-sandbox", "--disable-gpu", "--mute-audio", "--autoplay-policy=no-user-gesture-required",
-            "--no-first-run", "--disable-sync", "--no-proxy-server", "--disable-background-networking", "--disable-extensions",
-            f"--user-data-dir={tmp_path/'browser'}", f"--window-size={max(600,width+100)},{height+100}",
-            "--dump-dom", f"--screenshot={tmp_path/'line-repair.png'}", f"http://127.0.0.1:{server.server_port}/",
-        ], reset=lambda: (ready.clear(), result.clear()))
-    finally:
-        ready.set()
-        server.shutdown()
-        server.server_close()
-        worker.join(timeout=2)
-    (tmp_path / "rendered.html").write_bytes(rendered.stdout)
-    (tmp_path / "browser.log").write_bytes(rendered.stderr)
+    rendered, result = _run_iframe_repair(tmp_path, width, height, mode, SCRIPT, "line-repair.png")
     assert rendered.returncode == 0 and result and "error" not in result, result or rendered.stderr[-1000:]
     assert "当前测试音色" in result["namedVoice"]
     assert len(result["posts"]) == 1 and result["posts"][0]["voice_profile_id"] == 7
@@ -195,7 +274,7 @@ def test_log_line_repair_is_reachable_and_owned(tmp_path, width, height, mode):
         assert result["overflow"] <= 1 and result["left"] >= 0 and result["right"] <= width, result
 
 
-TWO_TAB_SCRIPT = """
+TWO_TAB_SCRIPT = _fill_page_js("""
 import {createStage} from '/frontend/src/adv/stage.js';
 import {createBacklog} from '/frontend/src/adv/backlog.js';
 import {createLineAudioRecovery} from '/frontend/src/controllers/line_audio_recovery.js';
@@ -244,33 +323,14 @@ player.playLine = async (...args) => {
 let log;
 try {
   const stage = createStage(document.getElementById('fixture-root'));
-  const recover = createLineAudioRecovery({
-    getSession: () => session,
-    getVoiceProfiles: () => [{ id: 7, name: '当前测试音色' }],
-    saveState: () => { saves++; return true; },
-  });
+__RECOVER__
   log = createBacklog(stage.overlay, {
-    getSession: () => session,
-    getSettings: () => session.settings,
-    getCharacter: () => ({ id: 7, name: '当前测试音色' }),
-    getRecoveryVoice: () => ({ id: 7, name: '当前测试音色' }),
-    voiceEnabled: () => true,
-    regenerateLineAudio: recover,
-    audio: player,
-    onClose: () => log.destroy(),
+__BACKLOG_OPTIONS__
   });
   await document.fonts.ready;
   await wait();
 
-  const click = selector => {
-    const el = document.querySelector(selector);
-    const r = el?.getBoundingClientRect();
-    const hit = r && document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-    if (!el || el.disabled || el.hidden || el.closest('[inert]') || !r.width || !r.height || !el.contains(hit)) {
-      throw new Error('Unreachable control ' + selector + ' hit=' + hit?.className);
-    }
-    el.click();
-  };
+__CLICK__
 
   const line = session.messages[0].lines[0];
   const regenBtn = document.querySelector('.adv-log-regenerate-btn');
@@ -303,14 +363,7 @@ try {
 
   log.destroy();
   log = createBacklog(stage.overlay, {
-    getSession: () => session,
-    getSettings: () => session.settings,
-    getCharacter: () => ({ id: 7, name: '当前测试音色' }),
-    getRecoveryVoice: () => ({ id: 7, name: '当前测试音色' }),
-    voiceEnabled: () => true,
-    regenerateLineAudio: recover,
-    audio: player,
-    onClose: () => log.destroy(),
+__BACKLOG_OPTIONS__
   });
   await wait();
   const replayBtn2 = document.querySelector('.adv-log-replay-btn');
@@ -332,7 +385,7 @@ await nativeFetch('/result', { method: 'POST', body: JSON.stringify(result) });
 if (tab === '2') {
   window.close();
 }
-"""
+""")
 
 
 class TwoTabRecoveryHandler(AudioRecoveryHandler):
@@ -356,17 +409,9 @@ class TwoTabRecoveryHandler(AudioRecoveryHandler):
                     'window.open("/case?tab=2", "_blank");'
                     '</script>'
                     '</body>').encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(page)))
-            self.end_headers()
-            self.wfile.write(page)
+            _send_body(self, 200, "text/html; charset=utf-8", page)
         elif parsed.path == "/case":
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(self.case)))
-            self.end_headers()
-            self.wfile.write(self.case)
+            _send_body(self, 200, "text/html; charset=utf-8", self.case)
         elif parsed.path == "/api/chat/history":
             query = urllib.parse.parse_qs(parsed.query)
             session_id = query.get("session_id", [""])[0]
@@ -394,19 +439,11 @@ class TwoTabRecoveryHandler(AudioRecoveryHandler):
                     }],
                 }
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            _send_body(self, 200, "application/json; charset=utf-8", body)
         elif parsed.path == "/audio/repair_browser.wav":
             with self.state_lock:
                 self.shared_state["audio_gets"].append(self.path)
-            self.send_response(200)
-            self.send_header("Content-Type", "audio/wav")
-            self.send_header("Content-Length", str(len(self.wav_bytes)))
-            self.end_headers()
-            self.wfile.write(self.wav_bytes)
+            _send_body(self, 200, "audio/wav", self.wav_bytes)
         else:
             super().do_GET()
 
@@ -428,44 +465,18 @@ class TwoTabRecoveryHandler(AudioRecoveryHandler):
             with self.state_lock:
                 if self.shared_state.get("line_audio") is None:
                     # First concurrent request to acquire lock commits first (HTTP 200)
-                    audio = {
-                        "status": "ready",
-                        "generated_at": int(time.time() * 1000),
-                        "voice_profile_id": 7,
-                        "voice_name": "当前测试音色",
-                        "chunks": [{
-                            "index": 0,
-                            "line": 0,
-                            "audio_url": "/audio/repair_browser.wav",
-                            "sentence": "こんにちは。",
-                        }],
-                    }
+                    audio = _ready_line_audio("こんにちは。")
                     self.shared_state["line_audio"] = audio
                     self.shared_state["post_responses"].append(200)
-                    success_resp = json.dumps({
-                        "session_id": body.get("session_id", "tab-sync-session"),
-                        "message_id": 42,
-                        "line_index": 0,
-                        "voice_profile_id": 7,
-                        "audio": audio,
-                        "persisted": True,
-                    }, ensure_ascii=False).encode("utf-8")
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/json; charset=utf-8")
-                    self.send_header("Content-Length", str(len(success_resp)))
-                    self.end_headers()
-                    self.wfile.write(success_resp)
+                    success_resp = _regen_response(body, audio, "tab-sync-session", 42)
+                    _send_body(self, 200, "application/json; charset=utf-8", success_resp)
                 else:
                     # Second concurrent request encounters HTTP 409 Conflict
                     self.shared_state["post_responses"].append(409)
                     conflict_resp = json.dumps({
                         "detail": "这句已有其他音频修复结果，未覆盖现有音频，请重新打开 LOG 检查。"
                     }, ensure_ascii=False).encode("utf-8")
-                    self.send_response(409)
-                    self.send_header("Content-Type", "application/json; charset=utf-8")
-                    self.send_header("Content-Length", str(len(conflict_resp)))
-                    self.end_headers()
-                    self.wfile.write(conflict_resp)
+                    _send_body(self, 409, "application/json; charset=utf-8", conflict_resp)
         elif parsed.path == "/result":
             length = int(self.headers.get("Content-Length", 0))
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -491,23 +502,14 @@ def test_two_tab_repair_sync_via_409(tmp_path, warm_cache):
     executable = browser_path()
     if not executable:
         pytest.skip("Two-tab repair sync needs an installed Chromium browser")
-    output = io.BytesIO()
-    with wave.open(output, "wb") as audio:
-        audio.setnchannels(1)
-        audio.setsampwidth(2)
-        audio.setframerate(8000)
-        audio.writeframes(b"\x20\x03" * 800)
-    wav_bytes = output.getvalue()
+    wav_bytes = _silent_wav_bytes()
     b64_wav = base64.b64encode(wav_bytes).decode("ascii")
 
     script = (TWO_TAB_SCRIPT
               .replace("__WARM_CACHE__", "true" if warm_cache else "false")
               .replace("__WAV_B64__", b64_wav))
 
-    case = ('<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/frontend/src/styles.css">'
-            '<link rel="stylesheet" href="/frontend/src/adv/adv.css"><link rel="stylesheet" href="/frontend/src/adv/app.css">'
-            '<body><div id="fixture-root"></div>'
-            f'<script type="module">{script}</script></body>').encode("utf-8")
+    case = _module_case(script)
 
     ready = threading.Event()
     barrier_event = threading.Event()
@@ -598,14 +600,10 @@ def test_two_tab_repair_sync_via_409(tmp_path, warm_cache):
             for path in audio_gets:
                 assert path.split("?")[0] == "/audio/repair_browser.wav", path
     finally:
-        ready.set()
-        barrier_event.set()
-        server.shutdown()
-        server.server_close()
-        worker.join(timeout=2)
+        _stop_layout_server(server, ready, worker, barrier_event)
 
 
-LEGACY_SCRIPT = """
+LEGACY_SCRIPT = _fill_page_js("""
 import {createStage} from '/frontend/src/adv/stage.js';
 import {createBacklog} from '/frontend/src/adv/backlog.js';
 import {createLineAudioRecovery} from '/frontend/src/controllers/line_audio_recovery.js';
@@ -686,33 +684,16 @@ player.playLine = async function(...args) {
 let log;
 try {
   const stage = createStage(document.getElementById('fixture-root'));
-  const recover = createLineAudioRecovery({
-    getSession: () => session,
-    getVoiceProfiles: () => [{ id: 7, name: '当前测试音色' }],
-    saveState: () => { saves++; return true; },
-  });
+__RECOVER__
 
   const makeBacklog = () => createBacklog(stage.overlay, {
-    getSession: () => session,
-    getSettings: () => session.settings,
-    getCharacter: () => ({ id: 7, name: '当前测试音色' }),
-    getRecoveryVoice: () => ({ id: 7, name: '当前测试音色' }),
-    voiceEnabled: () => true,
-    regenerateLineAudio: recover,
-    audio: player,
-    onClose: () => log.destroy(),
+__BACKLOG_OPTIONS__
   });
 
   log = makeBacklog();
   await document.fonts.ready; await wait();
 
-  const click = selector => {
-    const el = document.querySelector(selector), r = el?.getBoundingClientRect();
-    const hit = r && document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-    if (!el || el.disabled || el.hidden || el.closest('[inert]') || !r.width || !r.height || !el.contains(hit))
-      throw new Error('Unreachable control ' + selector + ' hit=' + hit?.className);
-    el.click();
-  };
+__CLICK__
 
   result.isLegacyEntry = Boolean(document.querySelector('.adv-log-entry.is-legacy'));
 
@@ -802,61 +783,16 @@ output.hidden = true;
 output.textContent = JSON.stringify(result);
 parent.document.body.append(output);
 await nativeFetch('/result', { method: 'POST', body: JSON.stringify(result) });
-"""
+""")
 
 
 @pytest.mark.requires_piped_subprocess
 @pytest.mark.parametrize("width,height", [(1280, 900)])
 @pytest.mark.parametrize("mode", ["success", "cancel", "late_change", "missing_file"])
 def test_legacy_log_reply_repair_in_chromium(tmp_path, width, height, mode):
-    executable = browser_path()
-    if not executable:
-        pytest.skip("LOG repair needs an installed Chromium browser")
-    output = io.BytesIO()
-    with wave.open(output, "wb") as audio:
-        audio.setnchannels(1)
-        audio.setsampwidth(2)
-        audio.setframerate(8000)
-        audio.writeframes(b"\x20\x03" * 800)
-    wav_bytes = output.getvalue()
-    script = LEGACY_SCRIPT.replace("__MODE__", json.dumps(mode)).replace("__WAV__", json.dumps(base64.b64encode(wav_bytes).decode()))
-    case = ('<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/frontend/src/styles.css">'
-            '<link rel="stylesheet" href="/frontend/src/adv/adv.css"><link rel="stylesheet" href="/frontend/src/adv/app.css">'
-            '<body><div id="fixture-root"></div>'
-            f'<script type="module">{script}</script></body>').encode()
-    page = (f'<body style="margin:0"><iframe src="/case" style="border:0;width:{width}px;height:{height}px"></iframe>'
-            '<img src="/hold-image" hidden></body>').encode()
-    ready, result = threading.Event(), {}
-    shared_requests = {
-        "missing_audio_gets": [],
-        "repair_audio_gets": [],
-        "regen_posts": [],
-    }
-    server = make_layout_server(partial(
-        LineRecoveryHandler,
-        page=page,
-        case=case,
-        ready=ready,
-        result=result,
-        wav_bytes=wav_bytes,
-        shared_requests=shared_requests,
-    ))
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        rendered = run_layout_browser([
-            executable, "--headless", "--no-sandbox", "--disable-gpu", "--mute-audio", "--autoplay-policy=no-user-gesture-required",
-            "--no-first-run", "--disable-sync", "--no-proxy-server", "--disable-background-networking", "--disable-extensions",
-            f"--user-data-dir={tmp_path/'browser'}", f"--window-size={max(600,width+100)},{height+100}",
-            "--dump-dom", f"--screenshot={tmp_path/'legacy-line-repair.png'}", f"http://127.0.0.1:{server.server_port}/",
-        ], reset=lambda: (ready.clear(), result.clear()))
-    finally:
-        ready.set()
-        server.shutdown()
-        server.server_close()
-        worker.join(timeout=2)
-    (tmp_path / "rendered.html").write_bytes(rendered.stdout)
-    (tmp_path / "browser.log").write_bytes(rendered.stderr)
+    rendered, result, shared_requests = _run_iframe_repair(
+        tmp_path, width, height, mode, LEGACY_SCRIPT, "legacy-line-repair.png", track_requests=True,
+    )
     assert rendered.returncode == 0 and result and "error" not in result, result or rendered.stderr[-1000:]
     assert result["isLegacyEntry"] is True
     assert "当前测试音色" in result["namedVoice"]
