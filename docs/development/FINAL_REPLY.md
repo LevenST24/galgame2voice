@@ -20,8 +20,7 @@
 事务的提交后回调记录：即使提交成功后请求立即取消，清理流程也不会重复保存回复
 或误删对应的用户消息；事务回滚时不会将回复标记为已保存。
 
-`tests/test_conversation.mjs` 覆盖事件补齐、去重、身份、请求串行和日文保存；
-`tests/test_final_reply_browser.py` 将真实 SSE 解析、控制器、舞台和文本框一起运行，
-覆盖桌面尺寸、旧格式、仅终稿台词、缺失音频事件及不重复播放。
+`tests/test_conversation.mjs` 与 `tests/test_adv_app.mjs` 分别覆盖事件补齐、去重、身份、
+请求串行、日文保存以及舞台与文本框的集成播放；
 `tests/test_chat_commit_cancellation.py` 和 `tests/test_chat_session_deletion_race.py`
 分别覆盖提交边界的取消、回滚和会话删除、清空、同 ID 重建的竞争。
