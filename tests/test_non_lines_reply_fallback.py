@@ -56,6 +56,68 @@ def _make_tts_stub(tmp_path: Path):
     )
 
 
+async def _init_test_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, db_name: str,
+    audio_name: str = "audio", make_ref: str | None = None, *, project_root: bool = False,
+):
+    if project_root:
+        monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
+    db_file = tmp_path / db_name
+    audio_dir = tmp_path / audio_name
+    audio_dir.mkdir()
+    ref_wav = (tmp_path / make_ref) if make_ref else None
+    if ref_wav is not None:
+        ref_wav.write_bytes(_make_pcm_wav(100))
+    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db_file))
+    monkeypatch.setenv("GALGAME2VOICE_CONSOLE_TOKEN", "test-console-token")
+    get_settings.cache_clear()
+    await init_db(db_file)
+    return db_file, audio_dir, ref_wav
+
+
+async def _create_default_voice_profile(conn, ref_wav: Path, name: str):
+    profile = await crud.create_voice_profile(
+        conn,
+        VoiceProfileCreate(
+            name=name, gpt_weights_path="models/m.ckpt", sovits_weights_path="models/m.pth",
+            ref_audio_path=str(ref_wav), prompt_text="テスト", prompt_lang="ja", text_lang="ja", is_default=True,
+        ),
+    )
+    await crud.set_active_voice_profile(conn, profile.id)
+    return profile
+
+
+def _make_coordinator(
+    stream_tokens, *, session_id: str, user_msg, tts_service, db_file: Path, emotion: str,
+    cancel_event: asyncio.Event | None = None,
+) -> StreamCoordinator:
+    return StreamCoordinator(
+        adapter=SimpleNamespace(stream_chat=stream_tokens, api_key="synthetic"),
+        messages=[], model_name="small-local-model", actual_provider_id="custom",
+        session_id=session_id, prompt="早安", user_msg=user_msg, tts_service=tts_service, db_path=str(db_file),
+        metrics_collector=SimpleNamespace(record_chat_turn=AsyncMock(return_value={})),
+        affection_service=SimpleNamespace(handle_turn_affection=AsyncMock(return_value={"emotion": emotion})),
+        concat_wav_fn=lambda *args: True, cancel_event=cancel_event,
+    )
+
+
+def _build_tts_app(monkeypatch: pytest.MonkeyPatch, audio_dir: Path, db_file: Path, *, wav_ms: int):
+    engine = SimpleNamespace(
+        current_refer_audio=None, current_gpt_weights=None, current_sovits_weights=None,
+        synthesize=AsyncMock(return_value=_make_pcm_wav(wav_ms)),
+    )
+    scheduler = TtsScheduler()
+    monkeypatch.setattr("galgame2voice.services.tts_service.get_tts_scheduler", lambda: scheduler)
+    cache = TtsCacheManager(cache_dir=audio_dir / "cache", db_path=str(db_file))
+    tts_service = TtsService(client=engine, audio_dir=audio_dir, cache_manager=cache, db_path=str(db_file))
+
+    app = FastAPI()
+    app.include_router(chat_router.router)
+    app.include_router(voice_router)
+    app.dependency_overrides[get_voice_manager] = lambda: SimpleNamespace(tts_service=tts_service)
+    return app, scheduler, cache, tts_service
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("case_id", "raw_reply"),
@@ -70,32 +132,13 @@ async def test_non_lines_completion_emits_null_lines_matching_database(
     case_id: str,
     raw_reply: str,
 ):
-    db_file = tmp_path / f"{case_id}.db"
-    audio_dir = tmp_path / f"audio_{case_id}"
-    audio_dir.mkdir()
-    ref_wav = tmp_path / f"ref_{case_id}.wav"
-    ref_wav.write_bytes(_make_pcm_wav(100))
-    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db_file))
-    monkeypatch.setenv("GALGAME2VOICE_CONSOLE_TOKEN", "test-console-token")
-    get_settings.cache_clear()
-    await init_db(db_file)
+    db_file, audio_dir, ref_wav = await _init_test_env(
+        tmp_path, monkeypatch, f"{case_id}.db", f"audio_{case_id}", f"ref_{case_id}.wav"
+    )
 
     session_id = f"sess_{case_id}"
     async with get_db(db_file) as conn:
-        profile = await crud.create_voice_profile(
-            conn,
-            VoiceProfileCreate(
-                name="测试音色",
-                gpt_weights_path="models/m.ckpt",
-                sovits_weights_path="models/m.pth",
-                ref_audio_path=str(ref_wav),
-                prompt_text="テスト",
-                prompt_lang="ja",
-                text_lang="ja",
-                is_default=True,
-            ),
-        )
-        await crud.set_active_voice_profile(conn, profile.id)
+        profile = await _create_default_voice_profile(conn, ref_wav, "测试音色")
         user_msg = await crud.add_message(
             conn,
             MessageCreate(session_id=session_id, role="user", content_chinese="早安"),
@@ -107,19 +150,13 @@ async def test_non_lines_completion_emits_null_lines_matching_database(
             await asyncio.sleep(0)
 
     tts_stub = _make_tts_stub(audio_dir)
-    coordinator = StreamCoordinator(
-        adapter=SimpleNamespace(stream_chat=stream_tokens, api_key="synthetic"),
-        messages=[],
-        model_name="small-local-model",
-        actual_provider_id="custom",
+    coordinator = _make_coordinator(
+        stream_tokens,
         session_id=session_id,
-        prompt="早安",
         user_msg=user_msg,
         tts_service=tts_stub,
-        db_path=str(db_file),
-        metrics_collector=SimpleNamespace(record_chat_turn=AsyncMock(return_value={})),
-        affection_service=SimpleNamespace(handle_turn_affection=AsyncMock(return_value={"emotion": "happy"})),
-        concat_wav_fn=lambda *args: True,
+        db_file=db_file,
+        emotion="happy",
     )
 
     events = [event async for event in coordinator]
@@ -158,21 +195,7 @@ async def test_non_lines_completion_emits_null_lines_matching_database(
     if isinstance(done["data"]["lines"], list):
         portable_msg["lines"] = done["data"]["lines"]
 
-    engine = SimpleNamespace(
-        current_refer_audio=None,
-        current_gpt_weights=None,
-        current_sovits_weights=None,
-        synthesize=AsyncMock(return_value=_make_pcm_wav(160)),
-    )
-    scheduler = TtsScheduler()
-    monkeypatch.setattr("galgame2voice.services.tts_service.get_tts_scheduler", lambda: scheduler)
-    cache = TtsCacheManager(cache_dir=audio_dir / "cache", db_path=str(db_file))
-    real_tts = TtsService(client=engine, audio_dir=audio_dir, cache_manager=cache, db_path=str(db_file))
-
-    app = FastAPI()
-    app.include_router(chat_router.router)
-    app.include_router(voice_router)
-    app.dependency_overrides[get_voice_manager] = lambda: SimpleNamespace(tts_service=real_tts)
+    app, scheduler, cache, _real_tts = _build_tts_app(monkeypatch, audio_dir, db_file, wav_ms=160)
 
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8000") as client:
@@ -254,19 +277,13 @@ async def test_non_lines_early_exit_emits_null_lines_matching_database(
         await release.wait()
         yield "再多说一句。"
 
-    coordinator = StreamCoordinator(
-        adapter=SimpleNamespace(stream_chat=stream_tokens, api_key="synthetic"),
-        messages=[],
-        model_name="small-local-model",
-        actual_provider_id="custom",
+    coordinator = _make_coordinator(
+        stream_tokens,
         session_id="sess_early",
-        prompt="早安",
         user_msg=user_msg,
         tts_service=_make_tts_stub(tmp_path),
-        db_path=str(db_file),
-        metrics_collector=SimpleNamespace(record_chat_turn=AsyncMock(return_value={})),
-        affection_service=SimpleNamespace(handle_turn_affection=AsyncMock(return_value={"emotion": "gentle"})),
-        concat_wav_fn=lambda *args: True,
+        db_file=db_file,
+        emotion="gentle",
         cancel_event=cancel,
     )
 
@@ -327,13 +344,7 @@ async def test_non_lines_reply_emits_line_before_hanging_tts_returns(
     japanese: str,
 ):
     """The route asks for lines, but a non-lines reply must still publish its line before TTS returns."""
-    db_file = tmp_path / f"{case_id}.db"
-    audio_dir = tmp_path / "audio"
-    audio_dir.mkdir()
-    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db_file))
-    monkeypatch.setenv("GALGAME2VOICE_CONSOLE_TOKEN", "test-console-token")
-    get_settings.cache_clear()
-    await init_db(db_file)
+    db_file, audio_dir, _ = await _init_test_env(tmp_path, monkeypatch, f"{case_id}.db")
 
     captured_messages: list = []
     release = asyncio.Event()
@@ -455,30 +466,12 @@ _LEGACY_LINES = [
 
 @pytest.mark.asyncio
 async def test_historical_legacy_message_displays_replays_and_regenerates_audio(tmp_path, monkeypatch):
-    from galgame2voice.services.chat_service import ChatService
-
-    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
-    get_settings.cache_clear()
-    db_file = tmp_path / "legacy-history.db"
-    audio_dir = tmp_path / "audio"
-    audio_dir.mkdir()
-    ref_wav = tmp_path / "ref.wav"
-    ref_wav.write_bytes(_make_pcm_wav(100))
-    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db_file))
-    await init_db(db_file)
+    db_file, audio_dir, ref_wav = await _init_test_env(
+        tmp_path, monkeypatch, "legacy-history.db", make_ref="ref.wav", project_root=True
+    )
 
     async with get_db(db_file) as conn:
-        profile = await crud.create_voice_profile(conn, VoiceProfileCreate(
-            name="历史角色",
-            gpt_weights_path="models/m.ckpt",
-            sovits_weights_path="models/m.pth",
-            ref_audio_path=str(ref_wav),
-            prompt_text="テスト",
-            prompt_lang="ja",
-            text_lang="ja",
-            is_default=True,
-        ))
-        await crud.set_active_voice_profile(conn, profile.id)
+        profile = await _create_default_voice_profile(conn, ref_wav, "历史角色")
         await crud.add_message(conn, MessageCreate(
             session_id="s_legacy_hist",
             role="user",
@@ -502,27 +495,13 @@ async def test_historical_legacy_message_displays_replays_and_regenerates_audio(
             ensure_ascii=False,
         )
 
-    engine = SimpleNamespace(
-        current_refer_audio=None,
-        current_gpt_weights=None,
-        current_sovits_weights=None,
-        synthesize=AsyncMock(return_value=_make_pcm_wav(180)),
-    )
-    scheduler = TtsScheduler()
-    monkeypatch.setattr("galgame2voice.services.tts_service.get_tts_scheduler", lambda: scheduler)
-    cache = TtsCacheManager(cache_dir=audio_dir / "cache", db_path=str(db_file))
-    tts_service = TtsService(client=engine, audio_dir=audio_dir, cache_manager=cache, db_path=str(db_file))
+    app, scheduler, cache, tts_service = _build_tts_app(monkeypatch, audio_dir, db_file, wav_ms=180)
     service = ChatService(db_path=db_file, tts_service=tts_service)
     service._get_active_llm_adapter = AsyncMock(
         return_value=(SimpleNamespace(stream_chat=stream_tokens, api_key="sk-test"), "mock-model", "deepseek")
     )
     service._extract_memory_safe = AsyncMock()
-
-    app = FastAPI()
-    app.include_router(chat_router.router)
-    app.include_router(voice_router)
     chat_router.set_chat_service(service)
-    app.dependency_overrides[get_voice_manager] = lambda: SimpleNamespace(tts_service=tts_service)
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             # 1. History API returns the legacy message with lines=None and original whole-text + audio_url

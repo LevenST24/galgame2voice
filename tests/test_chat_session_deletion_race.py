@@ -12,16 +12,13 @@ from galgame2voice.database.session import get_db, init_db
 from galgame2voice.services.chat_service import ChatService
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("finish", [False, True])
-@pytest.mark.parametrize("recreate", [False, True])
-async def test_deleted_session_is_not_resurrected_by_stream(tmp_path, finish, recreate):
-    database = tmp_path / "chat.db"
+async def _start_pausable_stream(tmp_path, db_name: str, partial_text: str, prompt: str, session_id: str):
+    database = tmp_path / db_name
     await init_db(database)
     release = asyncio.Event()
 
     async def tokens(*args, **kwargs):
-        yield '{"chinese":"Synthetic partial'
+        yield partial_text
         await release.wait()
         yield ' answer","japanese":""}'
 
@@ -30,7 +27,17 @@ async def test_deleted_session_is_not_resurrected_by_stream(tmp_path, finish, re
         SimpleNamespace(stream_chat=tokens, api_key="synthetic"), "test", "custom",
     ))
     service._extract_memory_safe = AsyncMock()
-    stream = service.stream_chat("Original question", session_id="deleted")
+    stream = service.stream_chat(prompt, session_id=session_id)
+    return database, release, service, stream
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finish", [False, True])
+@pytest.mark.parametrize("recreate", [False, True])
+async def test_deleted_session_is_not_resurrected_by_stream(tmp_path, finish, recreate):
+    database, release, service, stream = await _start_pausable_stream(
+        tmp_path, "chat.db", '{"chinese":"Synthetic partial', "Original question", "deleted"
+    )
     try:
         started = await asyncio.wait_for(stream.__anext__(), 5)
         assert started["event"] == "turn_started"
@@ -65,21 +72,9 @@ async def test_deleted_session_is_not_resurrected_by_stream(tmp_path, finish, re
 @pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["clear", "delete", "recreate"])
 async def test_removed_stream_turn_reports_error(tmp_path, change):
-    database = tmp_path / "stream.db"
-    await init_db(database)
-    release = asyncio.Event()
-
-    async def tokens(*args, **kwargs):
-        yield '{"chinese":"Partial'
-        await release.wait()
-        yield ' answer","japanese":""}'
-
-    service = ChatService(db_path=database)
-    service._get_active_llm_adapter = AsyncMock(return_value=(
-        SimpleNamespace(stream_chat=tokens, api_key="synthetic"), "test", "custom",
-    ))
-    service._extract_memory_safe = AsyncMock()
-    stream = service.stream_chat("Question", session_id="s")
+    database, release, service, stream = await _start_pausable_stream(
+        tmp_path, "stream.db", '{"chinese":"Partial', "Question", "s"
+    )
     try:
         started = await asyncio.wait_for(stream.__anext__(), 5)
         assert started["event"] == "turn_started"

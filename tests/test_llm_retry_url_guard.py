@@ -134,6 +134,44 @@ class MockTransportWithFailures(httpx.AsyncBaseTransport):
             )
 
 
+def _openai_adapter(
+    *,
+    api_key: str = "sk-test-valid-key-12345",
+    max_retries: int = 3,
+    base_delay: float = 0.01,
+) -> OpenAICompatibleLLMAdapter:
+    return OpenAICompatibleLLMAdapter(
+        api_key=api_key,
+        base_url="https://api.openai.com/v1",
+        max_retries=max_retries,
+        base_delay=base_delay,
+    )
+
+
+def _patched_transport(
+    failure_statuses: List[int],
+    success_content: str = "",
+    retry_after: str = "0.01",
+):
+    transport = MockTransportWithFailures(
+        failure_statuses,
+        success_content=success_content,
+        is_stream=True,
+        retry_after=retry_after,
+    )
+
+    def _client_factory(*args, **kwargs):
+        clean_kwargs = {k: v for k, v in kwargs.items() if k != "transport"}
+        return _ORIG_HTTPX_ASYNC_CLIENT(transport=transport, **clean_kwargs)
+
+    return transport, patch("httpx.AsyncClient", _client_factory)
+
+
+async def _collect_stream(adapter, prompt: str = "hello", **stream_kwargs):
+    messages = [ChatMessage(role="user", content=prompt)]
+    return [token async for token in adapter.stream_chat(messages, **stream_kwargs)]
+
+
 @pytest.mark.asyncio
 class TestLlmRetryEdgeCases:
     """Rigorous challenge tests for LLM streaming retry resilience."""
@@ -145,23 +183,10 @@ class TestLlmRetryEdgeCases:
             'data: {"choices":[{"delta":{"content":"\\uff0c\\u590f\\u76ee"}}]}\n\n'
             'data: [DONE]\n\n'
         )
-        transport = MockTransportWithFailures([429, 429], success_content=sse_body, is_stream=True, retry_after="0.01")
-        adapter = OpenAICompatibleLLMAdapter(
-            api_key="sk-test-valid-key-12345",
-            base_url="https://api.openai.com/v1",
-            max_retries=3,
-            base_delay=0.01,
-        )
-
-        def _client_factory(*args, **kwargs):
-            clean_kwargs = {k: v for k, v in kwargs.items() if k != "transport"}
-            return _ORIG_HTTPX_ASYNC_CLIENT(transport=transport, **clean_kwargs)
-
-        with patch("httpx.AsyncClient", _client_factory):
-            messages = [ChatMessage(role="user", content="hello")]
-            tokens = []
-            async for token in adapter.stream_chat(messages, model="gpt-4o", base_delay=0.01):
-                tokens.append(token)
+        transport, client_patch = _patched_transport([429, 429], sse_body)
+        adapter = _openai_adapter(max_retries=3)
+        with client_patch:
+            tokens = await _collect_stream(adapter, model="gpt-4o", base_delay=0.01)
 
             assert transport.attempt_count == 3  # 2 failed attempts (429) + 1 successful attempt
             assert tokens == ["你好", "，夏目"]
@@ -173,46 +198,21 @@ class TestLlmRetryEdgeCases:
             'data: {"choices":[{"delta":{"content":" Stream"}}]}\n\n'
             'data: [DONE]\n\n'
         )
-        transport = MockTransportWithFailures([503], success_content=sse_body, is_stream=True, retry_after="0.01")
-        adapter = OpenAICompatibleLLMAdapter(
-            api_key="sk-test-valid-key-12345",
-            base_url="https://api.openai.com/v1",
-            max_retries=2,
-            base_delay=0.01,
-        )
-
-        def _client_factory(*args, **kwargs):
-            clean_kwargs = {k: v for k, v in kwargs.items() if k != "transport"}
-            return _ORIG_HTTPX_ASYNC_CLIENT(transport=transport, **clean_kwargs)
-
-        with patch("httpx.AsyncClient", _client_factory):
-            messages = [ChatMessage(role="user", content="hello")]
-            tokens = []
-            async for token in adapter.stream_chat(messages, model="gpt-4o", base_delay=0.01):
-                tokens.append(token)
+        transport, client_patch = _patched_transport([503], sse_body)
+        adapter = _openai_adapter(max_retries=2)
+        with client_patch:
+            tokens = await _collect_stream(adapter, model="gpt-4o", base_delay=0.01)
 
             assert transport.attempt_count == 2
             assert tokens == ["Resilient", " Stream"]
 
     async def test_openai_stream_chat_fails_fast_on_401_403(self):
         """Verifies that HTTP 401/403 fails fast on attempt 1 without entering retry loops."""
-        transport = MockTransportWithFailures([401, 401, 401], success_content="", is_stream=True)
-        adapter = OpenAICompatibleLLMAdapter(
-            api_key="sk-invalid-key-9999",
-            base_url="https://api.openai.com/v1",
-            max_retries=5,
-            base_delay=0.01,
-        )
-
-        def _client_factory(*args, **kwargs):
-            clean_kwargs = {k: v for k, v in kwargs.items() if k != "transport"}
-            return _ORIG_HTTPX_ASYNC_CLIENT(transport=transport, **clean_kwargs)
-
-        with patch("httpx.AsyncClient", _client_factory):
-            messages = [ChatMessage(role="user", content="hello")]
+        transport, client_patch = _patched_transport([401, 401, 401])
+        adapter = _openai_adapter(api_key="sk-invalid-key-9999", max_retries=5)
+        with client_patch:
             with pytest.raises(ValueError, match="Authentication error"):
-                async for _ in adapter.stream_chat(messages, model="gpt-4o"):
-                    pass
+                await _collect_stream(adapter, model="gpt-4o")
 
             # Crucial check: only 1 attempt made, failed immediately!
             assert transport.attempt_count == 1
@@ -226,38 +226,26 @@ class TestLlmRetryEdgeCases:
             'data: {"type": "message_stop"}\n\n'
         )
         # 1. Test 429 recovery
-        transport_429 = MockTransportWithFailures([429], success_content=sse_body, is_stream=True, retry_after="0.01")
+        transport_429, patch_429 = _patched_transport([429], sse_body)
         adapter = AnthropicAdapter(
             api_key="sk-ant-test-key-12345",
             max_retries=2,
             base_delay=0.01,
         )
-
-        def _client_factory_429(*args, **kwargs):
-            clean_kwargs = {k: v for k, v in kwargs.items() if k != "transport"}
-            return _ORIG_HTTPX_ASYNC_CLIENT(transport=transport_429, **clean_kwargs)
-
-        with patch("httpx.AsyncClient", _client_factory_429):
-            tokens = []
-            async for t in adapter.stream_chat([ChatMessage(role="user", content="hi")], base_delay=0.01):
-                tokens.append(t)
+        with patch_429:
+            tokens = await _collect_stream(adapter, prompt="hi", base_delay=0.01)
             assert transport_429.attempt_count == 2
             assert tokens == ["Claude", " Response"]
 
         # 2. Test 401 fail fast
-        transport_401 = MockTransportWithFailures([401], success_content="", is_stream=True)
-        def _client_factory_401(*args, **kwargs):
-            clean_kwargs = {k: v for k, v in kwargs.items() if k != "transport"}
-            return _ORIG_HTTPX_ASYNC_CLIENT(transport=transport_401, **clean_kwargs)
-
-        with patch("httpx.AsyncClient", _client_factory_401):
+        transport_401, patch_401 = _patched_transport([401])
+        with patch_401:
             with pytest.raises(ValueError, match="auth failed|authentication failed"):
-                async for _ in adapter.stream_chat([ChatMessage(role="user", content="hi")]):
-                    pass
+                await _collect_stream(adapter, prompt="hi")
             assert transport_401.attempt_count == 1
 
     async def test_stream_chat_early_read_timeout_retries_successfully(self):
-        adapter = OpenAICompatibleLLMAdapter(api_key="sk-test", base_url="https://api.openai.com/v1")
+        adapter = _openai_adapter(api_key="sk-test")
         attempt_count = 0
 
         class MockStreamResponse:
@@ -279,14 +267,7 @@ class TestLlmRetryEdgeCases:
                 pass
 
         with patch("httpx.AsyncClient.stream", return_value=MockStreamResponse()):
-            tokens = []
-            async for tok in adapter.stream_chat(
-                messages=[ChatMessage(role="user", content="hello")],
-                model="gpt-4o",
-                max_retries=2,
-                base_delay=0.01,
-            ):
-                tokens.append(tok)
+            tokens = await _collect_stream(adapter, model="gpt-4o", max_retries=2, base_delay=0.01)
 
             assert "".join(tokens) == "RecoveredStream"
             assert attempt_count == 2
