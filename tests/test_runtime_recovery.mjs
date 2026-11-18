@@ -164,25 +164,28 @@ function element(value = '') {
     change(name = 'input') { listeners[name]?.forEach(handler => handler({ target: this })); } };
 }
 const cfg = (speed) => ({ status: 'ok', settings: { speed_factor: speed } });
+function initGlobalDom(defaults) {
+  const dom = Object.fromEntries(Object.entries(defaults).map(([k, v]) => [k, element(v)]));
+  initGlobalSettings(dom);
+  return dom;
+}
 {
   // An unconfirmed mode must start from saved preferences instead of forcing CUDA/FP16.
-  const dom = { gDashPrecisionBadge: element(), gBtnTogglePrecision: element() };
+  const dom = initGlobalDom({ gDashPrecisionBadge: '', gBtnTogglePrecision: '' });
   dom.gDashPrecisionBadge.textContent = '待确认';
-  initGlobalSettings(dom);
   const bodies = [];
   globalThis.fetch = async (url, options = {}) => {
     if (url.endsWith('/restart_sovits')) { bodies.push(JSON.parse(options.body)); return response({ status: 'starting' }); }
     if (url.endsWith('/engine-status')) return response({ state: 'ready', ready: true, message: '已就绪' });
     return response({});
   };
-  dom.gBtnTogglePrecision.change('click');
-  for (let i = 0; i < 3; i++) await tick();
+  await clickPrecisionToggle(dom);
   assert.deepEqual(bodies, [{}]); passed++;
 }
 for (const known of [true, false]) {
-  const dom = { gDashPrecisionBadge: element(), gDashPrecisionVal: element(), gDashDeviceVal: element(),
-    gBtnTogglePrecisionText: element() };
-  initGlobalSettings(dom);
+  const dom = initGlobalDom({
+    gDashPrecisionBadge: '', gDashPrecisionVal: '', gDashDeviceVal: '', gBtnTogglePrecisionText: '',
+  });
   globalThis.fetch = async url => response(url.endsWith('/system/status') ? { hardware: {
     inference_precision: known ? 'FP16' : null, precision_source: known ? 'managed_launch' : 'unknown',
     configured_precision: 'cpu', next_inference_precision: 'CPU', precision_pending_restart: known ? true : null,
@@ -202,15 +205,10 @@ for (const known of [true, false]) {
 
 // readHardware() runs on every status poll, so the caller can replace the object between polls.
 function beginPrecisionToggle(readHardware, engineStatus = { state: 'ready', ready: true, message: '已就绪' }) {
-  const dom = {
-    gDashPrecisionBadge: element(),
-    gDashPrecisionVal: element(),
-    gDashDeviceVal: element(),
-    gBtnTogglePrecision: element(),
-    gBtnTogglePrecisionText: element(),
-    gBtnRestartSovits: element(),
-  };
-  initGlobalSettings(dom);
+  const dom = initGlobalDom({
+    gDashPrecisionBadge: '', gDashPrecisionVal: '', gDashDeviceVal: '',
+    gBtnTogglePrecision: '', gBtnTogglePrecisionText: '', gBtnRestartSovits: '',
+  });
   const restartRequests = [];
   globalThis.fetch = async (url, options = {}) => {
     if (url.endsWith('/system/status')) return response({ hardware: readHardware() });
@@ -223,16 +221,24 @@ function beginPrecisionToggle(readHardware, engineStatus = { state: 'ready', rea
   };
   return { dom, restartRequests };
 }
+const managedHw = (inference_precision, gpu_available, gpu_name) => ({
+  ...(gpu_available !== undefined ? { gpu_available } : {}),
+  ...(gpu_name ? { gpu_name } : {}),
+  inference_precision,
+  precision_source: 'managed_launch',
+});
+async function startPrecisionToggle(readHardware, engineStatus) {
+  const ctx = beginPrecisionToggle(typeof readHardware === 'function' ? readHardware : () => readHardware, engineStatus);
+  await fetchSystemTelemetry();
+  return ctx;
+}
+async function clickPrecisionToggle(dom) {
+  dom.gBtnTogglePrecision.change('click');
+  for (let i = 0; i < 3; i++) await tick();
+}
 {
   // CPU-only machine without discrete GPU: hide precision toggle button and block switching to CUDA/FP16
-  const { dom, restartRequests } = beginPrecisionToggle(() => ({
-    gpu_available: false,
-    gpu_name: 'Intel Iris Xe',
-    inference_precision: 'CPU',
-    precision_source: 'managed_launch',
-  }));
-
-  await fetchSystemTelemetry();
+  const { dom, restartRequests } = await startPrecisionToggle(managedHw('CPU', false, 'Intel Iris Xe'));
 
   assert.equal(dom.gDashPrecisionBadge.textContent, 'CPU');
   assert.equal(dom.gBtnTogglePrecision.hidden, true, 'Precision toggle button should be hidden on CPU-only device');
@@ -240,106 +246,81 @@ function beginPrecisionToggle(readHardware, engineStatus = { state: 'ready', rea
   assert.equal(dom.gBtnTogglePrecisionText.textContent, '当前仅支持 CPU 模式');
 
   // Triggering click must be blocked and not request /restart_sovits
-  dom.gBtnTogglePrecision.change('click');
-  for (let i = 0; i < 3; i++) await tick();
+  await clickPrecisionToggle(dom);
   assert.equal(restartRequests.length, 0, 'Clicking precision toggle when gpu_available is false must not send restart request');
   passed++;
 }
 {
   // Machine with GPU running in CPU mode: toggle button remains visible and clicking requests FP16
-  const { dom, restartRequests } = beginPrecisionToggle(() => ({
-    gpu_available: true,
-    gpu_name: 'NVIDIA GeForce RTX 4070',
-    inference_precision: 'CPU',
-    precision_source: 'managed_launch',
-  }));
-
-  await fetchSystemTelemetry();
+  const { dom, restartRequests } = await startPrecisionToggle(managedHw('CPU', true, 'NVIDIA GeForce RTX 4070'));
 
   assert.equal(dom.gDashPrecisionBadge.textContent, 'CPU');
   assert.equal(dom.gBtnTogglePrecision.hidden, false, 'Precision toggle button should be visible when GPU is available');
   assert.equal(dom.gBtnTogglePrecisionText.textContent, '切为 GPU(FP16)');
 
-  dom.gBtnTogglePrecision.change('click');
-  for (let i = 0; i < 3; i++) await tick();
+  await clickPrecisionToggle(dom);
   assert.deepEqual(restartRequests, [{ precision: 'fp16' }], 'Clicking toggle when GPU is available sends fp16 restart request');
   passed++;
 }
 {
   // Transition: Poll 1 has gpu_available: false, then Poll 2 has gpu_available: undefined (legacy/external).
   // gpuAvailable must recover to default true, making toggle visible and clickable for FP16.
-  let statusHardware = {
-    gpu_available: false,
-    gpu_name: 'Intel Iris Xe',
-    inference_precision: 'CPU',
-    precision_source: 'managed_launch',
-  };
-  const { dom, restartRequests } = beginPrecisionToggle(() => statusHardware);
-
-  await fetchSystemTelemetry();
+  let statusHardware = managedHw('CPU', false, 'Intel Iris Xe');
+  const { dom, restartRequests } = await startPrecisionToggle(() => statusHardware);
   assert.equal(dom.gBtnTogglePrecision.hidden, true);
 
   // Poll 2: hardware present but gpu_available is undefined
-  statusHardware = {
-    inference_precision: 'CPU',
-    precision_source: 'managed_launch',
-  };
+  statusHardware = managedHw('CPU');
   await fetchSystemTelemetry();
   assert.equal(dom.gBtnTogglePrecision.hidden, false);
   assert.equal(dom.gBtnTogglePrecisionText.textContent, '切为 GPU(FP16)');
 
-  dom.gBtnTogglePrecision.change('click');
-  for (let i = 0; i < 3; i++) await tick();
+  await clickPrecisionToggle(dom);
   assert.deepEqual(restartRequests, [{ precision: 'fp16' }], 'Clicking toggle after undefined recovery sends fp16');
   passed++;
 }
 {
   // CPU-only device mistakenly set to FP16: button remains visible and offers direct switch to CPU mode
-  const { dom, restartRequests } = beginPrecisionToggle(() => ({
-    gpu_available: false,
-    gpu_name: 'Intel Iris Xe',
-    inference_precision: 'FP16',
-    precision_source: 'managed_launch',
-  }), { state: 'failed', ready: false, message: 'CUDA 不可用' });
-
-  await fetchSystemTelemetry();
+  const { dom, restartRequests } = await startPrecisionToggle(
+    managedHw('FP16', false, 'Intel Iris Xe'),
+    { state: 'failed', ready: false, message: 'CUDA 不可用' },
+  );
 
   assert.equal(dom.gDashPrecisionBadge.textContent, 'FP16');
   assert.equal(dom.gBtnTogglePrecision.hidden, false, 'Precision toggle button should remain visible to recover from FP16');
   assert.equal(dom.gBtnTogglePrecisionText.textContent, '切为 CPU 模式');
 
-  dom.gBtnTogglePrecision.change('click');
-  for (let i = 0; i < 3; i++) await tick();
+  await clickPrecisionToggle(dom);
   assert.deepEqual(restartRequests, [{ precision: 'cpu' }], 'Clicking toggle on CPU device in FP16 mode directly restarts in CPU mode');
   passed++;
 }
+async function pollSovitsTelemetry(engineStatus, sovitsStatus = { status: 'unreachable' }) {
+  const dom = initGlobalDom({ gDashSovitsBadge: '', gDashSovitsStatus: '', gDashSovitsUrl: '' });
+  globalThis.fetch = async url => response(url.endsWith('/engine-status') ? engineStatus : { gpt_sovits: sovitsStatus });
+  await fetchSystemTelemetry();
+  return dom;
+}
 {
   // A reachable app with a still-loading engine must not show a red offline badge.
-  const dom = { gDashSovitsBadge: element(), gDashSovitsStatus: element(), gDashSovitsUrl: element() };
-  initGlobalSettings(dom);
-  globalThis.fetch = async url => response(url.endsWith('/engine-status')
-    ? { state: 'starting', ready: false, message: '引擎正在加载模型' }
-    : { gpt_sovits: { status: 'unreachable', base_url: 'http://127.0.0.1:9872' } });
-  await fetchSystemTelemetry();
+  const dom = await pollSovitsTelemetry(
+    { state: 'starting', ready: false, message: '引擎正在加载模型' },
+    { status: 'unreachable', base_url: 'http://127.0.0.1:9872' },
+  );
   assert.equal(dom.gDashSovitsBadge.textContent, '启动中');
   assert.match(dom.gDashSovitsBadge.className, /yellow/);
   assert.equal(dom.gDashSovitsStatus.textContent, '引擎正在加载模型'); passed++;
 }
 {
-  const dom = { gDashSovitsBadge: element(), gDashSovitsStatus: element(), gDashSovitsUrl: element() };
-  initGlobalSettings(dom);
-  globalThis.fetch = async url => response(url.endsWith('/engine-status')
-    ? { state: 'loading_slow', ready: false, message: '引擎加载时间较长，请查看引擎日志' }
-    : { gpt_sovits: { status: 'unreachable' } });
-  await fetchSystemTelemetry();
+  const dom = await pollSovitsTelemetry({ state: 'loading_slow', ready: false, message: '引擎加载时间较长，请查看引擎日志' });
   assert.equal(dom.gDashSovitsBadge.textContent, '加载较慢');
   assert.match(dom.gDashSovitsStatus.textContent, /时间较长/); passed++;
 }
 {
   // A periodic status request that started before a restart must not overwrite progress.
-  const dom = { gDashSovitsBadge: element(), gDashSovitsStatus: element(), gDashSovitsUrl: element(),
-    gBtnRestartSovits: element(), gBtnTogglePrecision: element() };
-  initGlobalSettings(dom);
+  const dom = initGlobalDom({
+    gDashSovitsBadge: '', gDashSovitsStatus: '', gDashSovitsUrl: '',
+    gBtnRestartSovits: '', gBtnTogglePrecision: '',
+  });
   let finishOld, finishOldEngine, finishRestart, finishPoll;
   let polls = 0, telemetryRequests = 0;
   globalThis.fetch = url => {
@@ -386,8 +367,7 @@ function lostConfigSave(readback, { getFails = false } = {}) {
   assert.deepEqual(methods, ['POST', 'GET']); passed++;
 }
 {
-  const dom = { gAudioRetention: element('30'), gTgSave: element(), gStatus: element() };
-  initGlobalSettings(dom);
+  const dom = initGlobalDom({ gAudioRetention: '30', gTgSave: '', gStatus: '' });
   globalThis.fetch = async () => response({ status: 'ok', settings: { audio_retention_minutes: 30 } });
   await loadGlobalConfig();
   dom.gAudioRetention.value = '45'; dom.gAudioRetention.change();
@@ -399,8 +379,7 @@ function lostConfigSave(readback, { getFails = false } = {}) {
   assert.equal(dom.gAudioRetention.value, '45'); passed++;
 }
 {
-  const dom = { gAudioRetention: element('30') };
-  initGlobalSettings(dom);
+  const dom = initGlobalDom({ gAudioRetention: '30' });
   let complete;
   globalThis.fetch = () => new Promise(resolve => { complete = resolve; });
   const pending = loadGlobalConfig();
@@ -409,8 +388,7 @@ function lostConfigSave(readback, { getFails = false } = {}) {
   assert.equal(dom.gAudioRetention.value, '60'); passed++;
 }
 {
-  const dom = { gAudioRetention: element('45'), gTgSave: element() };
-  initGlobalSettings(dom);
+  const dom = initGlobalDom({ gAudioRetention: '45', gTgSave: '' });
   let complete;
   globalThis.fetch = async (_url, options) => options.method === 'POST'
     ? new Promise(resolve => { complete = resolve; })
@@ -426,8 +404,7 @@ function lostConfigSave(readback, { getFails = false } = {}) {
 {
   // The config never loaded (backend restarting): saving would overwrite every setting with
   // the form's defaults, resetting the engine URL and precision.
-  const dom = { gAudioRetention: element('30'), gTgSave: element() };
-  initGlobalSettings(dom);
+  const dom = initGlobalDom({ gAudioRetention: '30', gTgSave: '' });
   const posts = [];
   globalThis.fetch = async (_url, options = {}) => {
     if (options.method === 'POST') { posts.push(JSON.parse(options.body)); return response({ status: 'ok' }); }
@@ -440,8 +417,7 @@ function lostConfigSave(readback, { getFails = false } = {}) {
 }
 {
   // An edit made while the first load is in flight keeps the server's values in every other field.
-  const dom = { gAudioRetention: element('30'), gParamSovitsUrl: element(''), gTgSave: element() };
-  initGlobalSettings(dom);
+  const dom = initGlobalDom({ gAudioRetention: '30', gParamSovitsUrl: '', gTgSave: '' });
   let complete;
   globalThis.fetch = () => new Promise(resolve => { complete = resolve; });
   const pending = loadGlobalConfig();
@@ -461,8 +437,7 @@ function lostConfigSave(readback, { getFails = false } = {}) {
 }
 {
   // Restarting before the config loaded must not send the dropdown's default precision.
-  const dom = { gBtnRestartSovits: element(), gBtnTogglePrecision: element(), gPrecision: element('auto') };
-  initGlobalSettings(dom);
+  initGlobalDom({ gBtnRestartSovits: '', gBtnTogglePrecision: '', gPrecision: 'auto' });
   const bodies = [];
   globalThis.fetch = async (url, options = {}) => {
     if (url.endsWith('restart_sovits')) { bodies.push(JSON.parse(options.body)); return response({ status: 'starting' }); }
@@ -473,8 +448,7 @@ function lostConfigSave(readback, { getFails = false } = {}) {
   assert.deepEqual(bodies, [{}]); passed++;
 }
 {
-  const dom = { gBtnRestartSovits: element(), gBtnTogglePrecision: element(), gPrecision: element('cpu') };
-  initGlobalSettings(dom);
+  const dom = initGlobalDom({ gBtnRestartSovits: '', gBtnTogglePrecision: '', gPrecision: 'cpu' });
   let complete;
   let restarts = 0;
   globalThis.fetch = async (url) => {
@@ -585,29 +559,56 @@ for (const allowed of [true, false]) {
   assert.match(dom.gPrivateEndpointsStatus.textContent, /已保存/);
   assert.deepEqual(methods, ['POST', 'GET']); passed++;
 }
-function mountToastRoot(doc) {
+function clearToasts(toastRoot, replace = true) {
+  for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
+  if (replace) toastRoot.replaceChildren();
+}
+async function withFakeDocument(fn, { captureError = false, muteConsole = false } = {}) {
+  const previousDocument = globalThis.document;
+  const doc = fakeDocument();
+  globalThis.document = doc;
   const toastRoot = doc.createElement('div');
   toastRoot.id = 'toastRoot';
   doc.body.appendChild(toastRoot);
-  return toastRoot;
-}
-function controls(doc) {
-  return (tag, value = '', checked = false) => {
+  const control = (tag, value = '', checked = false) => {
     const el = doc.createElement(tag);
     el.value = value;
     el.checked = checked;
     return el;
   };
+  const errors = [];
+  const originalError = console.error;
+  const originalWarn = console.warn;
+  if (captureError) console.error = (...args) => errors.push(args);
+  if (muteConsole) { console.error = () => {}; console.warn = () => {}; }
+  try {
+    return await fn({ doc, toastRoot, control, errors });
+  } finally {
+    clearToasts(toastRoot, false);
+    console.error = originalError;
+    console.warn = originalWarn;
+    globalThis.document = previousDocument;
+  }
 }
-{
+function createElements(doc, tags) {
+  return Object.fromEntries(Object.entries(tags).map(([k, tag]) => [k, doc.createElement(tag)]));
+}
+async function withUpdateManager(extraTags, { buttonText = '检查更新', extraDom, beforeInit, ...opts } = {}, fn) {
+  return withFakeDocument(async ctx => {
+    const dom = {
+      ...createElements(ctx.doc, { gBtnCheckUpdate: 'button', gBtnCheckUpdateText: 'span', gRemoteStatusTag: 'span', ...extraTags }),
+      ...(extraDom ? extraDom(ctx.doc) : {}),
+    };
+    dom.gBtnCheckUpdateText.textContent = buttonText;
+    if (beforeInit) beforeInit(dom);
+    initUpdateManager(dom);
+    return fn({ ...ctx, dom });
+  }, opts);
+}
+await withFakeDocument(async ({ toastRoot, control }) => {
   // Retired memory, nickname, and persona controls used to ride along on every global save.
   // GET /api/config returns SettingsResponse and never contains those keys, so a lost POST
   // could not confirm. saveGlobalConfig must ignore them, accept the readback, and clear the draft.
-  const previousDocument = globalThis.document;
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  const toastRoot = mountToastRoot(doc);
-  const control = controls(doc);
   const dom = {
     gParamSovitsUrl: control('input', 'http://127.0.0.1:9880'),
     gPrecision: control('select', 'auto'),
@@ -640,131 +641,83 @@ function controls(doc) {
     console_token: '',
     updated_at: null,
   });
-  try {
-    for (const kind of ['disconnect', 'timeout']) {
-      initGlobalSettings(dom);
-      const posts = [];
-      let configGets = 0;
-      for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
-      toastRoot.replaceChildren();
-      globalThis.fetch = async (url, options = {}) => {
-        const method = options.method || 'GET';
-        if (String(url).includes('/api/config')) {
-          if (method === 'POST') {
-            posts.push(JSON.parse(options.body));
-            if (kind === 'timeout') {
-              const error = new Error('等待服务响应超时。请打开「运行状态」检查；保存结果可能尚未确认，请刷新配置后再决定是否重试。');
-              error.code = 'REQUEST_TIMEOUT';
-              throw error;
-            }
-            throw new TypeError('Failed to fetch');
+  for (const kind of ['disconnect', 'timeout']) {
+    initGlobalSettings(dom);
+    const posts = [];
+    let configGets = 0;
+    clearToasts(toastRoot);
+    globalThis.fetch = async (url, options = {}) => {
+      const method = options.method || 'GET';
+      if (String(url).includes('/api/config')) {
+        if (method === 'POST') {
+          posts.push(JSON.parse(options.body));
+          if (kind === 'timeout') {
+            const error = new Error('等待服务响应超时。请打开「运行状态」检查；保存结果可能尚未确认，请刷新配置后再决定是否重试。');
+            error.code = 'REQUEST_TIMEOUT';
+            throw error;
           }
-          configGets += 1;
-          const retention = configGets === 1 ? 30 : configGets === 2 ? 45 : 30;
-          return response({ status: 'ok', settings: persisted(retention), active_provider: null });
+          throw new TypeError('Failed to fetch');
         }
-        return response({});
-      };
-      await loadGlobalConfig();
-      dom.gAudioRetention.value = '45';
-      dom.gAudioRetention.dispatchEvent({ type: 'input' });
-      await saveGlobalConfig();
-      await tick();
-      const messages = [...toastRoot.children].map(node => node.textContent);
-      const detail = `${kind}: toasts=[${messages.join(' | ')}] gets=${configGets} posted=${JSON.stringify(posts[0])}`;
-      assert.equal(posts.length, 1, detail);
-      assert.ok(configGets >= 2, detail);
-      assert.ok(messages.includes('全局配置已保存'), detail);
-      assert.equal(messages.some(message => message.includes('保存失败')), false, detail);
-      assert.equal(messages.some(message => message.includes('尚未保存')), false, detail);
-      assert.equal(Number(dom.gAudioRetention.value), 30, detail);
-      assert.equal(dom.gTgSave.disabled, false, detail);
-      assert.equal(Object.hasOwn(posts[0], 'memory_enabled'), false, detail);
-      assert.equal(Object.hasOwn(posts[0], 'user_nickname'), false, detail);
-      assert.equal(Object.hasOwn(posts[0], 'system_prompt'), false, detail);
-      assert.equal(posts[0].audio_retention_minutes, 45, detail);
-      passed++;
-    }
-  } finally {
-    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
-    globalThis.document = previousDocument;
+        configGets += 1;
+        const retention = configGets === 1 ? 30 : configGets === 2 ? 45 : 30;
+        return response({ status: 'ok', settings: persisted(retention), active_provider: null });
+      }
+      return response({});
+    };
+    await loadGlobalConfig();
+    dom.gAudioRetention.value = '45';
+    dom.gAudioRetention.dispatchEvent({ type: 'input' });
+    await saveGlobalConfig();
+    await tick();
+    const messages = [...toastRoot.children].map(node => node.textContent);
+    const detail = `${kind}: toasts=[${messages.join(' | ')}] gets=${configGets} posted=${JSON.stringify(posts[0])}`;
+    assert.equal(posts.length, 1, detail);
+    assert.ok(configGets >= 2, detail);
+    assert.ok(messages.includes('全局配置已保存'), detail);
+    assert.equal(messages.some(message => message.includes('保存失败')), false, detail);
+    assert.equal(messages.some(message => message.includes('尚未保存')), false, detail);
+    assert.equal(Number(dom.gAudioRetention.value), 30, detail);
+    assert.equal(dom.gTgSave.disabled, false, detail);
+    assert.equal(Object.hasOwn(posts[0], 'memory_enabled'), false, detail);
+    assert.equal(Object.hasOwn(posts[0], 'user_nickname'), false, detail);
+    assert.equal(Object.hasOwn(posts[0], 'system_prompt'), false, detail);
+    assert.equal(posts[0].audio_retention_minutes, 45, detail);
+    passed++;
   }
-}
-{
-  const doc = fakeDocument();
-  const toastRoot = mountToastRoot(doc);
-  const dom = {
-    gBtnCheckUpdate: doc.createElement('button'),
-    gBtnCheckUpdateText: doc.createElement('span'),
-    gRemoteStatusTag: doc.createElement('span'),
-    gUpdateNoticeBox: doc.createElement('div'),
-  };
-  dom.gBtnCheckUpdateText.textContent = '检查更新';
-  initUpdateManager(dom);
-  const previousDocument = globalThis.document;
-  globalThis.document = doc;
-  const errors = [];
-  const originalError = console.error;
-  console.error = (...args) => errors.push(args);
+});
+await withUpdateManager({ gUpdateNoticeBox: 'div' }, { captureError: true }, async ({ toastRoot, errors }) => {
   globalThis.fetch = async () => response({ error: 'fatal: unable to access github.com: connection timed out' });
-  try {
-    await handleCheckUpdate();
-    assert.equal(toastRoot.children.length, 1);
-    const toast = toastRoot.children[0];
-    assert.equal(toast.dataset.msg, '检查更新失败：暂时无法获取最新版本信息，请检查网络连接后重试');
-    assert.doesNotMatch(toast.dataset.msg, /fatal|unable to access|timed out/);
-    assert.ok(errors.some(args => args.join(' ').includes('fatal: unable to access')));
-    passed++;
-  } finally {
-    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
-    console.error = originalError;
-    globalThis.document = previousDocument;
-  }
-}
-{
-  const doc = fakeDocument();
-  const toastRoot = mountToastRoot(doc);
-  const throwingEl = doc.createElement('div');
-  Object.defineProperty(throwingEl, 'textContent', {
-    get() { throw new Error('DOM detached during update check'); },
-    set() {},
-  });
-  const dom = {
-    gDashVersionCommit: throwingEl,
-    gBtnCheckUpdate: doc.createElement('button'),
-    gBtnCheckUpdateText: doc.createElement('span'),
-    gRemoteStatusTag: doc.createElement('span'),
-  };
-  dom.gBtnCheckUpdateText.textContent = '检查更新';
-  initUpdateManager(dom);
-  const previousDocument = globalThis.document;
-  globalThis.document = doc;
-  const errors = [];
-  const originalError = console.error;
-  console.error = (...args) => errors.push(args);
-  try {
-    await handleCheckUpdate();
-    assert.equal(toastRoot.children.length, 1);
-    const toast = toastRoot.children[0];
-    assert.equal(toast.dataset.msg, '检查更新失败：暂时无法连接服务，请检查网络连接后重试');
-    assert.doesNotMatch(toast.dataset.msg, /DOM detached/);
-    assert.ok(errors.some(args => args.join(' ').includes('DOM detached')));
-    passed++;
-  } finally {
-    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
-    console.error = originalError;
-    globalThis.document = previousDocument;
-  }
-}
-{
+  await handleCheckUpdate();
+  assert.equal(toastRoot.children.length, 1);
+  const toast = toastRoot.children[0];
+  assert.equal(toast.dataset.msg, '检查更新失败：暂时无法获取最新版本信息，请检查网络连接后重试');
+  assert.doesNotMatch(toast.dataset.msg, /fatal|unable to access|timed out/);
+  assert.ok(errors.some(args => args.join(' ').includes('fatal: unable to access')));
+  passed++;
+});
+await withUpdateManager({}, {
+  captureError: true,
+  extraDom: doc => {
+    const throwingEl = doc.createElement('div');
+    Object.defineProperty(throwingEl, 'textContent', {
+      get() { throw new Error('DOM detached during update check'); },
+      set() {},
+    });
+    return { gDashVersionCommit: throwingEl };
+  },
+}, async ({ toastRoot, errors }) => {
+  await handleCheckUpdate();
+  assert.equal(toastRoot.children.length, 1);
+  const toast = toastRoot.children[0];
+  assert.equal(toast.dataset.msg, '检查更新失败：暂时无法连接服务，请检查网络连接后重试');
+  assert.doesNotMatch(toast.dataset.msg, /DOM detached/);
+  assert.ok(errors.some(args => args.join(' ').includes('DOM detached')));
+  passed++;
+});
+await withFakeDocument(async ({ toastRoot, control }) => {
   // Modifying or browsing the local engine directory in Voice Service settings and clicking
   // the footer "保存全局配置" button must save the engine directory before confirming global save,
   // and must abort without claiming "全局配置已保存" if directory validation fails (HTTP 400).
-  const previousDocument = globalThis.document;
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  const toastRoot = mountToastRoot(doc);
-  const control = controls(doc);
   const dom = {
     gParamSovitsUrl: control('input', 'http://127.0.0.1:9880'),
     gSovitsDirectory: control('input', ''),
@@ -775,169 +728,140 @@ function controls(doc) {
     gAudioRetention: control('input', '30'),
     gTgSave: control('button', ''),
   };
-  try {
-    let savedDirectory = '';
-    let rejectDirSave = false;
-    const dirPuts = [];
-    const configPosts = [];
-    globalThis.fetch = async (url, options = {}) => {
-      const method = options.method || 'GET';
-      if (url === '/api/system/sovits-directory' && method === 'PUT') {
-        const body = JSON.parse(options.body);
-        dirPuts.push(body.directory);
-        if (rejectDirSave) {
-          return response({ detail: '所选文件夹需包含 api_v2.py。请先完整解压 GPT-SoVITS，再选择引擎目录。' }, 400);
-        }
-        savedDirectory = body.directory;
-        return response({ directory: savedDirectory, valid: true, message: '引擎目录有效，可在「运行状态」中启动或重启引擎。' });
+  let savedDirectory = '';
+  let rejectDirSave = false;
+  const dirPuts = [];
+  const configPosts = [];
+  globalThis.fetch = async (url, options = {}) => {
+    const method = options.method || 'GET';
+    if (url === '/api/system/sovits-directory' && method === 'PUT') {
+      const body = JSON.parse(options.body);
+      dirPuts.push(body.directory);
+      if (rejectDirSave) {
+        return response({ detail: '所选文件夹需包含 api_v2.py。请先完整解压 GPT-SoVITS，再选择引擎目录。' }, 400);
       }
-      if (url === '/api/system/sovits-directory') {
-        return response({ directory: savedDirectory, valid: Boolean(savedDirectory), message: savedDirectory ? '引擎目录有效' : '尚未设置' });
+      savedDirectory = body.directory;
+      return response({ directory: savedDirectory, valid: true, message: '引擎目录有效，可在「运行状态」中启动或重启引擎。' });
+    }
+    if (url === '/api/system/sovits-directory') {
+      return response({ directory: savedDirectory, valid: Boolean(savedDirectory), message: savedDirectory ? '引擎目录有效' : '尚未设置' });
+    }
+    if (url === '/api/voice/browse-file' && method === 'POST') {
+      return response({ selected_path: 'E:/GPT-SoVITS-browse' });
+    }
+    if (String(url).includes('/api/config')) {
+      if (method === 'POST') {
+        configPosts.push(JSON.parse(options.body));
       }
-      if (url === '/api/voice/browse-file' && method === 'POST') {
-        return response({ selected_path: 'E:/GPT-SoVITS-browse' });
-      }
-      if (String(url).includes('/api/config')) {
-        if (method === 'POST') {
-          configPosts.push(JSON.parse(options.body));
-        }
-        return response({ status: 'ok', settings: { gpt_sovits_url: 'http://127.0.0.1:9880', inference_precision: 'auto', audio_retention_minutes: 30 } });
-      }
-      return response({});
-    };
-
-    initGlobalSettings(dom);
-    await loadGlobalConfig();
-    await tick();
-
-    // 1. Input edited directory -> click Save Global Config -> PUT /api/system/sovits-directory is called
-    dom.gSovitsDirectory.value = 'D:/GPT-SoVITS-v2';
-    dom.gSovitsDirectory.dispatchEvent({ type: 'input' });
-    await saveGlobalConfig();
-    await tick();
-
-    let messages = [...toastRoot.children].map(node => node.textContent);
-    assert.deepEqual(dirPuts, ['D:/GPT-SoVITS-v2']);
-    assert.equal(configPosts.length, 1);
-    assert.equal(dom.gSovitsDirectory.value, 'D:/GPT-SoVITS-v2');
-    assert.ok(messages.includes('全局配置已保存'), `expected global save toast, got: ${messages.join(' | ')}`);
-    passed++;
-
-    // 2. Browse directory -> click Save Global Config -> PUT /api/system/sovits-directory is called
-    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
-    toastRoot.replaceChildren();
-    dom.gBrowseSovitsDirectory.dispatchEvent({ type: 'click' });
-    await tick();
-    assert.equal(dom.gSovitsDirectory.value, 'E:/GPT-SoVITS-browse');
-    await saveGlobalConfig();
-    await tick();
-    assert.deepEqual(dirPuts, ['D:/GPT-SoVITS-v2', 'E:/GPT-SoVITS-browse']);
-    assert.equal(dom.gSovitsDirectory.value, 'E:/GPT-SoVITS-browse');
-    passed++;
-
-    // 3. Directory validation returns 400 -> aborts global save, preserves user input, does not show "全局配置已保存"
-    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
-    toastRoot.replaceChildren();
-    rejectDirSave = true;
-    const prevConfigPosts = configPosts.length;
-    dom.gSovitsDirectory.value = 'D:/incomplete-engine';
-    dom.gSovitsDirectory.dispatchEvent({ type: 'input' });
-    await saveGlobalConfig();
-    await tick();
-
-    messages = [...toastRoot.children].map(node => node.textContent);
-    assert.deepEqual(dirPuts, ['D:/GPT-SoVITS-v2', 'E:/GPT-SoVITS-browse', 'D:/incomplete-engine']);
-    assert.equal(configPosts.length, prevConfigPosts, 'global config POST must not be sent when engine directory save fails');
-    assert.equal(messages.includes('全局配置已保存'), false, `must not claim global config saved when directory save fails: ${messages.join(' | ')}`);
-    assert.ok(messages.some(m => m.includes('保存目录失败') && m.includes('api_v2.py')), `expected directory save error toast, got: ${messages.join(' | ')}`);
-    assert.equal(dom.gSovitsDirectory.value, 'D:/incomplete-engine', 'user input must be preserved on error');
-    assert.equal(dom.gTgSave.disabled, false);
-    passed++;
-  } finally {
-    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
-    globalThis.document = previousDocument;
-  }
-}
-{
-  const doc = fakeDocument();
-  const toastRoot = mountToastRoot(doc);
-  const dom = {
-    gDashVersionBadge: doc.createElement('span'),
-    gCurrentCommit: doc.createElement('span'),
-    gCurrentBranch: doc.createElement('span'),
-    gRemoteStatusTag: doc.createElement('span'),
-    gUpdateNoticeBox: doc.createElement('div'),
-    gUpdateNoticeTitle: doc.createElement('div'),
-    gUpdateNoticeDesc: doc.createElement('div'),
-    gUpdateNoticeIcon: doc.createElement('span'),
-    gBtnCheckUpdate: doc.createElement('button'),
-    gBtnCheckUpdateText: doc.createElement('span'),
-    gReleaseDownloadLink: doc.createElement('a'),
+      return response({ status: 'ok', settings: { gpt_sovits_url: 'http://127.0.0.1:9880', inference_precision: 'auto', audio_retention_minutes: 30 } });
+    }
+    return response({});
   };
-  dom.gUpdateNoticeBox.classList.add('hidden');
-  dom.gBtnCheckUpdateText.textContent = '检查新版本';
-  dom.gReleaseDownloadLink.href = 'https://github.com/LevenST24/galgame2voice/releases';
-  initUpdateManager(dom);
-  const previousDocument = globalThis.document;
-  globalThis.document = doc;
-  const originalError = console.error;
-  const originalWarn = console.warn;
-  console.error = () => {};
-  console.warn = () => {};
-  try {
-    globalThis.fetch = async (url) => String(url).includes('check_remote=true')
-      ? response({
-        current_version: '3.1.2',
-        latest_version: '3.2.0',
-        current_branch: 'source',
-        release_url: 'https://github.com/LevenST24/galgame2voice/releases/tag/v3.2.0',
-        has_update: true,
-        error: null,
-      })
-      : response({
-        current_version: '3.1.2',
-        latest_version: null,
-        current_branch: 'source',
-        release_url: 'https://github.com/LevenST24/galgame2voice/releases',
-        has_update: false,
-        error: null,
-      });
-    await handleCheckUpdate();
-    assert.equal(dom.gDashVersionBadge.textContent, '发现新版本 v3.2.0');
-    assert.equal(dom.gReleaseDownloadLink.href, 'https://github.com/LevenST24/galgame2voice/releases/tag/v3.2.0');
-    await loadSystemVersionInfo(false);
-    assert.equal(dom.gDashVersionBadge.textContent, '发现新版本 v3.2.0');
-    assert.equal(dom.gRemoteStatusTag.textContent, '发现新版本 v3.2.0');
-    assert.equal(dom.gReleaseDownloadLink.href, 'https://github.com/LevenST24/galgame2voice/releases/tag/v3.2.0');
 
-    globalThis.fetch = async () => response({
-      current_version: '3.2.0',
+  initGlobalSettings(dom);
+  await loadGlobalConfig();
+  await tick();
+
+  // 1. Input edited directory -> click Save Global Config -> PUT /api/system/sovits-directory is called
+  dom.gSovitsDirectory.value = 'D:/GPT-SoVITS-v2';
+  dom.gSovitsDirectory.dispatchEvent({ type: 'input' });
+  await saveGlobalConfig();
+  await tick();
+
+  let messages = [...toastRoot.children].map(node => node.textContent);
+  assert.deepEqual(dirPuts, ['D:/GPT-SoVITS-v2']);
+  assert.equal(configPosts.length, 1);
+  assert.equal(dom.gSovitsDirectory.value, 'D:/GPT-SoVITS-v2');
+  assert.ok(messages.includes('全局配置已保存'), `expected global save toast, got: ${messages.join(' | ')}`);
+  passed++;
+
+  // 2. Browse directory -> click Save Global Config -> PUT /api/system/sovits-directory is called
+  clearToasts(toastRoot);
+  dom.gBrowseSovitsDirectory.dispatchEvent({ type: 'click' });
+  await tick();
+  assert.equal(dom.gSovitsDirectory.value, 'E:/GPT-SoVITS-browse');
+  await saveGlobalConfig();
+  await tick();
+  assert.deepEqual(dirPuts, ['D:/GPT-SoVITS-v2', 'E:/GPT-SoVITS-browse']);
+  assert.equal(dom.gSovitsDirectory.value, 'E:/GPT-SoVITS-browse');
+  passed++;
+
+  // 3. Directory validation returns 400 -> aborts global save, preserves user input, does not show "全局配置已保存"
+  clearToasts(toastRoot);
+  rejectDirSave = true;
+  const prevConfigPosts = configPosts.length;
+  dom.gSovitsDirectory.value = 'D:/incomplete-engine';
+  dom.gSovitsDirectory.dispatchEvent({ type: 'input' });
+  await saveGlobalConfig();
+  await tick();
+
+  messages = [...toastRoot.children].map(node => node.textContent);
+  assert.deepEqual(dirPuts, ['D:/GPT-SoVITS-v2', 'E:/GPT-SoVITS-browse', 'D:/incomplete-engine']);
+  assert.equal(configPosts.length, prevConfigPosts, 'global config POST must not be sent when engine directory save fails');
+  assert.equal(messages.includes('全局配置已保存'), false, `must not claim global config saved when directory save fails: ${messages.join(' | ')}`);
+  assert.ok(messages.some(m => m.includes('保存目录失败') && m.includes('api_v2.py')), `expected directory save error toast, got: ${messages.join(' | ')}`);
+  assert.equal(dom.gSovitsDirectory.value, 'D:/incomplete-engine', 'user input must be preserved on error');
+  assert.equal(dom.gTgSave.disabled, false);
+  passed++;
+});
+await withUpdateManager({
+  gDashVersionBadge: 'span', gCurrentCommit: 'span', gCurrentBranch: 'span',
+  gUpdateNoticeBox: 'div', gUpdateNoticeTitle: 'div', gUpdateNoticeDesc: 'div',
+  gUpdateNoticeIcon: 'span', gReleaseDownloadLink: 'a',
+}, {
+  buttonText: '检查新版本',
+  muteConsole: true,
+  beforeInit: dom => {
+    dom.gUpdateNoticeBox.classList.add('hidden');
+    dom.gReleaseDownloadLink.href = 'https://github.com/LevenST24/galgame2voice/releases';
+  },
+}, async ({ toastRoot, dom }) => {
+  globalThis.fetch = async (url) => String(url).includes('check_remote=true')
+    ? response({
+      current_version: '3.1.2',
       latest_version: '3.2.0',
       current_branch: 'source',
       release_url: 'https://github.com/LevenST24/galgame2voice/releases/tag/v3.2.0',
+      has_update: true,
+      error: null,
+    })
+    : response({
+      current_version: '3.1.2',
+      latest_version: null,
+      current_branch: 'source',
+      release_url: 'https://github.com/LevenST24/galgame2voice/releases',
       has_update: false,
       error: null,
     });
-    await handleCheckUpdate();
-    assert.equal(dom.gUpdateNoticeBox.classList.contains('hidden'), false);
-    assert.equal(dom.gUpdateNoticeTitle.textContent, '当前已是最新版本');
-    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
-    toastRoot.replaceChildren();
+  await handleCheckUpdate();
+  assert.equal(dom.gDashVersionBadge.textContent, '发现新版本 v3.2.0');
+  assert.equal(dom.gReleaseDownloadLink.href, 'https://github.com/LevenST24/galgame2voice/releases/tag/v3.2.0');
+  await loadSystemVersionInfo(false);
+  assert.equal(dom.gDashVersionBadge.textContent, '发现新版本 v3.2.0');
+  assert.equal(dom.gRemoteStatusTag.textContent, '发现新版本 v3.2.0');
+  assert.equal(dom.gReleaseDownloadLink.href, 'https://github.com/LevenST24/galgame2voice/releases/tag/v3.2.0');
 
-    globalThis.fetch = async () => { throw new TypeError('Failed to fetch'); };
-    await handleCheckUpdate();
-    assert.equal(dom.gUpdateNoticeBox.classList.contains('hidden'), true);
-    assert.equal(toastRoot.children.length, 1);
-    assert.equal(toastRoot.children[0].dataset.msg, '检查更新失败：暂时无法连接服务，请检查网络连接后重试');
-    assert.match(toastRoot.children[0].className, /toast-error/);
-    passed++;
-  } finally {
-    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
-    console.error = originalError;
-    console.warn = originalWarn;
-    globalThis.document = previousDocument;
-  }
-}
+  globalThis.fetch = async () => response({
+    current_version: '3.2.0',
+    latest_version: '3.2.0',
+    current_branch: 'source',
+    release_url: 'https://github.com/LevenST24/galgame2voice/releases/tag/v3.2.0',
+    has_update: false,
+    error: null,
+  });
+  await handleCheckUpdate();
+  assert.equal(dom.gUpdateNoticeBox.classList.contains('hidden'), false);
+  assert.equal(dom.gUpdateNoticeTitle.textContent, '当前已是最新版本');
+  clearToasts(toastRoot);
+
+  globalThis.fetch = async () => { throw new TypeError('Failed to fetch'); };
+  await handleCheckUpdate();
+  assert.equal(dom.gUpdateNoticeBox.classList.contains('hidden'), true);
+  assert.equal(toastRoot.children.length, 1);
+  assert.equal(toastRoot.children[0].dataset.msg, '检查更新失败：暂时无法连接服务，请检查网络连接后重试');
+  assert.match(toastRoot.children[0].className, /toast-error/);
+  passed++;
+});
 {
   // (a) handleRestartSovits failure states (400/409/500/network error) on the status card
   // must not be overwritten to '离线' or '在线' by finally fetchSystemTelemetry.
@@ -977,15 +901,10 @@ function controls(doc) {
   ];
 
   for (const tc of cases) {
-    const dom = {
-      gBtnRestartSovits: element(),
-      gBtnTogglePrecision: element(),
-      gPrecision: element('fp16'),
-      gDashSovitsBadge: element(),
-      gDashSovitsStatus: element(),
-      gDashSovitsUrl: element(),
-    };
-    initGlobalSettings(dom);
+    const dom = initGlobalDom({
+      gBtnRestartSovits: '', gBtnTogglePrecision: '', gPrecision: 'fp16',
+      gDashSovitsBadge: '', gDashSovitsStatus: '', gDashSovitsUrl: '',
+    });
     globalThis.fetch = async (url, options = {}) => {
       if (url.endsWith('/restart_sovits') && options.method === 'POST') return tc.restart();
       if (url.endsWith('/engine-status')) return response(tc.engineStatus);
@@ -1002,12 +921,10 @@ function controls(doc) {
 {
   // (b) When /api/system/status resolves before /api/system/engine-status during polling,
   // a 'starting' state must not be flashed to '离线' ('unavailable').
-  const dom = { gDashSovitsBadge: element(), gDashSovitsStatus: element(), gDashSovitsUrl: element() };
-  initGlobalSettings(dom);
-  globalThis.fetch = async url => response(url.endsWith('/engine-status')
-    ? { state: 'starting', ready: false, message: '语音引擎正在启动，模型加载中…' }
-    : { gpt_sovits: { status: 'unreachable', base_url: 'http://127.0.0.1:9880' } });
-  await fetchSystemTelemetry();
+  const dom = await pollSovitsTelemetry(
+    { state: 'starting', ready: false, message: '语音引擎正在启动，模型加载中…' },
+    { status: 'unreachable', base_url: 'http://127.0.0.1:9880' },
+  );
   assert.equal(dom.gDashSovitsBadge.textContent, '启动中');
 
   let finishEngineStatus;
