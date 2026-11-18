@@ -5,6 +5,8 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [3.2.6] - 2026-11-18
 ### Fixed
 - 修复模型没有按逐句台词格式回复（例如回了整段中文日文，或回复写到一半被截断）且语音合成迟迟不返回时，舞台对话框一直只有「……」、点一下也看不到台词的问题；现在回复文字一确定就先显示台词，语音还在准备时可以点击先看文字。
 - 修复加载语音模型时空闲内存只比安全阈值低一点点（例如 0.87 GB 对 0.90 GB）被拦下，提示却写成「系统空闲内存不足（0.9 GB < 0.9 GB）」两边一样的问题；现在提示保留两位小数，能看出实际差多少。
@@ -126,7 +128,8 @@ All notable changes to galgame2voice are documented here. The format follows
 - 修复聊天输入框超过 4000 字发送时清空草稿且报错失真，以及打开设置中心时未立即停止首页正在播放的试听语音的问题。
 - 修复在输入框使用中文/日文输入法组字时按 Esc 取消候选词会直接关闭弹窗，以及在背景选择对话框按 Tab 或 Shift+Tab 时焦点跳出对话框的问题。
 
-[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.5...HEAD
+[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.6...HEAD
+[3.2.6]: https://github.com/LevenST24/galgame2voice/compare/v3.2.5...v3.2.6
 [3.2.5]: https://github.com/LevenST24/galgame2voice/compare/v3.2.4...v3.2.5
 [3.2.4]: https://github.com/LevenST24/galgame2voice/compare/v3.2.3...v3.2.4
 [3.2.3]: https://github.com/LevenST24/galgame2voice/compare/v3.2.2...v3.2.3
