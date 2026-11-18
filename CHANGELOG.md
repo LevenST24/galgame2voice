@@ -5,6 +5,8 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fixed
+- 打开设置中心「长期记忆」时，开头把角色人设和音色都说成在当前会话里设置，改人设会让人以为只影响这一段对话；现在会写明人设在「角色与会话」里修改后对这个角色的所有会话生效，音色和语速按每段会话分别保存。
 
 ## [3.2.7] - 2026-11-18
 ### Fixed
