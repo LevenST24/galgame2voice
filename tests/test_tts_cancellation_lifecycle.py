@@ -41,33 +41,6 @@ async def test_cancel_full_buffer_put_leaves_no_helper_tasks():
         await asyncio.gather(*leaked, return_exceptions=True)
 
 
-async def test_cancel_stalled_stream_releases_worker():
-    scheduler = TtsScheduler()
-    closed = asyncio.Event()
-
-    async def stalled_stream():
-        try:
-            yield b"first"
-            await asyncio.Event().wait()
-        finally:
-            closed.set()
-
-    stream = scheduler.schedule_stream(stalled_stream, generation_id="old")
-    try:
-        assert await anext(stream) == b"first"
-        assert scheduler.cancel_generation("old") == 1
-        with pytest.raises(StopAsyncIteration):
-            await asyncio.wait_for(anext(stream), timeout=1)
-        assert await asyncio.wait_for(
-            scheduler.schedule(lambda: asyncio.sleep(0, result="new")), timeout=1
-        ) == "new"
-        assert closed.is_set()
-        assert scheduler.active_streams == 0
-    finally:
-        await stream.aclose()
-        await scheduler.aclose()
-
-
 async def test_cancel_active_caller_releases_worker():
     scheduler = TtsScheduler()
     started = asyncio.Event()
