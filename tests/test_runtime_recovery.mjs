@@ -199,8 +199,9 @@ for (const known of [true, false]) {
   }
   passed++;
 }
-{
-  // CPU-only machine without discrete GPU: hide precision toggle button and block switching to CUDA/FP16
+
+// readHardware() runs on every status poll, so the caller can replace the object between polls.
+function beginPrecisionToggle(readHardware, engineStatus = { state: 'ready', ready: true, message: '已就绪' }) {
   const dom = {
     gDashPrecisionBadge: element(),
     gDashPrecisionVal: element(),
@@ -212,25 +213,24 @@ for (const known of [true, false]) {
   initGlobalSettings(dom);
   const restartRequests = [];
   globalThis.fetch = async (url, options = {}) => {
-    if (url.endsWith('/system/status')) {
-      return response({
-        hardware: {
-          gpu_available: false,
-          gpu_name: 'Intel Iris Xe',
-          inference_precision: 'CPU',
-          precision_source: 'managed_launch',
-        },
-      });
-    }
+    if (url.endsWith('/system/status')) return response({ hardware: readHardware() });
     if (url.endsWith('/restart_sovits')) {
       restartRequests.push(options.body ? JSON.parse(options.body) : {});
       return response({ status: 'starting' });
     }
-    if (url.endsWith('/engine-status')) {
-      return response({ state: 'ready', ready: true, message: '已就绪' });
-    }
+    if (url.endsWith('/engine-status')) return response({ ...engineStatus });
     return response({});
   };
+  return { dom, restartRequests };
+}
+{
+  // CPU-only machine without discrete GPU: hide precision toggle button and block switching to CUDA/FP16
+  const { dom, restartRequests } = beginPrecisionToggle(() => ({
+    gpu_available: false,
+    gpu_name: 'Intel Iris Xe',
+    inference_precision: 'CPU',
+    precision_source: 'managed_launch',
+  }));
 
   await fetchSystemTelemetry();
 
@@ -247,36 +247,12 @@ for (const known of [true, false]) {
 }
 {
   // Machine with GPU running in CPU mode: toggle button remains visible and clicking requests FP16
-  const dom = {
-    gDashPrecisionBadge: element(),
-    gDashPrecisionVal: element(),
-    gDashDeviceVal: element(),
-    gBtnTogglePrecision: element(),
-    gBtnTogglePrecisionText: element(),
-    gBtnRestartSovits: element(),
-  };
-  initGlobalSettings(dom);
-  const restartRequests = [];
-  globalThis.fetch = async (url, options = {}) => {
-    if (url.endsWith('/system/status')) {
-      return response({
-        hardware: {
-          gpu_available: true,
-          gpu_name: 'NVIDIA GeForce RTX 4070',
-          inference_precision: 'CPU',
-          precision_source: 'managed_launch',
-        },
-      });
-    }
-    if (url.endsWith('/restart_sovits')) {
-      restartRequests.push(options.body ? JSON.parse(options.body) : {});
-      return response({ status: 'starting' });
-    }
-    if (url.endsWith('/engine-status')) {
-      return response({ state: 'ready', ready: true, message: '已就绪' });
-    }
-    return response({});
-  };
+  const { dom, restartRequests } = beginPrecisionToggle(() => ({
+    gpu_available: true,
+    gpu_name: 'NVIDIA GeForce RTX 4070',
+    inference_precision: 'CPU',
+    precision_source: 'managed_launch',
+  }));
 
   await fetchSystemTelemetry();
 
@@ -292,35 +268,13 @@ for (const known of [true, false]) {
 {
   // Transition: Poll 1 has gpu_available: false, then Poll 2 has gpu_available: undefined (legacy/external).
   // gpuAvailable must recover to default true, making toggle visible and clickable for FP16.
-  const dom = {
-    gDashPrecisionBadge: element(),
-    gDashPrecisionVal: element(),
-    gDashDeviceVal: element(),
-    gBtnTogglePrecision: element(),
-    gBtnTogglePrecisionText: element(),
-    gBtnRestartSovits: element(),
-  };
-  initGlobalSettings(dom);
   let statusHardware = {
     gpu_available: false,
     gpu_name: 'Intel Iris Xe',
     inference_precision: 'CPU',
     precision_source: 'managed_launch',
   };
-  const restartRequests = [];
-  globalThis.fetch = async (url, options = {}) => {
-    if (url.endsWith('/system/status')) {
-      return response({ hardware: statusHardware });
-    }
-    if (url.endsWith('/restart_sovits')) {
-      restartRequests.push(options.body ? JSON.parse(options.body) : {});
-      return response({ status: 'starting' });
-    }
-    if (url.endsWith('/engine-status')) {
-      return response({ state: 'ready', ready: true, message: '已就绪' });
-    }
-    return response({});
-  };
+  const { dom, restartRequests } = beginPrecisionToggle(() => statusHardware);
 
   await fetchSystemTelemetry();
   assert.equal(dom.gBtnTogglePrecision.hidden, true);
@@ -341,36 +295,12 @@ for (const known of [true, false]) {
 }
 {
   // CPU-only device mistakenly set to FP16: button remains visible and offers direct switch to CPU mode
-  const dom = {
-    gDashPrecisionBadge: element(),
-    gDashPrecisionVal: element(),
-    gDashDeviceVal: element(),
-    gBtnTogglePrecision: element(),
-    gBtnTogglePrecisionText: element(),
-    gBtnRestartSovits: element(),
-  };
-  initGlobalSettings(dom);
-  const restartRequests = [];
-  globalThis.fetch = async (url, options = {}) => {
-    if (url.endsWith('/system/status')) {
-      return response({
-        hardware: {
-          gpu_available: false,
-          gpu_name: 'Intel Iris Xe',
-          inference_precision: 'FP16',
-          precision_source: 'managed_launch',
-        },
-      });
-    }
-    if (url.endsWith('/restart_sovits')) {
-      restartRequests.push(options.body ? JSON.parse(options.body) : {});
-      return response({ status: 'starting' });
-    }
-    if (url.endsWith('/engine-status')) {
-      return response({ state: 'failed', ready: false, message: 'CUDA 不可用' });
-    }
-    return response({});
-  };
+  const { dom, restartRequests } = beginPrecisionToggle(() => ({
+    gpu_available: false,
+    gpu_name: 'Intel Iris Xe',
+    inference_precision: 'FP16',
+    precision_source: 'managed_launch',
+  }), { state: 'failed', ready: false, message: 'CUDA 不可用' });
 
   await fetchSystemTelemetry();
 
@@ -431,29 +361,27 @@ for (const known of [true, false]) {
   finishPoll(response({ state: 'failed', ready: false, message: '请重新选择引擎目录' }));
   await restart; await tick(); passed++;
 }
-{
+function lostConfigSave(readback, { getFails = false } = {}) {
   const methods = [];
   globalThis.fetch = async (_url, options) => {
     methods.push(options.method || 'GET');
-    if (options.method === 'POST') throw new TypeError('Failed to fetch');
-    return response(cfg(1.8));
+    if (getFails || options.method === 'POST') throw new TypeError('Failed to fetch');
+    return response(cfg(readback));
   };
+  return methods;
+}
+{
+  const methods = lostConfigSave(1.8);
   assert.equal((await saveConfirmedConfig({ speed_factor: 1.8 })).confirmed_after_disconnect, true);
   assert.deepEqual(methods, ['POST', 'GET']); passed++;
 }
 {
-  const methods = [];
-  globalThis.fetch = async (_url, options) => {
-    methods.push(options.method || 'GET');
-    if (options.method === 'POST') throw new TypeError('Failed to fetch');
-    return response(cfg(1));
-  };
+  const methods = lostConfigSave(1);
   await assert.rejects(saveConfirmedConfig({ speed_factor: 1.8 }), /启动.bat/);
   assert.deepEqual(methods, ['POST', 'GET']); passed++;
 }
 {
-  const methods = [];
-  globalThis.fetch = async (_url, options = {}) => { methods.push(options.method || 'GET'); throw new TypeError('Failed to fetch'); };
+  const methods = lostConfigSave(undefined, { getFails: true });
   await assert.rejects(saveConfirmedConfig({ gpt_sovits_url: 'http://127.0.0.1:9880' }), /启动.bat/);
   assert.deepEqual(methods, ['POST', 'GET']); passed++;
 }
@@ -657,6 +585,20 @@ for (const allowed of [true, false]) {
   assert.match(dom.gPrivateEndpointsStatus.textContent, /已保存/);
   assert.deepEqual(methods, ['POST', 'GET']); passed++;
 }
+function mountToastRoot(doc) {
+  const toastRoot = doc.createElement('div');
+  toastRoot.id = 'toastRoot';
+  doc.body.appendChild(toastRoot);
+  return toastRoot;
+}
+function controls(doc) {
+  return (tag, value = '', checked = false) => {
+    const el = doc.createElement(tag);
+    el.value = value;
+    el.checked = checked;
+    return el;
+  };
+}
 {
   // Retired memory, nickname, and persona controls used to ride along on every global save.
   // GET /api/config returns SettingsResponse and never contains those keys, so a lost POST
@@ -664,15 +606,8 @@ for (const allowed of [true, false]) {
   const previousDocument = globalThis.document;
   const doc = fakeDocument();
   globalThis.document = doc;
-  const toastRoot = doc.createElement('div');
-  toastRoot.id = 'toastRoot';
-  doc.body.appendChild(toastRoot);
-  const control = (tag, value, checked = false) => {
-    const el = doc.createElement(tag);
-    el.value = value;
-    el.checked = checked;
-    return el;
-  };
+  const toastRoot = mountToastRoot(doc);
+  const control = controls(doc);
   const dom = {
     gParamSovitsUrl: control('input', 'http://127.0.0.1:9880'),
     gPrecision: control('select', 'auto'),
@@ -757,9 +692,7 @@ for (const allowed of [true, false]) {
 }
 {
   const doc = fakeDocument();
-  const toastRoot = doc.createElement('div');
-  toastRoot.id = 'toastRoot';
-  doc.body.appendChild(toastRoot);
+  const toastRoot = mountToastRoot(doc);
   const dom = {
     gBtnCheckUpdate: doc.createElement('button'),
     gBtnCheckUpdateText: doc.createElement('span'),
@@ -790,9 +723,7 @@ for (const allowed of [true, false]) {
 }
 {
   const doc = fakeDocument();
-  const toastRoot = doc.createElement('div');
-  toastRoot.id = 'toastRoot';
-  doc.body.appendChild(toastRoot);
+  const toastRoot = mountToastRoot(doc);
   const throwingEl = doc.createElement('div');
   Object.defineProperty(throwingEl, 'textContent', {
     get() { throw new Error('DOM detached during update check'); },
@@ -832,15 +763,8 @@ for (const allowed of [true, false]) {
   const previousDocument = globalThis.document;
   const doc = fakeDocument();
   globalThis.document = doc;
-  const toastRoot = doc.createElement('div');
-  toastRoot.id = 'toastRoot';
-  doc.body.appendChild(toastRoot);
-  const control = (tag, value = '', checked = false) => {
-    const el = doc.createElement(tag);
-    el.value = value;
-    el.checked = checked;
-    return el;
-  };
+  const toastRoot = mountToastRoot(doc);
+  const control = controls(doc);
   const dom = {
     gParamSovitsUrl: control('input', 'http://127.0.0.1:9880'),
     gSovitsDirectory: control('input', ''),
@@ -936,9 +860,7 @@ for (const allowed of [true, false]) {
 }
 {
   const doc = fakeDocument();
-  const toastRoot = doc.createElement('div');
-  toastRoot.id = 'toastRoot';
-  doc.body.appendChild(toastRoot);
+  const toastRoot = mountToastRoot(doc);
   const dom = {
     gDashVersionBadge: doc.createElement('span'),
     gCurrentCommit: doc.createElement('span'),
