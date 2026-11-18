@@ -163,52 +163,70 @@ class TestWavConcatWithPauseSilence:
             assert silence_bytes == b"\x00" * (expected_silence_frames * 2)
 
 
+async def _run_mock_tts_stream_chat(tmp_path, stream_chunks, *, session_id, tts_options=None):
+    """Run ChatService.stream_chat with a mocked TTS/LLM adapter and record synth inputs."""
+    from unittest.mock import AsyncMock, MagicMock
+    from galgame2voice.adapters.base import ChatMessage
+    from galgame2voice.database.session import init_db
+
+    mock_tts = MagicMock()
+    captured_options = []
+    synthesized_sentences = []
+
+    async def _mock_synth(sentence, options=None, filename_prefix="chunk"):
+        captured_options.append(dict(options or {}))
+        synthesized_sentences.append(sentence)
+        p = tmp_path / f"{filename_prefix}.wav"
+        with wave.open(str(p), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes(b"\x00\x00" * 10)
+        return f"/audio/{p.name}", p, 20
+
+    mock_tts.synthesize_to_file = AsyncMock(side_effect=_mock_synth)
+    mock_tts.audio_dir = tmp_path
+
+    mock_adapter = MagicMock()
+
+    async def _mock_stream(*args, **kwargs):
+        for chunk, delay in stream_chunks:
+            if delay:
+                await asyncio.sleep(delay)
+            yield chunk
+
+    mock_adapter.stream_chat = _mock_stream
+
+    service = ChatService(tts_service=mock_tts, db_path=str(tmp_path / "test.db"))
+    service._get_active_llm_adapter = AsyncMock(return_value=(mock_adapter, "mock-model", "mock-prov"))
+    service._prepare_messages = AsyncMock(return_value=[ChatMessage(role="user", content="hi")])
+    service.affection_service = MagicMock()
+    service.affection_service.handle_turn_affection = AsyncMock(return_value={"emotion": "gentle"})
+    service.metrics_collector = MagicMock()
+    service.metrics_collector.estimate_tokens = MagicMock(return_value=10)
+    service.metrics_collector.record_metric = AsyncMock(return_value={})
+
+    await init_db(str(tmp_path / "test.db"))
+
+    stream_kwargs = {"session_id": session_id}
+    if tts_options is not None:
+        stream_kwargs["tts_options"] = tts_options
+    events = []
+    async for ev in service.stream_chat("hi", **stream_kwargs):
+        events.append(ev)
+    return captured_options, synthesized_sentences
+
+
 class TestChatServiceTextSplitMethodDefault:
     """Verifies that single sentence TTS requests default to cut0 (no comma splitting) to avoid disjoint pauses."""
 
     @pytest.mark.asyncio
     async def test_stream_chat_defaults_cut0_for_short_sentence(self, tmp_path):
-        from unittest.mock import AsyncMock, MagicMock
-        from galgame2voice.services.chat_service import ChatService
-        from galgame2voice.adapters.base import ChatMessage
-
-        mock_tts = MagicMock()
-        captured_options = []
-
-        async def _mock_synth(sentence, options=None, filename_prefix="chunk"):
-            captured_options.append(dict(options or {}))
-            p = tmp_path / f"{filename_prefix}.wav"
-            with wave.open(str(p), "wb") as w:
-                w.setnchannels(1)
-                w.setsampwidth(2)
-                w.setframerate(16000)
-                w.writeframes(b"\x00\x00" * 10)
-            return f"/audio/{p.name}", p, 20
-
-        mock_tts.synthesize_to_file = AsyncMock(side_effect=_mock_synth)
-        mock_tts.audio_dir = tmp_path
-
-        mock_adapter = MagicMock()
-        async def _mock_stream(*args, **kwargs):
-            yield '{"chinese": "你好", "japanese": "そうですね、私もそう思いますよ。"}'
-
-        mock_adapter.stream_chat = _mock_stream
-
-        service = ChatService(tts_service=mock_tts, db_path=str(tmp_path / "test.db"))
-        service._get_active_llm_adapter = AsyncMock(return_value=(mock_adapter, "mock-model", "mock-prov"))
-        service._prepare_messages = AsyncMock(return_value=[ChatMessage(role="user", content="hi")])
-        service.affection_service = MagicMock()
-        service.affection_service.handle_turn_affection = AsyncMock(return_value={"emotion": "gentle"})
-        service.metrics_collector = MagicMock()
-        service.metrics_collector.estimate_tokens = MagicMock(return_value=10)
-        service.metrics_collector.record_metric = AsyncMock(return_value={})
-
-        from galgame2voice.database.session import init_db
-        await init_db(str(tmp_path / "test.db"))
-
-        events = []
-        async for ev in service.stream_chat("hi", session_id="test_sess"):
-            events.append(ev)
+        captured_options, _ = await _run_mock_tts_stream_chat(
+            tmp_path,
+            [('{"chinese": "你好", "japanese": "そうですね、私もそう思いますよ。"}', 0)],
+            session_id="test_sess",
+        )
 
         assert len(captured_options) >= 1
         # When user does not specify text_split_method, chunk <= 80 defaults to cut0 (no comma slicing)
@@ -216,47 +234,12 @@ class TestChatServiceTextSplitMethodDefault:
 
     @pytest.mark.asyncio
     async def test_stream_chat_preserves_user_split_method_override(self, tmp_path):
-        from unittest.mock import AsyncMock, MagicMock
-        from galgame2voice.services.chat_service import ChatService
-        from galgame2voice.adapters.base import ChatMessage
-
-        mock_tts = MagicMock()
-        captured_options = []
-
-        async def _mock_synth(sentence, options=None, filename_prefix="chunk"):
-            captured_options.append(dict(options or {}))
-            p = tmp_path / f"{filename_prefix}.wav"
-            with wave.open(str(p), "wb") as w:
-                w.setnchannels(1)
-                w.setsampwidth(2)
-                w.setframerate(16000)
-                w.writeframes(b"\x00\x00" * 10)
-            return f"/audio/{p.name}", p, 20
-
-        mock_tts.synthesize_to_file = AsyncMock(side_effect=_mock_synth)
-        mock_tts.audio_dir = tmp_path
-
-        mock_adapter = MagicMock()
-        async def _mock_stream(*args, **kwargs):
-            yield '{"chinese": "你好", "japanese": "そうですね、私もそう思いますよ。"}'
-
-        mock_adapter.stream_chat = _mock_stream
-
-        service = ChatService(tts_service=mock_tts, db_path=str(tmp_path / "test.db"))
-        service._get_active_llm_adapter = AsyncMock(return_value=(mock_adapter, "mock-model", "mock-prov"))
-        service._prepare_messages = AsyncMock(return_value=[ChatMessage(role="user", content="hi")])
-        service.affection_service = MagicMock()
-        service.affection_service.handle_turn_affection = AsyncMock(return_value={"emotion": "gentle"})
-        service.metrics_collector = MagicMock()
-        service.metrics_collector.estimate_tokens = MagicMock(return_value=10)
-        service.metrics_collector.record_metric = AsyncMock(return_value={})
-
-        from galgame2voice.database.session import init_db
-        await init_db(str(tmp_path / "test.db"))
-
-        events = []
-        async for ev in service.stream_chat("hi", session_id="test_sess_override", tts_options={"text_split_method": "cut5"}):
-            events.append(ev)
+        captured_options, _ = await _run_mock_tts_stream_chat(
+            tmp_path,
+            [('{"chinese": "你好", "japanese": "そうですね、私もそう思いますよ。"}', 0)],
+            session_id="test_sess_override",
+            tts_options={"text_split_method": "cut5"},
+        )
 
         assert len(captured_options) >= 1
         # Explicit user option is respected
@@ -322,50 +305,14 @@ class TestChatServiceModalParticleSingleChunk:
 
     @pytest.mark.asyncio
     async def test_stream_chat_synthesizes_modal_particle_sentence_as_single_chunk(self, tmp_path):
-        from unittest.mock import AsyncMock, MagicMock
-        from galgame2voice.services.chat_service import ChatService
-        from galgame2voice.adapters.base import ChatMessage
-
-        mock_tts = MagicMock()
-        synthesized_sentences = []
-
-        async def _mock_synth(sentence, options=None, filename_prefix="chunk"):
-            synthesized_sentences.append(sentence)
-            p = tmp_path / f"{filename_prefix}.wav"
-            with wave.open(str(p), "wb") as w:
-                w.setnchannels(1)
-                w.setsampwidth(2)
-                w.setframerate(16000)
-                w.writeframes(b"\x00\x00" * 10)
-            return f"/audio/{p.name}", p, 20
-
-        mock_tts.synthesize_to_file = AsyncMock(side_effect=_mock_synth)
-        mock_tts.audio_dir = tmp_path
-
-        mock_adapter = MagicMock()
-        async def _mock_stream(*args, **kwargs):
-            # Stream in two parts: first ends with modal particle comma
-            yield '{"chinese": "好的", "japanese": "そうですね、'
-            await asyncio.sleep(0.01)
-            yield '私もそう思いますよ。"}'
-
-        mock_adapter.stream_chat = _mock_stream
-
-        service = ChatService(tts_service=mock_tts, db_path=str(tmp_path / "test.db"))
-        service._get_active_llm_adapter = AsyncMock(return_value=(mock_adapter, "mock-model", "mock-prov"))
-        service._prepare_messages = AsyncMock(return_value=[ChatMessage(role="user", content="hi")])
-        service.affection_service = MagicMock()
-        service.affection_service.handle_turn_affection = AsyncMock(return_value={"emotion": "gentle"})
-        service.metrics_collector = MagicMock()
-        service.metrics_collector.estimate_tokens = MagicMock(return_value=10)
-        service.metrics_collector.record_metric = AsyncMock(return_value={})
-
-        from galgame2voice.database.session import init_db
-        await init_db(str(tmp_path / "test.db"))
-
-        events = []
-        async for ev in service.stream_chat("hi", session_id="test_modal_sess"):
-            events.append(ev)
+        _, synthesized_sentences = await _run_mock_tts_stream_chat(
+            tmp_path,
+            [
+                ('{"chinese": "好的", "japanese": "そうですね、', 0),
+                ('私もそう思いますよ。"}', 0.01),
+            ],
+            session_id="test_modal_sess",
+        )
 
         # Crucial assertion: exactly 1 chunk was synthesized containing the entire thought
         assert len(synthesized_sentences) == 1

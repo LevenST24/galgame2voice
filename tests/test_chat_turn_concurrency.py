@@ -1,6 +1,7 @@
 """Concurrent chat turns must not interleave one session's persisted history."""
 
 import asyncio
+from contextlib import asynccontextmanager
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -58,6 +59,31 @@ async def concurrent_chat(tmp_path):
     await service.aclose()
 
 
+_DEFAULT_SECOND = object()
+
+
+@asynccontextmanager
+async def _blocked_shared_turn(stack, second_factory=_DEFAULT_SECOND, *, expect_blocked=True):
+    """Hold turn A on session 'shared', optionally start turn B, and cancel/gather both on exit."""
+    first = asyncio.create_task(stack.run("A", "shared"))
+    second = None
+    try:
+        await asyncio.wait_for(stack.entered["A"].wait(), 5)
+        if second_factory is not None:
+            coro = stack.run("B", "shared") if second_factory is _DEFAULT_SECOND else second_factory()
+            second = asyncio.create_task(coro)
+            if expect_blocked:
+                with pytest.raises(asyncio.TimeoutError):
+                    await asyncio.wait_for(stack.entered["B"].wait(), 0.3)
+        yield first, second
+    finally:
+        stack.release_a.set()
+        for task in (first, second):
+            if task and not task.done():
+                task.cancel()
+        await asyncio.gather(*(task for task in (first, second) if task), return_exceptions=True)
+
+
 async def test_first_turn_creates_session(concurrent_chat):
     stack = concurrent_chat
     await asyncio.wait_for(stack.run("B", "new"), 10)
@@ -66,13 +92,7 @@ async def test_first_turn_creates_session(concurrent_chat):
 
 async def test_queued_turn_does_not_recreate_deleted_session(concurrent_chat):
     stack = concurrent_chat
-    first = asyncio.create_task(stack.run("A", "shared"))
-    second = None
-    try:
-        await asyncio.wait_for(stack.entered["A"].wait(), 5)
-        second = asyncio.create_task(stack.run("B", "shared"))
-        with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(stack.entered["B"].wait(), 0.3)
+    async with _blocked_shared_turn(stack) as (first, second):
         async with get_db(stack.service.db_path) as conn:
             assert await crud.delete_session(conn, "shared")
         stack.release_a.set()
@@ -82,23 +102,11 @@ async def test_queued_turn_does_not_recreate_deleted_session(concurrent_chat):
             assert await crud.get_session(conn, "shared") is None
         assert await stack.rows("shared") == []
         assert not stack.entered["B"].is_set()
-    finally:
-        stack.release_a.set()
-        for task in (first, second):
-            if task and not task.done():
-                task.cancel()
-        await asyncio.gather(*(task for task in (first, second) if task), return_exceptions=True)
 
 
 async def test_same_session_turns_do_not_overlap_or_misorder(concurrent_chat):
     stack = concurrent_chat
-    first = asyncio.create_task(stack.run("A", "shared"))
-    second = None
-    try:
-        await asyncio.wait_for(stack.entered["A"].wait(), 5)
-        second = asyncio.create_task(stack.run("B", "shared"))
-        with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(stack.entered["B"].wait(), 0.3)
+    async with _blocked_shared_turn(stack) as (first, second):
         assert await stack.rows("shared") == [("user", "A")]
         stack.release_a.set()
         await asyncio.wait_for(asyncio.gather(first, second), 10)
@@ -107,34 +115,16 @@ async def test_same_session_turns_do_not_overlap_or_misorder(concurrent_chat):
             ("user", "B"), ("assistant", "answer to B"),
         ]
         assert [role for role, _ in stack.contexts["B"]] == ["user", "assistant", "user"]
-    finally:
-        stack.release_a.set()
-        for task in (first, second):
-            if task and not task.done():
-                task.cancel()
-        await asyncio.gather(*(task for task in (first, second) if task), return_exceptions=True)
 
 
 async def test_cancelled_turn_releases_same_session_after_cleanup(concurrent_chat):
     stack = concurrent_chat
-    first = asyncio.create_task(stack.run("A", "shared"))
-    second = None
-    try:
-        await asyncio.wait_for(stack.entered["A"].wait(), 5)
-        second = asyncio.create_task(stack.run("B", "shared"))
-        with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(stack.entered["B"].wait(), 0.3)
+    async with _blocked_shared_turn(stack) as (first, second):
         first.cancel()
         await asyncio.gather(first, return_exceptions=True)
         await asyncio.wait_for(second, 10)
         assert await stack.rows("shared") == [("user", "B"), ("assistant", "answer to B")]
         assert stack.contexts["B"] == [("user", "B")]
-    finally:
-        stack.release_a.set()
-        for task in (first, second):
-            if task and not task.done():
-                task.cancel()
-        await asyncio.gather(*(task for task in (first, second) if task), return_exceptions=True)
 
 
 async def test_different_sessions_are_allowed_to_run_concurrently(concurrent_chat):
@@ -154,13 +144,7 @@ async def test_different_sessions_are_allowed_to_run_concurrently(concurrent_cha
 
 async def test_cancelling_waiter_does_not_cancel_the_active_turn(concurrent_chat):
     stack = concurrent_chat
-    first = asyncio.create_task(stack.run("A", "shared"))
-    second = None
-    try:
-        await asyncio.wait_for(stack.entered["A"].wait(), 5)
-        second = asyncio.create_task(stack.run("B", "shared"))
-        with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(stack.entered["B"].wait(), 0.3)
+    async with _blocked_shared_turn(stack) as (first, second):
         second.cancel()
         assert isinstance((await asyncio.gather(second, return_exceptions=True))[0], asyncio.CancelledError)
         assert not first.done()
@@ -171,12 +155,6 @@ async def test_cancelling_waiter_does_not_cancel_the_active_turn(concurrent_chat
             ("user", "A"), ("assistant", "answer to A"),
             ("user", "B"), ("assistant", "answer to B"),
         ]
-    finally:
-        stack.release_a.set()
-        for task in (first, second):
-            if task and not task.done():
-                task.cancel()
-        await asyncio.gather(*(task for task in (first, second) if task), return_exceptions=True)
 
 
 async def test_unconsumed_stream_does_not_reserve_its_session(concurrent_chat):
@@ -191,35 +169,27 @@ async def test_unconsumed_stream_does_not_reserve_its_session(concurrent_chat):
 
 async def test_waiting_stream_stops_when_cancel_event_is_set(concurrent_chat):
     stack = concurrent_chat
-    first = asyncio.create_task(stack.run("A", "shared"))
     cancelled = asyncio.Event()
     stream = stack.service.stream_chat("B", session_id="shared", cancel_event=cancelled)
 
     async def consume():
         return [event async for event in stream]
 
-    second = None
     try:
-        await asyncio.wait_for(stack.entered["A"].wait(), 5)
-        second = asyncio.create_task(consume())
-        await asyncio.sleep(0.1)
-        cancelled.set()
-        await asyncio.wait_for(second, 2)
-        assert not stack.entered["B"].is_set()
-        assert await stack.rows("shared") == [("user", "A")]
-        stack.release_a.set()
-        await asyncio.wait_for(first, 10)
-        await asyncio.wait_for(stack.run("B", "shared"), 10)
-        assert await stack.rows("shared") == [
-            ("user", "A"), ("assistant", "answer to A"),
-            ("user", "B"), ("assistant", "answer to B"),
-        ]
+        async with _blocked_shared_turn(stack, consume, expect_blocked=False) as (first, second):
+            await asyncio.sleep(0.1)
+            cancelled.set()
+            await asyncio.wait_for(second, 2)
+            assert not stack.entered["B"].is_set()
+            assert await stack.rows("shared") == [("user", "A")]
+            stack.release_a.set()
+            await asyncio.wait_for(first, 10)
+            await asyncio.wait_for(stack.run("B", "shared"), 10)
+            assert await stack.rows("shared") == [
+                ("user", "A"), ("assistant", "answer to A"),
+                ("user", "B"), ("assistant", "answer to B"),
+            ]
     finally:
-        stack.release_a.set()
-        for task in (first, second):
-            if task and not task.done():
-                task.cancel()
-        await asyncio.gather(*(task for task in (first, second) if task), return_exceptions=True)
         await stream.aclose()
 
 
@@ -244,65 +214,55 @@ async def test_queued_stream_reports_progress_before_taking_the_lock(concurrent_
     )
     stack = concurrent_chat
     set_chat_service(stack.service)
-    first = asyncio.create_task(stack.run("A", "shared"))
     response = None
     try:
-        await asyncio.wait_for(stack.entered["A"].wait(), 5)
-        response = await chat_stream_endpoint(ChatRequest(prompt="B", session_id="shared"), None)
-        iterator = response.body_iterator
-        frame = await asyncio.wait_for(iterator.__anext__(), 2)
-        name, data = _sse_frame(frame)
-        assert name == "progress" and data == {"stage": "queued"}, frame
-        assert "answer to" not in frame
-        assert not stack.entered["B"].is_set()
-        stack.release_a.set()
-        rest = [chunk async for chunk in iterator]
-        events = [_sse_frame(chunk) for chunk in rest]
-        text = "".join(
-            item.get("delta_chinese", "")
-            for event_name, item in events
-            if event_name == "text" and isinstance(item, dict)
-        )
-        done = [item for event_name, item in events if event_name == "done" and isinstance(item, dict)]
-        assert "answer to B" in text
-        assert done and done[-1]["chinese"] == "answer to B"
-        assert all(event_name != "error" for event_name, _item in events)
+        async with _blocked_shared_turn(stack, None):
+            response = await chat_stream_endpoint(ChatRequest(prompt="B", session_id="shared"), None)
+            iterator = response.body_iterator
+            frame = await asyncio.wait_for(iterator.__anext__(), 2)
+            name, data = _sse_frame(frame)
+            assert name == "progress" and data == {"stage": "queued"}, frame
+            assert "answer to" not in frame
+            assert not stack.entered["B"].is_set()
+            stack.release_a.set()
+            rest = [chunk async for chunk in iterator]
+            events = [_sse_frame(chunk) for chunk in rest]
+            text = "".join(
+                item.get("delta_chinese", "")
+                for event_name, item in events
+                if event_name == "text" and isinstance(item, dict)
+            )
+            done = [item for event_name, item in events if event_name == "done" and isinstance(item, dict)]
+            assert "answer to B" in text
+            assert done and done[-1]["chinese"] == "answer to B"
+            assert all(event_name != "error" for event_name, _item in events)
     finally:
         set_chat_service(None)
-        stack.release_a.set()
-        if not first.done():
-            first.cancel()
-        await asyncio.gather(first, return_exceptions=True)
         if response is not None:
             await response.body_iterator.aclose()
 
 
 async def test_waiting_stream_sends_queued_progress_and_closes_owned_waiter(concurrent_chat):
     stack = concurrent_chat
-    first = asyncio.create_task(stack.run("A", "shared"))
     stream = stack.service.stream_chat("B", session_id="shared")
     try:
-        await asyncio.wait_for(stack.entered["A"].wait(), 5)
-        event = await asyncio.wait_for(stream.__anext__(), 7)
-        assert event.get("event") == "progress"
-        assert event.get("data") == {"stage": "queued"}
-        assert not stack.entered["B"].is_set()
-        # Let the waiter potentially acquire ownership while the generator is
-        # suspended at its heartbeat, then close without resuming the stream.
-        stack.release_a.set()
-        await asyncio.wait_for(first, 10)
-        await asyncio.sleep(0.05)
-        await stream.aclose()
-        await asyncio.wait_for(stack.run("B", "shared"), 10)
-        assert await stack.rows("shared") == [
-            ("user", "A"), ("assistant", "answer to A"),
-            ("user", "B"), ("assistant", "answer to B"),
-        ]
+        async with _blocked_shared_turn(stack, None) as (first, _):
+            event = await asyncio.wait_for(stream.__anext__(), 7)
+            assert event.get("event") == "progress"
+            assert event.get("data") == {"stage": "queued"}
+            assert not stack.entered["B"].is_set()
+            # Let the waiter potentially acquire ownership while the generator is
+            # suspended at its heartbeat, then close without resuming the stream.
+            stack.release_a.set()
+            await asyncio.wait_for(first, 10)
+            await asyncio.sleep(0.05)
+            await stream.aclose()
+            await asyncio.wait_for(stack.run("B", "shared"), 10)
+            assert await stack.rows("shared") == [
+                ("user", "A"), ("assistant", "answer to A"),
+                ("user", "B"), ("assistant", "answer to B"),
+            ]
     finally:
-        stack.release_a.set()
-        if not first.done():
-            first.cancel()
-        await asyncio.gather(first, return_exceptions=True)
         await stream.aclose()
 
 
@@ -319,30 +279,20 @@ async def test_turn_ownership_is_shared_by_database_and_session(concurrent_chat,
     async def consume_other():
         return [event async for event in other.stream_chat("B", session_id="shared")]
 
-    first = asyncio.create_task(stack.run("A", "shared"))
-    second = None
     try:
-        await asyncio.wait_for(stack.entered["A"].wait(), 5)
-        second = asyncio.create_task(consume_other())
-        if same_database:
-            with pytest.raises(asyncio.TimeoutError):
-                await asyncio.wait_for(stack.entered["B"].wait(), 0.3)
-            stack.release_a.set()
-            await asyncio.wait_for(asyncio.gather(first, second), 10)
-            assert await stack.rows("shared") == [
-                ("user", "A"), ("assistant", "answer to A"),
-                ("user", "B"), ("assistant", "answer to B"),
-            ]
-        else:
-            await asyncio.wait_for(stack.entered["B"].wait(), 5)
-            await asyncio.wait_for(second, 10)
-            assert not first.done()
+        async with _blocked_shared_turn(stack, consume_other, expect_blocked=same_database) as (first, second):
+            if same_database:
+                stack.release_a.set()
+                await asyncio.wait_for(asyncio.gather(first, second), 10)
+                assert await stack.rows("shared") == [
+                    ("user", "A"), ("assistant", "answer to A"),
+                    ("user", "B"), ("assistant", "answer to B"),
+                ]
+            else:
+                await asyncio.wait_for(stack.entered["B"].wait(), 5)
+                await asyncio.wait_for(second, 10)
+                assert not first.done()
     finally:
-        stack.release_a.set()
-        for task in (first, second):
-            if task and not task.done():
-                task.cancel()
-        await asyncio.gather(*(task for task in (first, second) if task), return_exceptions=True)
         await other.aclose()
 
 

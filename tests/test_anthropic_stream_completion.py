@@ -1,3 +1,4 @@
+import json
 from unittest.mock import AsyncMock, MagicMock
 import pytest
 
@@ -12,6 +13,38 @@ pytest_plugins = ["tests.test_stream_reply_lines"]
 _ANTHROPIC_CLIENT_PATCH = "galgame2voice.adapters.llm.anthropic_adapter.create_async_client"
 
 
+async def _run_anthropic_stream(
+    coordinator_factory,
+    monkeypatch,
+    *,
+    text: str | None = None,
+    stop_reason: str | None = None,
+    message_stop: bool = False,
+    cancel_on_text: bool = False,
+):
+    parts = []
+    if text is not None:
+        parts.append(
+            "event: content_block_delta\n"
+            f'data: {{"type":"content_block_delta","delta":{{"type":"text_delta","text":{json.dumps(text, ensure_ascii=False)}}}}}\n\n'
+        )
+    if stop_reason is not None:
+        parts.append(
+            "event: message_delta\n"
+            f'data: {{"type":"message_delta","delta":{{"stop_reason":"{stop_reason}"}}}}\n\n'
+        )
+    if message_stop:
+        parts.append('event: message_stop\ndata: {"type":"message_stop"}\n\n')
+    coordinator, database, events = await drive_stream_completion(
+        coordinator_factory, monkeypatch,
+        adapter_cls=AnthropicAdapter, client_patch=_ANTHROPIC_CLIENT_PATCH,
+        sse_body="".join(parts), cancel_on_text=cancel_on_text,
+    )
+    errors = [e for e in events if e.get("event") == "error"]
+    dones = [e for e in events if e.get("event") == "done"]
+    return coordinator, database, events, errors, dones
+
+
 @pytest.mark.asyncio
 async def test_anthropic_stream_early_eof_without_terminal_signals(coordinator_factory, monkeypatch):
     """
@@ -23,18 +56,9 @@ async def test_anthropic_stream_early_eof_without_terminal_signals(coordinator_f
       - Emit Chinese incomplete/retry guidance error and final done with truncated=True.
       - Never award favorability (affection_calls == 0).
     """
-    sse_body = (
-        'event: content_block_delta\n'
-        'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"{\\"chinese\\":\\"已经收到但未结束"}}\n\n'
+    coordinator, database, events, errors, dones = await _run_anthropic_stream(
+        coordinator_factory, monkeypatch, text='{"chinese":"已经收到但未结束',
     )
-    coordinator, database, events = await drive_stream_completion(
-        coordinator_factory, monkeypatch,
-        adapter_cls=AnthropicAdapter, client_patch=_ANTHROPIC_CLIENT_PATCH,
-        sse_body=sse_body,
-    )
-
-    errors = [e for e in events if e.get("event") == "error"]
-    dones = [e for e in events if e.get("event") == "done"]
 
     assert len(errors) == 1, f"Expected 1 error event for incomplete stream, got {events}"
     assert "未完整" in errors[0]["data"]["error"] or "中断" in errors[0]["data"]["error"] or "重试" in errors[0]["data"]["error"]
@@ -60,22 +84,10 @@ async def test_anthropic_stream_nonempty_max_tokens_truncation(coordinator_facto
       - Final done has truncated=True.
       - Never award favorability (affection_calls == 0).
     """
-    sse_body = (
-        'event: content_block_delta\n'
-        'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"{\\"chinese\\":\\"已经收到但未结束"}}\n\n'
-        'event: message_delta\n'
-        'data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"}}\n\n'
-        'event: message_stop\n'
-        'data: {"type":"message_stop"}\n\n'
-    )
-    coordinator, database, events = await drive_stream_completion(
+    coordinator, database, events, errors, dones = await _run_anthropic_stream(
         coordinator_factory, monkeypatch,
-        adapter_cls=AnthropicAdapter, client_patch=_ANTHROPIC_CLIENT_PATCH,
-        sse_body=sse_body,
+        text='{"chinese":"已经收到但未结束', stop_reason="max_tokens", message_stop=True,
     )
-
-    errors = [e for e in events if e.get("event") == "error"]
-    dones = [e for e in events if e.get("event") == "done"]
 
     assert len(errors) == 1, f"Expected 1 error/diagnostic for length truncation, got {events}"
     assert "长度" in errors[0]["data"]["error"]
@@ -95,19 +107,9 @@ async def test_anthropic_stream_empty_max_tokens_length_diagnosis(coordinator_fa
     """
     Case D: Empty content + stop_reason='max_tokens' must produce EmptyReplyError with length diagnosis.
     """
-    sse_body = (
-        'event: message_delta\n'
-        'data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"}}\n\n'
-        'event: message_stop\n'
-        'data: {"type":"message_stop"}\n\n'
+    coordinator, _, _, errors, dones = await _run_anthropic_stream(
+        coordinator_factory, monkeypatch, stop_reason="max_tokens", message_stop=True,
     )
-    coordinator, _, events = await drive_stream_completion(
-        coordinator_factory, monkeypatch,
-        adapter_cls=AnthropicAdapter, client_patch=_ANTHROPIC_CLIENT_PATCH,
-        sse_body=sse_body,
-    )
-    errors = [e for e in events if e.get("event") == "error"]
-    dones = [e for e in events if e.get("event") == "done"]
 
     assert len(errors) == 1
     assert errors[0]["data"]["kind"] == "empty_reply"
@@ -121,22 +123,11 @@ async def test_anthropic_stream_end_turn_message_stop_succeeds(coordinator_facto
     """
     Case B: Native Anthropic message_delta.stop_reason='end_turn' + message_stop (no OpenAI DONE) succeeds.
     """
-    sse_body = (
-        'event: content_block_delta\n'
-        'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"{\\"chinese\\":\\"完整回答\\",\\"japanese\\":\\"完全な回答\\"}"}}\n\n'
-        'event: message_delta\n'
-        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n'
-        'event: message_stop\n'
-        'data: {"type":"message_stop"}\n\n'
-    )
-    coordinator, _, events = await drive_stream_completion(
+    coordinator, _, _, errors, dones = await _run_anthropic_stream(
         coordinator_factory, monkeypatch,
-        adapter_cls=AnthropicAdapter, client_patch=_ANTHROPIC_CLIENT_PATCH,
-        sse_body=sse_body,
+        text='{"chinese":"完整回答","japanese":"完全な回答"}',
+        stop_reason="end_turn", message_stop=True,
     )
-
-    errors = [e for e in events if e.get("event") == "error"]
-    dones = [e for e in events if e.get("event") == "done"]
 
     assert len(errors) == 0
     assert len(dones) == 1
@@ -150,19 +141,11 @@ async def test_anthropic_stream_end_turn_without_message_stop_succeeds(coordinat
     """
     Case B2: Explicit end_turn without message_stop is also valid and succeeds.
     """
-    sse_body = (
-        'event: content_block_delta\n'
-        'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"{\\"chinese\\":\\"完整回答\\",\\"japanese\\":\\"完全な回答\\"}"}}\n\n'
-        'event: message_delta\n'
-        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n'
-    )
-    coordinator, _, events = await drive_stream_completion(
+    coordinator, _, _, errors, dones = await _run_anthropic_stream(
         coordinator_factory, monkeypatch,
-        adapter_cls=AnthropicAdapter, client_patch=_ANTHROPIC_CLIENT_PATCH,
-        sse_body=sse_body,
+        text='{"chinese":"完整回答","japanese":"完全な回答"}',
+        stop_reason="end_turn",
     )
-    errors = [e for e in events if e.get("event") == "error"]
-    dones = [e for e in events if e.get("event") == "done"]
 
     assert len(errors) == 0
     assert len(dones) == 1
@@ -175,21 +158,11 @@ async def test_anthropic_stream_stop_sequence_succeeds(coordinator_factory, monk
     """
     Case B3: stop_reason='stop_sequence' is a normal completion and succeeds.
     """
-    sse_body = (
-        'event: content_block_delta\n'
-        'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"{\\"chinese\\":\\"完整回答\\",\\"japanese\\":\\"完全な回答\\"}"}}\n\n'
-        'event: message_delta\n'
-        'data: {"type":"message_delta","delta":{"stop_reason":"stop_sequence"}}\n\n'
-        'event: message_stop\n'
-        'data: {"type":"message_stop"}\n\n'
-    )
-    coordinator, _, events = await drive_stream_completion(
+    coordinator, _, _, errors, dones = await _run_anthropic_stream(
         coordinator_factory, monkeypatch,
-        adapter_cls=AnthropicAdapter, client_patch=_ANTHROPIC_CLIENT_PATCH,
-        sse_body=sse_body,
+        text='{"chinese":"完整回答","japanese":"完全な回答"}',
+        stop_reason="stop_sequence", message_stop=True,
     )
-    errors = [e for e in events if e.get("event") == "error"]
-    dones = [e for e in events if e.get("event") == "done"]
 
     assert len(errors) == 0
     assert len(dones) == 1
@@ -202,17 +175,11 @@ async def test_anthropic_stream_client_cancellation_exits(coordinator_factory, m
     """
     Client cancellation while streaming exits with truncated=True.
     """
-    sse_body = (
-        'event: content_block_delta\n'
-        'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"{\\"chinese\\":\\"句一。句二。"}}\n\n'
-    )
-    coordinator, _, events = await drive_stream_completion(
+    coordinator, _, _, _, dones = await _run_anthropic_stream(
         coordinator_factory, monkeypatch,
-        adapter_cls=AnthropicAdapter, client_patch=_ANTHROPIC_CLIENT_PATCH,
-        sse_body=sse_body, cancel_on_text=True,
+        text='{"chinese":"句一。句二。', cancel_on_text=True,
     )
 
-    dones = [e for e in events if e.get("event") == "done"]
     assert len(dones) == 1
     assert dones[0]["data"]["truncated"] is True
     coordinator.affection_service.handle_turn_affection.assert_not_called()

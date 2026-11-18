@@ -89,6 +89,24 @@ async def drive_stream_completion(
     return coordinator, database, events
 
 
+async def _run_openai_stream(
+    coordinator_factory,
+    monkeypatch,
+    *,
+    sse_body: str | None = None,
+    response_factory=None,
+    cancel_on_text: bool = False,
+):
+    coordinator, database, events = await drive_stream_completion(
+        coordinator_factory, monkeypatch,
+        adapter_cls=OpenAICompatibleLLMAdapter, client_patch=_OPENAI_CLIENT_PATCH,
+        sse_body=sse_body, response_factory=response_factory, cancel_on_text=cancel_on_text,
+    )
+    errors = [e for e in events if e.get("event") == "error"]
+    dones = [e for e in events if e.get("event") == "done"]
+    return coordinator, database, events, errors, dones
+
+
 @pytest.mark.asyncio
 async def test_openai_stream_early_eof_without_terminal_signals(coordinator_factory, monkeypatch):
     """
@@ -101,14 +119,9 @@ async def test_openai_stream_early_eof_without_terminal_signals(coordinator_fact
       - Never award favorability (affection_calls == 0).
     """
     sse_body = 'data: {"choices":[{"delta":{"content":"{\\"chinese\\":\\"已经收到但未结束"}}]}\n\n'
-    coordinator, database, events = await drive_stream_completion(
-        coordinator_factory, monkeypatch,
-        adapter_cls=OpenAICompatibleLLMAdapter, client_patch=_OPENAI_CLIENT_PATCH,
-        sse_body=sse_body,
+    coordinator, database, events, errors, dones = await _run_openai_stream(
+        coordinator_factory, monkeypatch, sse_body=sse_body,
     )
-
-    errors = [e for e in events if e.get("event") == "error"]
-    dones = [e for e in events if e.get("event") == "done"]
 
     assert len(errors) == 1, f"Expected 1 error event for incomplete stream, got {events}"
     assert "未完整" in errors[0]["data"]["error"] or "中断" in errors[0]["data"]["error"] or "重试" in errors[0]["data"]["error"]
@@ -139,14 +152,9 @@ async def test_openai_stream_nonempty_length_truncation(coordinator_factory, mon
         'data: {"choices":[{"delta":{"content":"{\\"chinese\\":\\"已经收到但未结束"}}]}\n\n'
         'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'
     )
-    coordinator, _, events = await drive_stream_completion(
-        coordinator_factory, monkeypatch,
-        adapter_cls=OpenAICompatibleLLMAdapter, client_patch=_OPENAI_CLIENT_PATCH,
-        sse_body=sse_body,
+    coordinator, _, events, errors, dones = await _run_openai_stream(
+        coordinator_factory, monkeypatch, sse_body=sse_body,
     )
-
-    errors = [e for e in events if e.get("event") == "error"]
-    dones = [e for e in events if e.get("event") == "done"]
 
     assert len(errors) == 1, f"Expected 1 error/diagnostic for length truncation, got {events}"
     assert "长度" in errors[0]["data"]["error"]
@@ -168,14 +176,9 @@ async def test_openai_stream_stop_without_done_compatibility_control(coordinator
         'data: {"choices":[{"delta":{"content":"{\\"chinese\\":\\"完整回答\\",\\"japanese\\":\\"完全な回答\\"}"}}]}\n\n'
         'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
     )
-    coordinator, _, events = await drive_stream_completion(
-        coordinator_factory, monkeypatch,
-        adapter_cls=OpenAICompatibleLLMAdapter, client_patch=_OPENAI_CLIENT_PATCH,
-        sse_body=sse_body,
+    coordinator, _, _, errors, dones = await _run_openai_stream(
+        coordinator_factory, monkeypatch, sse_body=sse_body,
     )
-
-    errors = [e for e in events if e.get("event") == "error"]
-    dones = [e for e in events if e.get("event") == "done"]
 
     assert len(errors) == 0, f"Expected 0 errors for valid stop stream, got {errors}"
     assert len(dones) == 1
@@ -193,13 +196,9 @@ async def test_openai_stream_done_succeeds(coordinator_factory, monkeypatch):
         'data: {"choices":[{"delta":{"content":"{\\"chinese\\":\\"正常完成\\",\\"japanese\\":\\"完了\\"}"}}]}\n\n'
         'data: [DONE]\n\n'
     )
-    coordinator, _, events = await drive_stream_completion(
-        coordinator_factory, monkeypatch,
-        adapter_cls=OpenAICompatibleLLMAdapter, client_patch=_OPENAI_CLIENT_PATCH,
-        sse_body=sse_body,
+    coordinator, _, _, errors, dones = await _run_openai_stream(
+        coordinator_factory, monkeypatch, sse_body=sse_body,
     )
-    errors = [e for e in events if e.get("event") == "error"]
-    dones = [e for e in events if e.get("event") == "done"]
 
     assert len(errors) == 0
     assert len(dones) == 1
@@ -213,13 +212,9 @@ async def test_openai_stream_empty_length_keeps_original_diagnosis(coordinator_f
     Empty content + finish_reason='length' retains original EmptyReplyError diagnosis.
     """
     sse_body = 'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'
-    coordinator, _, events = await drive_stream_completion(
-        coordinator_factory, monkeypatch,
-        adapter_cls=OpenAICompatibleLLMAdapter, client_patch=_OPENAI_CLIENT_PATCH,
-        sse_body=sse_body,
+    coordinator, _, _, errors, dones = await _run_openai_stream(
+        coordinator_factory, monkeypatch, sse_body=sse_body,
     )
-    errors = [e for e in events if e.get("event") == "error"]
-    dones = [e for e in events if e.get("event") == "done"]
 
     assert len(errors) == 1
     assert errors[0]["data"]["kind"] == "empty_reply"
@@ -233,13 +228,10 @@ async def test_openai_stream_explicit_provider_error_terminal_without_done(coord
     """
     Explicit provider error (500) before content raises error, emits error event and NO done event.
     """
-    coordinator, _, events = await drive_stream_completion(
+    coordinator, _, _, errors, dones = await _run_openai_stream(
         coordinator_factory, monkeypatch,
-        adapter_cls=OpenAICompatibleLLMAdapter, client_patch=_OPENAI_CLIENT_PATCH,
         response_factory=lambda _request: httpx.Response(500, text="Internal Server Error"),
     )
-    errors = [e for e in events if e.get("event") == "error"]
-    dones = [e for e in events if e.get("event") == "done"]
 
     assert len(errors) == 1
     assert len(dones) == 0
@@ -252,13 +244,10 @@ async def test_openai_stream_client_cancellation_exits(coordinator_factory, monk
     Cancellation while streaming exits with truncated=True.
     """
     sse_body = 'data: {"choices":[{"delta":{"content":"{\\"chinese\\":\\"句一。句二。"}}]}\n\n'
-    coordinator, _, events = await drive_stream_completion(
-        coordinator_factory, monkeypatch,
-        adapter_cls=OpenAICompatibleLLMAdapter, client_patch=_OPENAI_CLIENT_PATCH,
-        sse_body=sse_body, cancel_on_text=True,
+    coordinator, _, _, _, dones = await _run_openai_stream(
+        coordinator_factory, monkeypatch, sse_body=sse_body, cancel_on_text=True,
     )
 
-    dones = [e for e in events if e.get("event") == "done"]
     assert len(dones) == 1
     assert dones[0]["data"]["truncated"] is True
     coordinator.affection_service.handle_turn_affection.assert_not_called()
@@ -296,6 +285,14 @@ class TestStreamingSSEParser:
         chunk_false = {"error": False, "choices": [{"delta": {"content": "StillValid"}}]}
         assert extract_stream_token(chunk_false) == "StillValid"
 
+    @staticmethod
+    async def _collect_sse_tokens(lines):
+        async def line_gen():
+            for line in lines:
+                yield line
+
+        return [t async for t in parse_sse_lines(line_gen())]
+
     @pytest.mark.asyncio
     async def test_parse_sse_lines_fragmented_and_comments(self):
         lines = [
@@ -308,13 +305,7 @@ class TestStreamingSSEParser:
             'data: [DONE]',
         ]
 
-        async def line_gen():
-            for line in lines:
-                yield line
-
-        tokens = []
-        async for t in parse_sse_lines(line_gen()):
-            tokens.append(t)
+        tokens = await self._collect_sse_tokens(lines)
 
         assert "".join(tokens) == "Fragmented Resolved"
 
@@ -327,13 +318,7 @@ class TestStreamingSSEParser:
             'data: [DONE]',
         ]
 
-        async def line_gen():
-            for line in lines:
-                yield line
-
-        tokens = []
-        async for t in parse_sse_lines(line_gen()):
-            tokens.append(t)
+        tokens = await self._collect_sse_tokens(lines)
 
         assert "".join(tokens) == "Start End"
 
@@ -347,9 +332,5 @@ class TestStreamingSSEParser:
             'data: [DONE]',
         ]
 
-        async def line_gen():
-            for line in lines:
-                yield line
-
-        tokens = [t async for t in parse_sse_lines(line_gen())]
+        tokens = await self._collect_sse_tokens(lines)
         assert "".join(tokens) == "MultiFragmentTriplet"
