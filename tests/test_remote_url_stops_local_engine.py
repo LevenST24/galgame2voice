@@ -27,372 +27,49 @@ def clean_sovits_env(monkeypatch, tmp_path):
     monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
 
 
-@pytest.mark.asyncio
-async def test_saving_remote_url_stops_owned_local_engine(monkeypatch, tmp_path):
-    monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
-    pid_file = tmp_path / "gptsovits.pid"
-    pid_file.write_text("4242", encoding="utf-8")
-
-    proc = MagicMock(pid=4242)
-    proc.poll.return_value = None
+def _set_spawned_engine(monkeypatch, proc=None, launch=None, started_at=None):
     monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", proc)
-    monkeypatch.setattr(
-        run_server,
-        "_SPAWNED_SOVITS_LAUNCH",
-        EngineLaunch(proc, HOST, PORT, "cuda", True, started_at=1.0),
-    )
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", 1.0)
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", launch)
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", started_at)
 
+
+def _setup_owned_engine(monkeypatch, tmp_path=None, *, pid=4242, poll_value=None):
+    pid_file = None
+    if tmp_path is not None:
+        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
+        pid_file = tmp_path / "gptsovits.pid"
+        pid_file.write_text(str(pid), encoding="utf-8")
+
+    proc = MagicMock(pid=pid)
+    proc.poll.return_value = poll_value
+    launch = EngineLaunch(proc, HOST, PORT, "cuda", True, started_at=1.0)
+    _set_spawned_engine(monkeypatch, proc, launch, 1.0)
+    return pid_file, proc, launch
+
+
+def _stub_terminate(monkeypatch, mark_exited_proc=None):
     killed = []
 
     def terminate(pid, timeout=2.0):
         killed.append(pid)
-        proc.poll.return_value = 0
+        if mark_exited_proc is not None:
+            mark_exited_proc.poll.return_value = 0
 
     monkeypatch.setattr(run_server, "terminate_process_tree", terminate)
+    return killed
 
+
+async def _post_sovits_url(url: str):
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
-        resp = await client.post("/api/config", json={"gpt_sovits_url": REMOTE_URL})
-
-    assert resp.status_code == 200
-    assert resp.json()["effective_sovits_url"] == REMOTE_URL
-    assert resp.json()["effective_sovits_source"] == "db"
-    assert killed == [4242], f"Expected owned process 4242 to be terminated, got: {killed}"
-    assert run_server._SPAWNED_SOVITS_PROC is None
-    assert run_server._SPAWNED_SOVITS_LAUNCH is None
-    assert run_server._SPAWNED_SOVITS_STARTED_AT is None
-    assert not pid_file.exists()
+        return await client.post("/api/config", json={"gpt_sovits_url": url})
 
 
-@pytest.mark.asyncio
-async def test_saving_local_url_preserves_owned_local_engine(monkeypatch, tmp_path):
-    pid_file = tmp_path / "gptsovits.pid"
-    pid_file.write_text("4242", encoding="utf-8")
-
-    proc = MagicMock(pid=4242)
-    proc.poll.return_value = None
-    launch = EngineLaunch(proc, HOST, PORT, "cuda", True, started_at=1.0)
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", proc)
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", launch)
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", 1.0)
-
-    killed = []
-    monkeypatch.setattr(
-        run_server,
-        "terminate_process_tree",
-        lambda pid, timeout=2.0: killed.append(pid),
-    )
-
-    app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
-        resp = await client.post("/api/config", json={"gpt_sovits_url": LOCAL_URL})
-
-    assert resp.status_code == 200
-    assert resp.json()["effective_sovits_url"] == LOCAL_URL
-    assert resp.json()["effective_sovits_source"] == "default"
-    assert killed == [], f"Expected no process to be killed, got: {killed}"
-    assert run_server._SPAWNED_SOVITS_PROC is proc
-    assert run_server._SPAWNED_SOVITS_LAUNCH is launch
-    assert run_server._SPAWNED_SOVITS_STARTED_AT == 1.0
-    assert pid_file.exists()
-
-
-@pytest.mark.asyncio
-async def test_saving_remote_url_without_owned_engine_does_not_terminate(monkeypatch):
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", None)
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", None)
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", None)
-
-    killed = []
-    monkeypatch.setattr(
-        run_server,
-        "terminate_process_tree",
-        lambda pid, timeout=2.0: killed.append(pid),
-    )
-
-    app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
-        resp = await client.post("/api/config", json={"gpt_sovits_url": REMOTE_URL})
-
-    assert resp.status_code == 200
-    assert resp.json()["effective_sovits_url"] == REMOTE_URL
-    assert resp.json()["effective_sovits_source"] == "db"
-    assert killed == []
-    assert run_server._SPAWNED_SOVITS_PROC is None
-    assert run_server._SPAWNED_SOVITS_LAUNCH is None
-
-
-@pytest.mark.asyncio
-async def test_saving_remote_url_when_owned_engine_already_exited(monkeypatch, tmp_path):
-    monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
-    pid_file = tmp_path / "gptsovits.pid"
-    pid_file.write_text("4242", encoding="utf-8")
-
-    proc = MagicMock(pid=4242)
-    proc.poll.return_value = 1  # already dead
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", proc)
-    monkeypatch.setattr(
-        run_server,
-        "_SPAWNED_SOVITS_LAUNCH",
-        EngineLaunch(proc, HOST, PORT, "cuda", True, started_at=1.0),
-    )
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", 1.0)
-
-    killed = []
-    monkeypatch.setattr(
-        run_server,
-        "terminate_process_tree",
-        lambda pid, timeout=2.0: killed.append(pid),
-    )
-
-    app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
-        resp = await client.post("/api/config", json={"gpt_sovits_url": REMOTE_URL})
-
-    assert resp.status_code == 200
-    assert resp.json()["effective_sovits_url"] == REMOTE_URL
-    assert resp.json()["effective_sovits_source"] == "db"
-    assert killed == [], "Must not call terminate_process_tree on an already dead process"
-    assert run_server._SPAWNED_SOVITS_PROC is None
-    assert run_server._SPAWNED_SOVITS_LAUNCH is None
-    assert run_server._SPAWNED_SOVITS_STARTED_AT is None
-    assert not pid_file.exists()
-
-
-@pytest.mark.asyncio
-async def test_explicit_local_env_var_overrides_remote_config_and_preserves_engine(monkeypatch, tmp_path):
-    """When an explicit env var forces a local endpoint, saving a remote DB URL does not kill the engine."""
-    pid_file = tmp_path / "gptsovits.pid"
-    pid_file.write_text("4242", encoding="utf-8")
-
-    monkeypatch.setenv("GALGAME2VOICE_GPT_SOVITS_BASE_URL", LOCAL_URL)
-    proc = MagicMock(pid=4242)
-    proc.poll.return_value = None
-    launch = EngineLaunch(proc, HOST, PORT, "cuda", True, started_at=1.0)
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", proc)
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", launch)
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", 1.0)
-
-    killed = []
-    monkeypatch.setattr(
-        run_server,
-        "terminate_process_tree",
-        lambda pid, timeout=2.0: killed.append(pid),
-    )
-
-    app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
-        resp = await client.post("/api/config", json={"gpt_sovits_url": REMOTE_URL})
-
-    assert resp.status_code == 200
-    assert resp.json()["effective_sovits_url"] == LOCAL_URL
-    assert resp.json()["effective_sovits_source"] == "env"
-    assert killed == []
-    assert run_server._SPAWNED_SOVITS_PROC is proc
-    assert run_server._SPAWNED_SOVITS_LAUNCH is launch
-    assert run_server._SPAWNED_SOVITS_STARTED_AT == 1.0
-    assert pid_file.exists()
-
-
-@pytest.mark.asyncio
-async def test_explicit_remote_env_var_overrides_local_config_and_stops_engine(monkeypatch, tmp_path):
-    """When an explicit env var forces a remote endpoint, saving a local DB URL still stops the engine."""
-    pid_file = tmp_path / "gptsovits.pid"
-    pid_file.write_text("4242", encoding="utf-8")
-
-    monkeypatch.setenv("GALGAME2VOICE_GPT_SOVITS_BASE_URL", REMOTE_URL)
-    proc = MagicMock(pid=4242)
-    proc.poll.return_value = None
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", proc)
-    monkeypatch.setattr(
-        run_server,
-        "_SPAWNED_SOVITS_LAUNCH",
-        EngineLaunch(proc, HOST, PORT, "cuda", True, started_at=1.0),
-    )
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", 1.0)
-
-    killed = []
-
-    def terminate(pid, timeout=2.0):
-        killed.append(pid)
-        proc.poll.return_value = 0
-
-    monkeypatch.setattr(run_server, "terminate_process_tree", terminate)
-
-    app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
-        resp = await client.post("/api/config", json={"gpt_sovits_url": LOCAL_URL})
-
-    assert resp.status_code == 200
-    assert resp.json()["effective_sovits_url"] == REMOTE_URL
-    assert resp.json()["effective_sovits_source"] == "env"
-    assert killed == [4242]
-    assert run_server._SPAWNED_SOVITS_PROC is None
-    assert run_server._SPAWNED_SOVITS_LAUNCH is None
-    assert run_server._SPAWNED_SOVITS_STARTED_AT is None
-    assert not pid_file.exists()
-
-
-@pytest.mark.asyncio
-async def test_saving_remote_url_preserves_records_when_termination_fails_and_process_alive(monkeypatch, tmp_path):
-    """If terminate_process_tree fails and process is still running, records and PID file are preserved."""
-    monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
-    pid_file = tmp_path / "gptsovits.pid"
-    pid_file.write_text("4242", encoding="utf-8")
-
-    proc = MagicMock(pid=4242)
-    proc.poll.return_value = None  # process is still running
-    launch = EngineLaunch(proc, HOST, PORT, "cuda", True, started_at=1.0)
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", proc)
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", launch)
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", 1.0)
-
-    def failing_kill(pid, timeout=2.0):
-        raise RuntimeError("process kill failed")
-
-    monkeypatch.setattr(run_server, "terminate_process_tree", failing_kill)
-
-    app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
-        resp = await client.post("/api/config", json={"gpt_sovits_url": REMOTE_URL})
-
-    assert resp.status_code == 200
-    assert resp.json()["effective_sovits_url"] == REMOTE_URL
-    assert run_server._SPAWNED_SOVITS_PROC is proc
-    assert run_server._SPAWNED_SOVITS_LAUNCH is launch
-    assert run_server._SPAWNED_SOVITS_STARTED_AT == 1.0
-    assert pid_file.exists()
-
-
-@pytest.mark.asyncio
-async def test_saving_remote_url_preserves_records_when_wait_times_out(monkeypatch, tmp_path):
-    """If proc.wait times out and process is still running, records and PID file are preserved."""
-    monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
-    pid_file = tmp_path / "gptsovits.pid"
-    pid_file.write_text("4242", encoding="utf-8")
-
-    proc = MagicMock(pid=4242)
-    proc.poll.return_value = None
-    proc.wait.side_effect = subprocess.TimeoutExpired(cmd="fake", timeout=3)
-    launch = EngineLaunch(proc, HOST, PORT, "cuda", True, started_at=1.0)
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", proc)
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", launch)
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", 1.0)
-
-    killed = []
-    monkeypatch.setattr(
-        run_server,
-        "terminate_process_tree",
-        lambda pid, timeout=2.0: killed.append(pid),
-    )
-
-    app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
-        resp = await client.post("/api/config", json={"gpt_sovits_url": REMOTE_URL})
-
-    assert resp.status_code == 200
-    assert killed == [4242]
-    assert run_server._SPAWNED_SOVITS_PROC is proc
-    assert run_server._SPAWNED_SOVITS_LAUNCH is launch
-    assert run_server._SPAWNED_SOVITS_STARTED_AT == 1.0
-    assert pid_file.exists()
-
-
-@pytest.mark.asyncio
-async def test_direct_apply_sovits_url_update_stops_engine(monkeypatch, tmp_path):
-    """Calling _apply_sovits_url_update directly terminates the owned engine and returns effective endpoint."""
-    pid_file = tmp_path / "gptsovits.pid"
-    pid_file.write_text("4242", encoding="utf-8")
-
-    proc = MagicMock(pid=4242)
-    proc.poll.return_value = None
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", proc)
-    monkeypatch.setattr(
-        run_server,
-        "_SPAWNED_SOVITS_LAUNCH",
-        EngineLaunch(proc, HOST, PORT, "cuda", True, started_at=1.0),
-    )
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", 1.0)
-
-    killed = []
-
-    def terminate(pid, timeout=2.0):
-        killed.append(pid)
-        proc.poll.return_value = 0
-
-    monkeypatch.setattr(run_server, "terminate_process_tree", terminate)
-
-    result = await _apply_sovits_url_update(REMOTE_URL)
-    assert result == {"base_url": REMOTE_URL, "source": "db"}
-    assert killed == [4242]
-    assert run_server._SPAWNED_SOVITS_PROC is None
-    assert run_server._SPAWNED_SOVITS_LAUNCH is None
-    assert run_server._SPAWNED_SOVITS_STARTED_AT is None
-    assert not pid_file.exists()
-
-
-@pytest.mark.asyncio
-async def test_saving_remote_url_cleans_records_if_process_exits_after_wait_timeout(monkeypatch, tmp_path):
-    """If proc.wait times out but the process has exited when polled, records and PID file are cleaned up."""
-    pid_file = tmp_path / "gptsovits.pid"
-    pid_file.write_text("4242", encoding="utf-8")
-
-    proc = MagicMock(pid=4242)
-    poll_states = [None, 0]
-    proc.poll.side_effect = lambda: poll_states.pop(0) if poll_states else 0
-    proc.wait.side_effect = subprocess.TimeoutExpired(cmd="fake", timeout=3)
-
-    launch = EngineLaunch(proc, HOST, PORT, "cuda", True, started_at=1.0)
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", proc)
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", launch)
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", 1.0)
-
-    killed = []
-    monkeypatch.setattr(
-        run_server,
-        "terminate_process_tree",
-        lambda pid, timeout=2.0: killed.append(pid),
-    )
-
-    app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
-        resp = await client.post("/api/config", json={"gpt_sovits_url": REMOTE_URL})
-
-    assert resp.status_code == 200
-    assert killed == [4242]
-    assert run_server._SPAWNED_SOVITS_PROC is None
-    assert run_server._SPAWNED_SOVITS_LAUNCH is None
-    assert run_server._SPAWNED_SOVITS_STARTED_AT is None
-    assert not pid_file.exists()
-
-
-@pytest.mark.asyncio
-async def test_saving_remote_url_waits_for_restart_lock_then_stops_current_engine(monkeypatch, tmp_path):
-    """Cleanup waits out a restart that holds the engine lock, then stops the process that restart published."""
+def _install_restart_lock_probe(monkeypatch):
     from galgame2voice.routers import health
-
-    pid_file = tmp_path / "gptsovits.pid"
-    pid_file.write_text("1111", encoding="utf-8")
-
-    old = MagicMock(pid=1111)
-    old.poll.return_value = None
-    new = MagicMock(pid=2222)
-    new.poll.return_value = None
-    old_launch = EngineLaunch(old, HOST, PORT, "cuda", True, started_at=1.0)
-    new_launch = EngineLaunch(new, HOST, PORT, "cuda", False, started_at=2.0)
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", old)
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", old_launch)
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", 1.0)
 
     inner = threading.Lock()
     cleanup_waiting = threading.Event()
-    stop_holder = threading.Event()
-    held = threading.Event()
-    published = threading.Event()
-    loop_blocked = threading.Event()
-    progress = threading.Event()
-    loop = asyncio.get_running_loop()
 
     class _RestartLock:
         def acquire(self, blocking=True, timeout=-1):
@@ -409,6 +86,190 @@ async def test_saving_remote_url_waits_for_restart_lock_then_stops_current_engin
             return inner.locked()
 
     monkeypatch.setattr(health, "_engine_restart_lock", _RestartLock())
+    return inner, cleanup_waiting
+
+
+@pytest.mark.asyncio
+async def test_saving_remote_url_stops_owned_local_engine(monkeypatch, tmp_path):
+    pid_file, proc, _ = _setup_owned_engine(monkeypatch, tmp_path)
+    killed = _stub_terminate(monkeypatch, proc)
+    resp = await _post_sovits_url(REMOTE_URL)
+
+    assert resp.status_code == 200
+    assert resp.json()["effective_sovits_url"] == REMOTE_URL
+    assert resp.json()["effective_sovits_source"] == "db"
+    assert killed == [4242], f"Expected owned process 4242 to be terminated, got: {killed}"
+    assert run_server._SPAWNED_SOVITS_PROC is None
+    assert run_server._SPAWNED_SOVITS_LAUNCH is None
+    assert run_server._SPAWNED_SOVITS_STARTED_AT is None
+    assert not pid_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_saving_local_url_preserves_owned_local_engine(monkeypatch, tmp_path):
+    pid_file, proc, launch = _setup_owned_engine(monkeypatch, tmp_path)
+    killed = _stub_terminate(monkeypatch)
+    resp = await _post_sovits_url(LOCAL_URL)
+
+    assert resp.status_code == 200
+    assert resp.json()["effective_sovits_url"] == LOCAL_URL
+    assert resp.json()["effective_sovits_source"] == "default"
+    assert killed == [], f"Expected no process to be killed, got: {killed}"
+    assert run_server._SPAWNED_SOVITS_PROC is proc
+    assert run_server._SPAWNED_SOVITS_LAUNCH is launch
+    assert run_server._SPAWNED_SOVITS_STARTED_AT == 1.0
+    assert pid_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_saving_remote_url_without_owned_engine_does_not_terminate(monkeypatch):
+    _set_spawned_engine(monkeypatch)
+    killed = _stub_terminate(monkeypatch)
+    resp = await _post_sovits_url(REMOTE_URL)
+
+    assert resp.status_code == 200
+    assert resp.json()["effective_sovits_url"] == REMOTE_URL
+    assert resp.json()["effective_sovits_source"] == "db"
+    assert killed == []
+    assert run_server._SPAWNED_SOVITS_PROC is None
+    assert run_server._SPAWNED_SOVITS_LAUNCH is None
+
+
+@pytest.mark.asyncio
+async def test_saving_remote_url_when_owned_engine_already_exited(monkeypatch, tmp_path):
+    pid_file, _, _ = _setup_owned_engine(monkeypatch, tmp_path, poll_value=1)
+    killed = _stub_terminate(monkeypatch)
+    resp = await _post_sovits_url(REMOTE_URL)
+
+    assert resp.status_code == 200
+    assert resp.json()["effective_sovits_url"] == REMOTE_URL
+    assert resp.json()["effective_sovits_source"] == "db"
+    assert killed == [], "Must not call terminate_process_tree on an already dead process"
+    assert run_server._SPAWNED_SOVITS_PROC is None
+    assert run_server._SPAWNED_SOVITS_LAUNCH is None
+    assert run_server._SPAWNED_SOVITS_STARTED_AT is None
+    assert not pid_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_explicit_local_env_var_overrides_remote_config_and_preserves_engine(monkeypatch, tmp_path):
+    """When an explicit env var forces a local endpoint, saving a remote DB URL does not kill the engine."""
+    monkeypatch.setenv("GALGAME2VOICE_GPT_SOVITS_BASE_URL", LOCAL_URL)
+    pid_file, proc, launch = _setup_owned_engine(monkeypatch, tmp_path)
+    killed = _stub_terminate(monkeypatch)
+    resp = await _post_sovits_url(REMOTE_URL)
+
+    assert resp.status_code == 200
+    assert resp.json()["effective_sovits_url"] == LOCAL_URL
+    assert resp.json()["effective_sovits_source"] == "env"
+    assert killed == []
+    assert run_server._SPAWNED_SOVITS_PROC is proc
+    assert run_server._SPAWNED_SOVITS_LAUNCH is launch
+    assert run_server._SPAWNED_SOVITS_STARTED_AT == 1.0
+    assert pid_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_explicit_remote_env_var_overrides_local_config_and_stops_engine(monkeypatch, tmp_path):
+    """When an explicit env var forces a remote endpoint, saving a local DB URL still stops the engine."""
+    monkeypatch.setenv("GALGAME2VOICE_GPT_SOVITS_BASE_URL", REMOTE_URL)
+    pid_file, proc, _ = _setup_owned_engine(monkeypatch, tmp_path)
+    killed = _stub_terminate(monkeypatch, proc)
+    resp = await _post_sovits_url(LOCAL_URL)
+
+    assert resp.status_code == 200
+    assert resp.json()["effective_sovits_url"] == REMOTE_URL
+    assert resp.json()["effective_sovits_source"] == "env"
+    assert killed == [4242]
+    assert run_server._SPAWNED_SOVITS_PROC is None
+    assert run_server._SPAWNED_SOVITS_LAUNCH is None
+    assert run_server._SPAWNED_SOVITS_STARTED_AT is None
+    assert not pid_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_saving_remote_url_preserves_records_when_termination_fails_and_process_alive(monkeypatch, tmp_path):
+    """If terminate_process_tree fails and process is still running, records and PID file are preserved."""
+    pid_file, proc, launch = _setup_owned_engine(monkeypatch, tmp_path)
+
+    def failing_kill(pid, timeout=2.0):
+        raise RuntimeError("process kill failed")
+
+    monkeypatch.setattr(run_server, "terminate_process_tree", failing_kill)
+    resp = await _post_sovits_url(REMOTE_URL)
+
+    assert resp.status_code == 200
+    assert resp.json()["effective_sovits_url"] == REMOTE_URL
+    assert run_server._SPAWNED_SOVITS_PROC is proc
+    assert run_server._SPAWNED_SOVITS_LAUNCH is launch
+    assert run_server._SPAWNED_SOVITS_STARTED_AT == 1.0
+    assert pid_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_saving_remote_url_preserves_records_when_wait_times_out(monkeypatch, tmp_path):
+    """If proc.wait times out and process is still running, records and PID file are preserved."""
+    pid_file, proc, launch = _setup_owned_engine(monkeypatch, tmp_path)
+    proc.wait.side_effect = subprocess.TimeoutExpired(cmd="fake", timeout=3)
+    killed = _stub_terminate(monkeypatch)
+    resp = await _post_sovits_url(REMOTE_URL)
+
+    assert resp.status_code == 200
+    assert killed == [4242]
+    assert run_server._SPAWNED_SOVITS_PROC is proc
+    assert run_server._SPAWNED_SOVITS_LAUNCH is launch
+    assert run_server._SPAWNED_SOVITS_STARTED_AT == 1.0
+    assert pid_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_direct_apply_sovits_url_update_stops_engine(monkeypatch, tmp_path):
+    """Calling _apply_sovits_url_update directly terminates the owned engine and returns effective endpoint."""
+    pid_file, proc, _ = _setup_owned_engine(monkeypatch, tmp_path)
+    killed = _stub_terminate(monkeypatch, proc)
+
+    result = await _apply_sovits_url_update(REMOTE_URL)
+    assert result == {"base_url": REMOTE_URL, "source": "db"}
+    assert killed == [4242]
+    assert run_server._SPAWNED_SOVITS_PROC is None
+    assert run_server._SPAWNED_SOVITS_LAUNCH is None
+    assert run_server._SPAWNED_SOVITS_STARTED_AT is None
+    assert not pid_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_saving_remote_url_cleans_records_if_process_exits_after_wait_timeout(monkeypatch, tmp_path):
+    """If proc.wait times out but the process has exited when polled, records and PID file are cleaned up."""
+    pid_file, proc, _ = _setup_owned_engine(monkeypatch, tmp_path)
+    poll_states = [None, 0]
+    proc.poll.side_effect = lambda: poll_states.pop(0) if poll_states else 0
+    proc.wait.side_effect = subprocess.TimeoutExpired(cmd="fake", timeout=3)
+    killed = _stub_terminate(monkeypatch)
+    resp = await _post_sovits_url(REMOTE_URL)
+
+    assert resp.status_code == 200
+    assert killed == [4242]
+    assert run_server._SPAWNED_SOVITS_PROC is None
+    assert run_server._SPAWNED_SOVITS_LAUNCH is None
+    assert run_server._SPAWNED_SOVITS_STARTED_AT is None
+    assert not pid_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_saving_remote_url_waits_for_restart_lock_then_stops_current_engine(monkeypatch, tmp_path):
+    """Cleanup waits out a restart that holds the engine lock, then stops the process that restart published."""
+    pid_file, old, _ = _setup_owned_engine(monkeypatch, tmp_path, pid=1111)
+    new = MagicMock(pid=2222)
+    new.poll.return_value = None
+    new_launch = EngineLaunch(new, HOST, PORT, "cuda", False, started_at=2.0)
+
+    inner, cleanup_waiting = _install_restart_lock_probe(monkeypatch)
+    stop_holder = threading.Event()
+    held = threading.Event()
+    published = threading.Event()
+    loop_blocked = threading.Event()
+    progress = threading.Event()
+    loop = asyncio.get_running_loop()
 
     killed = []
 
@@ -447,10 +308,8 @@ async def test_saving_remote_url_waits_for_restart_lock_then_stops_current_engin
     holder.start()
     assert held.wait(2), "restart lock holder did not start"
 
-    app = create_app()
     try:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
-            resp = await client.post("/api/config", json={"gpt_sovits_url": REMOTE_URL})
+        resp = await _post_sovits_url(REMOTE_URL)
     finally:
         stop_holder.set()
         holder.join(timeout=5)
@@ -471,26 +330,12 @@ async def test_saving_remote_url_waits_for_restart_lock_then_stops_current_engin
 @pytest.mark.asyncio
 async def test_saving_remote_url_keeps_replacement_published_during_wait(monkeypatch, tmp_path):
     """A process published while the old engine is stopping keeps its record and pid file."""
-    pid_file = tmp_path / "gptsovits.pid"
-    pid_file.write_text("4242", encoding="utf-8")
-
-    old = MagicMock(pid=4242)
-    old.poll.return_value = None
+    pid_file, old, _ = _setup_owned_engine(monkeypatch, tmp_path)
     replacement = MagicMock(pid=5252)
     replacement.poll.return_value = None
     replacement_launch = EngineLaunch(replacement, HOST, PORT, "cuda", False, started_at=2.0)
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", old)
-    monkeypatch.setattr(
-        run_server,
-        "_SPAWNED_SOVITS_LAUNCH",
-        EngineLaunch(old, HOST, PORT, "cuda", True, started_at=1.0),
-    )
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", 1.0)
 
-    killed = []
-
-    def terminate(pid, timeout=2.0):
-        killed.append(pid)
+    killed = _stub_terminate(monkeypatch)
 
     def wait_and_publish(timeout=None):
         old.poll.return_value = 0
@@ -501,11 +346,7 @@ async def test_saving_remote_url_keeps_replacement_published_during_wait(monkeyp
         return 0
 
     old.wait.side_effect = wait_and_publish
-    monkeypatch.setattr(run_server, "terminate_process_tree", terminate)
-
-    app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
-        resp = await client.post("/api/config", json={"gpt_sovits_url": REMOTE_URL})
+    resp = await _post_sovits_url(REMOTE_URL)
 
     assert resp.status_code == 200
     assert killed == [4242]
@@ -519,35 +360,9 @@ async def test_saving_remote_url_keeps_replacement_published_during_wait(monkeyp
 @pytest.mark.asyncio
 async def test_remote_cleanup_skips_when_a_later_save_switched_back_to_local(monkeypatch):
     """A remote save waiting on the restart lock leaves the engine alone once a later save chose a local URL."""
-    from galgame2voice.routers import health
-
-    proc = MagicMock(pid=3333)
-    proc.poll.return_value = None
-    launch = EngineLaunch(proc, HOST, PORT, "cuda", True, started_at=1.0)
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", proc)
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", launch)
-    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", 1.0)
-
-    inner = threading.Lock()
-    cleanup_waiting = threading.Event()
-
-    class _RestartLock:
-        def acquire(self, blocking=True, timeout=-1):
-            if blocking and inner.locked():
-                cleanup_waiting.set()
-            if timeout is None or timeout < 0:
-                return inner.acquire(blocking)
-            return inner.acquire(blocking, timeout)
-
-        def release(self):
-            inner.release()
-
-        def locked(self):
-            return inner.locked()
-
-    monkeypatch.setattr(health, "_engine_restart_lock", _RestartLock())
-    killed = []
-    monkeypatch.setattr(run_server, "terminate_process_tree", lambda pid, timeout=2.0: killed.append(pid))
+    _, proc, launch = _setup_owned_engine(monkeypatch, pid=3333)
+    inner, cleanup_waiting = _install_restart_lock_probe(monkeypatch)
+    killed = _stub_terminate(monkeypatch)
 
     inner.acquire()
     try:
