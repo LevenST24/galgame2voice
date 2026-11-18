@@ -46,6 +46,31 @@ class DummyEngine:
         return SimpleNamespace(status_code=200, json=lambda: {"code": 0})
 
 
+async def _create_profile(
+    char_env,
+    ref_audio_path: str | Path,
+    prompt_text: str,
+    prompt_lang: str = "zh",
+    *,
+    name: str = "四季夏目",
+    gpt_path: Path | None = None,
+    sovits_path: Path | None = None,
+):
+    async with get_db(char_env.db_path) as conn:
+        return await crud.create_voice_profile(
+            conn,
+            VoiceProfileCreate(
+                name=name,
+                gpt_weights_path=str(gpt_path or char_env.gpt_file),
+                sovits_weights_path=str(sovits_path or char_env.sovits_file),
+                ref_audio_path=str(ref_audio_path),
+                prompt_text=prompt_text,
+                prompt_lang=prompt_lang,
+                text_lang="ja",
+            ),
+        )
+
+
 @pytest.fixture
 async def char_env(tmp_path, monkeypatch):
     monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
@@ -125,19 +150,11 @@ async def char_env(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_missing_ref_audio_falls_back_to_gentle_with_matching_text_and_lang(char_env):
     """When a profile's ref_audio is missing, falling back to gentle must pair with gentle's text and lang."""
-    async with get_db(char_env.db_path) as conn:
-        profile = await crud.create_voice_profile(
-            conn,
-            VoiceProfileCreate(
-                name="四季夏目",
-                gpt_weights_path=str(char_env.gpt_file),
-                sovits_weights_path=str(char_env.sovits_file),
-                ref_audio_path=str(char_env.chars_dir / "refs" / "deleted_audio.wav"),  # Missing file
-                prompt_text="这是被删除参考的旧文本",
-                prompt_lang="zh",
-                text_lang="ja",
-            ),
-        )
+    profile = await _create_profile(
+        char_env,
+        char_env.chars_dir / "refs" / "deleted_audio.wav",  # Missing file
+        "这是被删除参考的旧文本",
+    )
 
     # 1. Verify via TtsService voice options population entry point
     opts = {"voice_profile_id": profile.id}
@@ -188,19 +205,14 @@ async def test_missing_ref_audio_falls_back_to_first_emotion_when_no_gentle(char
     mgr = get_character_manager(characters_dir=char_env.root / "characters")
     mgr.discover_characters()
 
-    async with get_db(char_env.db_path) as conn:
-        profile = await crud.create_voice_profile(
-            conn,
-            VoiceProfileCreate(
-                name="其他角色",
-                gpt_weights_path=str(gpt_file),
-                sovits_weights_path=str(sovits_file),
-                ref_audio_path=str(other_dir / "refs" / "missing.wav"),
-                prompt_text="旧文本（不应保留）",
-                prompt_lang="zh",
-                text_lang="ja",
-            ),
-        )
+    profile = await _create_profile(
+        char_env,
+        other_dir / "refs" / "missing.wav",
+        "旧文本（不应保留）",
+        name="其他角色",
+        gpt_path=gpt_file,
+        sovits_path=sovits_file,
+    )
 
     opts = {"voice_profile_id": profile.id}
     resolved = await char_env.service._populate_voice_profile_opts(opts)
@@ -213,19 +225,7 @@ async def test_missing_ref_audio_falls_back_to_first_emotion_when_no_gentle(char
 @pytest.mark.asyncio
 async def test_profile_with_empty_prompt_and_valid_custom_ref_preserves_empty_transcript(char_env):
     """A profile with a valid custom reference audio and an empty prompt_text preserves the empty transcript."""
-    async with get_db(char_env.db_path) as conn:
-        profile = await crud.create_voice_profile(
-            conn,
-            VoiceProfileCreate(
-                name="四季夏目",
-                gpt_weights_path=str(char_env.gpt_file),
-                sovits_weights_path=str(char_env.sovits_file),
-                ref_audio_path=str(char_env.custom_wav),  # Valid existing custom reference
-                prompt_text="",  # Legitimate empty transcript
-                prompt_lang="ja",
-                text_lang="ja",
-            ),
-        )
+    profile = await _create_profile(char_env, char_env.custom_wav, "", "ja")
 
     opts = {"voice_profile_id": profile.id}
     resolved = await char_env.service._populate_voice_profile_opts(opts)
@@ -245,19 +245,7 @@ async def test_profile_with_empty_prompt_and_valid_custom_ref_preserves_empty_tr
 @pytest.mark.asyncio
 async def test_valid_custom_ref_audio_preserves_custom_text_and_lang(char_env):
     """When a profile has a valid existing custom reference audio, its text and lang must be preserved."""
-    async with get_db(char_env.db_path) as conn:
-        profile = await crud.create_voice_profile(
-            conn,
-            VoiceProfileCreate(
-                name="四季夏目",
-                gpt_weights_path=str(char_env.gpt_file),
-                sovits_weights_path=str(char_env.sovits_file),
-                ref_audio_path=str(char_env.custom_wav),  # Valid existing file
-                prompt_text="自定义有效参考文本",
-                prompt_lang="zh",
-                text_lang="ja",
-            ),
-        )
+    profile = await _create_profile(char_env, char_env.custom_wav, "自定义有效参考文本")
 
     opts = {"voice_profile_id": profile.id}
     resolved = await char_env.service._populate_voice_profile_opts(opts)
@@ -270,19 +258,9 @@ async def test_valid_custom_ref_audio_preserves_custom_text_and_lang(char_env):
 @pytest.mark.asyncio
 async def test_explicit_options_override_takes_precedence(char_env):
     """Explicit ref_audio_path and prompt_text in options override profile defaults."""
-    async with get_db(char_env.db_path) as conn:
-        profile = await crud.create_voice_profile(
-            conn,
-            VoiceProfileCreate(
-                name="四季夏目",
-                gpt_weights_path=str(char_env.gpt_file),
-                sovits_weights_path=str(char_env.sovits_file),
-                ref_audio_path=str(char_env.chars_dir / "refs" / "deleted_audio.wav"),
-                prompt_text="这是被删除参考的旧文本",
-                prompt_lang="zh",
-                text_lang="ja",
-            ),
-        )
+    profile = await _create_profile(
+        char_env, char_env.chars_dir / "refs" / "deleted_audio.wav", "这是被删除参考的旧文本"
+    )
 
     override_wav = _create_wav(char_env.root / "override.wav", duration_sec=4.0)
     opts = {
@@ -301,19 +279,7 @@ async def test_explicit_options_override_takes_precedence(char_env):
 @pytest.mark.asyncio
 async def test_normal_emotion_selection_pairs_emotion_audio_and_text(char_env):
     """Normal adaptive emotion selection must pair joy audio with joy text."""
-    async with get_db(char_env.db_path) as conn:
-        profile = await crud.create_voice_profile(
-            conn,
-            VoiceProfileCreate(
-                name="四季夏目",
-                gpt_weights_path=str(char_env.gpt_file),
-                sovits_weights_path=str(char_env.sovits_file),
-                ref_audio_path=str(char_env.gentle_wav),
-                prompt_text="温柔默认台词",
-                prompt_lang="ja",
-                text_lang="ja",
-            ),
-        )
+    profile = await _create_profile(char_env, char_env.gentle_wav, "温柔默认台词", "ja")
 
     opts = {
         "voice_profile_id": profile.id,
