@@ -391,58 +391,30 @@ test('a startup voice switch that fails before home opens stays quiet', async t 
 });
 
 test('startup sync reloads session history when server has more messages than local copy (refresh keeps server reply)', async t => {
-  const { doc, root, toasts } = mountAdvDocument();
-
-  const session = {
+  const session = localChatSession({
     id: 's_refresh',
     title: '晚上的对话',
-    createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_100_000,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
     messages: [{ id: 'm_local_user', role: 'user', content: '今天去哪', ts: 1_700_000_100_000 }],
-  };
-  const server = {
-    id: session.id,
-    title: session.title,
-    voice_profile_id: null,
-    created_at: '2024-06-01 00:00:00',
+  });
+  const server = chatServer(session, {
     updated_at: '2024-06-01 00:00:02',
     message_count: 2,
     last_message: '去江边走走吧',
-    settings: { ...session.settings },
-  };
-
-  const storage = installChatStorage({
+  });
+  const { doc, storage, app } = await bootSyncedChat(t, {
     sessions: [session],
     activeId: session.id,
-    global: { ...DEFAULT_GLOBAL },
+    serverSessions: [server],
+    history: historyPayload(session, {
+      oldest_id: 10,
+      count: 2,
+      messages: [
+        { id: 10, role: 'user', content_chinese: '今天去哪', content_japanese: '', created_at: '2024-06-01 00:00:00' },
+        { id: 11, role: 'assistant', content_chinese: '去江边走走吧', content_japanese: '海辺へ', created_at: '2024-06-01 00:00:02' },
+      ],
+    }),
   });
-  installAdvHost();
-
-  const calls = [];
-  globalThis.window.fetch = async (url, options = {}) => {
-    const target = String(url);
-    calls.push({ url: target, method: options.method || 'GET', body: options.body });
-    if (target.includes('/api/chat/sessions')) {
-      return Response.json({ sessions: [server], has_more: false, count: 1 });
-    }
-    if (target.includes('/api/chat/history')) {
-      return Response.json({
-        session_id: session.id,
-        has_more: false,
-        oldest_id: 10,
-        count: 2,
-        messages: [
-          { id: 10, role: 'user', content_chinese: '今天去哪', content_japanese: '', created_at: '2024-06-01 00:00:00' },
-          { id: 11, role: 'assistant', content_chinese: '去江边走走吧', content_japanese: '海辺へ', created_at: '2024-06-01 00:00:02' },
-        ],
-      });
-    }
-    return startupApiFallback(target);
-  };
-  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
-
-  const app = await bootAdvApp(t, { root, toasts });
 
   // 1. 断言首页最后一句包含服务端已保存的回复
   const homeQuote = doc.querySelector('.home-quote')?.textContent || '';
@@ -475,67 +447,40 @@ test('startup sync reloads session history when server has more messages than lo
 });
 
 test('startup sync resets messages of non-active session when server has more messages and loads on switch', async t => {
-  const { doc, root, toasts } = mountAdvDocument();
-
-  const activeSession = {
+  const activeSession = localChatSession({
     id: 's_active',
     title: '当前会话',
-    createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_100_000,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
     messages: [
       { id: 'm_1', role: 'user', content: '你好' },
       { id: 'm_2', role: 'assistant', content: '你好呀' },
     ],
-  };
-  const otherSession = {
+  });
+  const otherSession = localChatSession({
     id: 's_other',
     title: '另一个对话',
-    createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_200_000,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
     messages: [{ id: 'm_local_user2', role: 'user', content: '晚饭吃什么', ts: 1_700_000_200_000 }],
-  };
-
+  });
   const serverSessions = [
-    {
-      id: activeSession.id,
-      title: activeSession.title,
-      voice_profile_id: null,
-      created_at: '2024-06-01 00:00:00',
+    chatServer(activeSession, {
       updated_at: '2024-06-01 00:00:01',
       message_count: 2,
       last_message: '你好呀',
-      settings: { ...activeSession.settings },
-    },
-    {
-      id: otherSession.id,
-      title: otherSession.title,
-      voice_profile_id: null,
-      created_at: '2024-06-01 00:00:00',
+    }),
+    chatServer(otherSession, {
       updated_at: '2024-06-01 00:00:03',
       message_count: 2,
       last_message: '吃拉面吧',
-      settings: { ...otherSession.settings },
-    },
+    }),
   ];
-
-  const storage = installChatStorage({
+  const { storage, app } = await bootSyncedChat(t, {
     sessions: [activeSession, otherSession],
     activeId: activeSession.id,
-    global: { ...DEFAULT_GLOBAL },
-  });
-  installAdvHost();
-
-  globalThis.window.fetch = async (url) => {
-    const target = String(url);
-    if (target.includes('/api/chat/sessions')) {
-      return Response.json({ sessions: serverSessions, has_more: false, count: 2 });
-    }
-    if (target.includes('/api/chat/history') && target.includes('session_id=s_other')) {
-      return Response.json({
-        session_id: otherSession.id,
-        has_more: false,
+    serverSessions,
+    history(target) {
+      if (!target.includes('session_id=s_other')) return undefined;
+      return historyPayload(otherSession, {
         oldest_id: 20,
         count: 2,
         messages: [
@@ -543,12 +488,8 @@ test('startup sync resets messages of non-active session when server has more me
           { id: 21, role: 'assistant', content_chinese: '吃拉面吧', content_japanese: 'ラーメン', created_at: '2024-06-01 00:00:03' },
         ],
       });
-    }
-    return startupApiFallback(target);
-  };
-  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
-
-  const app = await bootAdvApp(t, { root, toasts });
+    },
+  });
 
   // 1. 验证 actions.listSessions() 中 s_other 的 lastLine 来自服务端
   const sessionsList = app.actions.listSessions();
@@ -573,48 +514,25 @@ test('startup sync resets messages of non-active session when server has more me
 });
 
 test('startup sync failure retains local messages in memory and storage, and retrying reloads server reply', async t => {
-  const { doc, root, toasts } = mountAdvDocument();
-
-  const session = {
+  const session = localChatSession({
     id: 's_fail_then_retry',
     title: '网络抖动的对话',
-    createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_100_000,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
     messages: [{ id: 'm_local_user', role: 'user', content: '今天去哪', ts: 1_700_000_100_000 }],
-  };
-  const server = {
-    id: session.id,
-    title: session.title,
-    voice_profile_id: null,
-    created_at: '2024-06-01 00:00:00',
+  });
+  const server = chatServer(session, {
     updated_at: '2024-06-01 00:00:02',
     message_count: 2,
     last_message: '去江边走走吧',
-    settings: { ...session.settings },
-  };
-
-  const storage = installChatStorage({
+  });
+  let historyShouldFail = true;
+  const { storage, app } = await bootSyncedChat(t, {
     sessions: [session],
     activeId: session.id,
-    global: { ...DEFAULT_GLOBAL },
-  });
-  installAdvHost();
-
-  let historyShouldFail = true;
-
-  globalThis.window.fetch = async (url) => {
-    const target = String(url);
-    if (target.includes('/api/chat/sessions')) {
-      return Response.json({ sessions: [server], has_more: false, count: 1 });
-    }
-    if (target.includes('/api/chat/history')) {
-      if (historyShouldFail) {
-        throw new Error('网络连接超时');
-      }
-      return Response.json({
-        session_id: session.id,
-        has_more: false,
+    serverSessions: [server],
+    history() {
+      if (historyShouldFail) throw new Error('网络连接超时');
+      return historyPayload(session, {
         oldest_id: 10,
         count: 2,
         messages: [
@@ -622,12 +540,8 @@ test('startup sync failure retains local messages in memory and storage, and ret
           { id: 11, role: 'assistant', content_chinese: '去江边走走吧', content_japanese: '海辺へ', created_at: '2024-06-01 00:00:02' },
         ],
       });
-    }
-    return startupApiFallback(target);
-  };
-  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
-
-  const app = await bootAdvApp(t, { root, toasts });
+    },
+  });
 
   // 1. 历史请求失败后：内存中本地原消息保留
   const activeSession = storedActive();
@@ -657,14 +571,10 @@ test('startup sync failure retains local messages in memory and storage, and ret
 });
 
 test('startup sync correctly pairs voiceKey when earlier of duplicate messages had voice', async t => {
-  const { doc, root, toasts } = mountAdvDocument();
-
-  const session = {
+  const session = localChatSession({
     id: 's_voice_duplicate',
     title: '重复消息的对话',
-    createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_200_000,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
     messages: [
       {
         id: 'm_user_1',
@@ -687,49 +597,27 @@ test('startup sync correctly pairs voiceKey when earlier of duplicate messages h
         ts: 1_700_000_200_000,
       },
     ],
-  };
-  const server = {
-    id: session.id,
-    title: session.title,
-    voice_profile_id: null,
-    created_at: '2024-06-01 00:00:00',
+  });
+  const server = chatServer(session, {
     updated_at: '2024-06-01 00:00:03',
     message_count: 4,
     last_message: '不是刚去过公园吗',
-    settings: { ...session.settings },
-  };
-
-  const storage = installChatStorage({
+  });
+  const { storage } = await bootSyncedChat(t, {
     sessions: [session],
     activeId: session.id,
-    global: { ...DEFAULT_GLOBAL },
+    serverSessions: [server],
+    history: historyPayload(session, {
+      oldest_id: 10,
+      count: 4,
+      messages: [
+        { id: 10, role: 'user', content_chinese: '今天去哪', content_japanese: '', created_at: '2024-06-01 00:00:00' },
+        { id: 11, role: 'assistant', content_chinese: '去公园吧', content_japanese: '', created_at: '2024-06-01 00:00:01' },
+        { id: 12, role: 'user', content_chinese: '今天去哪', content_japanese: '', created_at: '2024-06-01 00:00:02' },
+        { id: 13, role: 'assistant', content_chinese: '不是刚去过公园吗', content_japanese: '', created_at: '2024-06-01 00:00:03' },
+      ],
+    }),
   });
-  installAdvHost();
-
-  globalThis.window.fetch = async (url) => {
-    const target = String(url);
-    if (target.includes('/api/chat/sessions')) {
-      return Response.json({ sessions: [server], has_more: false, count: 1 });
-    }
-    if (target.includes('/api/chat/history')) {
-      return Response.json({
-        session_id: session.id,
-        has_more: false,
-        oldest_id: 10,
-        count: 4,
-        messages: [
-          { id: 10, role: 'user', content_chinese: '今天去哪', content_japanese: '', created_at: '2024-06-01 00:00:00' },
-          { id: 11, role: 'assistant', content_chinese: '去公园吧', content_japanese: '', created_at: '2024-06-01 00:00:01' },
-          { id: 12, role: 'user', content_chinese: '今天去哪', content_japanese: '', created_at: '2024-06-01 00:00:02' },
-          { id: 13, role: 'assistant', content_chinese: '不是刚去过公园吗', content_japanese: '', created_at: '2024-06-01 00:00:03' },
-        ],
-      });
-    }
-    return startupApiFallback(target);
-  };
-  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
-
-  const app = await bootAdvApp(t, { root, toasts });
 
   const activeSession = storedActive();
   assert.equal(activeSession.messages.length, 4);
@@ -744,51 +632,27 @@ test('startup sync correctly pairs voiceKey when earlier of duplicate messages h
 });
 
 test('title screen excerpt presents server last_message when multi-turn session is behind server', async t => {
-  const { doc, root, toasts } = mountAdvDocument();
-
-  const session = {
+  const session = localChatSession({
     id: 's_multiturn_behind',
     title: '多轮会话',
-    createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_200_000,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
     messages: [
       { id: 'm_1', role: 'user', content: '第一问' },
       { id: 'm_2', role: 'assistant', content: '第一答' },
       { id: 'm_3', role: 'user', content: '第二问' },
     ],
-  };
-  const server = {
-    id: session.id,
-    title: session.title,
-    voice_profile_id: null,
-    created_at: '2024-06-01 00:00:00',
+  });
+  const server = chatServer(session, {
     updated_at: '2024-06-01 00:00:03',
     message_count: 4,
     last_message: '第二答',
-    settings: { ...session.settings },
-  };
-
-  const storage = installChatStorage({
+  });
+  const { doc, app } = await bootSyncedChat(t, {
     sessions: [session],
     activeId: session.id,
-    global: { ...DEFAULT_GLOBAL },
+    serverSessions: [server],
+    history() { throw new Error('网络连接超时'); },
   });
-  installAdvHost();
-
-  globalThis.window.fetch = async (url) => {
-    const target = String(url);
-    if (target.includes('/api/chat/sessions')) {
-      return Response.json({ sessions: [server], has_more: false, count: 1 });
-    }
-    if (target.includes('/api/chat/history')) {
-      throw new Error('网络连接超时');
-    }
-    return startupApiFallback(target);
-  };
-  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
-
-  const app = await bootAdvApp(t, { root, toasts });
 
   // 1. 验证 actions.listSessions() 中该会话的 excerpt 来自服务端的 lastLine，并且对应最后的 user 提问
   const sessionsList = app.actions.listSessions();
@@ -803,14 +667,10 @@ test('title screen excerpt presents server last_message when multi-turn session 
 });
 
 test('startup sync preserves voiceKey on message with matching server ID when server has duplicate text', async t => {
-  const { doc, root, toasts } = mountAdvDocument();
-
-  const session = {
+  const session = localChatSession({
     id: 's_voice_id_pair',
     title: '录音按ID配对',
-    createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_100_000,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
     messages: [
       {
         id: 'm_10',
@@ -829,49 +689,27 @@ test('startup sync preserves voiceKey on message with matching server ID when se
         ts: 1_700_000_150_000,
       },
     ],
-  };
-  const server = {
-    id: session.id,
-    title: session.title,
-    voice_profile_id: null,
-    created_at: '2024-06-01 00:00:00',
+  });
+  const server = chatServer(session, {
     updated_at: '2024-06-01 00:00:03',
     message_count: 4,
     last_message: '不是刚去过公园吗',
-    settings: { ...session.settings },
-  };
-
-  const storage = installChatStorage({
+  });
+  await bootSyncedChat(t, {
     sessions: [session],
     activeId: session.id,
-    global: { ...DEFAULT_GLOBAL },
+    serverSessions: [server],
+    history: historyPayload(session, {
+      oldest_id: 10,
+      count: 4,
+      messages: [
+        { id: 10, role: 'user', content_chinese: '今天去哪', content_japanese: '', created_at: '2024-06-01 00:00:00' },
+        { id: 11, role: 'assistant', content_chinese: '去公园吧', content_japanese: '', created_at: '2024-06-01 00:00:01' },
+        { id: 12, role: 'user', content_chinese: '今天去哪', content_japanese: '', created_at: '2024-06-01 00:00:02' },
+        { id: 13, role: 'assistant', content_chinese: '不是刚去过公园吗', content_japanese: '', created_at: '2024-06-01 00:00:03' },
+      ],
+    }),
   });
-  installAdvHost();
-
-  globalThis.window.fetch = async (url) => {
-    const target = String(url);
-    if (target.includes('/api/chat/sessions')) {
-      return Response.json({ sessions: [server], has_more: false, count: 1 });
-    }
-    if (target.includes('/api/chat/history')) {
-      return Response.json({
-        session_id: session.id,
-        has_more: false,
-        oldest_id: 10,
-        count: 4,
-        messages: [
-          { id: 10, role: 'user', content_chinese: '今天去哪', content_japanese: '', created_at: '2024-06-01 00:00:00' },
-          { id: 11, role: 'assistant', content_chinese: '去公园吧', content_japanese: '', created_at: '2024-06-01 00:00:01' },
-          { id: 12, role: 'user', content_chinese: '今天去哪', content_japanese: '', created_at: '2024-06-01 00:00:02' },
-          { id: 13, role: 'assistant', content_chinese: '不是刚去过公园吗', content_japanese: '', created_at: '2024-06-01 00:00:03' },
-        ],
-      });
-    }
-    return startupApiFallback(target);
-  };
-  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
-
-  const app = await bootAdvApp(t, { root, toasts });
 
   const activeSession = storedActive();
   assert.equal(activeSession.messages.length, 4);
@@ -883,14 +721,10 @@ test('startup sync preserves voiceKey on message with matching server ID when se
 });
 
 test('startup sync pulls history and retains failed question at end when server adds message after retention', async t => {
-  const { doc, root, toasts } = mountAdvDocument();
-
-  const session = {
+  const session = localChatSession({
     id: 's_failed_retained_more',
     title: '失败消息保留后服务端再多一条',
-    createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_100_000,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
     messages: [
       { id: 'm_1', serverMessageId: 1, role: 'user', content: '第一问', ts: 1_700_000_050_000 },
       { id: 'm_2', serverMessageId: 2, role: 'assistant', content: '第一答', ts: 1_700_000_080_000 },
@@ -904,50 +738,28 @@ test('startup sync pulls history and retains failed question at end when server 
         ts: 1_700_000_100_000,
       },
     ],
-  };
-  const server = {
-    id: session.id,
-    title: session.title,
-    voice_profile_id: null,
-    created_at: '2024-06-01 00:00:00',
+  });
+  const server = chatServer(session, {
     updated_at: '2024-06-01 00:00:04',
     message_count: 5,
     last_message: '第三问',
-    settings: { ...session.settings },
-  };
-
-  const storage = installChatStorage({
+  });
+  const { storage, app } = await bootSyncedChat(t, {
     sessions: [session],
     activeId: session.id,
-    global: { ...DEFAULT_GLOBAL },
+    serverSessions: [server],
+    history: historyPayload(session, {
+      oldest_id: 1,
+      count: 5,
+      messages: [
+        { id: 1, role: 'user', content_chinese: '第一问', content_japanese: '', created_at: '2024-06-01 00:00:00' },
+        { id: 2, role: 'assistant', content_chinese: '第一答', content_japanese: '', created_at: '2024-06-01 00:00:01' },
+        { id: 3, role: 'user', content_chinese: '第二问', content_japanese: '', created_at: '2024-06-01 00:00:02' },
+        { id: 4, role: 'assistant', content_chinese: '第二答', content_japanese: '', created_at: '2024-06-01 00:00:03' },
+        { id: 5, role: 'user', content_chinese: '第三问', content_japanese: '', created_at: '2024-06-01 00:00:04' },
+      ],
+    }),
   });
-  installAdvHost();
-
-  globalThis.window.fetch = async (url) => {
-    const target = String(url);
-    if (target.includes('/api/chat/sessions')) {
-      return Response.json({ sessions: [server], has_more: false, count: 1 });
-    }
-    if (target.includes('/api/chat/history')) {
-      return Response.json({
-        session_id: session.id,
-        has_more: false,
-        oldest_id: 1,
-        count: 5,
-        messages: [
-          { id: 1, role: 'user', content_chinese: '第一问', content_japanese: '', created_at: '2024-06-01 00:00:00' },
-          { id: 2, role: 'assistant', content_chinese: '第一答', content_japanese: '', created_at: '2024-06-01 00:00:01' },
-          { id: 3, role: 'user', content_chinese: '第二问', content_japanese: '', created_at: '2024-06-01 00:00:02' },
-          { id: 4, role: 'assistant', content_chinese: '第二答', content_japanese: '', created_at: '2024-06-01 00:00:03' },
-          { id: 5, role: 'user', content_chinese: '第三问', content_japanese: '', created_at: '2024-06-01 00:00:04' },
-        ],
-      });
-    }
-    return startupApiFallback(target);
-  };
-  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
-
-  const app = await bootAdvApp(t, { root, toasts });
 
   const activeSession = storedActive();
   // 1. 保留失败提问之后服务端再多 1 条，刷新仍会拉历史且失败提问仍在末尾
@@ -973,61 +785,35 @@ test('startup sync pulls history and retains failed question at end when server 
 });
 
 test('startup sync discards interrupted partial assistant reply and retains complete server reply without duplication', async t => {
-  const { doc, root, toasts } = mountAdvDocument();
-
-  const session = {
+  const session = localChatSession({
     id: 's_interrupted_assistant',
     title: '打断的半截回复',
-    createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_100_000,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
     messages: [
       { id: 'm_1', serverMessageId: 1, role: 'user', content: '今天去哪', ts: 1_700_000_050_000 },
       { id: 'm_stream_interrupted', role: 'assistant', content: '去公园', ts: 1_700_000_080_000 },
     ],
-  };
-  const server = {
-    id: session.id,
-    title: session.title,
-    voice_profile_id: null,
-    created_at: '2024-06-01 00:00:00',
+  });
+  const server = chatServer(session, {
     updated_at: '2024-06-01 00:00:03',
     message_count: 4,
     last_message: '明天下午两点',
-    settings: { ...session.settings },
-  };
-
-  const storage = installChatStorage({
+  });
+  await bootSyncedChat(t, {
     sessions: [session],
     activeId: session.id,
-    global: { ...DEFAULT_GLOBAL },
+    serverSessions: [server],
+    history: historyPayload(session, {
+      oldest_id: 1,
+      count: 4,
+      messages: [
+        { id: 1, role: 'user', content_chinese: '今天去哪', content_japanese: '', created_at: '2024-06-01 00:00:00' },
+        { id: 2, role: 'assistant', content_chinese: '去公园散步吧，天气很好。', content_japanese: '', created_at: '2024-06-01 00:00:01' },
+        { id: 3, role: 'user', content_chinese: '什么时候去', content_japanese: '', created_at: '2024-06-01 00:00:02' },
+        { id: 4, role: 'assistant', content_chinese: '明天下午两点', content_japanese: '', created_at: '2024-06-01 00:00:03' },
+      ],
+    }),
   });
-  installAdvHost();
-
-  globalThis.window.fetch = async (url) => {
-    const target = String(url);
-    if (target.includes('/api/chat/sessions')) {
-      return Response.json({ sessions: [server], has_more: false, count: 1 });
-    }
-    if (target.includes('/api/chat/history')) {
-      return Response.json({
-        session_id: session.id,
-        has_more: false,
-        oldest_id: 1,
-        count: 4,
-        messages: [
-          { id: 1, role: 'user', content_chinese: '今天去哪', content_japanese: '', created_at: '2024-06-01 00:00:00' },
-          { id: 2, role: 'assistant', content_chinese: '去公园散步吧，天气很好。', content_japanese: '', created_at: '2024-06-01 00:00:01' },
-          { id: 3, role: 'user', content_chinese: '什么时候去', content_japanese: '', created_at: '2024-06-01 00:00:02' },
-          { id: 4, role: 'assistant', content_chinese: '明天下午两点', content_japanese: '', created_at: '2024-06-01 00:00:03' },
-        ],
-      });
-    }
-    return startupApiFallback(target);
-  };
-  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
-
-  const app = await bootAdvApp(t, { root, toasts });
 
   const activeSession = storedActive();
   assert.equal(activeSession.messages.length, 4);
@@ -1039,10 +825,9 @@ test('startup sync discards interrupted partial assistant reply and retains comp
 test('startup sync keeps the cached failed question when it is retried while history is still loading', async t => {
   const { doc, root, toasts } = mountAdvDocument();
 
-  const session = {
+  const session = localChatSession({
     id: 's_retry_during_history',
     title: '历史未返回时重试',
-    createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_100_000,
     settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: 1 },
     messages: [
@@ -1056,23 +841,15 @@ test('startup sync keeps the cached failed question when it is retried while his
         ts: 1_700_000_100_000,
       },
     ],
-  };
-  const server = {
-    id: session.id,
-    title: session.title,
+  });
+  const server = chatServer(session, {
     voice_profile_id: 1,
-    created_at: '2024-06-01 00:00:00',
     updated_at: '2024-06-01 00:00:03',
     message_count: 4,
     last_message: '第二答',
-    settings: { ...session.settings },
-  };
-
-  const storage = installChatStorage({
-    sessions: [session],
-    activeId: session.id,
-    global: { ...DEFAULT_GLOBAL },
   });
+
+  const storage = installChatStorage(storedSessionSnapshot(session));
   installAdvHost();
 
   let releaseHistory = () => {};
@@ -1082,7 +859,6 @@ test('startup sync keeps the cached failed question when it is retried while his
   let markHistoryHung;
   const historyHung = new Promise(resolve => { markHistoryHung = resolve; });
   const streamRequests = [];
-  const encoder = new TextEncoder();
 
   globalThis.window.fetch = async (url, options = {}) => {
     const target = String(url);
@@ -1092,9 +868,7 @@ test('startup sync keeps the cached failed question when it is retried while his
     if (target.includes('/api/chat/history')) {
       markHistoryHung();
       await historyGate;
-      return Response.json({
-        session_id: session.id,
-        has_more: false,
+      return Response.json(historyPayload(session, {
         oldest_id: 1,
         count: 4,
         messages: [
@@ -1103,30 +877,9 @@ test('startup sync keeps the cached failed question when it is retried while his
           { id: 3, role: 'user', content_chinese: '第二问', content_japanese: '', created_at: '2024-06-01 00:00:02' },
           { id: 4, role: 'assistant', content_chinese: '第二答', content_japanese: '', created_at: '2024-06-01 00:00:03' },
         ],
-      });
+      }));
     }
-    if (target.includes('/api/chat/stream')) {
-      let output;
-      let started = false;
-      const body = new ReadableStream({
-        start(controller) { output = controller; started = true; },
-        cancel() { try { output?.close(); } catch { /* already closed */ } },
-      });
-      options.signal?.addEventListener('abort', () => {
-        try { output?.close(); } catch { /* already closed */ }
-      }, { once: true });
-      const request = {
-        url: target,
-        prompt: JSON.parse(options.body).prompt,
-        async event(type, payload) {
-          for (let i = 0; i < 10 && !started; i++) await tick();
-          output.enqueue(encoder.encode(`event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`));
-          await tick();
-        },
-      };
-      streamRequests.push(request);
-      return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } });
-    }
+    if (target.includes('/api/chat/stream')) return openChatStream(target, options, streamRequests, { events: true });
     return startupApiFallback(target);
   };
   globalThis.fetch = (...args) => globalThis.window.fetch(...args);
@@ -1266,6 +1019,119 @@ async function bootAdvApp(t, { root, toasts, onCleanup } = {}) {
 
 function storedSessionSnapshot(session) {
   return { sessions: [session], activeId: session.id, global: { ...DEFAULT_GLOBAL } };
+}
+
+function localChatSession({
+  id, title, createdAt = 1_700_000_000_000, updatedAt, settings, messages, ...extra
+}) {
+  return {
+    id,
+    title,
+    createdAt,
+    updatedAt,
+    ...extra,
+    settings: settings ?? { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+    messages,
+  };
+}
+
+function chatServer(session, {
+  voice_profile_id = null,
+  created_at = '2024-06-01 00:00:00',
+  updated_at,
+  message_count,
+  last_message,
+} = {}) {
+  return {
+    id: session.id,
+    title: session.title,
+    voice_profile_id,
+    created_at,
+    updated_at,
+    message_count,
+    last_message,
+    settings: { ...session.settings },
+  };
+}
+
+function historyPayload(sessionOrId, { has_more = false, oldest_id, count, messages }) {
+  return {
+    session_id: typeof sessionOrId === 'string' ? sessionOrId : sessionOrId.id,
+    has_more,
+    oldest_id,
+    count,
+    messages,
+  };
+}
+
+function openChatStream(target, options, streamRequests, { events = false } = {}) {
+  let output;
+  let started = false;
+  const body = new ReadableStream({
+    start(controller) { output = controller; started = true; },
+    cancel() { try { output?.close(); } catch {} },
+  });
+  options.signal?.addEventListener('abort', () => {
+    try { output?.close(); } catch {}
+  }, { once: true });
+  const request = { url: target, prompt: JSON.parse(options.body).prompt };
+  if (events) {
+    const encoder = new TextEncoder();
+    request.event = async (type, payload) => {
+      for (let i = 0; i < 10 && !started; i++) await tick();
+      output.enqueue(encoder.encode(`event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`));
+      await tick();
+    };
+  }
+  streamRequests.push(request);
+  return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } });
+}
+
+// Document, stored sessions, startup fetch, then initApp. mode "window" installs the fetch
+// with location; the default matches installAdvHost plus window.fetch.
+async function bootSyncedChat(t, {
+  sessions,
+  activeId,
+  serverSessions,
+  count,
+  history,
+  fallback,
+  routes,
+  mode = 'host',
+  beforeBoot,
+  onCleanup,
+} = {}) {
+  const { doc, root, toasts } = mountAdvDocument();
+  const storage = installChatStorage({
+    sessions,
+    activeId,
+    global: { ...DEFAULT_GLOBAL },
+  });
+  const fetchImpl = async (url, options = {}) => {
+    const target = String(url);
+    if (routes) {
+      const handled = await routes(target, options);
+      if (handled !== undefined) return handled;
+    }
+    if (target.includes('/api/chat/sessions')) {
+      return Response.json({ sessions: serverSessions, has_more: false, count: count ?? serverSessions.length });
+    }
+    if (history && target.includes('/api/chat/history')) {
+      const payload = typeof history === 'function' ? await history(target, options) : history;
+      if (payload === undefined) return startupApiFallback(target, fallback);
+      return payload instanceof Response ? payload : Response.json(payload);
+    }
+    return startupApiFallback(target, fallback);
+  };
+  if (mode === 'window') installAdvWindow(fetchImpl);
+  else {
+    installAdvHost();
+    globalThis.window.fetch = fetchImpl;
+    globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+  }
+  if (beforeBoot) beforeBoot();
+  const app = await bootAdvApp(t, { root, toasts, onCleanup });
+  return { doc, root, toasts, storage, app };
 }
 
 // Real startup: localStorage, then initApp's default boot sync against the session list.
@@ -1623,14 +1489,10 @@ test('getErrorMessage: FastAPI 422 prompt validation errors return specific char
 });
 
 test('startup sync marks unanswered user prompt as failed when pruned by server and preserves retry and sync baseline', async t => {
-  const { doc, root, toasts } = mountAdvDocument();
-
-  const session = {
+  const session = localChatSession({
     id: 's_unanswered_pruned',
     title: '未获回复会话',
-    createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_100_000,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
     messages: [
       { id: 'm_1', serverMessageId: 1, role: 'user', content: '第一问', ts: 1_700_000_050_000 },
       { id: 'm_2', serverMessageId: 2, role: 'assistant', content: '第一答', ts: 1_700_000_080_000 },
@@ -1641,14 +1503,11 @@ test('startup sync marks unanswered user prompt as failed when pruned by server 
         ts: 1_700_000_100_000,
       },
     ],
-  };
-
-  const remSession = {
+  });
+  const remSession = localChatSession({
     id: 's_unpersisted_rem',
     title: '未落盘本地会话',
-    createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_100_000,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
     messages: [
       {
         id: 'm_rem_unanswered',
@@ -1657,79 +1516,25 @@ test('startup sync marks unanswered user prompt as failed when pruned by server 
         ts: 1_700_000_100_000,
       },
     ],
-  };
-
-  const server = {
-    id: session.id,
-    title: session.title,
-    voice_profile_id: null,
-    created_at: '2024-06-01 00:00:00',
+  });
+  const server = chatServer(session, {
     updated_at: '2024-06-01 00:00:02',
     message_count: 2, // 服务端物理清理了孤立提问，故 message_count 小于本地 messages.length (3)
     last_message: '第一答',
-    settings: { ...session.settings },
-  };
-
-  const storage = installChatStorage({
+  });
+  const streamRequests = [];
+  const { doc, root, storage, app } = await bootSyncedChat(t, {
     sessions: [session, remSession],
     activeId: session.id,
-    global: { ...DEFAULT_GLOBAL },
-  });
-  installAdvHost();
-
-  const streamRequests = [];
-  const encoder = new TextEncoder();
-
-  globalThis.window.fetch = async (url, options = {}) => {
-    const target = String(url);
-    if (target.includes('/api/chat/sessions')) {
-      return Response.json({ sessions: [server], has_more: false, count: 1 });
-    }
-    if (target.includes('/api/chat/stream')) {
-      let output;
-      let started = false;
-      const body = new ReadableStream({
-        start(controller) { output = controller; started = true; },
-        cancel() { try { output?.close(); } catch {} },
-      });
-      options.signal?.addEventListener('abort', () => {
-        try { output?.close(); } catch {}
-      }, { once: true });
-      const request = {
-        url: target,
-        prompt: JSON.parse(options.body).prompt,
-        async event(type, payload) {
-          for (let i = 0; i < 10 && !started; i++) await tick();
-          output.enqueue(encoder.encode(`event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`));
-          await tick();
-        },
-      };
-      streamRequests.push(request);
-      return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } });
-    }
-    return startupApiFallback(target);
-  };
-  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
-
-  let app = initApp({
-    dom: { advRoot: root },
-    renderSessionList() {},
+    serverSessions: [server],
+    routes(target, options) {
+      if (target.includes('/api/chat/stream')) return openChatStream(target, options, streamRequests, { events: true });
+    },
   });
   let app2;
-
   t.after(() => {
-    try { app?.conversation.stop(); app?.adv?.unmount(); } catch {}
     try { app2?.conversation.stop(); app2?.adv?.unmount(); } catch {}
-    for (const toast of toasts.children) clearTimeout(toast._timer);
-    delete globalThis.document;
-    delete globalThis.window;
-    delete globalThis.localStorage;
-    delete globalThis.fetch;
-    delete globalThis.location;
   });
-
-  await app.ready;
-  for (let i = 0; i < 5; i++) await tick();
 
   // 1. 断言已在服务端落盘会话中，因 message_count < local.messages.length 被自动补标 failed
   const activeSession = storedActive();
@@ -1782,9 +1587,7 @@ test('startup sync marks unanswered user prompt as failed when pruned by server 
     }
     if (target.includes('/api/chat/history')) {
       historyFetched = true;
-      return Response.json({
-        session_id: session.id,
-        has_more: false,
+      return Response.json(historyPayload(session, {
         oldest_id: 1,
         count: 3,
         messages: [
@@ -1792,7 +1595,7 @@ test('startup sync marks unanswered user prompt as failed when pruned by server 
           { id: 2, role: 'assistant', content_chinese: '第一答', content_japanese: '', created_at: '2024-06-01 00:00:01' },
           { id: 3, role: 'user', content_chinese: '其他页面新增的第三问', content_japanese: '', created_at: '2024-06-01 00:00:02' },
         ],
-      });
+      }));
     }
     return startupApiFallback(target);
   };
@@ -1815,40 +1618,26 @@ test('startup sync marks unanswered user prompt as failed when pruned by server 
 });
 
 test('startup sync does not mark user prompt failed when server count covers local messages', async t => {
-  const { doc, root, toasts } = mountAdvDocument();
-
-  const session = {
+  const session = localChatSession({
     id: 's_equal_count',
     title: '已落盘提问',
-    createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_100_000,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
     messages: [
       { id: 'm_1', role: 'user', content: '提问', ts: 1_700_000_050_000 },
     ],
-  };
-
-  const server = {
-    id: session.id,
-    title: session.title,
-    voice_profile_id: null,
-    created_at: '2024-06-01 00:00:00',
+  });
+  const server = chatServer(session, {
     updated_at: '2024-06-01 00:00:02',
     message_count: 1, // server.message_count >= local.messages.length (1 >= 1)
     last_message: '提问',
-    settings: { ...session.settings },
-  };
-
-  const storage = installChatStorage(storedSessionSnapshot(session));
-  installAdvWindow(async (url) => {
-      const target = String(url);
-      if (target.includes('/api/chat/sessions')) {
-        return Response.json({ sessions: [server], has_more: false, count: 1 });
-      }
-      return startupApiFallback(target, { providers: 'empty' });
-    });
-
-  const app = await bootAdvApp(t, { root, toasts });
+  });
+  await bootSyncedChat(t, {
+    sessions: [session],
+    activeId: session.id,
+    serverSessions: [server],
+    mode: 'window',
+    fallback: { providers: 'empty' },
+  });
 
   const activeSession = storedActive();
   const lastMsg = activeSession.messages.at(-1);
@@ -1998,74 +1787,41 @@ test('chat stream request omits fixed tts sliders in adaptive voice mode and tra
 });
 
 test('startup sync clears cached messages for both active and inactive sessions when server message_count is 0', async t => {
-  const { doc, root, toasts } = mountAdvDocument();
-
-  const tg1001 = {
+  const tg1001 = localChatSession({
     id: 'tg_1001',
     title: 'Telegram 会话 1',
-    createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_200_000,
     lastLine: '旧回复 1',
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
     messages: [
       { id: 'm_1', serverMessageId: 1, role: 'user', content: '旧提问 1', ts: 1_700_000_100_000 },
       { id: 'm_2', serverMessageId: 2, role: 'assistant', content: '旧回复 1', ts: 1_700_000_200_000 },
     ],
-  };
-  const tg1002 = {
+  });
+  const tg1002 = localChatSession({
     id: 'tg_1002',
     title: 'Telegram 会话 2',
-    createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_150_000,
     lastLine: '旧回复 2',
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
     messages: [
       { id: 'm_3', serverMessageId: 3, role: 'user', content: '旧提问 2', ts: 1_700_000_120_000 },
       { id: 'm_4', serverMessageId: 4, role: 'assistant', content: '旧回复 2', ts: 1_700_000_150_000 },
     ],
-  };
-
+  });
   const serverSessions = [
-    {
-      id: 'tg_1001',
-      title: 'Telegram 会话 1',
-      voice_profile_id: null,
-      created_at: '2024-06-01 00:00:00',
-      updated_at: '2024-06-01 00:00:10',
-      message_count: 0,
-      last_message: '',
-      settings: { ...tg1001.settings },
-    },
-    {
-      id: 'tg_1002',
-      title: 'Telegram 会话 2',
-      voice_profile_id: null,
-      created_at: '2024-06-01 00:00:00',
-      updated_at: '2024-06-01 00:00:09',
-      message_count: 0,
-      last_message: '',
-      settings: { ...tg1002.settings },
-    },
+    chatServer(tg1001, { updated_at: '2024-06-01 00:00:10', message_count: 0, last_message: '' }),
+    chatServer(tg1002, { updated_at: '2024-06-01 00:00:09', message_count: 0, last_message: '' }),
   ];
-
-  const storage = installChatStorage({
+  const { doc, storage, app } = await bootSyncedChat(t, {
     sessions: [tg1001, tg1002],
     activeId: 'tg_1001',
-    global: { ...DEFAULT_GLOBAL },
+    serverSessions,
+    mode: 'window',
+    fallback: { providers: 'empty' },
+    history(target) {
+      const sid = new URL(String(target), 'http://127.0.0.1:8000').searchParams.get('session_id') || '';
+      return historyPayload(sid, { oldest_id: null, count: 0, messages: [] });
+    },
   });
-  installAdvWindow(async (url) => {
-      const target = String(url);
-      if (target.includes('/api/chat/sessions')) {
-        return Response.json({ sessions: serverSessions, has_more: false, count: 2 });
-      }
-      if (target.includes('/api/chat/history')) {
-        const sid = new URL(target, 'http://127.0.0.1:8000').searchParams.get('session_id') || '';
-        return Response.json({ session_id: sid, messages: [], has_more: false, oldest_id: null, count: 0 });
-      }
-      return startupApiFallback(target, { providers: 'empty' });
-    });
-
-  const app = await bootAdvApp(t, { root, toasts });
 
   assert.deepEqual(storedSession('tg_1001').messages, [], '激活会话 tg_1001 内存中的旧消息应已清空');
   assert.equal(storedSession('tg_1001').lastLine, '');
@@ -2094,96 +1850,52 @@ test('startup sync clears cached messages for both active and inactive sessions 
 });
 
 test('switching to a session cleared on server empties cached messages via loadSessionHistory', async t => {
-  const { doc, root, toasts } = mountAdvDocument();
-
-  const activeSession = {
+  const activeSession = localChatSession({
     id: 's_active_keep',
     title: '当前对话',
-    createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_300_000,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
     messages: [
       { id: 'm_1', serverMessageId: 1, role: 'user', content: '保留问', ts: 1_700_000_100_000 },
       { id: 'm_2', serverMessageId: 2, role: 'assistant', content: '保留答', ts: 1_700_000_200_000 },
     ],
-  };
-  const tgLess = {
+  });
+  const tgLess = localChatSession({
     id: 'tg_less_cleared',
     title: '服务端少于本地后清空',
-    createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_200_000,
     lastLine: '旧答 A',
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
     messages: [
       { id: 'm_10', serverMessageId: 10, role: 'user', content: '旧问 A', ts: 1_700_000_100_000 },
       { id: 'm_11', serverMessageId: 11, role: 'assistant', content: '旧答 A', ts: 1_700_000_200_000 },
     ],
-  };
-  const tgMore = {
+  });
+  const tgMore = localChatSession({
     id: 'tg_more_cleared',
     title: '运行期清空对话',
-    createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_150_000,
     lastLine: '旧答 B',
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
     messages: [
       { id: 'm_20', serverMessageId: 20, role: 'user', content: '旧问 B', ts: 1_700_000_100_000 },
       { id: 'm_21', serverMessageId: 21, role: 'assistant', content: '旧答 B', ts: 1_700_000_150_000 },
     ],
-  };
-
+  });
   const serverSessions = [
-    {
-      id: activeSession.id,
-      title: activeSession.title,
-      voice_profile_id: null,
-      created_at: '2024-06-01 00:00:00',
-      updated_at: '2024-06-01 00:00:10',
-      message_count: 2,
-      last_message: '保留答',
-      settings: { ...activeSession.settings },
-    },
-    {
-      id: tgLess.id,
-      title: tgLess.title,
-      voice_profile_id: null,
-      created_at: '2024-06-01 00:00:00',
-      updated_at: '2024-06-01 00:00:08',
-      message_count: 1,
-      last_message: '过渡消息',
-      settings: { ...tgLess.settings },
-    },
-    {
-      id: tgMore.id,
-      title: tgMore.title,
-      voice_profile_id: null,
-      created_at: '2024-06-01 00:00:00',
-      updated_at: '2024-06-01 00:00:07',
-      message_count: 3,
-      last_message: '过渡消息',
-      settings: { ...tgMore.settings },
-    },
+    chatServer(activeSession, { updated_at: '2024-06-01 00:00:10', message_count: 2, last_message: '保留答' }),
+    chatServer(tgLess, { updated_at: '2024-06-01 00:00:08', message_count: 1, last_message: '过渡消息' }),
+    chatServer(tgMore, { updated_at: '2024-06-01 00:00:07', message_count: 3, last_message: '过渡消息' }),
   ];
-
-  const storage = installChatStorage({
+  const { storage, app } = await bootSyncedChat(t, {
     sessions: [activeSession, tgLess, tgMore],
     activeId: activeSession.id,
-    global: { ...DEFAULT_GLOBAL },
+    serverSessions,
+    mode: 'window',
+    fallback: { providers: 'empty' },
+    history(target) {
+      const sid = new URL(String(target), 'http://127.0.0.1:8000').searchParams.get('session_id') || '';
+      // 会话已在运行期被清空，返回空历史列表
+      return historyPayload(sid, { oldest_id: null, count: 0, messages: [] });
+    },
   });
-  installAdvWindow(async (url) => {
-      const target = String(url);
-      if (target.includes('/api/chat/sessions')) {
-        return Response.json({ sessions: serverSessions, has_more: false, count: 3 });
-      }
-      if (target.includes('/api/chat/history')) {
-        const sid = new URL(target, 'http://127.0.0.1:8000').searchParams.get('session_id') || '';
-        // 会话已在运行期被清空，返回空历史列表
-        return Response.json({ session_id: sid, messages: [], has_more: false, oldest_id: null, count: 0 });
-      }
-      return startupApiFallback(target, { providers: 'empty' });
-    });
-
-  const app = await bootAdvApp(t, { root, toasts });
 
   await app.switchSession('tg_more_cleared');
   for (let i = 0; i < 5; i++) await tick();
@@ -2201,84 +1913,51 @@ test('switching to a session cleared on server empties cached messages via loadS
 });
 
 test('startup sync with server message_count 0 preserves local starter GREETING and unanswered user prompt for retry', async t => {
-  const { doc, root, toasts } = mountAdvDocument();
-
-  const starterSession = {
+  const starterSession = localChatSession({
     id: 's_local_greeting',
     title: '新对话',
-    createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_100_000,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
     messages: [
       { id: 'm_starter_greet', role: 'assistant', content: GREETING, noVoice: true, ts: 1_700_000_050_000 },
     ],
-  };
-  const unansweredOnlySession = {
+  });
+  const unansweredOnlySession = localChatSession({
     id: 's_unanswered_zero',
     title: '未收到回复的提问',
-    createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_300_000,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
     messages: [
       { id: 'm_local_pending', role: 'user', content: '尚未收到回复的提问', ts: 1_700_000_300_000 },
     ],
-  };
-  const clearedWithTailPending = {
+  });
+  const clearedWithTailPending = localChatSession({
     id: 's_cleared_with_pending',
     title: '清空旧历史但保留末尾未发提问',
-    createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_250_000,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
     messages: [
       { id: 'm_old_1', serverMessageId: 1, role: 'user', content: '已删旧问', ts: 1_700_000_100_000 },
       { id: 'm_old_2', serverMessageId: 2, role: 'assistant', content: '已删旧答', ts: 1_700_000_150_000 },
       { id: 'm_tail_pending', role: 'user', content: '末尾待重发提问', ts: 1_700_000_250_000 },
     ],
-  };
-
-  const serverSessions = [unansweredOnlySession, clearedWithTailPending, starterSession].map((s, idx) => ({
-    id: s.id,
-    title: s.title,
-    voice_profile_id: null,
-    created_at: '2024-06-01 00:00:00',
+  });
+  const serverSessions = [unansweredOnlySession, clearedWithTailPending, starterSession].map((s, idx) => chatServer(s, {
     updated_at: `2024-06-01 00:00:0${9 - idx}`,
     message_count: 0,
     last_message: '',
-    settings: { ...s.settings },
   }));
-
-  const storage = installChatStorage({
+  const streamRequests = [];
+  const { doc, app } = await bootSyncedChat(t, {
     sessions: [unansweredOnlySession, clearedWithTailPending, starterSession],
     activeId: unansweredOnlySession.id,
-    global: { ...DEFAULT_GLOBAL },
+    serverSessions,
+    mode: 'window',
+    history(target) {
+      const sid = new URL(String(target), 'http://127.0.0.1:8000').searchParams.get('session_id') || '';
+      return historyPayload(sid, { oldest_id: null, count: 0, messages: [] });
+    },
+    routes(target, options) {
+      if (target.includes('/api/chat/stream')) return openChatStream(target, options, streamRequests);
+    },
   });
-  globalThis.location = { origin: 'http://127.0.0.1:8000' };
-  const streamRequests = [];
-  assignAdvWindow(async (url, options = {}) => {
-      const target = String(url);
-      if (target.includes('/api/chat/sessions')) {
-        return Response.json({ sessions: serverSessions, has_more: false, count: serverSessions.length });
-      }
-      if (target.includes('/api/chat/history')) {
-        const sid = new URL(target, 'http://127.0.0.1:8000').searchParams.get('session_id') || '';
-        return Response.json({ session_id: sid, messages: [], has_more: false, oldest_id: null, count: 0 });
-      }
-      if (target.includes('/api/chat/stream')) {
-        let output;
-        const body = new ReadableStream({
-          start(controller) { output = controller; },
-          cancel() { try { output?.close(); } catch {} },
-        });
-        options.signal?.addEventListener('abort', () => {
-          try { output?.close(); } catch {}
-        }, { once: true });
-        streamRequests.push({ url: target, prompt: JSON.parse(options.body).prompt });
-        return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } });
-      }
-      return startupApiFallback(target);
-    });
-
-  const app = await bootAdvApp(t, { root, toasts });
 
   // (a) 仅含初始本地 GREETING 的新会话欢迎语不被误删
   const liveStarter = storedSession('s_local_greeting');
@@ -2319,8 +1998,6 @@ test('startup sync with server message_count 0 preserves local starter GREETING 
 
 for (const totalServerMessages of [150, 101]) {
   test(`startup sync preserves unanswered local prompt and enables retry when server has ${totalServerMessages} messages (>100)`, async t => {
-    const { doc, root, toasts } = mountAdvDocument();
-
     const oldestWindowId = totalServerMessages - 100 + 1;
     const serverWindow = Array.from({ length: 100 }, (_, idx) => {
       const id = oldestWindowId + idx;
@@ -2344,14 +2021,12 @@ for (const totalServerMessages of [150, 101]) {
     const unansweredId = `m_local_unanswered_${totalServerMessages}`;
     const unansweredPrompt = '刷新前刚发出的长会话提问';
 
-    const session = {
+    const session = localChatSession({
       id: `s_long_unanswered_${totalServerMessages}`,
       title: '超百条长会话',
-      createdAt: 1_700_000_000_000,
       updatedAt: 1_700_000_999_000,
       hasMoreHistory: true,
       oldestMessageId: oldestWindowId,
-      settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
       messages: [
         ...localCachedWindow,
         {
@@ -2363,55 +2038,32 @@ for (const totalServerMessages of [150, 101]) {
           ts: 1_700_000_999_000,
         },
       ],
-    };
-
-    const server = {
-      id: session.id,
-      title: session.title,
-      voice_profile_id: null,
-      created_at: '2024-06-01 00:00:00',
+    });
+    const server = chatServer(session, {
       updated_at: '2024-06-01 00:10:00',
       message_count: totalServerMessages,
       last_message: `服务端回复 #${totalServerMessages}`,
-      settings: { ...session.settings },
-    };
-
-    const storage = installChatStorage(storedSessionSnapshot(session));
-    globalThis.location = { origin: 'http://127.0.0.1:8000' };
-
+    });
     let historyFetches = 0;
     const streamRequests = [];
-    assignAdvWindow(async (url, options = {}) => {
-        const target = String(url);
-        if (target.includes('/api/chat/sessions')) {
-          return Response.json({ sessions: [server], has_more: false, count: 1 });
-        }
-        if (target.includes('/api/chat/history')) {
-          historyFetches += 1;
-          return Response.json({
-            session_id: session.id,
-            has_more: true,
-            oldest_id: oldestWindowId,
-            count: serverWindow.length,
-            messages: serverWindow,
-          });
-        }
-        if (target.includes('/api/chat/stream')) {
-          let output;
-          const body = new ReadableStream({
-            start(controller) { output = controller; },
-            cancel() { try { output?.close(); } catch {} },
-          });
-          options.signal?.addEventListener('abort', () => {
-            try { output?.close(); } catch {}
-          }, { once: true });
-          streamRequests.push({ url: target, prompt: JSON.parse(options.body).prompt });
-          return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } });
-        }
-        return startupApiFallback(target);
-      });
-
-    const app = await bootAdvApp(t, { root, toasts });
+    const { doc, storage, app } = await bootSyncedChat(t, {
+      sessions: [session],
+      activeId: session.id,
+      serverSessions: [server],
+      mode: 'window',
+      history() {
+        historyFetches += 1;
+        return historyPayload(session, {
+          has_more: true,
+          oldest_id: oldestWindowId,
+          count: serverWindow.length,
+          messages: serverWindow,
+        });
+      },
+      routes(target, options) {
+        if (target.includes('/api/chat/stream')) return openChatStream(target, options, streamRequests);
+      },
+    });
 
     assert.equal(historyFetches, 1, `服务端 message_count=${totalServerMessages} 时应拉取最近 100 条历史做核对`);
     const activeSession = storedActive();
@@ -2444,8 +2096,6 @@ for (const totalServerMessages of [150, 101]) {
 }
 
 test('startup sync in >100 message session merges answered local prompt without duplication or false failure', async t => {
-  const { doc, root, toasts } = mountAdvDocument();
-
   const initialWindow = Array.from({ length: 100 }, (_, idx) => {
     const id = 51 + idx;
     const isAssistant = id % 2 === 0;
@@ -2460,14 +2110,12 @@ test('startup sync in >100 message session merges answered local prompt without 
 
   const answeredPrompt = '刷新期间已完成回复的提问';
   const answeredReply = '服务端已生成的第152条回复';
-  const session = {
+  const session = localChatSession({
     id: 's_long_already_answered',
     title: '超百条已完成问答会话',
-    createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_999_000,
     hasMoreHistory: true,
     oldestMessageId: 51,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
     messages: [
       ...initialWindow,
       {
@@ -2479,7 +2127,7 @@ test('startup sync in >100 message session merges answered local prompt without 
         ts: 1_700_000_999_000,
       },
     ],
-  };
+  });
 
   const serverWindow = Array.from({ length: 100 }, (_, idx) => {
     const id = 53 + idx;
@@ -2499,36 +2147,23 @@ test('startup sync in >100 message session merges answered local prompt without 
     };
   });
 
-  const server = {
-    id: session.id,
-    title: session.title,
-    voice_profile_id: null,
-    created_at: '2024-06-01 00:00:00',
+  const server = chatServer(session, {
     updated_at: '2024-06-01 00:10:02',
     message_count: 152,
     last_message: answeredReply,
-    settings: { ...session.settings },
-  };
-
-  const storage = installChatStorage(storedSessionSnapshot(session));
-  installAdvWindow(async (url) => {
-      const target = String(url);
-      if (target.includes('/api/chat/sessions')) {
-        return Response.json({ sessions: [server], has_more: false, count: 1 });
-      }
-      if (target.includes('/api/chat/history')) {
-        return Response.json({
-          session_id: session.id,
-          has_more: true,
-          oldest_id: 53,
-          count: 100,
-          messages: serverWindow,
-        });
-      }
-      return startupApiFallback(target);
-    });
-
-  const app = await bootAdvApp(t, { root, toasts });
+  });
+  const { app } = await bootSyncedChat(t, {
+    sessions: [session],
+    activeId: session.id,
+    serverSessions: [server],
+    mode: 'window',
+    history: historyPayload(session, {
+      has_more: true,
+      oldest_id: 53,
+      count: 100,
+      messages: serverWindow,
+    }),
+  });
 
   const activeSession = storedActive();
   assert.equal(activeSession.messages.length, 100, '服务端已完成该轮问答时不应重复追加本地提问');
@@ -2551,19 +2186,15 @@ test('startup sync in >100 message session merges answered local prompt without 
 });
 
 test('startup sync merges answered local prompt even when previously marked failed without duplication', async t => {
-  const { doc, root, toasts } = mountAdvDocument();
-
   const initialMessages = [
     { id: 'm_10', serverMessageId: 10, role: 'assistant', content: '之前历史消息', ts: 1_700_000_000_000 },
   ];
   const newPrompt = '你好';
   const newReply = '我在';
-  const session = {
+  const session = localChatSession({
     id: 's_failed_prompt_reconcile',
     title: '断连失败提问配对会话',
-    createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_999_000,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
     messages: [
       ...initialMessages,
       {
@@ -2576,47 +2207,29 @@ test('startup sync merges answered local prompt even when previously marked fail
         ts: 1_700_000_999_000,
       },
     ],
-  };
-
+  });
   const serverMessages = [
     { id: 10, role: 'assistant', content_chinese: '之前历史消息', content_japanese: '', created_at: '2024-06-01 00:00:00' },
     { id: 11, role: 'user', content_chinese: newPrompt, content_japanese: '', created_at: '2024-06-01 00:10:01' },
     { id: 12, role: 'assistant', content_chinese: newReply, content_japanese: '返答12', created_at: '2024-06-01 00:10:02' },
   ];
-
-  const server = {
-    id: session.id,
-    title: session.title,
-    voice_profile_id: null,
-    created_at: '2024-06-01 00:00:00',
+  const server = chatServer(session, {
     updated_at: '2024-06-01 00:10:02',
     message_count: 3,
     last_message: newReply,
-    settings: { ...session.settings },
-  };
-
-  const storage = installChatStorage(storedSessionSnapshot(session));
-  installAdvWindow(async (url) => {
-      const target = String(url);
-      if (target.includes('/api/chat/sessions')) {
-        return Response.json({ sessions: [server], has_more: false, count: 1 });
-      }
-      if (target.includes('/api/chat/history')) {
-        return Response.json({
-          session_id: session.id,
-          has_more: false,
-          oldest_id: 10,
-          count: serverMessages.length,
-          messages: serverMessages,
-        });
-      }
-      return startupApiFallback(target);
-    });
-
+  });
   const fakeAudioBlob = { url: 'blob:http://localhost/fake_user_voice', dur: 1.5 };
-  audioStore.set('m_local_failed_prompt', fakeAudioBlob);
-  const app = await bootAdvApp(t, {
-    root, toasts,
+  const { app } = await bootSyncedChat(t, {
+    sessions: [session],
+    activeId: session.id,
+    serverSessions: [server],
+    mode: 'window',
+    history: historyPayload(session, {
+      oldest_id: 10,
+      count: serverMessages.length,
+      messages: serverMessages,
+    }),
+    beforeBoot() { audioStore.set('m_local_failed_prompt', fakeAudioBlob); },
     onCleanup() { audioStore.delete('m_local_failed_prompt'); audioStore.delete('m_11'); },
   });
 
@@ -2642,19 +2255,15 @@ test('startup sync merges answered local prompt even when previously marked fail
 });
 
 test('startup sync preserves failed local prompt at end when content matches earlier history but server has no new messages', async t => {
-  const { doc, root, toasts } = mountAdvDocument();
-
   const repeatedPrompt = '重复历史提问';
   const initialMessages = [
     { id: 'm_1', serverMessageId: 1, role: 'user', content: repeatedPrompt, ts: 1_700_000_000_000 },
     { id: 'm_2', serverMessageId: 2, role: 'assistant', content: '历史回复', ts: 1_700_000_001_000 },
   ];
-  const session = {
+  const session = localChatSession({
     id: 's_failed_prompt_same_as_history',
     title: '历史同文未发送成功会话',
-    createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_999_000,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
     messages: [
       ...initialMessages,
       {
@@ -2667,43 +2276,27 @@ test('startup sync preserves failed local prompt at end when content matches ear
         ts: 1_700_000_999_000,
       },
     ],
-  };
-
+  });
   const serverMessages = [
     { id: 1, role: 'user', content_chinese: repeatedPrompt, content_japanese: '', created_at: '2024-06-01 00:00:00' },
     { id: 2, role: 'assistant', content_chinese: '历史回复', content_japanese: '', created_at: '2024-06-01 00:00:01' },
   ];
-
-  const server = {
-    id: session.id,
-    title: session.title,
-    voice_profile_id: null,
-    created_at: '2024-06-01 00:00:00',
+  const server = chatServer(session, {
     updated_at: '2024-06-01 00:00:01',
     message_count: 2,
     last_message: '历史回复',
-    settings: { ...session.settings },
-  };
-
-  const storage = installChatStorage(storedSessionSnapshot(session));
-  installAdvWindow(async (url) => {
-      const target = String(url);
-      if (target.includes('/api/chat/sessions')) {
-        return Response.json({ sessions: [server], has_more: false, count: 1 });
-      }
-      if (target.includes('/api/chat/history')) {
-        return Response.json({
-          session_id: session.id,
-          has_more: false,
-          oldest_id: 1,
-          count: serverMessages.length,
-          messages: serverMessages,
-        });
-      }
-      return startupApiFallback(target);
-    });
-
-  const app = await bootAdvApp(t, { root, toasts });
+  });
+  const { app } = await bootSyncedChat(t, {
+    sessions: [session],
+    activeId: session.id,
+    serverSessions: [server],
+    mode: 'window',
+    history: historyPayload(session, {
+      oldest_id: 1,
+      count: serverMessages.length,
+      messages: serverMessages,
+    }),
+  });
 
   const activeSession = storedActive();
   assert.equal(activeSession.messages.length, 3, '应保留历史2条 + 末尾1条未发送成功的失败提问');
@@ -2715,17 +2308,13 @@ test('startup sync preserves failed local prompt at end when content matches ear
 });
 
 test('startup sync reconciles multiple unpersisted failed prompts correctly when only a subset was persisted on server', async t => {
-  const { doc, root, toasts } = mountAdvDocument();
-
   const initialMessages = [
     { id: 'm_10', serverMessageId: 10, role: 'assistant', content: '之前历史消息', ts: 1_700_000_000_000 },
   ];
-  const session = {
+  const session = localChatSession({
     id: 's_multi_failed_prompts',
     title: '多条失败提问部分落库会话',
-    createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_999_000,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
     messages: [
       ...initialMessages,
       {
@@ -2747,44 +2336,28 @@ test('startup sync reconciles multiple unpersisted failed prompts correctly when
         ts: 1_700_000_999_000,
       },
     ],
-  };
-
+  });
   const serverMessages = [
     { id: 10, role: 'assistant', content_chinese: '之前历史消息', content_japanese: '', created_at: '2024-06-01 00:00:00' },
     { id: 11, role: 'user', content_chinese: '第一条提问已落库', content_japanese: '', created_at: '2024-06-01 00:10:01' },
     { id: 12, role: 'assistant', content_chinese: '第一条回复', content_japanese: '返答12', created_at: '2024-06-01 00:10:02' },
   ];
-
-  const server = {
-    id: session.id,
-    title: session.title,
-    voice_profile_id: null,
-    created_at: '2024-06-01 00:00:00',
+  const server = chatServer(session, {
     updated_at: '2024-06-01 00:10:02',
     message_count: 3,
     last_message: '第一条回复',
-    settings: { ...session.settings },
-  };
-
-  const storage = installChatStorage(storedSessionSnapshot(session));
-  installAdvWindow(async (url) => {
-      const target = String(url);
-      if (target.includes('/api/chat/sessions')) {
-        return Response.json({ sessions: [server], has_more: false, count: 1 });
-      }
-      if (target.includes('/api/chat/history')) {
-        return Response.json({
-          session_id: session.id,
-          has_more: false,
-          oldest_id: 10,
-          count: serverMessages.length,
-          messages: serverMessages,
-        });
-      }
-      return startupApiFallback(target);
-    });
-
-  const app = await bootAdvApp(t, { root, toasts });
+  });
+  const { app } = await bootSyncedChat(t, {
+    sessions: [session],
+    activeId: session.id,
+    serverSessions: [server],
+    mode: 'window',
+    history: historyPayload(session, {
+      oldest_id: 10,
+      count: serverMessages.length,
+      messages: serverMessages,
+    }),
+  });
 
   const activeSession = storedActive();
   assert.equal(activeSession.messages.length, 4, '应包含历史1条 + 新问答2条 + 末尾1条未落库失败提问');
