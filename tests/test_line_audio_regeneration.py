@@ -33,6 +33,68 @@ def wav(amplitude):
     return output.getvalue()
 
 
+async def _fetch_message_row(db, message_id, columns="lines_json"):
+    async with get_db(db) as conn:
+        return await (await conn.execute(f"SELECT {columns} FROM messages WHERE id=?", (message_id,))).fetchone()
+
+
+def _make_request(is_disconnected_fn, wait_for=None):
+    class Request:
+        async def is_disconnected(self):
+            return is_disconnected_fn()
+
+        async def receive(self):
+            if wait_for is not None:
+                await wait_for.wait()
+                return {"type": "http.disconnect"}
+            await asyncio.Event().wait()
+
+    return Request()
+
+
+def _regen_body(repair, message_id, text, *, line_index=0, session_id="repair-session"):
+    return {
+        "session_id": session_id,
+        "message_id": message_id,
+        "line_index": line_index,
+        "text": text,
+        "voice_profile_id": repair.profiles[1].id,
+    }
+
+
+async def _add_legacy_message(
+    repair, zh, ja, audio_url="/audio/old.wav", *,
+    role="assistant", body_session="repair-session", line_index=0, body_text=None, ensure_session=False,
+):
+    async with get_db(repair.db) as conn:
+        if ensure_session:
+            await crud.get_or_create_session(conn, "repair-session")
+        msg = await crud.add_message(conn, MessageCreate(
+            session_id="repair-session", role=role, content_chinese=zh,
+            content_japanese=ja, audio_url=audio_url, lines=None,
+        ))
+    return msg, _regen_body(
+        repair, msg.id, ja if body_text is None else body_text,
+        line_index=line_index, session_id=body_session,
+    )
+
+
+def _start_gated_repair(repair, body, *, target="service"):
+    started, release = asyncio.Event(), asyncio.Event()
+    holder = repair.engine if target == "engine" else repair.service
+    attr = "synthesize" if target == "engine" else "synthesize_to_file"
+    original = getattr(holder, attr)
+
+    async def delayed(*args, **kwargs):
+        started.set()
+        await release.wait()
+        return await original(*args, **kwargs)
+
+    setattr(holder, attr, delayed)
+    pending = asyncio.create_task(repair.client.post("/api/voice/regenerate-line", json=body))
+    return started, release, pending
+
+
 @pytest.fixture
 async def repair(tmp_path, monkeypatch):
     monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
@@ -121,9 +183,8 @@ async def test_browser_only_line_returns_an_independent_audio_url(repair):
     response = await repair.client.post("/api/voice/regenerate-line", json=body)
     assert response.status_code == 200, response.text
     assert response.json()["persisted"] is False
-    async with get_db(repair.db) as conn:
-        row = await (await conn.execute("SELECT lines_json FROM messages WHERE id=?", (repair.message.id,))).fetchone()
-        assert json.loads(row[0]) == repair.lines
+    row = await _fetch_message_row(repair.db, repair.message.id)
+    assert json.loads(row[0]) == repair.lines
 
 
 async def test_unavailable_voice_context_prompts_retry_without_replacing_history(repair, monkeypatch):
@@ -135,8 +196,7 @@ async def test_unavailable_voice_context_prompts_retry_without_replacing_history
     assert response.status_code == 503
     assert "音色" in response.json()["detail"] and "稍后重试" in response.json()["detail"]
     assert repair.engine.calls == []
-    async with get_db(repair.db) as conn:
-        row = await (await conn.execute("SELECT lines_json FROM messages WHERE id=?", (repair.message.id,))).fetchone()
+    row = await _fetch_message_row(repair.db, repair.message.id)
     assert json.loads(row[0]) == repair.lines
 
 
@@ -177,9 +237,8 @@ async def test_engine_failure_preserves_original_line(repair):
     repair.engine.synthesize = fail
     response = await repair.client.post("/api/voice/regenerate-line", json=repair.body)
     assert response.status_code == 502 and "原音频" in response.json()["detail"]
-    async with get_db(repair.db) as conn:
-        row = await (await conn.execute("SELECT lines_json FROM messages WHERE id=?", (repair.message.id,))).fetchone()
-        assert json.loads(row[0]) == repair.lines
+    row = await _fetch_message_row(repair.db, repair.message.id)
+    assert json.loads(row[0]) == repair.lines
 
 
 @pytest.mark.parametrize("missing, expected", [("model", "模型"), ("reference", "参考音频")])
@@ -192,21 +251,13 @@ async def test_missing_voice_assets_explain_how_to_fix_without_mutating_history(
     assert expected in response.json()["detail"] and "设置中心" in response.json()["detail"]
     assert repair.engine.calls == []
     assert not list((repair.root / "audio").glob("repair_*.wav"))
-    async with get_db(repair.db) as conn:
-        row = await (await conn.execute("SELECT lines_json FROM messages WHERE id=?", (repair.message.id,))).fetchone()
-        assert json.loads(row[0]) == repair.lines
+    row = await _fetch_message_row(repair.db, repair.message.id)
+    assert json.loads(row[0]) == repair.lines
 
 
 @pytest.mark.parametrize("change", ["target", "other", "delete"])
 async def test_repair_merges_only_its_unchanged_target_after_inference(repair, change):
-    started, release = asyncio.Event(), asyncio.Event()
-    original = repair.engine.synthesize
-    async def delayed(*args, **kwargs):
-        started.set()
-        await release.wait()
-        return await original(*args, **kwargs)
-    repair.engine.synthesize = delayed
-    pending = asyncio.create_task(repair.client.post("/api/voice/regenerate-line", json=repair.body))
+    started, release, pending = _start_gated_repair(repair, repair.body, target="engine")
     try:
         await asyncio.wait_for(started.wait(), 3)
         updated = json.loads(json.dumps(repair.lines))
@@ -221,8 +272,7 @@ async def test_repair_merges_only_its_unchanged_target_after_inference(repair, c
         response = await asyncio.wait_for(pending, 5)
         assert response.status_code == {"target": 409, "other": 200, "delete": 404}[change], response.text
         assert len(list((repair.root / "audio").glob("repair_*.wav"))) == (1 if change == "other" else 0)
-        async with get_db(repair.db) as conn:
-            row = await (await conn.execute("SELECT lines_json FROM messages WHERE id=?", (repair.message.id,))).fetchone()
+        row = await _fetch_message_row(repair.db, repair.message.id)
         if change == "delete":
             assert row is None
         else:
@@ -237,12 +287,6 @@ async def test_repair_merges_only_its_unchanged_target_after_inference(repair, c
 async def test_client_disconnect_cancels_owned_inference_without_publishing(repair):
     from galgame2voice.routers.line_audio import LineAudioRequest, regenerate_line
     disconnected, started, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
-    class Request:
-        async def is_disconnected(self):
-            return disconnected.is_set()
-        async def receive(self):
-            await disconnected.wait()
-            return {"type": "http.disconnect"}
     async def blocked(*args, **kwargs):
         started.set()
         try:
@@ -250,7 +294,10 @@ async def test_client_disconnect_cancels_owned_inference_without_publishing(repa
         finally:
             finished.set()
     repair.engine.synthesize = blocked
-    operation = asyncio.create_task(regenerate_line(LineAudioRequest(**repair.body), Request(), SimpleNamespace(tts_service=repair.service)))
+    operation = asyncio.create_task(regenerate_line(
+        LineAudioRequest(**repair.body), _make_request(disconnected.is_set, disconnected),
+        SimpleNamespace(tts_service=repair.service),
+    ))
     try:
         await asyncio.wait_for(started.wait(), 3)
         disconnected.set()
@@ -258,9 +305,8 @@ async def test_client_disconnect_cancels_owned_inference_without_publishing(repa
         with pytest.raises(HTTPException) as error:
             await asyncio.wait_for(operation, 3)
         assert error.value.status_code == 499 and finished.is_set()
-        async with get_db(repair.db) as conn:
-            row = await (await conn.execute("SELECT lines_json FROM messages WHERE id=?", (repair.message.id,))).fetchone()
-            assert json.loads(row[0]) == repair.lines
+        row = await _fetch_message_row(repair.db, repair.message.id)
+        assert json.loads(row[0]) == repair.lines
     finally:
         disconnected.set()
         if not operation.done():
@@ -337,12 +383,6 @@ async def test_disconnected_completed_repair_discards_only_its_unpublished_file(
     from galgame2voice.routers.line_audio import LineAudioRequest, regenerate_line
 
     disconnected = asyncio.Event()
-    class Request:
-        async def is_disconnected(self):
-            return disconnected.is_set()
-        async def receive(self):
-            await disconnected.wait()
-            return {"type": "http.disconnect"}
     original = repair.service.synthesize_to_file
     async def completed(*args, **kwargs):
         result = await original(*args, **kwargs)
@@ -350,11 +390,13 @@ async def test_disconnected_completed_repair_discards_only_its_unpublished_file(
         return result
     repair.service.synthesize_to_file = completed
     with pytest.raises(HTTPException) as error:
-        await regenerate_line(LineAudioRequest(**repair.body), Request(), SimpleNamespace(tts_service=repair.service))
+        await regenerate_line(
+            LineAudioRequest(**repair.body), _make_request(disconnected.is_set, disconnected),
+            SimpleNamespace(tts_service=repair.service),
+        )
     assert error.value.status_code == 499
     assert not list((repair.root / "audio").glob("repair_*.wav"))
-    async with get_db(repair.db) as conn:
-        row = await (await conn.execute("SELECT lines_json FROM messages WHERE id=?", (repair.message.id,))).fetchone()
+    row = await _fetch_message_row(repair.db, repair.message.id)
     assert json.loads(row[0]) == repair.lines
 
 
@@ -364,11 +406,6 @@ async def test_disconnect_while_waiting_for_history_write_cannot_publish_audio(r
     from galgame2voice.routers import line_audio
 
     disconnected = False
-    class Request:
-        async def is_disconnected(self):
-            return disconnected
-        async def receive(self):
-            await asyncio.Event().wait()
     @asynccontextmanager
     async def acquired_after_disconnect(conn):
         nonlocal disconnected
@@ -377,11 +414,13 @@ async def test_disconnect_while_waiting_for_history_write_cannot_publish_audio(r
             yield conn
     monkeypatch.setattr(line_audio, "immediate_transaction", acquired_after_disconnect)
     with pytest.raises(HTTPException) as error:
-        await line_audio.regenerate_line(line_audio.LineAudioRequest(**repair.body), Request(), SimpleNamespace(tts_service=repair.service))
+        await line_audio.regenerate_line(
+            line_audio.LineAudioRequest(**repair.body), _make_request(lambda: disconnected),
+            SimpleNamespace(tts_service=repair.service),
+        )
     assert error.value.status_code == 499
     assert not list((repair.root / "audio").glob("repair_*.wav"))
-    async with get_db(repair.db) as conn:
-        row = await (await conn.execute("SELECT lines_json FROM messages WHERE id=?", (repair.message.id,))).fetchone()
+    row = await _fetch_message_row(repair.db, repair.message.id)
     assert json.loads(row[0]) == repair.lines
 
 
@@ -389,23 +428,19 @@ async def test_cancellation_after_durable_commit_keeps_the_referenced_repair(rep
     import aiosqlite
     from galgame2voice.routers.line_audio import LineAudioRequest, regenerate_line
 
-    class Request:
-        async def is_disconnected(self):
-            return False
-        async def receive(self):
-            await asyncio.Event().wait()
     real_commit = aiosqlite.Connection.commit
     operation = None
     async def commit_then_cancel(conn):
         await real_commit(conn)
         operation.cancel()
     monkeypatch.setattr(aiosqlite.Connection, "commit", commit_then_cancel)
-    operation = asyncio.create_task(regenerate_line(LineAudioRequest(**repair.body), Request(), SimpleNamespace(tts_service=repair.service)))
+    operation = asyncio.create_task(regenerate_line(
+        LineAudioRequest(**repair.body), _make_request(lambda: False), SimpleNamespace(tts_service=repair.service),
+    ))
     with pytest.raises(asyncio.CancelledError):
         await operation
     monkeypatch.setattr(aiosqlite.Connection, "commit", real_commit)
-    async with get_db(repair.db) as conn:
-        row = await (await conn.execute("SELECT lines_json FROM messages WHERE id=?", (repair.message.id,))).fetchone()
+    row = await _fetch_message_row(repair.db, repair.message.id)
     stored = json.loads(row[0])[1]["audio"]
     assert stored["status"] == "ready"
     assert (repair.root / stored["chunks"][0]["audio_url"].lstrip("/")).is_file()
@@ -419,22 +454,13 @@ async def test_empty_repair_does_not_leave_a_dead_audio_file(repair):
 
 
 async def test_legacy_assistant_message_with_null_lines_regenerates_line_zero(repair):
-    async with get_db(repair.db) as conn:
-        legacy_msg = await crud.add_message(conn, MessageCreate(
-            session_id="repair-session", role="assistant", content_chinese="旧版中文台词",
-            content_japanese="旧版の日本語セリフ。", audio_url="/audio/old-full.wav", lines=None,
-        ))
-        row_before = await (await conn.execute("SELECT lines_json, audio_url FROM messages WHERE id=?", (legacy_msg.id,))).fetchone()
-        assert row_before["lines_json"] is None
-        assert row_before["audio_url"] == "/audio/old-full.wav"
+    legacy_msg, body = await _add_legacy_message(
+        repair, "旧版中文台词", "旧版の日本語セリフ。", audio_url="/audio/old-full.wav",
+    )
+    row_before = await _fetch_message_row(repair.db, legacy_msg.id, "lines_json, audio_url")
+    assert row_before["lines_json"] is None
+    assert row_before["audio_url"] == "/audio/old-full.wav"
 
-    body = {
-        "session_id": "repair-session",
-        "message_id": legacy_msg.id,
-        "line_index": 0,
-        "text": "旧版の日本語セリフ。",
-        "voice_profile_id": repair.profiles[1].id,
-    }
     response = await repair.client.post("/api/voice/regenerate-line", json=body)
     assert response.status_code == 200, response.text
     result = response.json()
@@ -447,48 +473,36 @@ async def test_legacy_assistant_message_with_null_lines_regenerates_line_zero(re
     assert chunk["sentence"] == "旧版の日本語セリフ。"
     assert chunk["audio_url"].startswith("/audio/repair_")
 
-    async with get_db(repair.db) as conn:
-        row_after = await (await conn.execute("SELECT lines_json, audio_url FROM messages WHERE id=?", (legacy_msg.id,))).fetchone()
-        assert row_after["audio_url"] == ""
-        stored_lines = json.loads(row_after["lines_json"])
-        assert len(stored_lines) == 1
-        line0 = stored_lines[0]
-        assert line0["index"] == 0
-        assert line0["zh"] == "旧版中文台词"
-        assert line0["ja"] == "旧版の日本語セリフ。"
-        assert line0["emotion"] == "neutral"
-        assert line0["act"] == {}
-        assert line0["audio"]["status"] == "ready"
+    row_after = await _fetch_message_row(repair.db, legacy_msg.id, "lines_json, audio_url")
+    assert row_after["audio_url"] == ""
+    stored_lines = json.loads(row_after["lines_json"])
+    assert len(stored_lines) == 1
+    line0 = stored_lines[0]
+    assert line0["index"] == 0
+    assert line0["zh"] == "旧版中文台词"
+    assert line0["ja"] == "旧版の日本語セリフ。"
+    assert line0["emotion"] == "neutral"
+    assert line0["act"] == {}
+    assert line0["audio"]["status"] == "ready"
 
 
 @pytest.mark.parametrize("mismatch", ["role", "session", "text", "index"])
 async def test_legacy_message_wrong_role_or_session_or_text_or_index_returns_error(repair, mismatch):
-    async with get_db(repair.db) as conn:
-        msg = await crud.add_message(conn, MessageCreate(
-            session_id="repair-session",
-            role="user" if mismatch == "role" else "assistant",
-            content_chinese="原中文",
-            content_japanese="日本語セリフ。",
-            audio_url="/audio/old.wav",
-            lines=None,
-        ))
-
-    body = {
-        "session_id": "other-session" if mismatch == "session" else "repair-session",
-        "message_id": msg.id,
-        "line_index": 1 if mismatch == "index" else 0,
-        "text": "違う日本語。" if mismatch == "text" else "日本語セリフ。",
-        "voice_profile_id": repair.profiles[1].id,
-    }
+    msg, body = await _add_legacy_message(
+        repair, "原中文", "日本語セリフ。",
+        role="user" if mismatch == "role" else "assistant",
+        body_session="other-session" if mismatch == "session" else "repair-session",
+        line_index=1 if mismatch == "index" else 0,
+        body_text="違う日本語。" if mismatch == "text" else "日本語セリフ。",
+    )
     response = await repair.client.post("/api/voice/regenerate-line", json=body)
     expected_status = 409 if mismatch == "text" else 404
     assert response.status_code == expected_status, response.text
     assert not list((repair.root / "audio").glob("repair_*.wav"))
 
-    async with get_db(repair.db) as conn:
-        row = await (await conn.execute("SELECT lines_json, audio_url FROM messages WHERE id=?", (msg.id,))).fetchone()
-        assert row["lines_json"] is None
-        assert row["audio_url"] == "/audio/old.wav"
+    row = await _fetch_message_row(repair.db, msg.id, "lines_json, audio_url")
+    assert row["lines_json"] is None
+    assert row["audio_url"] == "/audio/old.wav"
 
 
 @pytest.mark.parametrize("corrupt_val", [
@@ -507,13 +521,7 @@ async def test_corrupt_or_empty_lines_json_not_treated_as_legacy(repair, corrupt
             )
             msg_id = cursor.lastrowid
 
-    body = {
-        "session_id": "repair-session",
-        "message_id": msg_id,
-        "line_index": 0,
-        "text": "テスト日本語。",
-        "voice_profile_id": repair.profiles[1].id,
-    }
+    body = _regen_body(repair, msg_id, "テスト日本語。")
     response = await repair.client.post("/api/voice/regenerate-line", json=body)
     expected_status = 404 if corrupt_val == "[]" else 422
     assert response.status_code == expected_status, response.text
@@ -521,45 +529,24 @@ async def test_corrupt_or_empty_lines_json_not_treated_as_legacy(repair, corrupt
         assert "历史台词数据损坏，原记录未修改。" in response.text
     assert not list((repair.root / "audio").glob("repair_*.wav"))
 
-    async with get_db(repair.db) as conn:
-        row = await (await conn.execute("SELECT lines_json, audio_url FROM messages WHERE id=?", (msg_id,))).fetchone()
-        assert row["lines_json"] == corrupt_val
-        assert row["audio_url"] == "/audio/corrupt.wav"
+    row = await _fetch_message_row(repair.db, msg_id, "lines_json, audio_url")
+    assert row["lines_json"] == corrupt_val
+    assert row["audio_url"] == "/audio/corrupt.wav"
 
 
 async def test_legacy_repair_failure_and_delete_preserves_db_and_discards_audio(repair):
-    async with get_db(repair.db) as conn:
-        legacy_msg = await crud.add_message(conn, MessageCreate(
-            session_id="repair-session", role="assistant", content_chinese="旧版中文",
-            content_japanese="旧版日文。", audio_url="/audio/old.wav", lines=None,
-        ))
+    legacy_msg, body = await _add_legacy_message(repair, "旧版中文", "旧版日文。")
 
     # 1. Synthesis error -> 502, DB preserved, no orphan audio
     original_engine_synth = repair.engine.synthesize
     repair.engine.synthesize = AsyncMock(side_effect=RuntimeError("TTS engine crashed"))
-    body = {
-        "session_id": "repair-session",
-        "message_id": legacy_msg.id,
-        "line_index": 0,
-        "text": "旧版日文。",
-        "voice_profile_id": repair.profiles[1].id,
-    }
     resp = await repair.client.post("/api/voice/regenerate-line", json=body)
     assert resp.status_code == 502
     assert not list((repair.root / "audio").glob("repair_*.wav"))
 
     # 2. Deletion during synthesis -> 404, orphan audio discarded
-    started, release = asyncio.Event(), asyncio.Event()
-    original_synth = repair.service.synthesize_to_file
-
-    async def delayed_synth(*args, **kwargs):
-        started.set()
-        await release.wait()
-        return await original_synth(*args, **kwargs)
-
     repair.engine.synthesize = original_engine_synth  # restore engine synthesize
-    repair.service.synthesize_to_file = delayed_synth
-    pending = asyncio.create_task(repair.client.post("/api/voice/regenerate-line", json=body))
+    started, release, pending = _start_gated_repair(repair, body)
     try:
         await asyncio.wait_for(started.wait(), 3)
         async with get_db(repair.db) as conn:
@@ -575,11 +562,7 @@ async def test_legacy_repair_failure_and_delete_preserves_db_and_discards_audio(
 
 
 async def test_legacy_repair_concurrent_contenders_race(repair):
-    async with get_db(repair.db) as conn:
-        legacy_msg = await crud.add_message(conn, MessageCreate(
-            session_id="repair-session", role="assistant", content_chinese="旧版中文",
-            content_japanese="旧版日文。", audio_url="/audio/old.wav", lines=None,
-        ))
+    legacy_msg, body = await _add_legacy_message(repair, "旧版中文", "旧版日文。")
 
     started1, started2 = asyncio.Event(), asyncio.Event()
     release1, release2 = asyncio.Event(), asyncio.Event()
@@ -599,13 +582,6 @@ async def test_legacy_repair_concurrent_contenders_race(repair):
         return await original_synth(*args, **kwargs)
 
     repair.service.synthesize_to_file = gated_synth
-    body = {
-        "session_id": "repair-session",
-        "message_id": legacy_msg.id,
-        "line_index": 0,
-        "text": "旧版日文。",
-        "voice_profile_id": repair.profiles[1].id,
-    }
 
     t1 = asyncio.create_task(repair.client.post("/api/voice/regenerate-line", json=body))
     await asyncio.wait_for(started1.wait(), 3)
@@ -631,29 +607,8 @@ async def test_legacy_repair_concurrent_contenders_race(repair):
 
 @pytest.mark.parametrize("change_type", ["audio_url", "chinese", "japanese", "lines_json"])
 async def test_legacy_repair_concurrent_modifications_conflict(repair, change_type):
-    async with get_db(repair.db) as conn:
-        legacy_msg = await crud.add_message(conn, MessageCreate(
-            session_id="repair-session", role="assistant", content_chinese="原中文",
-            content_japanese="原日文。", audio_url="/audio/old.wav", lines=None,
-        ))
-
-    started, release = asyncio.Event(), asyncio.Event()
-    original_synth = repair.service.synthesize_to_file
-
-    async def delayed_synth(*args, **kwargs):
-        started.set()
-        await release.wait()
-        return await original_synth(*args, **kwargs)
-
-    repair.service.synthesize_to_file = delayed_synth
-    body = {
-        "session_id": "repair-session",
-        "message_id": legacy_msg.id,
-        "line_index": 0,
-        "text": "原日文。",
-        "voice_profile_id": repair.profiles[1].id,
-    }
-    pending = asyncio.create_task(repair.client.post("/api/voice/regenerate-line", json=body))
+    legacy_msg, body = await _add_legacy_message(repair, "原中文", "原日文。")
+    started, release, pending = _start_gated_repair(repair, body)
     try:
         await asyncio.wait_for(started.wait(), 3)
         async with get_db(repair.db) as conn:
@@ -681,20 +636,7 @@ async def test_repaired_legacy_line_survives_history_export_and_fresh_connection
     monkeypatch.setenv("GALGAME2VOICE_DB_PATH", repair.db)
     monkeypatch.setenv("GALGAME_DB_PATH", repair.db)
 
-    async with get_db(repair.db) as conn:
-        await crud.get_or_create_session(conn, "repair-session")
-        legacy_msg = await crud.add_message(conn, MessageCreate(
-            session_id="repair-session", role="assistant", content_chinese="旧版中文持久",
-            content_japanese="旧版日文持久。", audio_url="/audio/old.wav", lines=None,
-        ))
-
-    body = {
-        "session_id": "repair-session",
-        "message_id": legacy_msg.id,
-        "line_index": 0,
-        "text": "旧版日文持久。",
-        "voice_profile_id": repair.profiles[1].id,
-    }
+    legacy_msg, body = await _add_legacy_message(repair, "旧版中文持久", "旧版日文持久。", ensure_session=True)
     resp = await repair.client.post("/api/voice/regenerate-line", json=body)
     assert resp.status_code == 200
 
@@ -718,37 +660,21 @@ async def test_repaired_legacy_line_survives_history_export_and_fresh_connection
 
 
 async def test_unrepresentable_legacy_chinese_must_not_destroy_old_audio(repair):
-    async with get_db(repair.db) as conn:
-        message = await crud.add_message(conn, MessageCreate(
-            session_id="repair-session", role="assistant", content_chinese="旧" * 10001,
-            content_japanese="こんにちは。", audio_url="/audio/original.wav", lines=None,
-        ))
-    response = await repair.client.post("/api/voice/regenerate-line", json={
-        "session_id": "repair-session", "message_id": message.id, "line_index": 0,
-        "text": "こんにちは。", "voice_profile_id": repair.profiles[1].id,
-    })
+    message, body = await _add_legacy_message(repair, "旧" * 10001, "こんにちは。", audio_url="/audio/original.wav")
+    response = await repair.client.post("/api/voice/regenerate-line", json=body)
     assert response.status_code == 422, response.text
     assert "这句历史台词超出单句规格" in response.text
-    async with get_db(repair.db) as conn:
-        row = await (await conn.execute("SELECT lines_json, audio_url FROM messages WHERE id=?", (message.id,))).fetchone()
+    row = await _fetch_message_row(repair.db, message.id, "lines_json, audio_url")
     assert row["lines_json"] is None
     assert row["audio_url"] == "/audio/original.wav"
     assert not list((repair.root / "audio").glob("repair_*.wav"))
 
 
 async def test_legacy_chinese_exact_boundary_10000_succeeds_and_roundtrips(repair):
-    async with get_db(repair.db) as conn:
-        message = await crud.add_message(conn, MessageCreate(
-            session_id="repair-session", role="assistant", content_chinese="旧" * 10000,
-            content_japanese="こんにちは。", audio_url="/audio/original.wav", lines=None,
-        ))
-    response = await repair.client.post("/api/voice/regenerate-line", json={
-        "session_id": "repair-session", "message_id": message.id, "line_index": 0,
-        "text": "こんにちは。", "voice_profile_id": repair.profiles[1].id,
-    })
+    message, body = await _add_legacy_message(repair, "旧" * 10000, "こんにちは。", audio_url="/audio/original.wav")
+    response = await repair.client.post("/api/voice/regenerate-line", json=body)
     assert response.status_code == 200, response.text
-    async with get_db(repair.db) as conn:
-        row = await (await conn.execute("SELECT lines_json, audio_url FROM messages WHERE id=?", (message.id,))).fetchone()
+    row = await _fetch_message_row(repair.db, message.id, "lines_json, audio_url")
     assert row["audio_url"] == ""
     assert row["lines_json"] is not None
     decoded = decode_lines(row["lines_json"])

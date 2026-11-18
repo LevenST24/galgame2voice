@@ -17,6 +17,7 @@ from galgame2voice.database import crud
 from galgame2voice.database.models import VoiceProfileCreate
 from galgame2voice.main import create_app
 from galgame2voice.routers import characters
+from galgame2voice.services import character_manager
 from galgame2voice.services.character_manager import CharacterManager
 
 
@@ -27,14 +28,18 @@ def project(tmp_path, monkeypatch):
     return tmp_path
 
 
-def install(root, package_id, name, aliases=(), folder=None, seconds=4):
-    package = root / "characters" / (folder or package_id)
-    package.mkdir(parents=True)
-    with wave.open(str(package / "gentle.wav"), "wb") as audio:
+def _write_wav(path, frame=b"\x01\x00", seconds=4):
+    with wave.open(str(path), "wb") as audio:
         audio.setnchannels(1)
         audio.setsampwidth(2)
         audio.setframerate(8000)
-        audio.writeframes(b"\x01\x00" * 8000 * seconds)
+        audio.writeframes(frame * 8000 * seconds)
+
+
+def install(root, package_id, name, aliases=(), folder=None, seconds=4):
+    package = root / "characters" / (folder or package_id)
+    package.mkdir(parents=True)
+    _write_wav(package / "gentle.wav", seconds=seconds)
     (package / "gpt.ckpt").write_bytes(b"x" * 5000)
     (package / "sovits.pth").write_bytes(b"x" * 5000)
     (package / "manifest.json").write_text(json.dumps({
@@ -46,10 +51,25 @@ def install(root, package_id, name, aliases=(), folder=None, seconds=4):
     return package
 
 
-def catalog(root):
+def catalog(root, monkeypatch=None):
     manager = CharacterManager(root / "characters")
     manager.discover_characters()
+    if monkeypatch is not None:
+        monkeypatch.setattr(character_manager, "get_character_manager", lambda: manager)
     return manager
+
+
+def _copy_ref(folder, target="gentle.wav", source="gentle.wav"):
+    refs = folder / "refs"
+    refs.mkdir(exist_ok=True)
+    (refs / target).write_bytes((folder / source).read_bytes())
+
+
+@asynccontextmanager
+async def _db(path):
+    async with aiosqlite.connect(path) as conn:
+        conn.row_factory = aiosqlite.Row
+        yield conn
 
 
 async def profile(conn, name, **overrides):
@@ -99,8 +119,7 @@ def test_duplicate_manifest_ids_preserve_previous_catalog(project):
 async def test_sync_exact_profile_beats_longer_name(project, isolate_test_database):
     install(project, "ann", "Ann")
     manager = catalog(project)
-    async with aiosqlite.connect(isolate_test_database) as conn:
-        conn.row_factory = aiosqlite.Row
+    async with _db(isolate_test_database) as conn:
         other = await profile(conn, "Annabelle", system_prompt="User persona")
         exact = await profile(conn, "Ann")
         await manager.sync_with_db(conn)
@@ -114,8 +133,7 @@ async def test_sync_alias_cannot_claim_another_package_name(project, isolate_tes
     install(project, "ann", "Ann", ["Bella"])
     install(project, "bella", "Bella")
     manager = catalog(project)
-    async with aiosqlite.connect(isolate_test_database) as conn:
-        conn.row_factory = aiosqlite.Row
+    async with _db(isolate_test_database) as conn:
         original = await profile(conn, "Bella")
         await manager.sync_with_db(conn)
         rows = await crud.list_voice_profiles(conn)
@@ -127,8 +145,7 @@ async def test_sync_alias_cannot_claim_another_package_name(project, isolate_tes
 async def test_ambiguous_profiles_are_preserved_without_duplicate_inserts(project, isolate_test_database):
     install(project, "ann", "Ann", ["Anna"])
     manager = catalog(project)
-    async with aiosqlite.connect(isolate_test_database) as conn:
-        conn.row_factory = aiosqlite.Row
+    async with _db(isolate_test_database) as conn:
         await profile(conn, "Anna", system_prompt="first")
         await profile(conn, "ANNA", system_prompt="second")
         assert await manager.sync_with_db(conn) == 0
@@ -141,8 +158,7 @@ async def test_ambiguous_profiles_are_preserved_without_duplicate_inserts(projec
 async def test_rescan_does_not_delete_user_profiles(project, isolate_test_database):
     install(project, "ann", "Ann")
     manager = catalog(project)
-    async with aiosqlite.connect(isolate_test_database) as conn:
-        conn.row_factory = aiosqlite.Row
+    async with _db(isolate_test_database) as conn:
         custom = await profile(conn, "kazari", system_prompt="My settings")
         absent = await profile(conn, "Unavailable", ref_audio_path="characters/removed/gentle.wav")
         await manager.sync_with_db(conn)
@@ -169,8 +185,7 @@ async def test_sync_preserves_shared_reference_and_user_weights(project, isolate
     elsewhere = project / "unrelated-cwd"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
-    async with aiosqlite.connect(isolate_test_database) as conn:
-        conn.row_factory = aiosqlite.Row
+    async with _db(isolate_test_database) as conn:
         original = await profile(conn, "Ann", gpt_weights_path="models/custom.ckpt",
                                  ref_audio_path="audio/shared/natsume_gentle.wav", prompt_text="User text")
         await manager.sync_with_db(conn)
@@ -185,8 +200,7 @@ async def test_startup_does_not_replace_unknown_voice_with_default(project, isol
     bundled = project / "audio" / "references" / "natsume" / "gentle.ogg"
     bundled.parent.mkdir(parents=True)
     bundled.write_bytes(b"unrelated voice")
-    async with aiosqlite.connect(isolate_test_database) as conn:
-        conn.row_factory = aiosqlite.Row
+    async with _db(isolate_test_database) as conn:
         original = await profile(conn, "Other", ref_audio_path="missing.wav", prompt_text="Other words")
         assert await crud.auto_heal_voice_profiles(conn) == 0
         result = await crud.get_voice_profile(conn, original.id)
@@ -207,8 +221,7 @@ async def test_sync_rolls_back_all_changes_when_one_package_fails(project, isola
         await insert(conn, name, *args)
 
     monkeypatch.setattr(manager, "_insert_new_profile", fail_second)
-    async with aiosqlite.connect(isolate_test_database) as conn:
-        conn.row_factory = aiosqlite.Row
+    async with _db(isolate_test_database) as conn:
         with pytest.raises(RuntimeError, match="synthetic sync"):
             await manager.sync_with_db(conn)
         assert await crud.list_voice_profiles(conn) == []
@@ -216,17 +229,11 @@ async def test_sync_rolls_back_all_changes_when_one_package_fails(project, isola
 
 @pytest.mark.asyncio
 async def test_sync_does_not_borrow_a_bare_reference_from_another_package(project, isolate_test_database, monkeypatch):
-    from galgame2voice.services import character_manager
-
     install(project, "ann", "Ann")
     other = install(project, "bella", "Bella")
-    refs = other / "refs"
-    refs.mkdir()
-    (refs / "gentle.wav").write_bytes((other / "gentle.wav").read_bytes())
-    manager = catalog(project)
-    monkeypatch.setattr(character_manager, "get_character_manager", lambda: manager)
-    async with aiosqlite.connect(isolate_test_database) as conn:
-        conn.row_factory = aiosqlite.Row
+    _copy_ref(other)
+    manager = catalog(project, monkeypatch)
+    async with _db(isolate_test_database) as conn:
         original = await profile(conn, "Ann", ref_audio_path="refs/gentle.wav", prompt_text="Old reference")
         await manager.sync_with_db(conn)
         updated = await crud.get_voice_profile(conn, original.id)
@@ -237,8 +244,7 @@ async def test_sync_does_not_borrow_a_bare_reference_from_another_package(projec
         assert "bella" not in updated.ref_audio_path.lower()
 
     # Verify persistence with a fresh DB connection and verify rescan idempotency
-    async with aiosqlite.connect(isolate_test_database) as fresh_conn:
-        fresh_conn.row_factory = aiosqlite.Row
+    async with _db(isolate_test_database) as fresh_conn:
         reloaded = await crud.get_voice_profile(fresh_conn, original.id)
         assert reloaded.ref_audio_path == "refs/gentle.wav"
         assert reloaded.prompt_text == "Old reference"
@@ -253,37 +259,27 @@ async def test_startup_preserves_valid_external_audio(project, isolate_test_data
     get_settings.cache_clear()
     external = project / "external.wav"
     external.write_bytes(b"user audio outside the install")
-    async with aiosqlite.connect(isolate_test_database) as conn:
-        conn.row_factory = aiosqlite.Row
+    async with _db(isolate_test_database) as conn:
         original = await profile(conn, "Custom", ref_audio_path=str(external))
         assert await crud.auto_heal_voice_profiles(conn) == 0
         assert (await crud.get_voice_profile(conn, original.id)).ref_audio_path == str(external)
 
 
 def test_runtime_audio_search_refuses_ambiguous_bare_paths(project, monkeypatch):
-    from galgame2voice.services import character_manager
     from galgame2voice.utils.path_guard import resolve_existing_audio_path
 
     for package_id in ("ann", "bella"):
-        folder = install(project, package_id, package_id.title())
-        refs = folder / "refs"
-        refs.mkdir()
-        (refs / "gentle.wav").write_bytes((folder / "gentle.wav").read_bytes())
-    manager = catalog(project)
-    monkeypatch.setattr(character_manager, "get_character_manager", lambda: manager)
+        _copy_ref(install(project, package_id, package_id.title()))
+    catalog(project, monkeypatch)
     assert resolve_existing_audio_path("refs/gentle.wav") is None
     assert resolve_existing_audio_path("characters/ann/refs/gentle.wav") == project / "characters/ann/refs/gentle.wav"
 
 
 @pytest.mark.asyncio
 async def test_sync_qualifies_own_package_relative_reference(project, isolate_test_database):
-    folder = install(project, "ann", "Ann")
-    refs = folder / "refs"
-    refs.mkdir()
-    (refs / "custom.wav").write_bytes((folder / "gentle.wav").read_bytes())
+    _copy_ref(install(project, "ann", "Ann"), "custom.wav")
     manager = catalog(project)
-    async with aiosqlite.connect(isolate_test_database) as conn:
-        conn.row_factory = aiosqlite.Row
+    async with _db(isolate_test_database) as conn:
         original = await profile(conn, "Ann", ref_audio_path="refs/custom.wav", prompt_text="Custom transcript")
         await manager.sync_with_db(conn)
         updated = await crud.get_voice_profile(conn, original.id)
@@ -306,36 +302,28 @@ def test_invalid_package_does_not_poison_valid_package_identity(project):
 
 
 def test_runtime_audio_search_prioritizes_package_id_over_alias(project, monkeypatch):
-    from galgame2voice.services import character_manager
     from galgame2voice.utils.path_guard import resolve_existing_audio_path
 
     ann = install(project, "ann", "Ann", ["Bella"])
     bella = install(project, "bella", "Bella")
     for folder in (ann, bella):
-        refs = folder / "refs"
-        refs.mkdir()
-        (refs / "gentle.wav").write_bytes((folder / "gentle.wav").read_bytes())
-    (bella / "refs" / "only_bella.wav").write_bytes((bella / "gentle.wav").read_bytes())
+        _copy_ref(folder)
+    _copy_ref(bella, "only_bella.wav")
 
-    manager = catalog(project)
-    monkeypatch.setattr(character_manager, "get_character_manager", lambda: manager)
+    catalog(project, monkeypatch)
     assert resolve_existing_audio_path("audio/references/bella/gentle.wav") == bella / "refs" / "gentle.wav"
     assert resolve_existing_audio_path("refs/only_bella.wav") is None
 
 
 def test_voice_profile_resolver_scopes_audio_to_owning_package(project, monkeypatch):
-    from galgame2voice.services import character_manager
     from galgame2voice.services.voice_resolver import VoiceProfileResolver
 
     ann = install(project, "ann", "Ann")
     bella = install(project, "bella", "Bella")
     for folder in (ann, bella):
-        refs = folder / "refs"
-        refs.mkdir()
-        (refs / "custom.wav").write_bytes((folder / "gentle.wav").read_bytes())
+        _copy_ref(folder, "custom.wav")
 
-    manager = catalog(project)
-    monkeypatch.setattr(character_manager, "get_character_manager", lambda: manager)
+    catalog(project, monkeypatch)
     resolver = VoiceProfileResolver()
 
     own_ctx = resolver._build_context({
@@ -376,77 +364,73 @@ def test_character_manager_is_conflicting(project):
     assert manager.is_conflicting("nonexistent") is False
 
 
+async def _setup_conflict_profiles(project, db_path, monkeypatch, other_pairs, shared_alias, db_names):
+    install(project, "ann", "Ann", ["Annie"])
+    for pkg_id, name in other_pairs:
+        install(project, pkg_id, name, [shared_alias])
+    manager = catalog(project, monkeypatch)
+    async with _db(db_path) as conn:
+        profiles = [await profile(conn, name) for name in db_names]
+    return manager, profiles
+
+
 @pytest.mark.asyncio
 async def test_resolve_profile_for_query_edge_cases(project, isolate_test_database, monkeypatch):
-    from galgame2voice.services import character_manager
     from galgame2voice.services.character_identity import (
         AmbiguousProfileName,
         resolve_profile_for_query,
     )
 
-    install(project, "ann", "Ann", ["Annie"])
-    install(project, "cathy", "Cathy", ["shared_alias"])
-    install(project, "dora", "Dora", ["shared_alias"])
-    manager = catalog(project)
-    monkeypatch.setattr(character_manager, "get_character_manager", lambda: manager)
+    manager, profiles = await _setup_conflict_profiles(
+        project, isolate_test_database, monkeypatch,
+        [("cathy", "Cathy"), ("dora", "Dora")], "shared_alias", ("Ann", "Cathy", "CustomStandalone"),
+    )
+    p_ann, p_cathy, p_custom = profiles
 
-    async with aiosqlite.connect(isolate_test_database) as conn:
-        conn.row_factory = aiosqlite.Row
-        p_ann = await profile(conn, "Ann")
-        p_cathy = await profile(conn, "Cathy")
-        p_custom = await profile(conn, "CustomStandalone")
-        profiles = [p_ann, p_cathy, p_custom]
+    # 1. Empty query
+    assert resolve_profile_for_query(profiles, "", manager=manager) == (None, None, False)
+    assert resolve_profile_for_query(profiles, "   ", manager=manager) == (None, None, False)
 
-        # 1. Empty query
-        assert resolve_profile_for_query(profiles, "", manager=manager) == (None, None, False)
-        assert resolve_profile_for_query(profiles, "   ", manager=manager) == (None, None, False)
+    # 2. Conflicting query across packages
+    matched, pkg, conflicting = resolve_profile_for_query(profiles, "shared_alias", manager=manager)
+    assert matched is None
+    assert pkg is None
+    assert conflicting is True
 
-        # 2. Conflicting query across packages
-        matched, pkg, conflicting = resolve_profile_for_query(profiles, "shared_alias", manager=manager)
-        assert matched is None
-        assert pkg is None
-        assert conflicting is True
+    # 3. Exact package name
+    matched, pkg, conflicting = resolve_profile_for_query(profiles, "Ann", manager=manager)
+    assert matched is not None and matched.id == p_ann.id
+    assert pkg is not None and pkg.id == "ann"
+    assert conflicting is False
 
-        # 3. Exact package name
-        matched, pkg, conflicting = resolve_profile_for_query(profiles, "Ann", manager=manager)
-        assert matched is not None and matched.id == p_ann.id
-        assert pkg is not None and pkg.id == "ann"
-        assert conflicting is False
+    # 4. Package alias
+    matched, pkg, conflicting = resolve_profile_for_query(profiles, "annie", manager=manager)
+    assert matched is not None and matched.id == p_ann.id
+    assert pkg is not None and pkg.id == "ann"
+    assert conflicting is False
 
-        # 4. Package alias
-        matched, pkg, conflicting = resolve_profile_for_query(profiles, "annie", manager=manager)
-        assert matched is not None and matched.id == p_ann.id
-        assert pkg is not None and pkg.id == "ann"
-        assert conflicting is False
+    # 5. Non-package custom profile
+    matched, pkg, conflicting = resolve_profile_for_query(profiles, "CustomStandalone", manager=manager)
+    assert matched is not None and matched.id == p_custom.id
+    assert pkg is None
+    assert conflicting is False
 
-        # 5. Non-package custom profile
-        matched, pkg, conflicting = resolve_profile_for_query(profiles, "CustomStandalone", manager=manager)
-        assert matched is not None and matched.id == p_custom.id
-        assert pkg is None
-        assert conflicting is False
-
-        # 6. Ambiguous custom profiles
+    # 6. Ambiguous custom profiles
+    async with _db(isolate_test_database) as conn:
         p_dup = await profile(conn, "CUSTOMSTANDALONE")
-        profiles_with_dup = [*profiles, p_dup]
-        with pytest.raises(AmbiguousProfileName):
-            resolve_profile_for_query(profiles_with_dup, "customstandalone", manager=manager)
+    profiles_with_dup = [*profiles, p_dup]
+    with pytest.raises(AmbiguousProfileName):
+        resolve_profile_for_query(profiles_with_dup, "customstandalone", manager=manager)
 
 
 @pytest.mark.asyncio
 async def test_voice_resolver_finds_profile_by_character_query(project, isolate_test_database, monkeypatch):
-    from galgame2voice.services import character_manager
     from galgame2voice.services.voice_resolver import VoiceProfileResolver
 
-    install(project, "ann", "Ann", ["Annie"])
-    install(project, "bella", "Bella", ["shared"])
-    install(project, "clara", "Clara", ["shared"])
-    manager = catalog(project)
-    monkeypatch.setattr(character_manager, "get_character_manager", lambda: manager)
-
-    async with aiosqlite.connect(isolate_test_database) as conn:
-        conn.row_factory = aiosqlite.Row
-        p_ann = await profile(conn, "Ann")
-        await profile(conn, "Bella")
+    _, (p_ann, _) = await _setup_conflict_profiles(
+        project, isolate_test_database, monkeypatch,
+        [("bella", "Bella"), ("clara", "Clara")], "shared", ("Ann", "Bella"),
+    )
 
     resolver = VoiceProfileResolver()
 
@@ -473,7 +457,6 @@ async def test_duplicate_id_cold_start_keeps_profiles_and_reports_conflict(
     project, isolate_test_database, monkeypatch, duplicate_id,
 ):
     from galgame2voice.routers import characters, voice
-    from galgame2voice.services import character_manager
 
     install(project, "ann", "Ann", folder="first")
     second = install(project, duplicate_id, "Ann Copy", folder="second")
@@ -481,8 +464,7 @@ async def test_duplicate_id_cold_start_keeps_profiles_and_reports_conflict(
     monkeypatch.setattr(character_manager, "get_character_manager", lambda: manager)
     monkeypatch.setattr(characters, "get_character_manager", lambda: manager)
     monkeypatch.setattr(voice, "get_character_manager", lambda: manager)
-    async with aiosqlite.connect(isolate_test_database) as conn:
-        conn.row_factory = aiosqlite.Row
+    async with _db(isolate_test_database) as conn:
         await profile(conn, "Saved")
         await conn.commit()
 
@@ -507,19 +489,16 @@ async def test_duplicate_id_cold_start_keeps_profiles_and_reports_conflict(
 async def test_missing_reference_under_default_directory_does_not_borrow_default_package(
     project, isolate_test_database, monkeypatch
 ):
-    from galgame2voice.services import character_manager
     from galgame2voice.services.voice_resolver import VoiceProfileResolver
     from galgame2voice.services.tts_service import TtsService
     from galgame2voice.utils.path_guard import resolve_existing_audio_path
 
     # Install a valid default character package containing gentle.wav
     pkg_dir = install(project, "natsume", "四季夏目")
-    manager = catalog(project)
-    monkeypatch.setattr(character_manager, "get_character_manager", lambda: manager)
+    manager = catalog(project, monkeypatch)
     CharacterManager._instance = manager
 
-    async with aiosqlite.connect(isolate_test_database) as conn:
-        conn.row_factory = aiosqlite.Row
+    async with _db(isolate_test_database) as conn:
         await manager.sync_with_db(conn)
         bob = await profile(
             conn,
@@ -589,63 +568,72 @@ def _profile_named(payload: dict, name: str) -> dict:
     return matches[0]
 
 
+@asynccontextmanager
+async def _app_client(*, raise_app_exceptions=False, timeout=30.0):
+    CharacterManager.reset_instance()
+    try:
+        transport = ASGITransport(app=create_app(), raise_app_exceptions=raise_app_exceptions)
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080", timeout=timeout) as client:
+            yield client
+    finally:
+        CharacterManager.reset_instance()
+
+
+async def _scan_ann(client):
+    scanned = await client.post("/api/characters/rescan")
+    assert scanned.status_code == 200, scanned.text
+    return _profile_named((await client.get("/api/voice/profiles")).json(), "Ann")
+
+
 @pytest.mark.asyncio
 async def test_failed_persona_save_keeps_the_old_manifest_and_reports_the_duplicate(
     project, isolate_test_database,
 ):
     """A duplicate package id must not keep the persona the failed save just wrote."""
-    CharacterManager.reset_instance()
-    try:
-        folder = install(project, "ann", "Ann")
-        original_manifest = (folder / "manifest.json").read_text(encoding="utf-8")
-        edited = "NEW PERSONA THAT THE FAILURE MUST NOT KEEP"
-        app = create_app()
-        transport = ASGITransport(app=app, raise_app_exceptions=False)
-        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080", timeout=30.0) as client:
-            scanned = await client.post("/api/characters/rescan")
-            assert scanned.status_code == 200, scanned.text
-            ann = _profile_named((await client.get("/api/voice/profiles")).json(), "Ann")
-            original_prompt = ann["system_prompt"]
+    folder = install(project, "ann", "Ann")
+    original_manifest = (folder / "manifest.json").read_text(encoding="utf-8")
+    edited = "NEW PERSONA THAT THE FAILURE MUST NOT KEEP"
+    async with _app_client() as client:
+        ann = await _scan_ann(client)
+        original_prompt = ann["system_prompt"]
 
-            second = install(project, "ann", "Ann Copy", folder="second")
-            saved = await client.put(
-                f"/api/characters/{ann['id']}/system-prompt",
-                json={"system_prompt": edited},
-            )
-            body = saved.json()
-            detail = body.get("detail") if isinstance(body, dict) else ""
-            if not isinstance(detail, str):
-                detail = saved.text
-            on_disk = (folder / "manifest.json").read_text(encoding="utf-8")
-            profiles = (await client.get("/api/voice/profiles")).json()
-            ann_after = _profile_named(profiles, "Ann")
-            warning = profiles.get("catalog_warning")
+        second = install(project, "ann", "Ann Copy", folder="second")
+        saved = await client.put(
+            f"/api/characters/{ann['id']}/system-prompt",
+            json={"system_prompt": edited},
+        )
+        body = saved.json()
+        detail = body.get("detail") if isinstance(body, dict) else ""
+        if not isinstance(detail, str):
+            detail = saved.text
+        on_disk = (folder / "manifest.json").read_text(encoding="utf-8")
+        profiles = (await client.get("/api/voice/profiles")).json()
+        ann_after = _profile_named(profiles, "Ann")
+        warning = profiles.get("catalog_warning")
 
-            shutil.rmtree(second)
-            recovered_scan = await client.post("/api/characters/rescan")
-            assert recovered_scan.status_code == 200, recovered_scan.text
-            recovered = _profile_named((await client.get("/api/voice/profiles")).json(), "Ann")
+        shutil.rmtree(second)
+        recovered_scan = await client.post("/api/characters/rescan")
+        assert recovered_scan.status_code == 200, recovered_scan.text
+        recovered = _profile_named((await client.get("/api/voice/profiles")).json(), "Ann")
 
-        problems = []
-        if not 400 <= saved.status_code < 500:
-            problems.append(f"status {saved.status_code} body {saved.text}")
-        if "角色包 ID 重复" not in detail:
-            problems.append(f"user-visible error is {detail!r}")
-        if on_disk != original_manifest:
-            problems.append(f"failed save rewrote manifest to {on_disk!r} (db still {ann_after['system_prompt']!r})")
-        if ann_after["system_prompt"] != original_prompt:
-            problems.append(f"database changed to {ann_after['system_prompt']!r}")
-        if not warning:
-            problems.append(f"voice list catalog_warning stayed empty after the failed save ({warning!r})")
-        elif "角色包 ID 重复" not in warning:
-            problems.append(f"catalog_warning does not name the duplicate ({warning!r})")
-        if recovered["system_prompt"] != original_prompt:
-            problems.append(
-                f"after the duplicate folder is removed, sync stores the failed text {recovered['system_prompt']!r}"
-            )
-        assert not problems, "\n".join(problems)
-    finally:
-        CharacterManager.reset_instance()
+    problems = []
+    if not 400 <= saved.status_code < 500:
+        problems.append(f"status {saved.status_code} body {saved.text}")
+    if "角色包 ID 重复" not in detail:
+        problems.append(f"user-visible error is {detail!r}")
+    if on_disk != original_manifest:
+        problems.append(f"failed save rewrote manifest to {on_disk!r} (db still {ann_after['system_prompt']!r})")
+    if ann_after["system_prompt"] != original_prompt:
+        problems.append(f"database changed to {ann_after['system_prompt']!r}")
+    if not warning:
+        problems.append(f"voice list catalog_warning stayed empty after the failed save ({warning!r})")
+    elif "角色包 ID 重复" not in warning:
+        problems.append(f"catalog_warning does not name the duplicate ({warning!r})")
+    if recovered["system_prompt"] != original_prompt:
+        problems.append(
+            f"after the duplicate folder is removed, sync stores the failed text {recovered['system_prompt']!r}"
+        )
+    assert not problems, "\n".join(problems)
 
 
 @pytest.mark.asyncio
@@ -653,17 +641,12 @@ async def test_overlapping_persona_saves_keep_manifest_and_database_together(
     project, isolate_test_database, monkeypatch,
 ):
     """Two saves must not leave the manifest on one text and the database on the other."""
-    CharacterManager.reset_instance()
     first = second = None
     release = asyncio.Event()
     try:
         folder = install(project, "ann", "Ann")
-        app = create_app()
-        transport = ASGITransport(app=app, raise_app_exceptions=False)
-        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080", timeout=30.0) as client:
-            scanned = await client.post("/api/characters/rescan")
-            assert scanned.status_code == 200, scanned.text
-            ann = _profile_named((await client.get("/api/voice/profiles")).json(), "Ann")
+        async with _app_client() as client:
+            ann = await _scan_ann(client)
 
             # 第一次保存停在写数据库的那次 get_db（本请求里的第二次进入）。
             # 锁会让第二次保存一直等到第一次整段结束，所以第二次用超时等待，避免死锁。
@@ -712,15 +695,10 @@ async def test_overlapping_persona_saves_keep_manifest_and_database_together(
         for task in (first, second):
             if task is not None and not task.done():
                 task.cancel()
-        CharacterManager.reset_instance()
 
 
 async def _rescan_and_list(project, monkeypatch):
-    from httpx import ASGITransport, AsyncClient
-
-    from galgame2voice.main import create_app
-    from galgame2voice.routers import characters, voice
-    from galgame2voice.services import character_manager
+    from galgame2voice.routers import voice
 
     manager = CharacterManager(project / "characters")
     for module in (character_manager, characters, voice):
@@ -801,45 +779,37 @@ async def test_rescan_and_validation_accept_utf8_bom_manifest_and_system_prompt(
 async def test_saving_persona_on_utf8_bom_manifest_succeeds_and_writes_utf8_without_bom(
     project, isolate_test_database,
 ):
-    CharacterManager.reset_instance()
-    try:
-        folder = install(project, "ann", "Ann")
-        manifest_path = folder / "manifest.json"
-        app = create_app()
-        transport = ASGITransport(app=app, raise_app_exceptions=False)
-        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080", timeout=30.0) as client:
-            scanned = await client.post("/api/characters/rescan")
-            assert scanned.status_code == 200, scanned.text
-            ann = _profile_named((await client.get("/api/voice/profiles")).json(), "Ann")
+    folder = install(project, "ann", "Ann")
+    manifest_path = folder / "manifest.json"
+    async with _app_client() as client:
+        ann = await _scan_ann(client)
 
-            original_data = json.loads(manifest_path.read_text(encoding="utf-8"))
-            manifest_path.write_text(
-                json.dumps(original_data, ensure_ascii=False, indent=2),
-                encoding="utf-8-sig",
-            )
-            assert manifest_path.read_bytes().startswith(b"\xef\xbb\xbf")
+        original_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest_path.write_text(
+            json.dumps(original_data, ensure_ascii=False, indent=2),
+            encoding="utf-8-sig",
+        )
+        assert manifest_path.read_bytes().startswith(b"\xef\xbb\xbf")
 
-            updated_prompt = "记事本保存后通过界面更新的人设"
-            saved = await client.put(
-                f"/api/characters/{ann['id']}/system-prompt",
-                json={"system_prompt": updated_prompt},
-            )
-            assert saved.status_code == 200, saved.text
+        updated_prompt = "记事本保存后通过界面更新的人设"
+        saved = await client.put(
+            f"/api/characters/{ann['id']}/system-prompt",
+            json={"system_prompt": updated_prompt},
+        )
+        assert saved.status_code == 200, saved.text
 
-            raw_bytes = manifest_path.read_bytes()
-            assert not raw_bytes.startswith(b"\xef\xbb\xbf")
-            written_data = json.loads(raw_bytes.decode("utf-8"))
-            assert written_data == {**original_data, "system_prompt": updated_prompt}
+        raw_bytes = manifest_path.read_bytes()
+        assert not raw_bytes.startswith(b"\xef\xbb\xbf")
+        written_data = json.loads(raw_bytes.decode("utf-8"))
+        assert written_data == {**original_data, "system_prompt": updated_prompt}
 
-            profiles_after = (await client.get("/api/voice/profiles")).json()
-            assert _profile_named(profiles_after, "Ann")["system_prompt"] == updated_prompt
+        profiles_after = (await client.get("/api/voice/profiles")).json()
+        assert _profile_named(profiles_after, "Ann")["system_prompt"] == updated_prompt
 
-            rescanned = await client.post("/api/characters/rescan")
-            assert rescanned.status_code == 200, rescanned.text
-            assert rescanned.json()["catalog_warning"] is None
-            assert rescanned.json()["characters"] == ["Ann"]
-    finally:
-        CharacterManager.reset_instance()
+        rescanned = await client.post("/api/characters/rescan")
+        assert rescanned.status_code == 200, rescanned.text
+        assert rescanned.json()["catalog_warning"] is None
+        assert rescanned.json()["characters"] == ["Ann"]
 
 
 @pytest.mark.asyncio
@@ -849,18 +819,13 @@ async def test_persona_save_character_scan_does_not_block_other_requests(
     """A lightweight request completes while a persona save is scanning character packages."""
     from galgame2voice.services.tts_service import TtsService
 
-    CharacterManager.reset_instance()
     save_task = None
     scan_entered = threading.Event()
     release_scan = threading.Event()
     try:
         ann_folder = install(project, "ann", "Ann")
-        app = create_app()
-        transport = ASGITransport(app=app, raise_app_exceptions=False)
-        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080", timeout=30.0) as client:
-            scanned = await client.post("/api/characters/rescan")
-            assert scanned.status_code == 200, scanned.text
-            ann = _profile_named((await client.get("/api/voice/profiles")).json(), "Ann")
+        async with _app_client() as client:
+            ann = await _scan_ann(client)
 
             # Drop an uncached character package so the save's rescan probes its audio.
             install(project, "bella", "Bella")
@@ -918,80 +883,65 @@ async def test_persona_save_character_scan_does_not_block_other_requests(
         release_scan.set()
         if save_task is not None and not save_task.done():
             save_task.cancel()
-        CharacterManager.reset_instance()
 
 
 @pytest.mark.asyncio
 async def test_rescan_reports_long_folder_with_corrupt_manifest(project, isolate_test_database):
-    CharacterManager.reset_instance()
-    try:
-        install(project, "valid_char", "有效角色")
-        prefix = "corrupt_character_package_" + "x" * 80
-        long_folder = (prefix + "_broken_json_edition")[:120]
-        assert len(long_folder) == 120
-        corrupt_dir = project / "characters" / long_folder
-        corrupt_dir.mkdir(parents=True)
-        (corrupt_dir / "manifest.json").write_text("{ invalid json", encoding="utf-8")
+    install(project, "valid_char", "有效角色")
+    prefix = "corrupt_character_package_" + "x" * 80
+    long_folder = (prefix + "_broken_json_edition")[:120]
+    assert len(long_folder) == 120
+    corrupt_dir = project / "characters" / long_folder
+    corrupt_dir.mkdir(parents=True)
+    (corrupt_dir / "manifest.json").write_text("{ invalid json", encoding="utf-8")
 
-        app = create_app()
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
-            scan_res = await client.post("/api/characters/rescan")
-            assert scan_res.status_code == 200, scan_res.text
-            scan = scan_res.json()
-            chars_res = await client.get("/api/characters")
-            assert chars_res.status_code == 200, chars_res.text
-            chars = chars_res.json()
-            voices_res = await client.get("/api/voice/profiles")
-            assert voices_res.status_code == 200, voices_res.text
-            voices = voices_res.json()
+    async with _app_client(raise_app_exceptions=True, timeout=5.0) as client:
+        scan_res = await client.post("/api/characters/rescan")
+        assert scan_res.status_code == 200, scan_res.text
+        scan = scan_res.json()
+        chars_res = await client.get("/api/characters")
+        assert chars_res.status_code == 200, chars_res.text
+        chars = chars_res.json()
+        voices_res = await client.get("/api/voice/profiles")
+        assert voices_res.status_code == 200, voices_res.text
+        voices = voices_res.json()
 
-            assert scan["characters"] == ["有效角色"]
-            assert [c["name"] for c in chars["characters"]] == ["有效角色"]
-            assert [p["name"] for p in voices["profiles"]] == ["有效角色"]
-            warning = scan["catalog_warning"]
-            assert warning is not None
-            assert warning.startswith(f"角色包「{long_folder}」不合格：manifest.json JSON 解析错误:")
-            assert chars["catalog_warning"] == warning
-            assert voices["catalog_warning"] == warning
+        assert scan["characters"] == ["有效角色"]
+        assert [c["name"] for c in chars["characters"]] == ["有效角色"]
+        assert [p["name"] for p in voices["profiles"]] == ["有效角色"]
+        warning = scan["catalog_warning"]
+        assert warning is not None
+        assert warning.startswith(f"角色包「{long_folder}」不合格：manifest.json JSON 解析错误:")
+        assert chars["catalog_warning"] == warning
+        assert voices["catalog_warning"] == warning
 
-            # A second 120-char folder sharing the first 100 chars and failing schema validation
-            # must also be reported without colliding on the truncated fallback ID.
-            second_long_folder = (prefix + "_bad_schema_edition_")[:120]
-            assert len(second_long_folder) == 120
-            assert second_long_folder[:100] == long_folder[:100]
-            second_dir = project / "characters" / second_long_folder
-            second_dir.mkdir(parents=True)
-            (second_dir / "manifest.json").write_text("{}", encoding="utf-8")
+        # A second 120-char folder sharing the first 100 chars and failing schema validation
+        # must also be reported without colliding on the truncated fallback ID.
+        second_long_folder = (prefix + "_bad_schema_edition_")[:120]
+        assert len(second_long_folder) == 120
+        assert second_long_folder[:100] == long_folder[:100]
+        second_dir = project / "characters" / second_long_folder
+        second_dir.mkdir(parents=True)
+        (second_dir / "manifest.json").write_text("{}", encoding="utf-8")
 
-            scan2_res = await client.post("/api/characters/rescan")
-            assert scan2_res.status_code == 200, scan2_res.text
-            scan2 = scan2_res.json()
-            assert scan2["characters"] == ["有效角色"]
-            warning2 = scan2["catalog_warning"]
-            assert f"角色包「{long_folder}」不合格：manifest.json JSON 解析错误:" in warning2
-            assert f"角色包「{second_long_folder}」不合格：manifest.json 结构验证失败:" in warning2
-    finally:
-        CharacterManager.reset_instance()
+        scan2_res = await client.post("/api/characters/rescan")
+        assert scan2_res.status_code == 200, scan2_res.text
+        scan2 = scan2_res.json()
+        assert scan2["characters"] == ["有效角色"]
+        warning2 = scan2["catalog_warning"]
+        assert f"角色包「{long_folder}」不合格：manifest.json JSON 解析错误:" in warning2
+        assert f"角色包「{second_long_folder}」不合格：manifest.json 结构验证失败:" in warning2
 
 
 @pytest.fixture
 async def ann_package(project, isolate_test_database):
-    CharacterManager.reset_instance()
-    try:
-        folder = install(project, "ann", "Ann")
-        manifest_path = folder / "manifest.json"
-        original_manifest_text = manifest_path.read_text(encoding="utf-8")
-        original_prompt = json.loads(original_manifest_text)["system_prompt"]
+    folder = install(project, "ann", "Ann")
+    manifest_path = folder / "manifest.json"
+    original_prompt = json.loads(manifest_path.read_text(encoding="utf-8"))["system_prompt"]
 
-        app = create_app()
-        transport = ASGITransport(app=app, raise_app_exceptions=False)
-        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080", timeout=30.0) as client:
-            scanned = await client.post("/api/characters/rescan")
-            assert scanned.status_code == 200, scanned.text
-            ann = _profile_named((await client.get("/api/voice/profiles")).json(), "Ann")
-            yield client, ann, manifest_path, original_prompt
-    finally:
-        CharacterManager.reset_instance()
+    async with _app_client() as client:
+        ann = await _scan_ann(client)
+        yield client, ann, manifest_path, original_prompt
 
 
 @pytest.mark.asyncio
@@ -1138,29 +1088,23 @@ async def test_update_persona_db_failure_standalone_profile(
 ):
     import sqlite3
 
-    CharacterManager.reset_instance()
-    try:
-        app = create_app()
-        transport = ASGITransport(app=app, raise_app_exceptions=False)
-        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080", timeout=30.0) as client:
-            async with characters.get_db() as conn:
-                created = await profile(conn, "CustomStandalone", system_prompt="Old Standalone Persona")
+    async with _app_client() as client:
+        async with characters.get_db() as conn:
+            created = await profile(conn, "CustomStandalone", system_prompt="Old Standalone Persona")
 
-            async def fail_update_voice_profile(*args, **kwargs):
-                raise sqlite3.OperationalError("database is locked")
+        async def fail_update_voice_profile(*args, **kwargs):
+            raise sqlite3.OperationalError("database is locked")
 
-            monkeypatch.setattr("galgame2voice.routers.characters.crud.update_voice_profile", fail_update_voice_profile)
+        monkeypatch.setattr("galgame2voice.routers.characters.crud.update_voice_profile", fail_update_voice_profile)
 
-            response = await client.put(
-                f"/api/characters/{created.id}/system-prompt",
-                json={"system_prompt": "New Standalone Persona"},
-            )
+        response = await client.put(
+            f"/api/characters/{created.id}/system-prompt",
+            json={"system_prompt": "New Standalone Persona"},
+        )
 
-            assert response.status_code == 500, response.text
-            assert "人设保存到数据库失败" in response.json()["detail"]
-            assert "已回滚角色包修改" not in response.json()["detail"]
-    finally:
-        CharacterManager.reset_instance()
+        assert response.status_code == 500, response.text
+        assert "人设保存到数据库失败" in response.json()["detail"]
+        assert "已回滚角色包修改" not in response.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -1310,11 +1254,7 @@ async def test_update_persona_task_cancel_restores_manifest_and_cache(
 def test_resolve_audio_path_does_not_call_authorized_roots_for_relative_paths(project, monkeypatch):
     package_dir = install(project, "ann", "Ann")
     # Add a second emotion with relative path and distinct audio content (to avoid duplicate hash rejection)
-    with wave.open(str(package_dir / "happy.wav"), "wb") as audio:
-        audio.setnchannels(1)
-        audio.setsampwidth(2)
-        audio.setframerate(8000)
-        audio.writeframes(b"\x02\x00" * 8000 * 5)
+    _write_wav(package_dir / "happy.wav", frame=b"\x02\x00", seconds=5)
     manifest_file = package_dir / "manifest.json"
     manifest_data = json.loads(manifest_file.read_text(encoding="utf-8"))
     manifest_data["emotions"]["happy"] = {"audio": "happy.wav", "text": "Happy Ann", "lang": "ja"}
@@ -1363,11 +1303,7 @@ def test_resolve_audio_path_does_not_call_authorized_roots_for_relative_paths(pr
         outside_dir = project.parent / "outside_unauthorized"
         outside_dir.mkdir(parents=True, exist_ok=True)
         outside_audio = outside_dir / "outside.wav"
-        with wave.open(str(outside_audio), "wb") as audio:
-            audio.setnchannels(1)
-            audio.setsampwidth(2)
-            audio.setframerate(8000)
-            audio.writeframes(b"\x03\x00" * 8000 * 4)
+        _write_wav(outside_audio, frame=b"\x03\x00", seconds=4)
 
         assert ann_pkg.resolve_audio_path(str(outside_audio)) is None
         assert root_calls == 2
