@@ -54,6 +54,87 @@ class DummyEngine:
         return SimpleNamespace(status_code=200, json=lambda: {"code": 0})
 
 
+def _create_char_package(
+    characters_root: Path,
+    char_id: str,
+    name: str,
+    emotion: str,
+    text: str,
+    freq: int,
+    gpt_bytes: bytes,
+    sovits_bytes: bytes,
+) -> tuple[Path, Path, Path, Path]:
+    char_dir = characters_root / char_id
+    char_dir.mkdir(parents=True, exist_ok=True)
+    ref_rel = f"refs/{emotion}.wav"
+    wav_path = _create_wav(char_dir / ref_rel, duration_sec=4.0, freq=freq)
+    gpt_file = char_dir / "weights" / "char.ckpt"
+    sovits_file = char_dir / "weights" / "char.pth"
+    gpt_file.parent.mkdir(parents=True, exist_ok=True)
+    gpt_file.write_bytes(gpt_bytes)
+    sovits_file.write_bytes(sovits_bytes)
+    manifest = {
+        "id": char_id,
+        "name": name,
+        "version": "1.0.0",
+        "gpt_weights": "weights/char.ckpt",
+        "sovits_weights": "weights/char.pth",
+        "emotions": {emotion: {"audio": ref_rel, "text": text, "lang": "ja"}},
+    }
+    (char_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    return char_dir, wav_path, gpt_file, sovits_file
+
+
+async def _create_shiki_profile(
+    origin_env,
+    ref_audio_path: str,
+    prompt_text: str,
+    prompt_lang: str = "zh",
+    *,
+    sync: bool = False,
+):
+    async with get_db(origin_env.db_path) as conn:
+        profile = await crud.create_voice_profile(
+            conn,
+            VoiceProfileCreate(
+                name="四季夏目",
+                gpt_weights_path=str(origin_env.gpt_file),
+                sovits_weights_path=str(origin_env.sovits_file),
+                ref_audio_path=ref_audio_path,
+                prompt_text=prompt_text,
+                prompt_lang=prompt_lang,
+                text_lang="ja",
+            ),
+        )
+        if sync:
+            await origin_env.mgr.sync_with_db(conn)
+        return profile
+
+
+async def _post_voice_profile(
+    client: AsyncClient,
+    name: str,
+    gpt_path: Path,
+    sovits_path: Path,
+    ref_audio_path: str,
+    prompt_text: str,
+    prompt_lang: str,
+    refer_language: str | None = None,
+):
+    payload = {
+        "name": name,
+        "gpt_weights_path": str(gpt_path),
+        "sovits_weights_path": str(sovits_path),
+        "ref_audio_path": ref_audio_path,
+        "prompt_text": prompt_text,
+        "prompt_lang": prompt_lang,
+        "text_lang": "ja",
+    }
+    if refer_language is not None:
+        payload["refer_language"] = refer_language
+    return await client.post("/api/voice/profiles", json=payload)
+
+
 @pytest.fixture
 async def origin_env(tmp_path, monkeypatch):
     db_file = tmp_path / "voices.db"
@@ -67,57 +148,18 @@ async def origin_env(tmp_path, monkeypatch):
     CharacterManager.reset_instance()
     get_voice_resolver().invalidate()
 
-    chars_dir = tmp_path / "characters" / "shiki"
-    chars_dir.mkdir(parents=True, exist_ok=True)
-
-    gentle_wav = _create_wav(chars_dir / "refs" / "gentle.wav", duration_sec=4.0, freq=440)
-    gpt_file = chars_dir / "weights" / "char.ckpt"
-    sovits_file = chars_dir / "weights" / "char.pth"
-    gpt_file.parent.mkdir(parents=True, exist_ok=True)
-    gpt_file.write_bytes(b"synthetic gpt weights")
-    sovits_file.write_bytes(b"synthetic sovits weights")
-
+    characters_root = tmp_path / "characters"
+    chars_dir, gentle_wav, gpt_file, sovits_file = _create_char_package(
+        characters_root, "shiki", "四季夏目", "gentle",
+        "四季夏目、よろしくお願いします。（gentle）", 440,
+        b"synthetic gpt weights", b"synthetic sovits weights",
+    )
     # Second package for cross-character testing
-    other_dir = tmp_path / "characters" / "other"
-    other_dir.mkdir(parents=True, exist_ok=True)
-    other_wav = _create_wav(other_dir / "refs" / "joy.wav", duration_sec=4.0, freq=880)
-    other_gpt = other_dir / "weights" / "char.ckpt"
-    other_sovits = other_dir / "weights" / "char.pth"
-    other_gpt.parent.mkdir(parents=True, exist_ok=True)
-    other_gpt.write_bytes(b"other synthetic gpt")
-    other_sovits.write_bytes(b"other synthetic sovits")
-
-    manifest_shiki = {
-        "id": "shiki",
-        "name": "四季夏目",
-        "version": "1.0.0",
-        "gpt_weights": "weights/char.ckpt",
-        "sovits_weights": "weights/char.pth",
-        "emotions": {
-            "gentle": {
-                "audio": "refs/gentle.wav",
-                "text": "四季夏目、よろしくお願いします。（gentle）",
-                "lang": "ja",
-            },
-        },
-    }
-    (chars_dir / "manifest.json").write_text(json.dumps(manifest_shiki, ensure_ascii=False), encoding="utf-8")
-
-    manifest_other = {
-        "id": "other",
-        "name": "其他角色",
-        "version": "1.0.0",
-        "gpt_weights": "weights/char.ckpt",
-        "sovits_weights": "weights/char.pth",
-        "emotions": {
-            "joy": {
-                "audio": "refs/joy.wav",
-                "text": "楽しいです！（joy）",
-                "lang": "ja",
-            },
-        },
-    }
-    (other_dir / "manifest.json").write_text(json.dumps(manifest_other, ensure_ascii=False), encoding="utf-8")
+    other_dir, other_wav, _, _ = _create_char_package(
+        characters_root, "other", "其他角色", "joy",
+        "楽しいです！（joy）", 880,
+        b"other synthetic gpt", b"other synthetic sovits",
+    )
 
     mgr = get_character_manager(characters_dir=tmp_path / "characters")
     discovered = mgr.discover_characters()
@@ -179,16 +221,10 @@ async def test_api_create_and_update_with_external_references(origin_env):
     transport = ASGITransport(app=origin_env.app)
     async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         # 1. Create with audio/custom_remote_ref.wav
-        resp1 = await client.post("/api/voice/profiles", json={
-            "name": "四季夏目",
-            "gpt_weights_path": str(origin_env.gpt_file),
-            "sovits_weights_path": str(origin_env.sovits_file),
-            "ref_audio_path": "audio/custom_remote_ref.wav",
-            "prompt_text": "远端参考音频文本",
-            "prompt_lang": "zh",
-            "refer_language": "zh",
-            "text_lang": "ja",
-        })
+        resp1 = await _post_voice_profile(
+            client, "四季夏目", origin_env.gpt_file, origin_env.sovits_file,
+            "audio/custom_remote_ref.wav", "远端参考音频文本", "zh", refer_language="zh",
+        )
         assert resp1.status_code in (200, 201)
         p1 = resp1.json()["profile"]
         pid = p1["id"]
@@ -257,28 +293,19 @@ async def test_rescan_preserves_external_references_with_fresh_connection(origin
     transport = ASGITransport(app=origin_env.app)
     async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         # Create profiles via HTTP API
-        resp1 = await client.post("/api/voice/profiles", json={
-            "name": "四季夏目",
-            "gpt_weights_path": str(origin_env.gpt_file),
-            "sovits_weights_path": str(origin_env.sovits_file),
-            "ref_audio_path": "audio/custom_remote_ref.wav",
-            "prompt_text": "远端参考文本",
-            "prompt_lang": "zh",
-            "refer_language": "zh",
-            "text_lang": "ja",
-        })
+        resp1 = await _post_voice_profile(
+            client, "四季夏目", origin_env.gpt_file, origin_env.sovits_file,
+            "audio/custom_remote_ref.wav", "远端参考文本", "zh", refer_language="zh",
+        )
         assert resp1.status_code in (200, 201)
         p1_id = resp1.json()["profile"]["id"]
 
-        resp2 = await client.post("/api/voice/profiles", json={
-            "name": "其他角色",
-            "gpt_weights_path": str(origin_env.other_dir / "weights" / "char.ckpt"),
-            "sovits_weights_path": str(origin_env.other_dir / "weights" / "char.pth"),
-            "ref_audio_path": "refs/engine_only.wav",
-            "prompt_text": "",  # Legitimate empty prompt
-            "prompt_lang": "ja",
-            "text_lang": "ja",
-        })
+        resp2 = await _post_voice_profile(
+            client, "其他角色",
+            origin_env.other_dir / "weights" / "char.ckpt",
+            origin_env.other_dir / "weights" / "char.pth",
+            "refs/engine_only.wav", "", "ja",
+        )
         assert resp2.status_code in (200, 201)
         p2_id = resp2.json()["profile"]["id"]
 
@@ -306,19 +333,7 @@ async def test_rescan_preserves_external_references_with_fresh_connection(origin
 @pytest.mark.asyncio
 async def test_resolver_preserves_external_and_unmanifested_refs(origin_env):
     """VoiceProfileResolver preserves external references and unmanifested refs/ without gentle fallback."""
-    async with get_db(origin_env.db_path) as conn:
-        profile = await crud.create_voice_profile(
-            conn,
-            VoiceProfileCreate(
-                name="四季夏目",
-                gpt_weights_path=str(origin_env.gpt_file),
-                sovits_weights_path=str(origin_env.sovits_file),
-                ref_audio_path="refs/engine_only.wav",
-                prompt_text="引擎端独立参考文本",
-                prompt_lang="zh",
-                text_lang="ja",
-            ),
-        )
+    profile = await _create_shiki_profile(origin_env, "refs/engine_only.wav", "引擎端独立参考文本")
 
     resolver = get_voice_resolver()
     ctx = await resolver.resolve_context(str(origin_env.db_path), profile_id=profile.id)
@@ -332,20 +347,8 @@ async def test_resolver_preserves_external_and_unmanifested_refs(origin_env):
 async def test_missing_package_owned_and_cross_char_audio_fall_back_to_gentle(origin_env):
     """Missing package-owned references and cross-package references fall back to gentle."""
     deleted_pkg_wav = str(origin_env.chars_dir / "refs" / "deleted_ref.wav")
-    async with get_db(origin_env.db_path) as conn:
-        # 1. Missing package-owned reference on package "四季夏目"
-        p_missing = await crud.create_voice_profile(
-            conn,
-            VoiceProfileCreate(
-                name="四季夏目",
-                gpt_weights_path=str(origin_env.gpt_file),
-                sovits_weights_path=str(origin_env.sovits_file),
-                ref_audio_path=deleted_pkg_wav,
-                prompt_text="旧文本",
-                prompt_lang="zh",
-                text_lang="ja",
-            ),
-        )
+    # 1. Missing package-owned reference on package "四季夏目"
+    p_missing = await _create_shiki_profile(origin_env, deleted_pkg_wav, "旧文本")
 
     resolver = get_voice_resolver()
 
@@ -376,19 +379,7 @@ async def test_missing_package_owned_and_cross_char_audio_fall_back_to_gentle(or
 @pytest.mark.asyncio
 async def test_tts_explicit_override_parity_between_prod_and_standin(origin_env):
     """Production and stand-in clients behave identically for external explicit overrides."""
-    async with get_db(origin_env.db_path) as conn:
-        profile = await crud.create_voice_profile(
-            conn,
-            VoiceProfileCreate(
-                name="四季夏目",
-                gpt_weights_path=str(origin_env.gpt_file),
-                sovits_weights_path=str(origin_env.sovits_file),
-                ref_audio_path=str(origin_env.gentle_wav),
-                prompt_text="温柔默认台词",
-                prompt_lang="ja",
-                text_lang="ja",
-            ),
-        )
+    profile = await _create_shiki_profile(origin_env, str(origin_env.gentle_wav), "温柔默认台词", "ja")
 
     opts = {
         "voice_profile_id": profile.id,
@@ -416,19 +407,7 @@ async def test_local_audio_invalid_duration_triggers_fallback(origin_env):
     # Create 1.0s audio (too short)
     short_wav = _create_wav(origin_env.root / "audio" / "short.wav", duration_sec=1.0)
 
-    async with get_db(origin_env.db_path) as conn:
-        profile = await crud.create_voice_profile(
-            conn,
-            VoiceProfileCreate(
-                name="四季夏目",
-                gpt_weights_path=str(origin_env.gpt_file),
-                sovits_weights_path=str(origin_env.sovits_file),
-                ref_audio_path=str(origin_env.gentle_wav),
-                prompt_text="温柔默认台词",
-                prompt_lang="ja",
-                text_lang="ja",
-            ),
-        )
+    profile = await _create_shiki_profile(origin_env, str(origin_env.gentle_wav), "温柔默认台词", "ja")
 
     opts = {
         "voice_profile_id": profile.id,
@@ -492,20 +471,7 @@ async def test_unknown_remote_ref_preserved_despite_same_filename_in_other_and_u
     assert (origin_env.other_dir / "refs" / "engine_only.wav").is_file()
     assert (origin_env.root / "characters" / "unregistered" / "engine_only.wav").is_file()
 
-    async with get_db(origin_env.db_path) as conn:
-        profile = await crud.create_voice_profile(
-            conn,
-            VoiceProfileCreate(
-                name="四季夏目",
-                gpt_weights_path=str(origin_env.gpt_file),
-                sovits_weights_path=str(origin_env.sovits_file),
-                ref_audio_path="refs/engine_only.wav",
-                prompt_text="引擎端独立参考文本",
-                prompt_lang="zh",
-                text_lang="ja",
-            ),
-        )
-        await origin_env.mgr.sync_with_db(conn)
+    profile = await _create_shiki_profile(origin_env, "refs/engine_only.wav", "引擎端独立参考文本", sync=True)
 
     # Fresh connection verification:
     async with get_db(origin_env.db_path) as new_conn:
@@ -528,22 +494,9 @@ async def test_unknown_remote_ref_preserved_despite_same_filename_in_other_and_u
 @pytest.mark.asyncio
 async def test_same_filename_with_different_undeclared_path_not_swallowed_as_refs_alias(origin_env):
     """Same filename gentle.wav with different undeclared path is not swallowed as a refs/ alias."""
-    async with get_db(origin_env.db_path) as conn:
-        # Four Seasons Natsume (shiki) declared refs/gentle.wav in manifest.
-        # This profile uses a different undeclared path: audio/custom/gentle.wav
-        profile = await crud.create_voice_profile(
-            conn,
-            VoiceProfileCreate(
-                name="四季夏目",
-                gpt_weights_path=str(origin_env.gpt_file),
-                sovits_weights_path=str(origin_env.sovits_file),
-                ref_audio_path="audio/custom/gentle.wav",
-                prompt_text="外部同名音频文本",
-                prompt_lang="zh",
-                text_lang="ja",
-            ),
-        )
-        await origin_env.mgr.sync_with_db(conn)
+    # Four Seasons Natsume (shiki) declared refs/gentle.wav in manifest.
+    # This profile uses a different undeclared path: audio/custom/gentle.wav
+    profile = await _create_shiki_profile(origin_env, "audio/custom/gentle.wav", "外部同名音频文本", sync=True)
 
     # Fresh connection verification:
     async with get_db(origin_env.db_path) as new_conn:

@@ -41,6 +41,75 @@ def _sample_lines_and_states() -> tuple[list[dict], dict[int, dict], dict]:
     return announced_lines, line_audio_states, chunk0
 
 
+_UNSET = object()
+
+
+def _early_exit(
+    announced_lines,
+    line_audio_states,
+    partial_chinese: str,
+    partial_japanese: str,
+    *,
+    cancel_flagged: bool = False,
+    is_truncation: bool = False,
+):
+    return decide_early_exit_policy(
+        announced_lines=announced_lines,
+        line_audio_states=line_audio_states,
+        partial_chinese=partial_chinese,
+        partial_japanese=partial_japanese,
+        cancel_flagged=cancel_flagged,
+        is_truncation=is_truncation,
+        persisted_assistant=False,
+        has_user_message=True,
+    )
+
+
+def _teardown(
+    announced_lines,
+    line_audio_states,
+    partial_chinese: str,
+    partial_japanese: str,
+    *,
+    persisted_assistant: bool = False,
+    has_user_message: bool = True,
+    persisted_lines=_UNSET,
+):
+    kwargs = {} if persisted_lines is _UNSET else {"persisted_lines": persisted_lines}
+    return decide_teardown_policy(
+        announced_lines=announced_lines,
+        line_audio_states=line_audio_states,
+        partial_chinese=partial_chinese,
+        partial_japanese=partial_japanese,
+        persisted_assistant=persisted_assistant,
+        has_user_message=has_user_message,
+        **kwargs,
+    )
+
+
+def _build_done_event(final_lines: list[dict], **overrides):
+    params = {
+        "full_chinese": "你好。",
+        "full_japanese": "こんにちは。",
+        "final_lines": final_lines,
+        "reply_format": "lines",
+        "final_emotion": "gentle",
+        "affection": {"score": 55},
+        "metrics": {},
+        "total_audio_url": "/audio/0.wav",
+        "chunks": [],
+        "latency_ms": 100,
+        "tts_params": None,
+        "persisted_message_id": 88,
+        "telemetry": {},
+        "cancel_flagged": False,
+        "has_meaningful_content": True,
+        "lines_truncated": False,
+    }
+    params.update(overrides)
+    return build_completion_done_event(**params)
+
+
 def test_normal_completion_persists_once_and_settles_affection_once():
     """Terminal state 1a: Normal completion saves full message once, settles affection once, teardown is no-op."""
     announced_lines = [
@@ -71,14 +140,9 @@ def test_normal_completion_persists_once_and_settles_affection_once():
     assert main_policy["persisted_lines"] == main_policy["final_lines"]
 
     # Simulate DB commit updating persisted_assistant=True, then entering finally teardown
-    teardown_policy = decide_teardown_policy(
-        announced_lines=announced_lines,
-        line_audio_states=states,
-        partial_chinese="早安。",
-        partial_japanese="おはよう。",
-        persisted_assistant=True,
-        has_user_message=True,
-        persisted_lines=main_policy["persisted_lines"],
+    teardown_policy = _teardown(
+        announced_lines, states, "早安。", "おはよう。",
+        persisted_assistant=True, persisted_lines=main_policy["persisted_lines"],
     )
     assert teardown_policy["db_action"] == "none"
     assert teardown_policy["settle_affection"] is False
@@ -152,56 +216,28 @@ def test_truncation_and_stream_error_persist_at_most_once_without_affection():
     announced_lines, states, _ = _sample_lines_and_states()
 
     # Case A: Stream truncation with partial content
-    trunc_main = decide_early_exit_policy(
-        announced_lines=announced_lines,
-        line_audio_states=states,
-        partial_chinese="第一句。第二句。",
-        partial_japanese="一番です。二番です。",
-        cancel_flagged=False,
-        is_truncation=True,
-        persisted_assistant=False,
-        has_user_message=True,
-    )
+    trunc_main = _early_exit(announced_lines, states, "第一句。第二句。", "一番です。二番です。", is_truncation=True)
     assert trunc_main["db_action"] == "persist_partial"
     assert trunc_main["emit_truncated_done"] is True
     assert trunc_main["audio_url"] == ""
     assert trunc_main["settle_affection"] is False
 
-    trunc_teardown = decide_teardown_policy(
-        announced_lines=announced_lines,
-        line_audio_states=states,
-        partial_chinese="第一句。第二句。",
-        partial_japanese="一番です。二番です。",
-        persisted_assistant=True,
-        has_user_message=True,
-        persisted_lines=trunc_main["persisted_lines"],
+    trunc_teardown = _teardown(
+        announced_lines, states, "第一句。第二句。", "一番です。二番です。",
+        persisted_assistant=True, persisted_lines=trunc_main["persisted_lines"],
     )
     assert trunc_teardown["db_action"] == "none"
     assert trunc_teardown["settle_affection"] is False
 
     # Case B: Non-truncation stream error with partial text -> early exit does not persist; teardown persists once
-    err_main = decide_early_exit_policy(
-        announced_lines=announced_lines,
-        line_audio_states=states,
-        partial_chinese="第一句。",
-        partial_japanese="一番です。",
-        cancel_flagged=False,
-        is_truncation=False,
-        persisted_assistant=False,
-        has_user_message=True,
-    )
+    err_main = _early_exit(announced_lines, states, "第一句。", "一番です。")
     assert err_main["db_action"] == "none"
     assert err_main["emit_truncated_done"] is False
     assert err_main["settle_affection"] is False
     assert err_main["persisted_lines"] is not None
 
-    err_teardown = decide_teardown_policy(
-        announced_lines=announced_lines,
-        line_audio_states=states,
-        partial_chinese="第一句。",
-        partial_japanese="一番です。",
-        persisted_assistant=False,
-        has_user_message=True,
+    err_teardown = _teardown(
+        announced_lines, states, "第一句。", "一番です。",
         persisted_lines=err_main["persisted_lines"],
     )
     assert err_teardown["db_action"] == "persist_partial"
@@ -215,55 +251,26 @@ def test_user_cancellation_persists_partial_or_prunes_empty_without_affection():
     announced_lines, states, _ = _sample_lines_and_states()
 
     # Cancelled with partial content
-    cancel_main = decide_early_exit_policy(
-        announced_lines=announced_lines,
-        line_audio_states=states,
-        partial_chinese="第一句。",
-        partial_japanese="一番です。",
-        cancel_flagged=True,
-        is_truncation=False,
-        persisted_assistant=False,
-        has_user_message=True,
-    )
+    cancel_main = _early_exit(announced_lines, states, "第一句。", "一番です。", cancel_flagged=True)
     assert cancel_main["db_action"] == "persist_partial"
     assert cancel_main["emit_truncated_done"] is True
     assert cancel_main["settle_affection"] is False
 
-    cancel_teardown = decide_teardown_policy(
-        announced_lines=announced_lines,
-        line_audio_states=states,
-        partial_chinese="第一句。",
-        partial_japanese="一番です。",
-        persisted_assistant=True,
-        has_user_message=True,
-        persisted_lines=cancel_main["persisted_lines"],
+    cancel_teardown = _teardown(
+        announced_lines, states, "第一句。", "一番です。",
+        persisted_assistant=True, persisted_lines=cancel_main["persisted_lines"],
     )
     assert cancel_teardown["db_action"] == "none"
     assert cancel_teardown["settle_affection"] is False
 
     # Cancelled before any text or lines were produced
-    empty_cancel_main = decide_early_exit_policy(
-        announced_lines=[],
-        line_audio_states={},
-        partial_chinese="",
-        partial_japanese="   ",
-        cancel_flagged=True,
-        is_truncation=False,
-        persisted_assistant=False,
-        has_user_message=True,
-    )
+    empty_cancel_main = _early_exit([], {}, "", "   ", cancel_flagged=True)
     assert empty_cancel_main["db_action"] == "none"
     assert empty_cancel_main["emit_truncated_done"] is True
     assert empty_cancel_main["settle_affection"] is False
 
-    empty_cancel_teardown = decide_teardown_policy(
-        announced_lines=[],
-        line_audio_states={},
-        partial_chinese="",
-        partial_japanese="   ",
-        persisted_assistant=False,
-        has_user_message=True,
-        persisted_lines=empty_cancel_main["persisted_lines"],
+    empty_cancel_teardown = _teardown(
+        [], {}, "", "   ", persisted_lines=empty_cancel_main["persisted_lines"],
     )
     assert empty_cancel_teardown["db_action"] == "prune_user"
     assert empty_cancel_teardown["settle_affection"] is False
@@ -274,14 +281,7 @@ def test_client_disconnect_teardown_policy_rules():
     announced_lines, states, _ = _sample_lines_and_states()
 
     # Meaningful partial text -> persist_partial
-    disc_partial = decide_teardown_policy(
-        announced_lines=announced_lines,
-        line_audio_states=states,
-        partial_chinese="断线前的话。",
-        partial_japanese="切断前の言葉。",
-        persisted_assistant=False,
-        has_user_message=True,
-    )
+    disc_partial = _teardown(announced_lines, states, "断线前的话。", "切断前の言葉。")
     assert disc_partial["db_action"] == "persist_partial"
     assert disc_partial["content_chinese"] == "断线前的话。"
     assert disc_partial["content_japanese"] == "切断前の言葉。"
@@ -290,27 +290,13 @@ def test_client_disconnect_teardown_policy_rules():
     assert disc_partial["lines"] is not None
 
     # No meaningful text -> prune_user
-    disc_empty = decide_teardown_policy(
-        announced_lines=[],
-        line_audio_states={},
-        partial_chinese="  ",
-        partial_japanese="",
-        persisted_assistant=False,
-        has_user_message=True,
-    )
+    disc_empty = _teardown([], {}, "  ", "")
     assert disc_empty["db_action"] == "prune_user"
     assert disc_empty["lines"] is None
     assert disc_empty["settle_affection"] is False
 
     # No user message -> none
-    disc_no_user = decide_teardown_policy(
-        announced_lines=announced_lines,
-        line_audio_states=states,
-        partial_chinese="断线前的话。",
-        partial_japanese="切断前の言葉。",
-        persisted_assistant=False,
-        has_user_message=False,
-    )
+    disc_no_user = _teardown(announced_lines, states, "断线前的话。", "切断前の言葉。", has_user_message=False)
     assert disc_no_user["db_action"] == "none"
     assert disc_no_user["lines"] is None
     assert disc_no_user["settle_affection"] is False
@@ -320,34 +306,9 @@ def test_interrupted_policies_preserve_ready_line_audio_and_keep_master_audio_em
     """Interrupted turns retain meaningful text and completed line 0 audio while marking pending line 1 failed."""
     announced_lines, states, chunk0 = _sample_lines_and_states()
 
-    trunc_policy = decide_early_exit_policy(
-        announced_lines=announced_lines,
-        line_audio_states=states,
-        partial_chinese="第一句。第二句。",
-        partial_japanese="一番です。二番です。",
-        cancel_flagged=False,
-        is_truncation=True,
-        persisted_assistant=False,
-        has_user_message=True,
-    )
-    cancel_policy = decide_early_exit_policy(
-        announced_lines=announced_lines,
-        line_audio_states=states,
-        partial_chinese="第一句。第二句。",
-        partial_japanese="一番です。二番です。",
-        cancel_flagged=True,
-        is_truncation=False,
-        persisted_assistant=False,
-        has_user_message=True,
-    )
-    disconnect_policy = decide_teardown_policy(
-        announced_lines=announced_lines,
-        line_audio_states=states,
-        partial_chinese="第一句。第二句。",
-        partial_japanese="一番です。二番です。",
-        persisted_assistant=False,
-        has_user_message=True,
-    )
+    trunc_policy = _early_exit(announced_lines, states, "第一句。第二句。", "一番です。二番です。", is_truncation=True)
+    cancel_policy = _early_exit(announced_lines, states, "第一句。第二句。", "一番です。二番です。", cancel_flagged=True)
+    disconnect_policy = _teardown(announced_lines, states, "第一句。第二句。", "一番です。二番です。")
 
     for policy in (trunc_policy, cancel_policy, disconnect_policy):
         assert policy["db_action"] == "persist_partial"
@@ -457,12 +418,8 @@ def test_message_create_turn_action_and_completion_done_event_builders():
         is None
     )
 
-    done_no_id = build_completion_done_event(
-        full_chinese="你好。",
-        full_japanese="こんにちは。",
-        final_lines=lines,
-        reply_format="lines",
-        final_emotion="gentle",
+    done_no_id = _build_done_event(
+        lines,
         affection={"score": 55, "emotion": "gentle"},
         metrics={"ttft_ms": 120.0},
         total_audio_url="/audio/full.wav",
@@ -471,9 +428,6 @@ def test_message_create_turn_action_and_completion_done_event_builders():
         tts_params={"speed": 1.0, "temperature": 0.8, "emotion": "gentle", "adaptive_enabled": True},
         persisted_message_id=None,
         telemetry={"turn_id": "sess_1"},
-        cancel_flagged=False,
-        has_meaningful_content=True,
-        lines_truncated=False,
     )
     assert done_no_id["event"] == "done"
     assert "message_id" not in done_no_id["data"]
@@ -481,64 +435,21 @@ def test_message_create_turn_action_and_completion_done_event_builders():
     assert done_no_id["data"]["audio_url"] == "/audio/full.wav"
     assert done_no_id["data"]["total_audio_url"] == "/audio/full.wav"
 
-    done_cancelled = build_completion_done_event(
-        full_chinese="你好。",
-        full_japanese="こんにちは。",
-        final_lines=lines,
-        reply_format="lines",
-        final_emotion="gentle",
-        affection={"score": 55},
-        metrics={},
-        total_audio_url="/audio/0.wav",
-        chunks=[],
-        latency_ms=100,
-        tts_params=None,
-        persisted_message_id=88,
-        telemetry={},
-        cancel_flagged=True,
-        has_meaningful_content=True,
-        lines_truncated=False,
-    )
+    done_cancelled = _build_done_event(lines, cancel_flagged=True)
     assert done_cancelled["data"]["message_id"] == 88
     assert done_cancelled["data"]["truncated"] is True
 
-    done_lines_trunc = build_completion_done_event(
-        full_chinese="你好。",
-        full_japanese="こんにちは。",
-        final_lines=lines,
-        reply_format="lines",
-        final_emotion="gentle",
-        affection={"score": 55},
-        metrics={},
-        total_audio_url="",
-        chunks=[],
-        latency_ms=100,
-        tts_params=None,
-        persisted_message_id=89,
-        telemetry={},
-        cancel_flagged=False,
-        has_meaningful_content=True,
-        lines_truncated=True,
+    done_lines_trunc = _build_done_event(
+        lines, total_audio_url="", persisted_message_id=89, lines_truncated=True,
     )
     assert done_lines_trunc["data"]["truncated"] is True
 
-    done_empty_lines = build_completion_done_event(
+    done_empty_lines = _build_done_event(
+        [],
         full_chinese="早安。",
         full_japanese="おはよう。",
-        final_lines=[],
         reply_format="plain",
-        final_emotion="gentle",
-        affection={"score": 55},
-        metrics={},
-        total_audio_url="/audio/0.wav",
-        chunks=[],
-        latency_ms=100,
-        tts_params=None,
         persisted_message_id=90,
-        telemetry={},
-        cancel_flagged=False,
-        has_meaningful_content=True,
-        lines_truncated=False,
     )
     assert done_empty_lines["data"]["lines"] is None
 

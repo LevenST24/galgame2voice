@@ -63,24 +63,33 @@ def _patch_upstream(monkeypatch, handler):
     monkeypatch.setattr(httpx.AsyncClient, "post", mocked_post)
 
 
-@pytest.mark.asyncio
-async def test_provider_test_402_insufficient_balance(app_client, monkeypatch):
+def _patch_upstream_response(monkeypatch, status_code: int, **response_kwargs):
     async def upstream(method: str, url: str, _kwargs: dict):
-        return httpx.Response(
-            402,
-            json={"error": {"message": "Insufficient Balance"}},
-            request=httpx.Request(method, url),
-        )
+        return httpx.Response(status_code, **response_kwargs, request=httpx.Request(method, url))
 
     _patch_upstream(monkeypatch, upstream)
 
-    resp = await app_client.post(
+
+def _patch_upstream_error(monkeypatch, exc_cls, message: str):
+    async def upstream(method: str, url: str, _kwargs: dict):
+        raise exc_cls(message, request=httpx.Request(method, url))
+
+    _patch_upstream(monkeypatch, upstream)
+
+
+async def _post_provider_test(app_client: AsyncClient, provider_id: str, api_key: str, base_url: str):
+    return await app_client.post(
         "/api/providers/test",
-        json={
-            "id": "deepseek",
-            "api_key": "sk-deepseek-test-key-12345",
-            "base_url": "https://api.deepseek.com",
-        },
+        json={"id": provider_id, "api_key": api_key, "base_url": base_url},
+    )
+
+
+@pytest.mark.asyncio
+async def test_provider_test_402_insufficient_balance(app_client, monkeypatch):
+    _patch_upstream_response(monkeypatch, 402, json={"error": {"message": "Insufficient Balance"}})
+
+    resp = await _post_provider_test(
+        app_client, "deepseek", "sk-deepseek-test-key-12345", "https://api.deepseek.com"
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -94,29 +103,21 @@ async def test_provider_test_402_insufficient_balance(app_client, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_provider_test_429_rate_limit_not_misclassified_by_28401(app_client, monkeypatch):
-    async def upstream(method: str, url: str, _kwargs: dict):
-        return httpx.Response(
-            429,
-            json={
-                "error": {
-                    "message": (
-                        "Rate limit reached for gpt-4o on tokens per min (TPM): "
-                        "Limit 30000, Used 28401, Requested 2100."
-                    )
-                }
-            },
-            request=httpx.Request(method, url),
-        )
-
-    _patch_upstream(monkeypatch, upstream)
-
-    resp = await app_client.post(
-        "/api/providers/test",
+    _patch_upstream_response(
+        monkeypatch,
+        429,
         json={
-            "id": "openai",
-            "api_key": "sk-openai-test-key-12345",
-            "base_url": "https://api.openai.com/v1",
+            "error": {
+                "message": (
+                    "Rate limit reached for gpt-4o on tokens per min (TPM): "
+                    "Limit 30000, Used 28401, Requested 2100."
+                )
+            }
         },
+    )
+
+    resp = await _post_provider_test(
+        app_client, "openai", "sk-openai-test-key-12345", "https://api.openai.com/v1"
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -131,22 +132,10 @@ async def test_provider_test_429_rate_limit_not_misclassified_by_28401(app_clien
 
 @pytest.mark.asyncio
 async def test_provider_test_401_auth_failed_openai_and_anthropic(app_client, monkeypatch):
-    async def upstream(method: str, url: str, _kwargs: dict):
-        return httpx.Response(
-            401,
-            text="Unauthorized",
-            request=httpx.Request(method, url),
-        )
+    _patch_upstream_response(monkeypatch, 401, text="Unauthorized")
 
-    _patch_upstream(monkeypatch, upstream)
-
-    resp_openai = await app_client.post(
-        "/api/providers/test",
-        json={
-            "id": "openai",
-            "api_key": "sk-invalid-openai-key",
-            "base_url": "https://api.openai.com/v1",
-        },
+    resp_openai = await _post_provider_test(
+        app_client, "openai", "sk-invalid-openai-key", "https://api.openai.com/v1"
     )
     assert resp_openai.status_code == 200
     data_openai = resp_openai.json()
@@ -156,13 +145,8 @@ async def test_provider_test_401_auth_failed_openai_and_anthropic(app_client, mo
     assert data_openai["error_title"] and "验证失败" in data_openai["error_title"]
     assert data_openai["diagnostic"] and "密钥" in data_openai["diagnostic"]
 
-    resp_anthropic = await app_client.post(
-        "/api/providers/test",
-        json={
-            "id": "anthropic",
-            "api_key": "sk-ant-invalid-key",
-            "base_url": "https://api.anthropic.com/v1",
-        },
+    resp_anthropic = await _post_provider_test(
+        app_client, "anthropic", "sk-ant-invalid-key", "https://api.anthropic.com/v1"
     )
     assert resp_anthropic.status_code == 200
     data_anthropic = resp_anthropic.json()
@@ -175,18 +159,10 @@ async def test_provider_test_401_auth_failed_openai_and_anthropic(app_client, mo
 
 @pytest.mark.asyncio
 async def test_provider_test_timeout_and_connect_error_preserve_transport_diagnosis(app_client, monkeypatch):
-    async def timeout_upstream(method: str, url: str, _kwargs: dict):
-        raise httpx.ReadTimeout("timed out", request=httpx.Request(method, url))
+    _patch_upstream_error(monkeypatch, httpx.ReadTimeout, "timed out")
 
-    _patch_upstream(monkeypatch, timeout_upstream)
-
-    resp_timeout = await app_client.post(
-        "/api/providers/test",
-        json={
-            "id": "openai",
-            "api_key": "sk-openai-timeout-key",
-            "base_url": "https://api.openai.com/v1",
-        },
+    resp_timeout = await _post_provider_test(
+        app_client, "openai", "sk-openai-timeout-key", "https://api.openai.com/v1"
     )
     assert resp_timeout.status_code == 200
     data_timeout = resp_timeout.json()
@@ -196,18 +172,10 @@ async def test_provider_test_timeout_and_connect_error_preserve_transport_diagno
     assert data_timeout["error_title"] and "超时" in data_timeout["error_title"]
     assert data_timeout["diagnostic"] and ("代理" in data_timeout["diagnostic"] or "网络" in data_timeout["diagnostic"])
 
-    async def tls_upstream(method: str, url: str, _kwargs: dict):
-        raise httpx.ConnectError("TLS handshake failed", request=httpx.Request(method, url))
+    _patch_upstream_error(monkeypatch, httpx.ConnectError, "TLS handshake failed")
 
-    _patch_upstream(monkeypatch, tls_upstream)
-
-    resp_tls = await app_client.post(
-        "/api/providers/test",
-        json={
-            "id": "openai",
-            "api_key": "sk-openai-tls-key",
-            "base_url": "https://api.openai.com/v1",
-        },
+    resp_tls = await _post_provider_test(
+        app_client, "openai", "sk-openai-tls-key", "https://api.openai.com/v1"
     )
     assert resp_tls.status_code == 200
     data_tls = resp_tls.json()
@@ -219,14 +187,7 @@ async def test_provider_test_timeout_and_connect_error_preserve_transport_diagno
 @pytest.mark.asyncio
 async def test_provider_test_ssrf_and_credential_mismatch_return_structured_diagnostics(app_client):
     # Scenario A: private/loopback address rejected when private endpoints are disabled
-    resp_ssrf = await app_client.post(
-        "/api/providers/test",
-        json={
-            "id": "custom",
-            "api_key": "dummy-local-key",
-            "base_url": "http://127.0.0.1:11434/v1",
-        },
-    )
+    resp_ssrf = await _post_provider_test(app_client, "custom", "dummy-local-key", "http://127.0.0.1:11434/v1")
     assert resp_ssrf.status_code == 400
     data_ssrf = resp_ssrf.json()
     assert "detail" in data_ssrf and "允许私网 LLM 端点" in data_ssrf["detail"]
@@ -253,14 +214,7 @@ async def test_provider_test_ssrf_and_credential_mismatch_return_structured_diag
     masked_key = save_resp.json()["provider"]["api_key"]
     assert masked_key.startswith("sk-****")
 
-    resp_mismatch = await app_client.post(
-        "/api/providers/test",
-        json={
-            "id": "openai",
-            "api_key": masked_key,
-            "base_url": "https://api.example.com/v1",
-        },
-    )
+    resp_mismatch = await _post_provider_test(app_client, "openai", masked_key, "https://api.example.com/v1")
     assert resp_mismatch.status_code == 400
     data_mismatch = resp_mismatch.json()
     assert "detail" in data_mismatch and "Cannot test custom base_url with stored API key" in data_mismatch["detail"]
@@ -275,13 +229,8 @@ async def test_provider_test_ssrf_and_credential_mismatch_return_structured_diag
     assert data_mismatch.get("retryable") is False
 
     # Scenario C: invalid scheme URL rejected with INVALID_BASE_URL while preserving detail
-    resp_invalid_url = await app_client.post(
-        "/api/providers/test",
-        json={
-            "id": "custom",
-            "api_key": "sk-explicit-key-12345",
-            "base_url": "ftp://api.example.com/v1",
-        },
+    resp_invalid_url = await _post_provider_test(
+        app_client, "custom", "sk-explicit-key-12345", "ftp://api.example.com/v1"
     )
     assert resp_invalid_url.status_code == 400
     data_invalid_url = resp_invalid_url.json()
@@ -365,17 +314,9 @@ async def test_provider_diagnostics_v1_contract_samples(app_client, monkeypatch)
             status_code = sample["upstream_status"]
             body = sample["upstream_body"]
 
-            async def upstream_http(method: str, url: str, _kwargs: dict, sc=status_code, text=body):
-                return httpx.Response(sc, text=text, request=httpx.Request(method, url))
-
-            _patch_upstream(monkeypatch, upstream_http)
-            resp = await app_client.post(
-                "/api/providers/test",
-                json={
-                    "id": sample["provider_id"],
-                    "api_key": "sk-contract-test-key-12345",
-                    "base_url": sample["base_url"],
-                },
+            _patch_upstream_response(monkeypatch, status_code, text=body)
+            resp = await _post_provider_test(
+                app_client, sample["provider_id"], "sk-contract-test-key-12345", sample["base_url"]
             )
             assert resp.status_code == expected["provider_test_http_status"], sample["id"]
             payload = resp.json()
@@ -398,17 +339,9 @@ async def test_provider_diagnostics_v1_contract_samples(app_client, monkeypatch)
         elif kind == "transport_timeout":
             msg = sample["exception_message"]
 
-            async def upstream_timeout(method: str, url: str, _kwargs: dict, err_msg=msg):
-                raise httpx.ReadTimeout(err_msg, request=httpx.Request(method, url))
-
-            _patch_upstream(monkeypatch, upstream_timeout)
-            resp = await app_client.post(
-                "/api/providers/test",
-                json={
-                    "id": sample["provider_id"],
-                    "api_key": "sk-contract-timeout-key-12345",
-                    "base_url": sample["base_url"],
-                },
+            _patch_upstream_error(monkeypatch, httpx.ReadTimeout, msg)
+            resp = await _post_provider_test(
+                app_client, sample["provider_id"], "sk-contract-timeout-key-12345", sample["base_url"]
             )
             assert resp.status_code == expected["provider_test_http_status"], sample["id"]
             payload = resp.json()
@@ -430,14 +363,7 @@ async def test_provider_diagnostics_v1_contract_samples(app_client, monkeypatch)
                 assert chat_payload["error_code"] == expected["legacy_error_code"], sample["id"]
 
         elif kind == "preflight_private_endpoint":
-            resp = await app_client.post(
-                "/api/providers/test",
-                json={
-                    "id": sample["provider_id"],
-                    "api_key": "dummy-key",
-                    "base_url": sample["base_url"],
-                },
-            )
+            resp = await _post_provider_test(app_client, sample["provider_id"], "dummy-key", sample["base_url"])
             assert resp.status_code == expected["provider_test_http_status"], sample["id"]
             payload = resp.json()
             assert "detail" in payload and payload["detail"], sample["id"]
@@ -456,13 +382,8 @@ async def test_provider_diagnostics_v1_contract_samples(app_client, monkeypatch)
                     "api_base_url": sample["stored_base_url"],
                 },
             )
-            resp = await app_client.post(
-                "/api/providers/test",
-                json={
-                    "id": sample["provider_id"],
-                    "api_key": "sk-****7766",
-                    "base_url": sample["test_base_url"],
-                },
+            resp = await _post_provider_test(
+                app_client, sample["provider_id"], "sk-****7766", sample["test_base_url"]
             )
             assert resp.status_code == expected["provider_test_http_status"], sample["id"]
             payload = resp.json()
