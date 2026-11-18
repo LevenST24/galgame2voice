@@ -12,6 +12,46 @@ MOCK_WAV = (
 )
 
 
+async def _start_old_client_inflight():
+    old_started = asyncio.Event()
+    old_release = asyncio.Event()
+
+    async def old_handler(request: httpx.Request) -> httpx.Response:
+        old_started.set()
+        await old_release.wait()
+        return httpx.Response(200, content=MOCK_WAV, headers={"Content-Type": "audio/wav"})
+
+    old_client = httpx.AsyncClient(transport=httpx.MockTransport(old_handler))
+    client = GptSovitsClient(base_url="http://engine-old.test:9880", client=old_client)
+    client._model_state_uncertain = False
+    client.current_refer_audio = "dummy.wav"
+
+    old_task = asyncio.create_task(
+        client.synthesize("旧客户端消息", options={"ref_audio_path": "dummy.wav"})
+    )
+    await asyncio.wait_for(old_started.wait(), timeout=2.0)
+    await client.set_base_url("http://engine-new.test:9880")
+    return client, old_client, old_release, old_task
+
+
+async def _swap_new_client_and_finish_old(client, handler, old_release, old_task):
+    new_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client._client = new_client
+    client._model_state_uncertain = False
+    client.current_refer_audio = "dummy.wav"
+    old_release.set()
+    await asyncio.wait_for(old_task, timeout=2.0)
+    return new_client
+
+
+async def _cleanup_drain_clients(release_event, task, client, new_client):
+    release_event.set()
+    await asyncio.wait_for(task, timeout=2.0)
+    await client.aclose()
+    if not new_client.is_closed:
+        await new_client.aclose()
+
+
 @pytest.mark.asyncio
 async def test_old_client_drains_promptly_when_new_client_has_inflight_requests(caplog):
     """When base URL is changed while requests are in-flight, old HTTP client
@@ -21,29 +61,8 @@ async def test_old_client_drains_promptly_when_new_client_has_inflight_requests(
     """
     caplog.set_level(logging.WARNING)
 
-    # 1. Setup old client with an ongoing in-flight request
-    old_started = asyncio.Event()
-    old_release = asyncio.Event()
-
-    async def old_handler(request: httpx.Request) -> httpx.Response:
-        old_started.set()
-        await old_release.wait()
-        return httpx.Response(200, content=MOCK_WAV, headers={"Content-Type": "audio/wav"})
-
-    old_transport = httpx.MockTransport(old_handler)
-    old_client = httpx.AsyncClient(transport=old_transport)
-
-    client = GptSovitsClient(base_url="http://engine-old.test:9880", client=old_client)
-    client._model_state_uncertain = False
-    client.current_refer_audio = "dummy.wav"
-
-    old_task = asyncio.create_task(
-        client.synthesize("旧客户端消息", options={"ref_audio_path": "dummy.wav"})
-    )
-    await asyncio.wait_for(old_started.wait(), timeout=2.0)
-
-    # 2. Hot-reload to new base URL while old request is still in-flight
-    await client.set_base_url("http://engine-new.test:9880")
+    # 1. Setup old client with an ongoing in-flight request & 2. Hot-reload to new base URL
+    client, old_client, old_release, old_task = await _start_old_client_inflight()
     assert client._client is None
 
     # 3. Setup new client with a hanging in-flight request
@@ -55,15 +74,7 @@ async def test_old_client_drains_promptly_when_new_client_has_inflight_requests(
         await new_release.wait()
         return httpx.Response(200, content=MOCK_WAV, headers={"Content-Type": "audio/wav"})
 
-    new_transport = httpx.MockTransport(new_handler)
-    new_client = httpx.AsyncClient(transport=new_transport)
-    client._client = new_client
-    client._model_state_uncertain = False
-    client.current_refer_audio = "dummy.wav"
-
-    # Finish old request so old_client has 0 in-flight requests
-    old_release.set()
-    await asyncio.wait_for(old_task, timeout=2.0)
+    new_client = await _swap_new_client_and_finish_old(client, new_handler, old_release, old_task)
 
     # Immediately start new request on new_client
     new_task = asyncio.create_task(
@@ -84,11 +95,7 @@ async def test_old_client_drains_promptly_when_new_client_has_inflight_requests(
             for r in caplog.records
         ), "Should not emit force-closing warning for old client"
     finally:
-        new_release.set()
-        await asyncio.wait_for(new_task, timeout=2.0)
-        await client.aclose()
-        if not new_client.is_closed:
-            await new_client.aclose()
+        await _cleanup_drain_clients(new_release, new_task, client, new_client)
 
 
 @pytest.mark.asyncio
@@ -99,27 +106,8 @@ async def test_old_client_drains_promptly_during_new_client_streaming(caplog):
     """
     caplog.set_level(logging.WARNING)
 
-    # Old client with an in-flight request
-    old_started = asyncio.Event()
-    old_release = asyncio.Event()
-
-    async def old_handler(request: httpx.Request) -> httpx.Response:
-        old_started.set()
-        await old_release.wait()
-        return httpx.Response(200, content=MOCK_WAV, headers={"Content-Type": "audio/wav"})
-
-    old_client = httpx.AsyncClient(transport=httpx.MockTransport(old_handler))
-    client = GptSovitsClient(base_url="http://engine-old.test:9880", client=old_client)
-    client._model_state_uncertain = False
-    client.current_refer_audio = "dummy.wav"
-
-    old_task = asyncio.create_task(
-        client.synthesize("旧客户端消息", options={"ref_audio_path": "dummy.wav"})
-    )
-    await asyncio.wait_for(old_started.wait(), timeout=2.0)
-
-    # Swap URL
-    await client.set_base_url("http://engine-new.test:9880")
+    # Old client with an in-flight request & swap URL
+    client, old_client, old_release, old_task = await _start_old_client_inflight()
 
     # New client streaming response
     stream_started = asyncio.Event()
@@ -138,14 +126,7 @@ async def test_old_client_drains_promptly_during_new_client_streaming(caplog):
             headers={"Content-Type": "audio/wav"},
         )
 
-    new_client = httpx.AsyncClient(transport=httpx.MockTransport(streaming_handler))
-    client._client = new_client
-    client._model_state_uncertain = False
-    client.current_refer_audio = "dummy.wav"
-
-    # Finish old request
-    old_release.set()
-    await asyncio.wait_for(old_task, timeout=2.0)
+    new_client = await _swap_new_client_and_finish_old(client, streaming_handler, old_release, old_task)
 
     async def consume_stream():
         chunks = []
@@ -166,8 +147,4 @@ async def test_old_client_drains_promptly_during_new_client_streaming(caplog):
             for r in caplog.records
         )
     finally:
-        stream_proceed.set()
-        await asyncio.wait_for(stream_task, timeout=2.0)
-        await client.aclose()
-        if not new_client.is_closed:
-            await new_client.aclose()
+        await _cleanup_drain_clients(stream_proceed, stream_task, client, new_client)

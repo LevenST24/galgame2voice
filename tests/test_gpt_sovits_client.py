@@ -339,28 +339,23 @@ class TestGptSovitsClient:
         assert ok_ref is True
         assert mock_gpt_sovits.current_refer_audio == "ref/custom.wav"
 
+    def _make_profile(self, label: str, suffix: str) -> dict[str, str]:
+        return {
+            "name": f"Profile{label}",
+            "gpt_weights_path": f"weights/{suffix}.ckpt",
+            "sovits_weights_path": f"weights/{suffix}.pth",
+            "refer_audio_path": f"ref/{suffix}.wav",
+            "refer_text": f"テキスト{label}",
+        }
+
     @pytest.mark.asyncio
     async def test_rollback_on_step2_sovits_failure(self, mock_gpt_sovits):
         client = GptSovitsClient(server=mock_gpt_sovits)
-        profile_a = {
-            "name": "ProfileA",
-            "gpt_weights_path": "weights/a.ckpt",
-            "sovits_weights_path": "weights/a.pth",
-            "refer_audio_path": "ref/a.wav",
-            "refer_text": "テキストA",
-        }
-        await client.switch_voice_profile(profile_a)
+        await client.switch_voice_profile(self._make_profile("A", "a"))
         assert mock_gpt_sovits.current_gpt_weights == "weights/a.ckpt"
 
-        profile_b = {
-            "name": "ProfileB",
-            "gpt_weights_path": "weights/b.ckpt",
-            "sovits_weights_path": "weights/b.pth",
-            "refer_audio_path": "ref/b.wav",
-            "refer_text": "テキストB",
-        }
         mock_gpt_sovits.fail_on_step("set_sovits_weights")
-        success = await client.switch_voice_profile(profile_b)
+        success = await client.switch_voice_profile(self._make_profile("B", "b"))
         assert success is False
         # Rollback check: GPT weights restored to profile A
         assert mock_gpt_sovits.current_gpt_weights == "weights/a.ckpt"
@@ -368,24 +363,10 @@ class TestGptSovitsClient:
     @pytest.mark.asyncio
     async def test_rollback_on_step3_refer_audio_failure(self, mock_gpt_sovits):
         client = GptSovitsClient(server=mock_gpt_sovits)
-        profile_a = {
-            "name": "ProfileA",
-            "gpt_weights_path": "weights/a.ckpt",
-            "sovits_weights_path": "weights/a.pth",
-            "refer_audio_path": "ref/a.wav",
-            "refer_text": "テキストA",
-        }
-        await client.switch_voice_profile(profile_a)
+        await client.switch_voice_profile(self._make_profile("A", "a"))
 
-        profile_b = {
-            "name": "ProfileB",
-            "gpt_weights_path": "weights/b.ckpt",
-            "sovits_weights_path": "weights/b.pth",
-            "refer_audio_path": "ref/b.wav",
-            "refer_text": "テキストB",
-        }
         mock_gpt_sovits.fail_on_step("set_refer_audio")
-        success = await client.switch_voice_profile(profile_b)
+        success = await client.switch_voice_profile(self._make_profile("B", "b"))
         assert success is False
         # Rollback check: Both GPT and SoVITS weights restored to profile A
         assert mock_gpt_sovits.current_gpt_weights == "weights/a.ckpt"

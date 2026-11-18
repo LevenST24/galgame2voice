@@ -292,62 +292,57 @@ class TestDynamicBatchSchedulerAndSpeedTracker:
         # cut3 (split on period): 3 slices
         assert DynamicBatchScheduler.estimate_slice_count(text, "cut3") >= 3
 
+    def _compute_batch(
+        self,
+        text: str,
+        *,
+        records: tuple[tuple[int, float, float], ...] = (),
+        is_streaming: bool = False,
+        split_method: str = "cut2",
+        user_batch_size: int | None = None,
+    ) -> int:
+        if records:
+            tracker = SynthesisSpeedTracker()
+            for char_count, elapsed_s, audio_dur_s in records:
+                tracker.record(char_count=char_count, elapsed_s=elapsed_s, audio_dur_s=audio_dur_s)
+            scheduler = DynamicBatchScheduler(tracker=tracker)
+        else:
+            scheduler = DynamicBatchScheduler()
+        return scheduler.compute_batch_size(
+            text=text,
+            is_streaming=is_streaming,
+            split_method=split_method,
+            user_batch_size=user_batch_size,
+        )
+
     def test_scheduler_streaming_always_returns_batch_size_one(self):
-        scheduler = DynamicBatchScheduler()
         # Even with multi-fragment text, streaming requires batch_size 1 for minimum TTFA
         long_multi_sentence = "文1。文2。文3。文4。文5。文6。"
-        batch_size = scheduler.compute_batch_size(
-            text=long_multi_sentence,
-            is_streaming=True,
-            split_method="cut2",
-        )
+        batch_size = self._compute_batch(long_multi_sentence, is_streaming=True)
         assert batch_size == 1
 
     def test_scheduler_single_slice_returns_batch_size_one(self):
-        scheduler = DynamicBatchScheduler()
-        batch_size = scheduler.compute_batch_size(
-            text="短いテキストです。",
-            is_streaming=False,
-            split_method="cut0",
-        )
+        batch_size = self._compute_batch("短いテキストです。", split_method="cut0")
         assert batch_size == 1
 
     def test_scheduler_user_override_respected(self):
-        scheduler = DynamicBatchScheduler()
-        batch_size = scheduler.compute_batch_size(
-            text="長い文。たくさんの文。分割される文。",
-            is_streaming=False,
-            split_method="cut2",
-            user_batch_size=6,
-        )
+        batch_size = self._compute_batch("長い文。たくさんの文。分割される文。", user_batch_size=6)
         assert batch_size == 6
 
     def test_scheduler_resource_constrained_clamps_batch_size(self):
-        tracker = SynthesisSpeedTracker()
-        tracker.record(char_count=10, elapsed_s=3.0, audio_dur_s=2.0)
-        tracker.record(char_count=10, elapsed_s=3.0, audio_dur_s=2.0)
-        scheduler = DynamicBatchScheduler(tracker=tracker)
-
         multi_frag_text = "句1。句2。句3。句4。句5。句6。句7。句8。"
-        batch_size = scheduler.compute_batch_size(
-            text=multi_frag_text,
-            is_streaming=False,
-            split_method="cut2",
+        batch_size = self._compute_batch(
+            multi_frag_text,
+            records=((10, 3.0, 2.0), (10, 3.0, 2.0)),
         )
         # On constrained hardware, batch_size is clamped to at most 2
         assert batch_size <= 2
 
     def test_scheduler_high_throughput_scales_batch_size(self):
-        tracker = SynthesisSpeedTracker()
-        tracker.record(char_count=200, elapsed_s=1.0, audio_dur_s=5.0)
-        tracker.record(char_count=200, elapsed_s=1.0, audio_dur_s=5.0)
-        scheduler = DynamicBatchScheduler(tracker=tracker)
-
         multi_frag_text = "句1。句2。句3。句4。句5。句6。句7。句8。句9。句10。"
-        batch_size = scheduler.compute_batch_size(
-            text=multi_frag_text,
-            is_streaming=False,
-            split_method="cut2",
+        batch_size = self._compute_batch(
+            multi_frag_text,
+            records=((200, 1.0, 5.0), (200, 1.0, 5.0)),
         )
         # On high throughput GPU, multi-fragment text scales up to 4 or 8
         assert batch_size >= 4

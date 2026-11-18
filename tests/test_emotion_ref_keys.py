@@ -142,6 +142,49 @@ async def _resolve_profile_context(
     return await resolver.resolve_context(db_path=db_path, profile_id=profile.id)
 
 
+def _setup_test_character(tmp_path: Path, monkeypatch) -> tuple[Path, str, str, str]:
+    _setup_env(tmp_path, monkeypatch)
+    pkg = _install_test_character(tmp_path)
+    return (
+        pkg,
+        str((pkg / "gentle.wav").resolve()),
+        str((pkg / "happy.wav").resolve()),
+        str((pkg / "sad.wav").resolve()),
+    )
+
+
+async def _setup_package_and_context(
+    tmp_path: Path,
+    monkeypatch,
+    char_id: str,
+    name: str,
+    emotions: dict[str, dict],
+    prompt_text: str = "gentle text",
+):
+    _setup_env(tmp_path, monkeypatch)
+    pkg_dir = _create_character_package(tmp_path, char_id, name, emotions)
+    ctx = await _resolve_profile_context(tmp_path, pkg_dir, name, "gentle.wav", prompt_text)
+    return pkg_dir, ctx
+
+
+async def _synthesize_emotion(
+    tts_service: TtsService,
+    text: str,
+    emotion: str,
+    *,
+    adaptive: bool = True,
+) -> None:
+    await tts_service.synthesize(
+        text,
+        options={
+            "character_name": "TestChar",
+            "ai_adaptive_voice": adaptive,
+            "emotion": emotion,
+        },
+        use_cache=False,
+    )
+
+
 class MockEngine:
     def __init__(self):
         self.tts_calls = []
@@ -173,12 +216,7 @@ class MockEngine:
 
 @pytest.mark.asyncio
 async def test_ai_adaptive_voice_switches_emotion_references(tmp_path, monkeypatch):
-    _setup_env(tmp_path, monkeypatch)
-
-    pkg = _install_test_character(tmp_path)
-    gentle_wav = str((pkg / "gentle.wav").resolve())
-    happy_wav = str((pkg / "happy.wav").resolve())
-    sad_wav = str((pkg / "sad.wav").resolve())
+    pkg, gentle_wav, happy_wav, sad_wav = _setup_test_character(tmp_path, monkeypatch)
 
     db_path = str(tmp_path / "test.db")
     profile = await _create_profile(db_path, pkg, "TestChar", "gentle.wav", "温柔台词", set_active=True)
@@ -194,80 +232,32 @@ async def test_ai_adaptive_voice_switches_emotion_references(tmp_path, monkeypat
         tts_service = TtsService(client=client, cache_manager=cache, db_path=db_path, audio_dir=tmp_path / "audio")
 
         # 1. Synthesize with happy emotion -> happy.wav
-        await tts_service.synthesize(
-            "こんにちは！",
-            options={
-                "character_name": "TestChar",
-                "ai_adaptive_voice": True,
-                "emotion": "happy",
-            },
-            use_cache=False,
-        )
+        await _synthesize_emotion(tts_service, "こんにちは！", "happy")
         assert len(engine.tts_calls) == 1
         assert _same_path(engine.tts_calls[-1]["ref_audio_path"], happy_wav)
 
         # 2. Synthesize with sad emotion -> sad.wav
-        await tts_service.synthesize(
-            "さようなら……",
-            options={
-                "character_name": "TestChar",
-                "ai_adaptive_voice": True,
-                "emotion": "sad",
-            },
-            use_cache=False,
-        )
+        await _synthesize_emotion(tts_service, "さようなら……", "sad")
         assert len(engine.tts_calls) == 2
         assert _same_path(engine.tts_calls[-1]["ref_audio_path"], sad_wav)
 
         # 3. Synthesize with synonym "joy" -> happy.wav
-        await tts_service.synthesize(
-            "嬉しいです！",
-            options={
-                "character_name": "TestChar",
-                "ai_adaptive_voice": True,
-                "emotion": "joy",
-            },
-            use_cache=False,
-        )
+        await _synthesize_emotion(tts_service, "嬉しいです！", "joy")
         assert len(engine.tts_calls) == 3
         assert _same_path(engine.tts_calls[-1]["ref_audio_path"], happy_wav)
 
         # 4. Synthesize with Chinese synonym "开心" -> happy.wav
-        await tts_service.synthesize(
-            "今天真开心！",
-            options={
-                "character_name": "TestChar",
-                "ai_adaptive_voice": True,
-                "emotion": "开心",
-            },
-            use_cache=False,
-        )
+        await _synthesize_emotion(tts_service, "今天真开心！", "开心")
         assert len(engine.tts_calls) == 4
         assert _same_path(engine.tts_calls[-1]["ref_audio_path"], happy_wav)
 
         # 5. Synthesize with unmapped emotion -> falls back to default gentle.wav
-        await tts_service.synthesize(
-            "未定义的情绪",
-            options={
-                "character_name": "TestChar",
-                "ai_adaptive_voice": True,
-                "emotion": "mysterious_unknown",
-            },
-            use_cache=False,
-        )
+        await _synthesize_emotion(tts_service, "未定义的情绪", "mysterious_unknown")
         assert len(engine.tts_calls) == 5
         assert _same_path(engine.tts_calls[-1]["ref_audio_path"], gentle_wav)
 
         # 6. Synthesize with ai_adaptive_voice=False -> keeps default gentle.wav
-        await tts_service.synthesize(
-            "自适应关闭",
-            options={
-                "character_name": "TestChar",
-                "ai_adaptive_voice": False,
-                "emotion": "happy",
-            },
-            use_cache=False,
-        )
+        await _synthesize_emotion(tts_service, "自适应关闭", "happy", adaptive=False)
         assert len(engine.tts_calls) == 6
         assert _same_path(engine.tts_calls[-1]["ref_audio_path"], gentle_wav)
     finally:
@@ -282,12 +272,7 @@ async def test_ai_adaptive_voice_switches_emotion_references(tmp_path, monkeypat
 
 @pytest.mark.asyncio
 async def test_resolved_voice_context_emotions_and_synonyms(tmp_path, monkeypatch):
-    _setup_env(tmp_path, monkeypatch)
-
-    pkg = _install_test_character(tmp_path)
-    gentle_wav = str((pkg / "gentle.wav").resolve())
-    happy_wav = str((pkg / "happy.wav").resolve())
-    sad_wav = str((pkg / "sad.wav").resolve())
+    pkg, gentle_wav, happy_wav, sad_wav = _setup_test_character(tmp_path, monkeypatch)
 
     ctx = await _resolve_profile_context(tmp_path, pkg, "TestChar", "gentle.wav", "温柔台词")
     assert ctx is not None
@@ -325,15 +310,13 @@ async def test_resolved_voice_context_emotions_and_synonyms(tmp_path, monkeypatc
 @pytest.mark.asyncio
 async def test_all_valid_emotions_resolution(tmp_path, monkeypatch):
     """Verifies that all 7 VALID_EMOTIONS are resolved without duplicates or omissions."""
-    _setup_env(tmp_path, monkeypatch)
-
     emotions_dict = {
         emo: {"audio": f"{emo}.wav", "text": f"{emo} prompt", "lang": "ja", "amplitude": idx * 200}
         for idx, emo in enumerate(sorted(VALID_EMOTIONS), start=1)
     }
-    pkg_dir = _create_character_package(tmp_path, "fullchar", "FullChar", emotions_dict)
-
-    ctx = await _resolve_profile_context(tmp_path, pkg_dir, "FullChar", "gentle.wav", "gentle prompt")
+    pkg_dir, ctx = await _setup_package_and_context(
+        tmp_path, monkeypatch, "fullchar", "FullChar", emotions_dict, prompt_text="gentle prompt"
+    )
     assert ctx is not None
 
     # All 7 VALID_EMOTIONS must be in ctx.emotions, exactly 7 entries (no duplicate keys)
@@ -350,10 +333,9 @@ async def test_all_valid_emotions_resolution(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_manifest_custom_emotions_resolution(tmp_path, monkeypatch):
     """Verifies that custom manifest emotions (and unmapped keys like yandere) resolve properly and are not shadowed by gentle."""
-    _setup_env(tmp_path, monkeypatch)
-
-    pkg_dir = _create_character_package(
+    pkg_dir, ctx = await _setup_package_and_context(
         tmp_path,
+        monkeypatch,
         "customchar",
         "CustomChar",
         {
@@ -362,8 +344,6 @@ async def test_manifest_custom_emotions_resolution(tmp_path, monkeypatch):
             "custom_mood": {"audio": "custom_mood.wav", "text": "custom mood text", "lang": "ja"},
         },
     )
-
-    ctx = await _resolve_profile_context(tmp_path, pkg_dir, "CustomChar", "gentle.wav", "gentle text")
     assert ctx is not None
 
     # gentle, yandere, and custom_mood must all be resolved
@@ -385,10 +365,9 @@ async def test_manifest_custom_emotions_resolution(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_conflicting_aliases_same_canonical_archetype(tmp_path, monkeypatch):
     """Verifies that if both canonical emotion (happy) and alias (joy) exist in manifest, only one entry is stored in emotions_map."""
-    _setup_env(tmp_path, monkeypatch)
-
-    pkg_dir = _create_character_package(
+    pkg_dir, ctx = await _setup_package_and_context(
         tmp_path,
+        monkeypatch,
         "aliaschar",
         "AliasChar",
         {
@@ -397,8 +376,6 @@ async def test_conflicting_aliases_same_canonical_archetype(tmp_path, monkeypatc
             "joy": {"audio": "joy_short.wav", "text": "alias joy text", "lang": "ja"},
         },
     )
-
-    ctx = await _resolve_profile_context(tmp_path, pkg_dir, "AliasChar", "gentle.wav", "gentle text")
     assert ctx is not None
 
     # Exactly one entry for happy canonical archetype

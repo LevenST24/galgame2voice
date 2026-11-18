@@ -22,6 +22,11 @@ from galgame2voice.services.gpt_sovits_client import GptSovitsClient
 from galgame2voice.services.chat_service import ChatService
 
 
+def _bool_cases(true_items: tuple[str, ...], false_items: tuple[str, ...] = ()) -> list[tuple[str, bool]]:
+    """Expand clause tuples into (clause, expected_bool) parametrize pairs."""
+    return [(c, True) for c in true_items] + [(c, False) for c in false_items]
+
+
 class TestDialogueProsodyNormalization:
     """Tests prosodic cleanup of dialogue text before TTS synthesis."""
 
@@ -63,28 +68,14 @@ class TestDialogueProsodyNormalization:
 class TestModalParticlesPattern:
     """Verifies modal particles regex correctly detects sentence-ending particles and soft connectors."""
 
-    @pytest.mark.parametrize("clause,expected", [
-        ("そうですね", True),
-        ("違うよ", True),
-        ("わたしわ", True),
-        ("いいな", True),
-        ("だよね", True),
-        ("行かないわよ", True),
-        ("知らんけど", True),
-        ("好きだから", True),
-        ("暑いので", True),
-        ("行ったのに", True),
-        ("嬉しいなぁ", True),
-        ("いいかもねぇ", True),
-        ("好啊", True),
-        ("是吗", True),
-        ("走吧", True),
-        ("真棒呀", True),
-        ("こんにちは", False),
-        ("先生", False),
-        ("学校", False),
-        ("東京", False),
-    ])
+    @pytest.mark.parametrize("clause,expected", _bool_cases(
+        (
+            "そうですね", "違うよ", "わたしわ", "いいな", "だよね", "行かないわよ",
+            "知らんけど", "好きだから", "暑いので", "行ったのに", "嬉しいなぁ", "いいかもねぇ",
+            "好啊", "是吗", "走吧", "真棒呀",
+        ),
+        ("こんにちは", "先生", "学校", "東京"),
+    ))
     def test_particle_matching(self, clause, expected):
         assert bool(MODAL_PARTICLES_PATTERN.search(clause)) is expected
 
@@ -92,28 +83,19 @@ class TestModalParticlesPattern:
 class TestGptSovitsPayloadFragmentInterval:
     """Verifies GptSovitsClient._build_tts_payload includes fragment_interval and normalizes prosody."""
 
+    def _build_payload(self, text: str, **extra_options):
+        options = {"text_lang": "ja", "ref_audio_path": "dummy.wav", "prompt_text": "dummy", "prompt_lang": "ja"}
+        options.update(extra_options)
+        return GptSovitsClient()._build_tts_payload(text=text, options=options)
+
     def test_payload_includes_fragment_interval_default(self):
-        client = GptSovitsClient()
-        payload = client._build_tts_payload(
-            text="こんにちは、、先生、",
-            options={"text_lang": "ja", "ref_audio_path": "dummy.wav", "prompt_text": "dummy", "prompt_lang": "ja"},
-        )
+        payload = self._build_payload("こんにちは、、先生、")
         assert payload["fragment_interval"] == 0.3
         # Trailing comma normalized to period so TTS intonation drops naturally
         assert payload["text"] == "こんにちは、先生。"
 
     def test_payload_includes_custom_fragment_interval(self):
-        client = GptSovitsClient()
-        payload = client._build_tts_payload(
-            text="テストです。",
-            options={
-                "text_lang": "ja",
-                "ref_audio_path": "dummy.wav",
-                "prompt_text": "dummy",
-                "prompt_lang": "ja",
-                "fragment_interval": 0.15,
-            },
-        )
+        payload = self._build_payload("テストです。", fragment_interval=0.15)
         assert payload["fragment_interval"] == 0.15
 
 
@@ -128,30 +110,24 @@ class TestWavConcatWithPauseSilence:
             # 16-bit audio: 2 bytes per sample
             w.writeframes(b"\x10\x20" * n_frames)
 
-    def test_concat_wav_zero_pause_duration(self, tmp_path):
+    def _concat_two_wavs(self, tmp_path: Path, out_name: str, pause_duration: float, rate: int = 16000):
         service = ChatService(cast(Any, None), cast(Any, None), cast(Any, None))
-        c1 = tmp_path / "c1.wav"
-        c2 = tmp_path / "c2.wav"
-        out = tmp_path / "out_zero.wav"
-        self._write_test_wav(c1, n_frames=100, rate=16000)
-        self._write_test_wav(c2, n_frames=100, rate=16000)
+        c1, c2, out = tmp_path / "c1.wav", tmp_path / "c2.wav", tmp_path / out_name
+        self._write_test_wav(c1, n_frames=100, rate=rate)
+        self._write_test_wav(c2, n_frames=100, rate=rate)
+        ok = service._concat_wav_files([str(c1), str(c2)], out, pause_duration=pause_duration)
+        return ok, out
 
-        ok = service._concat_wav_files([str(c1), str(c2)], out, pause_duration=0.0)
+    def test_concat_wav_zero_pause_duration(self, tmp_path):
+        ok, out = self._concat_two_wavs(tmp_path, "out_zero.wav", pause_duration=0.0)
         assert ok is True
         with wave.open(str(out), "rb") as w:
             assert w.getnframes() == 200
 
     def test_concat_wav_with_pause_duration(self, tmp_path):
-        service = ChatService(cast(Any, None), cast(Any, None), cast(Any, None))
-        c1 = tmp_path / "c1.wav"
-        c2 = tmp_path / "c2.wav"
-        out = tmp_path / "out_paused.wav"
         rate = 16000
         pause_sec = 0.25  # 0.25s * 16000 = 4000 silence frames
-        self._write_test_wav(c1, n_frames=100, rate=rate)
-        self._write_test_wav(c2, n_frames=100, rate=rate)
-
-        ok = service._concat_wav_files([str(c1), str(c2)], out, pause_duration=pause_sec)
+        ok, out = self._concat_two_wavs(tmp_path, "out_paused.wav", pause_duration=pause_sec, rate=rate)
         assert ok is True
         with wave.open(str(out), "rb") as w:
             expected_silence_frames = int(rate * pause_sec)
@@ -250,25 +226,18 @@ class TestModalParticleSentenceSplitting:
     """Verifies that clauses ending in modal particles are NOT split on soft commas."""
 
     @pytest.mark.parametrize("text,expected_count", [
-        ("そうですね、私もそう思いますよ。", 1),
-        ("違うよ、それは誤解だよ。", 1),
-        ("わたしわ、いつでもここにいるよ。", 1),
-        ("いいな、一緒に行きたいな。", 1),
-        ("行かないわよ、危ないもの。", 1),
-        ("知らんけど、たぶん大丈夫。", 1),
-        ("好きだから、一緒にいよう。", 1),
-        ("暑いので、窓を開けましょう。", 1),
-        ("行ったのに、誰もいなかったよ。", 1),
-        ("嬉しいなぁ、ありがとう。", 1),
-        ("いいかもねぇ、そうしよう。", 1),
-        ("好啊，我们一起去吧。", 1),
-        ("是吗，我怎么不知道。", 1),
-        ("走吧，时间差不多了。", 1),
-        ("真棒呀，太厉害了。", 1),
-        ("どうしようかな……、迷うな……。", 1),
-        ("そうですね〜、わかりました。", 1),
-        ("いいよー、任せて。", 1),
-        ("あのね、実はね、言いたいことがあるの。", 1),
+        (t, 1) for t in (
+            "そうですね、私もそう思いますよ。", "違うよ、それは誤解だよ。",
+            "わたしわ、いつでもここにいるよ。", "いいな、一緒に行きたいな。",
+            "行かないわよ、危ないもの。", "知らんけど、たぶん大丈夫。",
+            "好きだから、一緒にいよう。", "暑いので、窓を開けましょう。",
+            "行ったのに、誰もいなかったよ。", "嬉しいなぁ、ありがとう。",
+            "いいかもねぇ、そうしよう。", "好啊，我们一起去吧。",
+            "是吗，我怎么不知道。", "走吧，时间差不多了。",
+            "真棒呀，太厉害了。", "どうしようかな……、迷うな……。",
+            "そうですね〜、わかりました。", "いいよー、任せて。",
+            "あのね、実はね、言いたいことがあるの。",
+        )
     ])
     def test_modal_particles_prevent_splitting(self, text, expected_count):
         sents = split_japanese_sentences(text, is_first_chunk=True, min_chars=6)
@@ -439,34 +408,15 @@ class TestJapaneseSentenceSplitting:
 class TestExpandedModalParticles:
     """Verifies expanded colloquial modal particles and clause boundary detection."""
 
-    @pytest.mark.parametrize("clause,expected", [
-        ("本当でしょ", True),
-        ("明日は晴れでしょう", True),
-        ("可愛いじゃん", True),
-        ("バカってば", True),
-        ("待っててば", True),
-        ("元気かい", True),
-        ("どうしたんだい", True),
-        ("好きだもんね", True),
-        ("行くもんよ", True),
-        ("そうなんだ", True),
-        ("好きなんだから", True),
-        ("楽しみなんです", True),
-        ("寂しいんだもん", True),
-        ("好呗", True),
-        ("走嘞", True),
-        ("对哒", True),
-        ("好的滴", True),
-        ("可爱喵", True),
-        ("痛嗷", True),
-        ("行咯", True),
-        ("こんにちは", False),
-        ("秋葉原", False),
-        ("東京", False),
-        ("先生", False),
-        ("学校", False),
-        ("約束", False),
-    ])
+    @pytest.mark.parametrize("clause,expected", _bool_cases(
+        (
+            "本当でしょ", "明日は晴れでしょう", "可愛いじゃん", "バカってば", "待っててば",
+            "元気かい", "どうしたんだい", "好きだもんね", "行くもんよ", "そうなんだ",
+            "好きなんだから", "楽しみなんです", "寂しいんだもん", "好呗", "走嘞",
+            "对哒", "好的滴", "可爱喵", "痛嗷", "行咯",
+        ),
+        ("こんにちは", "秋葉原", "東京", "先生", "学校", "約束"),
+    ))
     def test_particle_matching(self, clause, expected):
         assert bool(MODAL_PARTICLES_PATTERN.search(clause)) is expected
 
@@ -526,21 +476,11 @@ class TestQuotedJapaneseSentenceSplitting:
 class TestCharacterSpecificModalParticles:
     """Verifies Galgame character signature modal particles (Murasame, Mako, Kanna) avoid disjoint pauses."""
 
-    @pytest.mark.parametrize("clause,expected", [
-        ("妾は叢雨じゃ", True),
-        ("我が主殿のじゃ", True),
-        ("そうじゃな", True),
-        ("元気でおるの", True),
-        ("お疲れ様っす", True),
-        ("大丈夫っすよ", True),
-        ("そうっすね", True),
-        ("行きますから", True),
-        ("私の秘密のよ", True),
-        ("好きなんだよ", True),
-        ("好哒", True),
-        ("好嘞", True),
-        ("行啦", True),
-    ])
+    @pytest.mark.parametrize("clause,expected", _bool_cases((
+        "妾は叢雨じゃ", "我が主殿のじゃ", "そうじゃな", "元気でおるの",
+        "お疲れ様っす", "大丈夫っすよ", "そうっすね", "行きますから",
+        "私の秘密のよ", "好きなんだよ", "好哒", "好嘞", "行啦",
+    )))
     def test_character_particles(self, clause, expected):
         assert bool(MODAL_PARTICLES_PATTERN.search(clause)) is expected
 
