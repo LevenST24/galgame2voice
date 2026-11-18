@@ -253,75 +253,7 @@ class FakeDOMElement {
   }
 }
 
-test('shortcuts DOM: createShortcuts DOM attachment and preventDefault execution', () => {
-  const target = new FakeDOMElement('div', 'test-root');
-  const handled = [];
-  const shortcuts = createShortcuts(target, {
-    getContext: () => ({ inInput: false, stageFocused: true }),
-    onAction: (act) => handled.push(act),
-  });
-
-  // Handled event: Enter -> advance, preventDefault should be called
-  let pdCalled = false;
-  target.dispatchEvent({
-    type: 'keydown',
-    key: 'Enter',
-    preventDefault: () => { pdCalled = true; },
-  });
-  assert.equal(pdCalled, true, 'preventDefault called for handled shortcut');
-  assert.deepEqual(handled, ['advance']);
-
-  // Unhandled event: key 'b' -> preventDefault should NOT be called
-  let pdUnhandled = false;
-  target.dispatchEvent({
-    type: 'keydown',
-    key: 'b',
-    preventDefault: () => { pdUnhandled = true; },
-  });
-  assert.equal(pdUnhandled, false, 'preventDefault should not be called for unhandled key');
-
-  // Blur event triggers skip-hold-end
-  target.dispatchEvent({
-    type: 'blur',
-    preventDefault: () => {},
-  });
-  assert.equal(handled[handled.length - 1], 'skip-hold-end');
-
-  // Destroy cleans up
-  shortcuts.destroy();
-  target.dispatchEvent({
-    type: 'keydown',
-    key: 'Enter',
-    preventDefault: () => {},
-  });
-  assert.equal(handled.length, 2, 'No more actions after destroy');
-});
-
-test('shortcuts DOM: click returns null and never advances when overlayOpen is true', () => {
-  const shell = new FakeDOMElement('div', 'adv-shell');
-  const stage = new FakeDOMElement('div', 'adv-stage');
-  const stageBg = new FakeDOMElement('div', 'adv-layer-bg');
-  shell.appendChild(stage);
-  stage.appendChild(stageBg);
-
-  const actions = [];
-  const shortcuts = createShortcuts(shell, {
-    getContext: () => ({ inInput: false, stageFocused: true, overlayOpen: true }),
-    onAction: (act) => actions.push(act),
-  });
-
-  stageBg.dispatchEvent({
-    type: 'click',
-    button: 0,
-    target: stageBg,
-    preventDefault: () => {},
-  });
-  assert.equal(actions.length, 0, 'Click on stage when overlayOpen must not advance');
-  shortcuts.destroy();
-});
-
-test('shortcuts DOM: clicks on letterbox, quick menu, and editor never advance; exactly one advance per stage click', () => {
-  // Build hierarchy: shell -> stage -> [textbox -> textarea, quickmenu]
+function setupStageShortcuts(ctxOverrides = {}) {
   const shell = new FakeDOMElement('div', 'adv-shell');
   const stage = new FakeDOMElement('div', 'adv-stage');
   const textbox = new FakeDOMElement('div', 'adv-layer-textbox');
@@ -337,44 +269,74 @@ test('shortcuts DOM: clicks on letterbox, quick menu, and editor never advance; 
 
   const actions = [];
   const shortcuts = createShortcuts(shell, {
-    getContext: () => ({ inInput: false, stageFocused: true }),
+    getContext: () => ({ inInput: false, stageFocused: true, ...ctxOverrides }),
     onAction: (act) => actions.push(act),
   });
+  return { shell, editor, quickmenu, stageBg, actions, shortcuts };
+}
+
+function dispatch(el, type, extra = {}) {
+  let prevented = false;
+  el.dispatchEvent({ type, preventDefault: () => { prevented = true; }, ...extra });
+  return prevented;
+}
+
+function clickTarget(el) {
+  dispatch(el, 'click', { button: 0, target: el });
+}
+
+test('shortcuts DOM: createShortcuts DOM attachment and preventDefault execution', () => {
+  const target = new FakeDOMElement('div', 'test-root');
+  const handled = [];
+  const shortcuts = createShortcuts(target, {
+    getContext: () => ({ inInput: false, stageFocused: true }),
+    onAction: (act) => handled.push(act),
+  });
+
+  // Handled event: Enter -> advance, preventDefault should be called
+  const pdCalled = dispatch(target, 'keydown', { key: 'Enter' });
+  assert.equal(pdCalled, true, 'preventDefault called for handled shortcut');
+  assert.deepEqual(handled, ['advance']);
+
+  // Unhandled event: key 'b' -> preventDefault should NOT be called
+  const pdUnhandled = dispatch(target, 'keydown', { key: 'b' });
+  assert.equal(pdUnhandled, false, 'preventDefault should not be called for unhandled key');
+
+  // Blur event triggers skip-hold-end
+  dispatch(target, 'blur');
+  assert.equal(handled[handled.length - 1], 'skip-hold-end');
+
+  // Destroy cleans up
+  shortcuts.destroy();
+  dispatch(target, 'keydown', { key: 'Enter' });
+  assert.equal(handled.length, 2, 'No more actions after destroy');
+});
+
+test('shortcuts DOM: click returns null and never advances when overlayOpen is true', () => {
+  const { stageBg, actions, shortcuts } = setupStageShortcuts({ overlayOpen: true });
+
+  clickTarget(stageBg);
+  assert.equal(actions.length, 0, 'Click on stage when overlayOpen must not advance');
+  shortcuts.destroy();
+});
+
+test('shortcuts DOM: clicks on letterbox, quick menu, and editor never advance; exactly one advance per stage click', () => {
+  const { shell, editor, quickmenu, stageBg, actions, shortcuts } = setupStageShortcuts();
 
   // 1. Click on letterbox (shell)
-  shell.dispatchEvent({
-    type: 'click',
-    button: 0,
-    target: shell,
-    preventDefault: () => {},
-  });
+  clickTarget(shell);
   assert.equal(actions.length, 0, 'Click on letterbox must not advance');
 
   // 2. Click on quick menu
-  quickmenu.dispatchEvent({
-    type: 'click',
-    button: 0,
-    target: quickmenu,
-    preventDefault: () => {},
-  });
+  clickTarget(quickmenu);
   assert.equal(actions.length, 0, 'Click on quick menu must not advance');
 
   // 3. Click inside editor
-  editor.dispatchEvent({
-    type: 'click',
-    button: 0,
-    target: editor,
-    preventDefault: () => {},
-  });
+  clickTarget(editor);
   assert.equal(actions.length, 0, 'Click inside editor must not advance');
 
   // 4. Click on stage background (should advance exactly once)
-  stageBg.dispatchEvent({
-    type: 'click',
-    button: 0,
-    target: stageBg,
-    preventDefault: () => {},
-  });
+  clickTarget(stageBg);
   assert.deepEqual(actions, ['advance'], 'One stage click equals exactly one advance');
 
   shortcuts.destroy();
