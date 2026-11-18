@@ -1,6 +1,7 @@
 """Startup and queued warm-up must not publish or restore an unconfirmed voice."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -57,12 +58,16 @@ async def warmup(monkeypatch, mock_gpt_sovits):
         await client.aclose()
 
 
-async def test_startup_does_not_publish_database_models_before_engine_ack(warmup, monkeypatch):
+@asynccontextmanager
+async def _bootstrap_warmup(warmup, monkeypatch, *, set_global_manager: bool = False):
     import galgame2voice.main as main
     from galgame2voice.services import sovits_endpoint
 
     monkeypatch.setattr(main, "get_gpt_sovits_client", lambda: warmup.client)
-    monkeypatch.setattr(voice_manager, "get_voice_manager", lambda: warmup.manager)
+    if set_global_manager:
+        monkeypatch.setattr(voice_manager, "_global_voice_manager", warmup.manager)
+    else:
+        monkeypatch.setattr(voice_manager, "get_voice_manager", lambda: warmup.manager)
     monkeypatch.setattr(
         sovits_endpoint,
         "resolve_effective_sovits_endpoint",
@@ -72,32 +77,24 @@ async def test_startup_does_not_publish_database_models_before_engine_ack(warmup
     monkeypatch.setattr(warmup.manager, "_spawn_background", pending.append)
     try:
         await main._init_gpt_sovits_client(get_settings())
-        assert len(pending) == 1
-        assert warmup.client.active_profile is None
-        assert warmup.client.current_gpt_weights is None
-        assert warmup.client.current_sovits_weights is None
-        assert warmup.client.current_refer_audio is None
+        yield main, pending
     finally:
         for coroutine in pending:
             coroutine.close()
 
 
+async def test_startup_does_not_publish_database_models_before_engine_ack(warmup, monkeypatch):
+    async with _bootstrap_warmup(warmup, monkeypatch) as (_main, pending):
+        assert len(pending) == 1
+        assert warmup.client.active_profile is None
+        assert warmup.client.current_gpt_weights is None
+        assert warmup.client.current_sovits_weights is None
+        assert warmup.client.current_refer_audio is None
+
+
 @pytest.mark.parametrize("run_background", [False, True])
 async def test_first_http_switch_after_bootstrap_really_loads_models(warmup, monkeypatch, run_background):
-    import galgame2voice.main as main
-    from galgame2voice.services import sovits_endpoint
-
-    monkeypatch.setattr(main, "get_gpt_sovits_client", lambda: warmup.client)
-    monkeypatch.setattr(voice_manager, "_global_voice_manager", warmup.manager)
-    monkeypatch.setattr(
-        sovits_endpoint,
-        "resolve_effective_sovits_endpoint",
-        AsyncMock(return_value=SimpleNamespace(base_url=warmup.client.base_url.rstrip("/"), source="synthetic")),
-    )
-    pending = []
-    monkeypatch.setattr(warmup.manager, "_spawn_background", pending.append)
-    try:
-        await main._init_gpt_sovits_client(get_settings())
+    async with _bootstrap_warmup(warmup, monkeypatch, set_global_manager=True) as (main, pending):
         if run_background:
             assert await pending.pop() is True
         async with httpx.AsyncClient(
@@ -109,9 +106,6 @@ async def test_first_http_switch_after_bootstrap_really_loads_models(warmup, mon
         assert endpoints.count("/set_gpt_weights") == 1
         assert endpoints.count("/set_sovits_weights") == 1
         assert warmup.client.active_profile.id == warmup.a.id
-    finally:
-        for coroutine in pending:
-            coroutine.close()
 
 
 @pytest.mark.parametrize("failure", ["offline", "exception"])
@@ -290,21 +284,28 @@ async def test_repeated_warmups_for_one_profile_use_distinct_task_ids(warmup):
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
+async def _create_warmup_profile(temp_db_path):
+    async with get_db(temp_db_path) as conn:
+        return await crud.create_voice_profile(
+            conn,
+            VoiceProfileCreate(
+                name="WarmupChar",
+                gpt_weights_path="weights/warmup.ckpt",
+                sovits_weights_path="weights/warmup.pth",
+                ref_audio_path="ref/warmup.wav",
+                prompt_text="テストプロンプトです。",
+                prompt_lang="ja",
+                text_lang="ja",
+                is_default=True,
+            ),
+        )
+
+
 @pytest.mark.asyncio
 async def test_r1_warmup_current_profile_success(temp_db_path, mock_gpt_sovits):
     """Verifies successful asynchronous warm-up calls weight switch and lightweight probe."""
     # Insert active profile in test db
-    async with get_db(temp_db_path) as conn:
-        profile = await crud.create_voice_profile(conn, VoiceProfileCreate(
-            name="WarmupChar",
-            gpt_weights_path="weights/warmup.ckpt",
-            sovits_weights_path="weights/warmup.pth",
-            ref_audio_path="ref/warmup.wav",
-            prompt_text="テストプロンプトです。",
-            prompt_lang="ja",
-            text_lang="ja",
-            is_default=True,
-        ))
+    profile = await _create_warmup_profile(temp_db_path)
 
     client = GptSovitsClient(server=mock_gpt_sovits)
     vm = voice_manager.VoiceManager(gpt_sovits_client_or_server=client, db_path=temp_db_path)
@@ -329,17 +330,7 @@ async def test_r1_warmup_current_profile_success(temp_db_path, mock_gpt_sovits):
 @pytest.mark.asyncio
 async def test_r1_warmup_probe_passes_the_engine_text_check(temp_db_path, mock_gpt_sovits):
     """GPT-SoVITS answers symbol-only text with 400 "请输入有效文本"; the probe must not be rejected."""
-    async with get_db(temp_db_path) as conn:
-        profile = await crud.create_voice_profile(conn, VoiceProfileCreate(
-            name="WarmupChar",
-            gpt_weights_path="weights/warmup.ckpt",
-            sovits_weights_path="weights/warmup.pth",
-            ref_audio_path="ref/warmup.wav",
-            prompt_text="テストプロンプトです。",
-            prompt_lang="ja",
-            text_lang="ja",
-            is_default=True,
-        ))
+    profile = await _create_warmup_profile(temp_db_path)
 
     import re
 
