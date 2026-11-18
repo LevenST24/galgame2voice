@@ -27,10 +27,10 @@ function formatChatErrorPayload(data, fallback, receivedReply = false) {
 // Received reply text is saved with the turn. Do not tell the user to resend it.
 const idleTimeoutMessage = receivedReply => (receivedReply
   ? `回复等待超时，${KEPT_LINES}请在「设置中心」检查网络、模型与语音服务。`
-  : '回复等待超时，已保留收到的内容。请在「设置中心」检查网络、模型与语音服务，稍后重新发送上一条消息。');
+  : '回复等待超时，没有收到回复。请在「设置中心」检查网络、模型与语音服务，稍后重新发送上一条消息。');
 const streamClosedMessage = receivedReply => (receivedReply
   ? `回复连接提前结束，${KEPT_LINES}请检查服务与网络。`
-  : '回复连接提前结束，已保留收到的内容。请检查服务与网络，稍后重新发送上一条消息。');
+  : '回复连接提前结束，没有收到回复。请检查服务与网络，稍后重新发送上一条消息。');
 
 function isReplyProgress(event, data) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
