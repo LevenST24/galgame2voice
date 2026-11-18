@@ -32,6 +32,13 @@ _SPAWN_HOLDING_GRANDCHILD_CODE = (
 )
 
 
+# A timed-out probe must still leave the spawner time to start Python, launch the grandchild and record its pid.
+# With 0.5 s a loaded CI runner killed the spawner after it created the pid file but before it wrote the pid.
+# The pipe holders live 8 s, so returning within PROMPT_LIMIT still proves the probe did not wait for them.
+PROBE_TIMEOUT = 2.0
+PROMPT_LIMIT = PROBE_TIMEOUT + 3.5
+
+
 def _build_pipe_holding_cmd(pid_file: Path, parent_sleep: float = 8.0) -> list[str]:
     return [sys.executable, "-S", "-c", _SPAWN_HOLDING_GRANDCHILD_CODE, str(pid_file), str(parent_sleep)]
 
@@ -106,11 +113,11 @@ def test_exec_command_output_returns_promptly_when_grandchild_holds_stdout(tmp_p
     cmd = _build_pipe_holding_cmd(pid_file)
     try:
         t0 = time.monotonic()
-        res = hardware._exec_command_output(cmd, timeout=0.5)
+        res = hardware._exec_command_output(cmd, timeout=PROBE_TIMEOUT)
         elapsed = time.monotonic() - t0
 
         assert res is None
-        assert elapsed < 4.0, f"expected bounded timeout return (<4.0s), took {elapsed:.2f}s"
+        assert elapsed < PROMPT_LIMIT, f"expected bounded timeout return (<{PROMPT_LIMIT}s), took {elapsed:.2f}s"
         assert pid_file.is_file(), "grandchild pid file was not written before timeout"
         grandchild_pid = int(pid_file.read_text(encoding="utf-8").strip())
         assert _wait_pid_dead(grandchild_pid), f"grandchild pid {grandchild_pid} still alive after timeout cleanup"
@@ -140,7 +147,7 @@ def test_get_gpu_vram_status_timeout_with_pipe_holder_returns_none_tuple(
     py_cmd = _build_pipe_holding_cmd(pid_file)
 
     monkeypatch.delitem(sys.modules, "torch", raising=False)
-    monkeypatch.setattr(hardware, "DEFAULT_SUBPROCESS_TIMEOUT", 0.5)
+    monkeypatch.setattr(hardware, "DEFAULT_SUBPROCESS_TIMEOUT", PROBE_TIMEOUT)
     monkeypatch.setattr(
         hardware,
         "subprocess",
@@ -153,7 +160,7 @@ def test_get_gpu_vram_status_timeout_with_pipe_holder_returns_none_tuple(
         elapsed = time.monotonic() - t0
 
         assert vram == (None, None)
-        assert elapsed < 4.0, f"expected bounded VRAM probe timeout (<4.0s), took {elapsed:.2f}s"
+        assert elapsed < PROMPT_LIMIT, f"expected bounded VRAM probe timeout (<{PROMPT_LIMIT}s), took {elapsed:.2f}s"
         assert pid_file.is_file(), "grandchild pid file was not written before timeout"
         grandchild_pid = int(pid_file.read_text(encoding="utf-8").strip())
         assert _wait_pid_dead(grandchild_pid), f"grandchild pid {grandchild_pid} still alive after timeout cleanup"
