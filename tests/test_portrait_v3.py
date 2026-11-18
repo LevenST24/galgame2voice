@@ -3,6 +3,7 @@
 import json
 import logging
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -33,6 +34,13 @@ TINY_PNG = (
     b"\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4"
     b"\x00\x00\x00\x00IEND\xaeB`\x82"
 )
+
+
+@asynccontextmanager
+async def _portrait_client(base_url="http://127.0.0.1:8080"):
+    transport = httpx.ASGITransport(app=create_app())
+    async with httpx.AsyncClient(transport=transport, base_url=base_url) as client:
+        yield client
 
 
 def write_legacy_pack(root, *, version=2):
@@ -213,7 +221,7 @@ async def test_layer_route_strict_paths_and_auth(setup_v3_character_db, v3_chara
             f"/api/characters/{profile.id}/portrait/layers")
     path = f"{base}/A/1278.webp"
     url = sign_media_url(path) if signed else path
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app()), base_url="http://test") as client:
+    async with _portrait_client("http://test") as client:
         if not signed:
             assert (await client.get(path)).status_code == 401
         good = await client.get(url, headers=headers)
@@ -256,7 +264,7 @@ async def test_layer_route_rejects_resolved_file_outside_canvas(setup_v3_charact
     profile = setup_v3_character_db
     path = (f"/api/media/portrait/{profile.id}/layers/A/1278.webp" if signed else
             f"/api/characters/{profile.id}/portrait/layers/A/1278.webp")
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
+    async with _portrait_client() as client:
         result = await client.get(sign_media_url(path) if signed else path)
     assert result.status_code == 404
     assert b"PRIVATE" not in result.content
@@ -269,7 +277,7 @@ async def test_manifest_layer_and_legacy_urls_load(setup_v3_character_db, v3_cha
     if not signed:
         monkeypatch.setattr(characters_router, "get_media_signing_key", lambda: None)
     profile = setup_v3_character_db
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
+    async with _portrait_client() as client:
         payload = (await client.get(f"/api/characters/{profile.id}/portrait")).json()
         assert payload["version"] == 3
         assert payload["sprites"] == {}
@@ -284,6 +292,30 @@ async def test_manifest_layer_and_legacy_urls_load(setup_v3_character_db, v3_cha
         assert ("sig=" in legacy_url) is signed
         assert (await client.get(layer_url)).content == TINY_WEBP
         assert (await client.get(legacy_url)).content == TINY_PNG
+
+
+def _v3_look(pose, outfit, default_face, faces, body=("A/1278",), **extra):
+    return {
+        "pose": pose,
+        "outfit": outfit,
+        "crop": {"left": 540, "top": 865, "width": 792, "height": 1623},
+        "faceRect": {"x": 175, "y": 0, "width": 362, "height": 325},
+        "headAnchor": {"x": 356, "y": 2},
+        "body": list(body),
+        "defaultFace": default_face,
+        "faces": faces,
+        **extra,
+    }
+
+
+def _v3_layer(fid, x, y, width, height, z, opacity=1):
+    return {
+        "canvas": "A",
+        "file": f"layers/A/{fid}.webp",
+        "rect": {"x": x, "y": y, "width": width, "height": height},
+        "z": z,
+        "opacity": opacity,
+    }
 
 
 def make_valid_v3(tmp_path: Path) -> tuple[Path, dict]:
@@ -319,17 +351,9 @@ def make_valid_v3(tmp_path: Path) -> tuple[Path, dict]:
             "20": {"label": "惊讶", "jp": "20驚き", "emotion": "surprised", "weights": {"surprised": 3}},
         },
         "looks": {
-            "a/uniform": {
-                "pose": "a",
-                "outfit": "uniform",
-                "crop": {"left": 540, "top": 865, "width": 792, "height": 1623},
-                "faceRect": {"x": 175, "y": 0, "width": 362, "height": 325},
-                "headAnchor": {"x": 356, "y": 2},
-                "body": ["A/1278", "A/1301"],
-                "blush": ["A/1490"],
-                "fx": {"sweat": ["A/1600"]},
-                "defaultFace": "01",
-                "faces": {
+            "a/uniform": _v3_look(
+                "a", "uniform", "01",
+                {
                     "01": {
                         "layers": ["A/1511", "A/1402"],
                         "eyesClosed": False,
@@ -341,42 +365,23 @@ def make_valid_v3(tmp_path: Path) -> tuple[Path, dict]:
                     "14": {"layers": ["A/1531", "A/1402"], "eyesClosed": True},
                     "16": {"layers": ["A/1533", "A/1402"], "eyesClosed": False},
                 },
-            },
-            "b/uniform": {
-                "pose": "b",
-                "outfit": "uniform",
-                "crop": {"left": 540, "top": 865, "width": 792, "height": 1623},
-                "faceRect": {"x": 175, "y": 0, "width": 362, "height": 325},
-                "headAnchor": {"x": 356, "y": 2},
-                "body": ["A/1278"],
-                "defaultFace": "20",
-                "faces": {
-                    "20": {"layers": ["A/1511"], "eyesClosed": False},
-                },
-            },
-            "a/casual": {
-                "pose": "a",
-                "outfit": "casual",
-                "crop": {"left": 540, "top": 865, "width": 792, "height": 1623},
-                "faceRect": {"x": 175, "y": 0, "width": 362, "height": 325},
-                "headAnchor": {"x": 356, "y": 2},
-                "body": ["A/1278"],
-                "defaultFace": "01",
-                "faces": {
-                    "01": {"layers": ["A/1511"], "eyesClosed": False},
-                },
-            },
+                body=("A/1278", "A/1301"),
+                blush=["A/1490"],
+                fx={"sweat": ["A/1600"]},
+            ),
+            "b/uniform": _v3_look("b", "uniform", "20", {"20": {"layers": ["A/1511"], "eyesClosed": False}}),
+            "a/casual": _v3_look("a", "casual", "01", {"01": {"layers": ["A/1511"], "eyesClosed": False}}),
         },
         "layers": {
-            "A/1278": {"canvas": "A", "file": "layers/A/1278.webp", "rect": {"x": 600, "y": 900, "width": 700, "height": 1500}, "z": 0, "opacity": 1},
-            "A/1301": {"canvas": "A", "file": "layers/A/1301.webp", "rect": {"x": 600, "y": 900, "width": 700, "height": 1500}, "z": 1, "opacity": 1},
-            "A/1490": {"canvas": "A", "file": "layers/A/1490.webp", "rect": {"x": 650, "y": 950, "width": 200, "height": 100}, "z": 20, "opacity": 0.8},
-            "A/1511": {"canvas": "A", "file": "layers/A/1511.webp", "rect": {"x": 650, "y": 950, "width": 300, "height": 200}, "z": 10, "opacity": 1},
-            "A/1402": {"canvas": "A", "file": "layers/A/1402.webp", "rect": {"x": 650, "y": 900, "width": 320, "height": 220}, "z": 15, "opacity": 1},
-            "A/1512": {"canvas": "A", "file": "layers/A/1512.webp", "rect": {"x": 650, "y": 950, "width": 300, "height": 200}, "z": 10, "opacity": 1},
-            "A/1531": {"canvas": "A", "file": "layers/A/1531.webp", "rect": {"x": 650, "y": 950, "width": 300, "height": 200}, "z": 10, "opacity": 1},
-            "A/1533": {"canvas": "A", "file": "layers/A/1533.webp", "rect": {"x": 650, "y": 950, "width": 300, "height": 200}, "z": 10, "opacity": 1},
-            "A/1600": {"canvas": "A", "file": "layers/A/1600.webp", "rect": {"x": 650, "y": 920, "width": 80, "height": 80}, "z": 25, "opacity": 1},
+            "A/1278": _v3_layer("1278", 600, 900, 700, 1500, 0),
+            "A/1301": _v3_layer("1301", 600, 900, 700, 1500, 1),
+            "A/1490": _v3_layer("1490", 650, 950, 200, 100, 20, 0.8),
+            "A/1511": _v3_layer("1511", 650, 950, 300, 200, 10),
+            "A/1402": _v3_layer("1402", 650, 900, 320, 220, 15),
+            "A/1512": _v3_layer("1512", 650, 950, 300, 200, 10),
+            "A/1531": _v3_layer("1531", 650, 950, 300, 200, 10),
+            "A/1533": _v3_layer("1533", 650, 950, 300, 200, 10),
+            "A/1600": _v3_layer("1600", 650, 920, 80, 80, 25),
         },
     }
     return portrait_dir, data
@@ -600,10 +605,7 @@ class TestSignedLayerUrlsAndPathSafety:
     @pytest.mark.asyncio
     async def test_manifest_rewrites_signed_layer_urls(self, setup_v3_character_db):
         profile = setup_v3_character_db
-        app = create_app()
-        transport = httpx.ASGITransport(app=app)
-
-        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+        async with _portrait_client() as client:
             resp = await client.get(f"/api/characters/{profile.id}/portrait")
             assert resp.status_code == 200
             data = resp.json()
@@ -624,10 +626,7 @@ class TestSignedLayerUrlsAndPathSafety:
     @pytest.mark.asyncio
     async def test_tampered_signature_returns_403(self, setup_v3_character_db):
         profile = setup_v3_character_db
-        app = create_app()
-        transport = httpx.ASGITransport(app=app)
-
-        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+        async with _portrait_client() as client:
             path = f"/api/media/portrait/{profile.id}/layers/A/1278.webp"
             signed = sign_media_url(path)
             bad_url = signed[:-4] + "0000"
@@ -637,10 +636,7 @@ class TestSignedLayerUrlsAndPathSafety:
     @pytest.mark.asyncio
     async def test_path_traversal_on_layer_endpoint_rejected(self, setup_v3_character_db):
         profile = setup_v3_character_db
-        app = create_app()
-        transport = httpx.ASGITransport(app=app)
-
-        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+        async with _portrait_client() as client:
             base = f"/api/media/portrait/{profile.id}"
             exp = compute_bucketed_expiry()
 

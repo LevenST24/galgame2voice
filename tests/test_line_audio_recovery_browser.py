@@ -16,6 +16,20 @@ from test_home_layout_browser import browser_path, make_layout_server, run_layou
 
 
 def _page_setup_js():
+    imports = """\
+import {createStage} from '/frontend/src/adv/stage.js';
+import {createBacklog} from '/frontend/src/adv/backlog.js';
+import {createLineAudioRecovery} from '/frontend/src/controllers/line_audio_recovery.js';
+import {StreamAudioController} from '/frontend/src/audio_player.js';"""
+    wait_until = """\
+const wait = () => new Promise(resolve => setTimeout(resolve, 20));
+const until = async check => {
+  for (let i = 0; i < 200; i++) {
+    if (check()) return;
+    await wait();
+  }
+  throw new Error('Condition timed out');
+};"""
     click = """\
   const click = selector => {
     const el = document.querySelector(selector), r = el?.getBoundingClientRect();
@@ -39,14 +53,16 @@ def _page_setup_js():
     regenerateLineAudio: recover,
     audio: player,
     onClose: () => log.destroy(),"""
-    return click, recover, backlog_options
+    return imports, wait_until, click, recover, backlog_options
 
 
-_CLICK_JS, _RECOVER_JS, _BACKLOG_OPTIONS_JS = _page_setup_js()
+_IMPORTS_JS, _WAIT_UNTIL_JS, _CLICK_JS, _RECOVER_JS, _BACKLOG_OPTIONS_JS = _page_setup_js()
 
 
 def _fill_page_js(source):
     return (source
+            .replace("__IMPORTS__", _IMPORTS_JS)
+            .replace("__WAIT_UNTIL__", _WAIT_UNTIL_JS)
             .replace("__CLICK__", _CLICK_JS)
             .replace("__RECOVER__", _RECOVER_JS)
             .replace("__BACKLOG_OPTIONS__", _BACKLOG_OPTIONS_JS))
@@ -58,6 +74,11 @@ def _send_body(handler, status, content_type, body):
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
     handler.wfile.write(body)
+
+
+def _read_json_body(handler):
+    length = int(handler.headers.get("Content-Length", 0))
+    return json.loads(handler.rfile.read(length).decode("utf-8"))
 
 
 def _ready_line_audio(sentence):
@@ -115,6 +136,16 @@ def _stop_layout_server(server, ready, worker, *events):
     worker.join(timeout=2)
 
 
+def _launch_browser(executable, port, user_data_dir, screenshot_path, width, height, *, extra_args=(), reset):
+    return run_layout_browser([
+        executable, "--headless", "--no-sandbox", "--disable-gpu", *extra_args, "--mute-audio",
+        "--autoplay-policy=no-user-gesture-required", "--no-first-run", "--disable-sync",
+        "--no-proxy-server", "--disable-background-networking", "--disable-extensions",
+        f"--user-data-dir={user_data_dir}", f"--window-size={max(600, width + 100)},{height + 100}",
+        "--dump-dom", f"--screenshot={screenshot_path}", f"http://127.0.0.1:{port}/",
+    ], reset=reset)
+
+
 def _run_iframe_repair(tmp_path, width, height, mode, script_source, screenshot, *, track_requests=False):
     executable = browser_path()
     if not executable:
@@ -143,13 +174,10 @@ def _run_iframe_repair(tmp_path, width, height, mode, script_source, screenshot,
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
     try:
-        rendered = run_layout_browser([
-            executable, "--headless", "--no-sandbox", "--disable-gpu", "--mute-audio",
-            "--autoplay-policy=no-user-gesture-required", "--no-first-run", "--disable-sync",
-            "--no-proxy-server", "--disable-background-networking", "--disable-extensions",
-            f"--user-data-dir={tmp_path / 'browser'}", f"--window-size={max(600, width + 100)},{height + 100}",
-            "--dump-dom", f"--screenshot={tmp_path / screenshot}", f"http://127.0.0.1:{server.server_port}/",
-        ], reset=lambda: (ready.clear(), result.clear()))
+        rendered = _launch_browser(
+            executable, server.server_port, tmp_path / "browser", tmp_path / screenshot,
+            width, height, reset=lambda: (ready.clear(), result.clear()),
+        )
     finally:
         _stop_layout_server(server, ready, worker)
     (tmp_path / "rendered.html").write_bytes(rendered.stdout)
@@ -160,10 +188,7 @@ def _run_iframe_repair(tmp_path, width, height, mode, script_source, screenshot,
 
 
 SCRIPT = _fill_page_js("""
-import {createStage} from '/frontend/src/adv/stage.js';
-import {createBacklog} from '/frontend/src/adv/backlog.js';
-import {createLineAudioRecovery} from '/frontend/src/controllers/line_audio_recovery.js';
-import {StreamAudioController} from '/frontend/src/audio_player.js';
+__IMPORTS__
 const nativeFetch=globalThis.fetch.bind(globalThis),mode=__MODE__;
 const result={},oldTime=Date.now()-9*86400000;
 const session={id:'repair-browser',settings:{voiceProfileId:7},messages:[{id:'m_42',serverMessageId:42,role:'assistant',
@@ -182,15 +207,15 @@ globalThis.fetch=async (url,options={})=>{
   if(url==='/audio/repair_browser.wav'){gets.push(url);return new Response(wav);}
   throw new Error('Unexpected request '+url);
 };
-const wait=()=>new Promise(resolve=>setTimeout(resolve,20));
-const until=async check=>{for(let i=0;i<150;i++){if(check())return;await wait();}throw new Error('Condition did not finish');};
+__WAIT_UNTIL__
 const player=new StreamAudioController({fetchTimeoutMs:3000});
 let log;
 try {
   const stage=createStage(document.getElementById('fixture-root'));
-  const recover=createLineAudioRecovery({getSession:()=>session,getVoiceProfiles:()=>[{id:7,name:'当前测试音色'}],saveState:()=>{saves++;return true;}});
-  log=createBacklog(stage.overlay,{getSession:()=>session,getSettings:()=>session.settings,getCharacter:()=>({id:7,name:'当前测试音色'}),
-    getRecoveryVoice:()=>({id:7,name:'当前测试音色'}),voiceEnabled:()=>true,regenerateLineAudio:recover,audio:player,onClose:()=>log.destroy()});
+__RECOVER__
+  log=createBacklog(stage.overlay,{
+__BACKLOG_OPTIONS__
+  });
   await document.fonts.ready;await wait();
 __CLICK__
   result.namedVoice=document.querySelector('.adv-log-regenerate-btn').title;
@@ -228,10 +253,7 @@ class LineRecoveryHandler(AudioRecoveryHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/case":
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(self.case)
+            _send_body(self, 200, "text/html; charset=utf-8", self.case)
         elif parsed.path == "/audio/missing_legacy.wav":
             if "missing_audio_gets" in self.shared_requests:
                 self.shared_requests["missing_audio_gets"].append(self.path)
@@ -246,8 +268,7 @@ class LineRecoveryHandler(AudioRecoveryHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/voice/regenerate-line":
-            length = int(self.headers.get("Content-Length", 0))
-            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            body = _read_json_body(self)
             if "regen_posts" in self.shared_requests:
                 self.shared_requests["regen_posts"].append(body)
             audio = _ready_line_audio(body.get("text", "こんにちは。"))
@@ -275,10 +296,7 @@ def test_log_line_repair_is_reachable_and_owned(tmp_path, width, height, mode):
 
 
 TWO_TAB_SCRIPT = _fill_page_js("""
-import {createStage} from '/frontend/src/adv/stage.js';
-import {createBacklog} from '/frontend/src/adv/backlog.js';
-import {createLineAudioRecovery} from '/frontend/src/controllers/line_audio_recovery.js';
-import {StreamAudioController} from '/frontend/src/audio_player.js';
+__IMPORTS__
 import {putCachedAudioBlob} from '/frontend/src/cache.js';
 
 const nativeFetch = globalThis.fetch.bind(globalThis);
@@ -303,14 +321,7 @@ const session = {
 };
 
 let saves = 0;
-const wait = () => new Promise(resolve => setTimeout(resolve, 20));
-const until = async check => {
-  for (let i = 0; i < 200; i++) {
-    if (check()) return;
-    await wait();
-  }
-  throw new Error('Condition timed out');
-};
+__WAIT_UNTIL__
 
 const player = new StreamAudioController({ fetchTimeoutMs: 5000 });
 const playOutcomes = [];
@@ -450,8 +461,7 @@ class TwoTabRecoveryHandler(AudioRecoveryHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/voice/regenerate-line":
-            length = int(self.headers.get("Content-Length", 0))
-            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            body = _read_json_body(self)
             with self.state_lock:
                 self.shared_state["regen_posts"].append(body)
                 if len(self.shared_state["regen_posts"]) >= 2:
@@ -478,8 +488,7 @@ class TwoTabRecoveryHandler(AudioRecoveryHandler):
                     }, ensure_ascii=False).encode("utf-8")
                     _send_body(self, 409, "application/json; charset=utf-8", conflict_resp)
         elif parsed.path == "/result":
-            length = int(self.headers.get("Content-Length", 0))
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            payload = _read_json_body(self)
             tab = payload.get("tab")
             with self.state_lock:
                 if tab == 1:
@@ -542,13 +551,10 @@ def test_two_tab_repair_sync_via_409(tmp_path, warm_cache):
     try:
         browser_dir = tmp_path / f"browser_twotab_{'warm' if warm_cache else 'cold'}"
         ready.clear()
-        browser_proc = run_layout_browser([
-            executable, "--headless", "--no-sandbox", "--disable-gpu", "--disable-popup-blocking",
-            "--mute-audio", "--autoplay-policy=no-user-gesture-required", "--no-first-run", "--disable-sync",
-            "--no-proxy-server", "--disable-background-networking", "--disable-extensions",
-            f"--user-data-dir={browser_dir}", f"--window-size={max(600, width + 100)},{height + 100}",
-            "--dump-dom", f"--screenshot={tmp_path / 'tabs.png'}", f"http://127.0.0.1:{server.server_port}/",
-        ], reset=lambda: ready.clear())
+        browser_proc = _launch_browser(
+            executable, server.server_port, browser_dir, tmp_path / "tabs.png", width, height,
+            extra_args=("--disable-popup-blocking",), reset=lambda: ready.clear(),
+        )
         assert browser_proc.returncode == 0, browser_proc.stderr[-1000:]
 
         with state_lock:
@@ -604,10 +610,7 @@ def test_two_tab_repair_sync_via_409(tmp_path, warm_cache):
 
 
 LEGACY_SCRIPT = _fill_page_js("""
-import {createStage} from '/frontend/src/adv/stage.js';
-import {createBacklog} from '/frontend/src/adv/backlog.js';
-import {createLineAudioRecovery} from '/frontend/src/controllers/line_audio_recovery.js';
-import {StreamAudioController} from '/frontend/src/audio_player.js';
+__IMPORTS__
 
 const mode = __MODE__;
 const nativeFetch = globalThis.fetch.bind(globalThis);
@@ -662,14 +665,7 @@ if (!isMissingFile) {
   };
 }
 
-const wait = () => new Promise(resolve => setTimeout(resolve, 20));
-const until = async check => {
-  for (let i = 0; i < 200; i++) {
-    if (check()) return;
-    await wait();
-  }
-  throw new Error('Condition did not finish');
-};
+__WAIT_UNTIL__
 
 const player = new StreamAudioController({ fetchTimeoutMs: 3000 });
 

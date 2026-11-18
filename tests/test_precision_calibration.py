@@ -54,12 +54,12 @@ class TestCalibrateEnginePrecision:
     """Exercises scripts.run_server.calibrate_engine_precision with fake probe/restart."""
 
     @pytest.fixture
-    def calibrate(self):
+    def calibrate(self, tmp_path, monkeypatch):
         import scripts.run_server as rs
+        monkeypatch.setattr("scripts.run_server.PROJECT_ROOT", tmp_path)
         return rs.calibrate_engine_precision
 
     def test_fp16_audible_caches_fp16(self, calibrate, tmp_path, monkeypatch):
-        monkeypatch.setattr("scripts.run_server.PROJECT_ROOT", tmp_path)
         probes = iter([0.5])
         is_half, calibrated = calibrate(
             tmp_path / "engine", True, lambda: next(probes), lambda fh: (_ for _ in ()).throw(AssertionError("no restart expected")),
@@ -68,7 +68,6 @@ class TestCalibrateEnginePrecision:
         assert read_precision_cache(tmp_path)["is_half"] is True
 
     def test_fp16_silent_restarts_fp32_and_caches(self, calibrate, tmp_path, monkeypatch):
-        monkeypatch.setattr("scripts.run_server.PROJECT_ROOT", tmp_path)
         # First probe (FP16): silent. Second probe (after FP32 restart): audible.
         probes = iter([0.0, 0.42])
         restarts = []
@@ -83,20 +82,17 @@ class TestCalibrateEnginePrecision:
         assert read_precision_cache(tmp_path)["is_half"] is False
 
     def test_fp32_still_silent_no_cache(self, calibrate, tmp_path, monkeypatch):
-        monkeypatch.setattr("scripts.run_server.PROJECT_ROOT", tmp_path)
         probes = iter([0.0, 0.0])
         is_half, calibrated = calibrate(tmp_path / "engine", True, lambda: next(probes), lambda fh: object())
         assert is_half is False and calibrated is False
         assert read_precision_cache(tmp_path) is None
 
     def test_inconclusive_probe_no_cache(self, calibrate, tmp_path, monkeypatch):
-        monkeypatch.setattr("scripts.run_server.PROJECT_ROOT", tmp_path)
         is_half, calibrated = calibrate(tmp_path / "engine", True, lambda: None, lambda fh: object())
         assert is_half is True and calibrated is False
         assert read_precision_cache(tmp_path) is None
 
     def test_fp32_silent_from_start_no_restart(self, calibrate, tmp_path, monkeypatch):
-        monkeypatch.setattr("scripts.run_server.PROJECT_ROOT", tmp_path)
         probes = iter([0.0])
         restarts = []
 
@@ -109,45 +105,61 @@ class TestResolveWeightFilePath:
     """Weights can live inside the character package (project-relative) or the
     engine dir (engine-relative); the switch flow absolutizes either form."""
 
-    def test_package_relative_weight_absolutized(self, tmp_path, monkeypatch):
+    @staticmethod
+    def _setup_path_guard(tmp_path, monkeypatch, authorized_roots=()):
         import galgame2voice.utils.path_guard as pg
+        monkeypatch.setattr(pg, "get_settings", lambda: SimpleNamespace(project_root=tmp_path, audio_dir=tmp_path / "audio"))
+        monkeypatch.setattr(pg, "get_authorized_roots", lambda include_sovits=True: list(authorized_roots))
+        return pg
+
+    def test_package_relative_weight_absolutized(self, tmp_path, monkeypatch):
+        pg = self._setup_path_guard(tmp_path, monkeypatch)
         pkg = tmp_path / "characters" / "kanna" / "gpt.ckpt"
         pkg.parent.mkdir(parents=True)
         pkg.write_bytes(b"w")
-        monkeypatch.setattr(pg, "get_settings", lambda: SimpleNamespace(project_root=tmp_path, audio_dir=tmp_path / "audio"))
-        monkeypatch.setattr(pg, "get_authorized_roots", lambda include_sovits=True: [])
         assert pg.resolve_weight_file_path("characters/kanna/gpt.ckpt") == str(pkg)
 
     def test_engine_relative_weight_absolutized(self, tmp_path, monkeypatch):
-        import galgame2voice.utils.path_guard as pg
         engine = tmp_path / "engine"
+        pg = self._setup_path_guard(tmp_path, monkeypatch, [engine])
         w = engine / "GPT_weights_v2ProPlus" / "kanna-e50.ckpt"
         w.parent.mkdir(parents=True)
         w.write_bytes(b"w")
-        monkeypatch.setattr(pg, "get_settings", lambda: SimpleNamespace(project_root=tmp_path, audio_dir=tmp_path / "audio"))
-        monkeypatch.setattr(pg, "get_authorized_roots", lambda include_sovits=True: [engine])
         assert pg.resolve_weight_file_path("GPT_weights_v2ProPlus/kanna-e50.ckpt") == str(w)
 
     def test_absolute_untouched_and_missing_passthrough(self, tmp_path, monkeypatch):
-        import galgame2voice.utils.path_guard as pg
-        monkeypatch.setattr(pg, "get_settings", lambda: SimpleNamespace(project_root=tmp_path, audio_dir=tmp_path / "audio"))
-        monkeypatch.setattr(pg, "get_authorized_roots", lambda include_sovits=True: [])
+        pg = self._setup_path_guard(tmp_path, monkeypatch)
         assert pg.resolve_weight_file_path("GPT_weights_v2ProPlus/missing.ckpt") == "GPT_weights_v2ProPlus/missing.ckpt"
         assert pg.resolve_weight_file_path("") == ""
 
 
 class TestYamlPrecisionSync:
+    @staticmethod
+    def _write_sovits_yaml(tmp_path, text):
+        configs_dir = tmp_path / "GPT_SoVITS" / "configs"
+        configs_dir.mkdir(parents=True)
+        yaml_file = configs_dir / "tts_infer.yaml"
+        yaml_file.write_text(text, encoding="utf-8")
+        return yaml_file
+
+    @staticmethod
+    def _init_precision_db(tmp_path, precision):
+        import sqlite3
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(parents=True)
+        db_file = data_dir / "galgame2voice.db"
+        with sqlite3.connect(str(db_file)) as conn:
+            conn.execute("CREATE TABLE settings (id INTEGER PRIMARY KEY, inference_precision TEXT);")
+            conn.execute("INSERT INTO settings (id, inference_precision) VALUES (1, ?);", (precision,))
+        return db_file
+
     def test_yaml_read_write_roundtrip(self, tmp_path):
         from galgame2voice.utils.precision import (
             read_sovits_yaml_is_half,
             find_sovits_yaml_path,
         )
-        configs_dir = tmp_path / "GPT_SoVITS" / "configs"
-        configs_dir.mkdir(parents=True)
-        yaml_file = configs_dir / "tts_infer.yaml"
-        yaml_file.write_text(
-            "custom:\n  device: cuda\n  is_half: true\n  version: v2\nv1:\n  is_half: false\n",
-            encoding="utf-8",
+        yaml_file = self._write_sovits_yaml(
+            tmp_path, "custom:\n  device: cuda\n  is_half: true\n  version: v2\nv1:\n  is_half: false\n",
         )
 
         assert find_sovits_yaml_path(tmp_path) == yaml_file
@@ -158,12 +170,7 @@ class TestYamlPrecisionSync:
         from galgame2voice.utils.precision import read_db_precision
         monkeypatch.delenv("GPT_SOVITS_PRECISION", raising=False)
 
-        data_dir = tmp_path / "data"
-        data_dir.mkdir(parents=True)
-        db_file = data_dir / "galgame2voice.db"
-        with sqlite3.connect(str(db_file)) as conn:
-            conn.execute("CREATE TABLE settings (id INTEGER PRIMARY KEY, inference_precision TEXT);")
-            conn.execute("INSERT INTO settings (id, inference_precision) VALUES (1, 'fp32');")
+        db_file = self._init_precision_db(tmp_path, "fp32")
 
         assert read_db_precision(tmp_path) == "fp32"
 
@@ -183,13 +190,7 @@ class TestYamlPrecisionSync:
         monkeypatch.delenv("GPT_SOVITS_PRECISION", raising=False)
         monkeypatch.delenv("GPT_SOVITS_DEVICE", raising=False)
 
-        configs_dir = tmp_path / "GPT_SoVITS" / "configs"
-        configs_dir.mkdir(parents=True)
-        yaml_file = configs_dir / "tts_infer.yaml"
-        yaml_file.write_text(
-            "custom:\n  device: cuda\n  is_half: true\n",
-            encoding="utf-8",
-        )
+        yaml_file = self._write_sovits_yaml(tmp_path, "custom:\n  device: cuda\n  is_half: true\n")
 
         assert read_sovits_yaml_device(tmp_path) == "cuda"
 
@@ -207,12 +208,7 @@ class TestYamlPrecisionSync:
         assert src == "yaml"
 
         # 3. DB source detection for CPU
-        data_dir = tmp_path / "data"
-        data_dir.mkdir(parents=True)
-        db_file = data_dir / "galgame2voice.db"
-        with sqlite3.connect(str(db_file)) as conn:
-            conn.execute("CREATE TABLE settings (id INTEGER PRIMARY KEY, inference_precision TEXT);")
-            conn.execute("INSERT INTO settings (id, inference_precision) VALUES (1, 'cpu');")
+        db_file = self._init_precision_db(tmp_path, "cpu")
 
         dev2, half2, src2 = resolve_initial_device_and_half(tmp_path, tmp_path)
         assert dev2 == "cpu"
@@ -230,6 +226,41 @@ class TestYamlPrecisionSync:
         assert src3 == "cache"
 
 
+def _patch_run_server_endpoint(tmp_path, monkeypatch, host="127.0.0.1", port=19231):
+    monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", None)
+    endpoint = parse_sovits_endpoint(f"http://{host}:{port}", source="db")
+    monkeypatch.setattr(
+        "galgame2voice.services.sovits_endpoint.resolve_effective_sovits_endpoint_sync",
+        lambda: endpoint,
+    )
+    engine = tmp_path / "engine"
+    engine.mkdir()
+    monkeypatch.setattr(run_server, "find_gpt_sovits_directory", lambda: engine)
+    monkeypatch.setattr(
+        run_server,
+        "resolve_initial_device_and_half",
+        lambda *_a, **_k: ("cuda", True, "default"),
+    )
+    return engine
+
+
+def _run_captured_ensure_running(monkeypatch):
+    created = []
+    real_thread = threading.Thread
+
+    def capture(*args, **kwargs):
+        thread = real_thread(*args, **kwargs)
+        created.append(thread)
+        return thread
+
+    monkeypatch.setattr(run_server.threading, "Thread", capture)
+    run_server.ensure_gpt_sovits_running()
+    assert len(created) == 1
+    created[0].join(timeout=5)
+    assert not created[0].is_alive()
+
+
 class TestSilenceCalibrationRestart:
     HOST = "127.0.0.1"
     PORT = 19231
@@ -239,8 +270,6 @@ class TestSilenceCalibrationRestart:
 
     @classmethod
     def _install_owned_engine(cls, tmp_path, monkeypatch):
-        import threading
-
         monkeypatch.setattr(health, "_engine_restart_lock", threading.Lock())
         monkeypatch.setattr(health, "_engine_restart_target", None)
         monkeypatch.setattr(get_settings(), "project_root", tmp_path)
@@ -291,33 +320,51 @@ class TestSilenceCalibrationRestart:
         client._loaded_sovits_source = None
         return client
 
-    def test_silence_calibration_gap_stays_starting(self, tmp_path, monkeypatch):
-        proc, engine = self._install_owned_engine(tmp_path, monkeypatch)
-        endpoint = parse_sovits_endpoint(f"http://{self.HOST}:{self.PORT}", source="db")
-        seen = {}
+    @classmethod
+    def _setup_calibration_restart(
+        cls, tmp_path, monkeypatch, *, port_in_use, spawn_fn, probe_fn=None,
+        with_pid_file=False, unreachable_health=False,
+    ):
+        proc, engine = cls._install_owned_engine(tmp_path, monkeypatch)
+        pid_file = None
+        if with_pid_file:
+            pid_file = tmp_path / "gptsovits.pid"
+            pid_file.write_text(str(proc.pid), encoding="utf-8")
+        if unreachable_health:
+            endpoint = parse_sovits_endpoint(f"http://{cls.HOST}:{cls.PORT}", source="db")
 
-        async def resolve():
-            return endpoint
+            async def resolve():
+                return endpoint
 
-        async def probe(*_args, **_kwargs):
-            return SimpleNamespace(status="unreachable")
+            async def probe(*_args, **_kwargs):
+                return SimpleNamespace(status="unreachable")
+
+            monkeypatch.setattr(health, "resolve_effective_sovits_endpoint", resolve)
+            monkeypatch.setattr(health, "_probe_gpt_sovits", probe)
 
         def terminate(pid, timeout=2.0):
             assert pid == proc.pid
             proc.poll.return_value = 1
 
-        def port_in_use(*_args, **_kwargs):
-            if run_server._SPAWNED_SOVITS_PROC is proc:
-                seen["status"] = asyncio.run(health.engine_status_endpoint())
-                return False
-            return True
-
-        monkeypatch.setattr(health, "resolve_effective_sovits_endpoint", resolve)
-        monkeypatch.setattr(health, "_probe_gpt_sovits", probe)
         monkeypatch.setattr(run_server, "terminate_process_tree", terminate)
         monkeypatch.setattr(run_server, "is_port_in_use", port_in_use)
-        monkeypatch.setattr(run_server, "_probe_synth_peak", lambda *_a, **_k: 0.0)
-        monkeypatch.setattr(run_server, "_spawn_sovits_process", self._remember_replacement(False))
+        monkeypatch.setattr(run_server, "_probe_synth_peak", probe_fn or (lambda *_a, **_k: 0.0))
+        monkeypatch.setattr(run_server, "_spawn_sovits_process", spawn_fn)
+        return proc, engine, pid_file
+
+    def test_silence_calibration_gap_stays_starting(self, tmp_path, monkeypatch):
+        seen = {}
+        proc, engine, _ = self._setup_calibration_restart(
+            tmp_path,
+            monkeypatch,
+            port_in_use=lambda *_a, **_k: (
+                seen.__setitem__("status", asyncio.run(health.engine_status_endpoint())) or False
+                if run_server._SPAWNED_SOVITS_PROC is proc
+                else True
+            ),
+            spawn_fn=self._remember_replacement(False),
+            unreachable_health=True,
+        )
         run_server._calibrate_precision_after_ready(
             engine, self.HOST, self.PORT, True, "default", device="cuda"
         )
@@ -326,7 +373,14 @@ class TestSilenceCalibrationRestart:
         assert seen["status"]["state"] != "failed", seen["status"]
 
     def test_silence_calibration_reloads_weights_on_the_replacement(self, tmp_path, monkeypatch):
-        proc, engine = self._install_owned_engine(tmp_path, monkeypatch)
+        peaks = iter((0.0, 0.5))
+        proc, engine, _ = self._setup_calibration_restart(
+            tmp_path,
+            monkeypatch,
+            port_in_use=lambda *_a, **_k: run_server._SPAWNED_SOVITS_PROC is not proc,
+            probe_fn=lambda *_a, **_k: next(peaks),
+            spawn_fn=self._remember_replacement(False),
+        )
         client = self._loaded_client()
         monkeypatch.setattr(
             "galgame2voice.services.gpt_sovits_client._global_gpt_sovits_client", client
@@ -334,20 +388,6 @@ class TestSilenceCalibrationRestart:
         monkeypatch.setattr(
             "galgame2voice.services.gpt_sovits_client.get_gpt_sovits_client", lambda: client
         )
-        peaks = iter((0.0, 0.5))
-
-        def terminate(pid, timeout=2.0):
-            assert pid == proc.pid
-            proc.poll.return_value = 1
-
-        monkeypatch.setattr(run_server, "terminate_process_tree", terminate)
-        monkeypatch.setattr(
-            run_server,
-            "is_port_in_use",
-            lambda *_a, **_k: run_server._SPAWNED_SOVITS_PROC is not proc,
-        )
-        monkeypatch.setattr(run_server, "_probe_synth_peak", lambda *_a, **_k: next(peaks))
-        monkeypatch.setattr(run_server, "_spawn_sovits_process", self._remember_replacement(False))
         run_server._calibrate_precision_after_ready(
             engine, self.HOST, self.PORT, True, "default", device="cuda"
         )
@@ -383,34 +423,20 @@ class TestSilenceCalibrationRestart:
         }
 
     def test_silence_calibration_does_not_spawn_while_the_port_is_busy(self, tmp_path, monkeypatch):
-        proc, engine = self._install_owned_engine(tmp_path, monkeypatch)
-        pid_file = tmp_path / "gptsovits.pid"
-        pid_file.write_text(str(proc.pid), encoding="utf-8")
-        endpoint = parse_sovits_endpoint(f"http://{self.HOST}:{self.PORT}", source="db")
-
-        async def resolve():
-            return endpoint
-
-        async def probe(*_args, **_kwargs):
-            return SimpleNamespace(status="unreachable")
-
-        monkeypatch.setattr(health, "resolve_effective_sovits_endpoint", resolve)
-        monkeypatch.setattr(health, "_probe_gpt_sovits", probe)
-
         spawned = []
-
-        def terminate(pid, timeout=2.0):
-            assert pid == proc.pid
-            proc.poll.return_value = 1
 
         def spawn(*args, **kwargs):
             spawned.append((args, kwargs))
             return self._remember_replacement(False)()
 
-        monkeypatch.setattr(run_server, "terminate_process_tree", terminate)
-        monkeypatch.setattr(run_server, "is_port_in_use", lambda *_a, **_k: True)
-        monkeypatch.setattr(run_server, "_probe_synth_peak", lambda *_a, **_k: 0.0)
-        monkeypatch.setattr(run_server, "_spawn_sovits_process", spawn)
+        _, engine, pid_file = self._setup_calibration_restart(
+            tmp_path,
+            monkeypatch,
+            port_in_use=lambda *_a, **_k: True,
+            spawn_fn=spawn,
+            with_pid_file=True,
+            unreachable_health=True,
+        )
         run_server._calibrate_precision_after_ready(
             engine, self.HOST, self.PORT, True, "default", device="cuda"
         )
@@ -427,31 +453,17 @@ class TestSilenceCalibrationRestart:
     def test_silence_calibration_clears_managed_state_when_replacement_spawn_raises(
         self, tmp_path, monkeypatch
     ):
-        proc, engine = self._install_owned_engine(tmp_path, monkeypatch)
-        pid_file = tmp_path / "gptsovits.pid"
-        pid_file.write_text(str(proc.pid), encoding="utf-8")
-        endpoint = parse_sovits_endpoint(f"http://{self.HOST}:{self.PORT}", source="db")
-
-        async def resolve():
-            return endpoint
-
-        async def probe(*_args, **_kwargs):
-            return SimpleNamespace(status="unreachable")
-
-        monkeypatch.setattr(health, "resolve_effective_sovits_endpoint", resolve)
-        monkeypatch.setattr(health, "_probe_gpt_sovits", probe)
-
-        def terminate(pid, timeout=2.0):
-            assert pid == proc.pid
-            proc.poll.return_value = 1
-
         def failing_spawn(*_args, **_kwargs):
             raise OSError("spawn failed")
 
-        monkeypatch.setattr(run_server, "terminate_process_tree", terminate)
-        monkeypatch.setattr(run_server, "is_port_in_use", lambda *_a, **_k: False)
-        monkeypatch.setattr(run_server, "_probe_synth_peak", lambda *_a, **_k: 0.0)
-        monkeypatch.setattr(run_server, "_spawn_sovits_process", failing_spawn)
+        _, engine, pid_file = self._setup_calibration_restart(
+            tmp_path,
+            monkeypatch,
+            port_in_use=lambda *_a, **_k: False,
+            spawn_fn=failing_spawn,
+            with_pid_file=True,
+            unreachable_health=True,
+        )
         run_server._calibrate_precision_after_ready(
             engine, self.HOST, self.PORT, True, "default", device="cuda"
         )
@@ -468,24 +480,9 @@ class TestSilenceCalibrationRestart:
         monkeypatch.setattr(health, "_engine_restart_lock", threading.Lock())
         monkeypatch.setattr(health, "_engine_restart_target", None)
         monkeypatch.setattr(get_settings(), "project_root", tmp_path)
-        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
-        monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", None)
         monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", None)
         monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", None)
-
-        endpoint = parse_sovits_endpoint(f"http://{self.HOST}:{self.PORT}", source="db")
-        monkeypatch.setattr(
-            "galgame2voice.services.sovits_endpoint.resolve_effective_sovits_endpoint_sync",
-            lambda: endpoint,
-        )
-        engine = tmp_path / "engine"
-        engine.mkdir()
-        monkeypatch.setattr(run_server, "find_gpt_sovits_directory", lambda: engine)
-        monkeypatch.setattr(
-            run_server,
-            "resolve_initial_device_and_half",
-            lambda *_a, **_k: ("cuda", True, "default"),
-        )
+        _patch_run_server_endpoint(tmp_path, monkeypatch, self.HOST, self.PORT)
 
         active_state = None
         states_by_pid = {}
@@ -548,26 +545,14 @@ class TestSilenceCalibrationRestart:
                 return None
             return probe_peak(active_state)
 
-        created = []
-        real_thread = threading.Thread
-
-        def capture_thread(*args, **kwargs):
-            t = real_thread(*args, **kwargs)
-            created.append(t)
-            return t
-
         monkeypatch.setattr(run_server, "calibrate_engine_precision", spy_calibrate)
         monkeypatch.setattr(run_server, "_spawn_sovits_process", fake_spawn)
         monkeypatch.setattr(run_server, "terminate_process_tree", fake_terminate)
         monkeypatch.setattr(run_server, "is_port_in_use", fake_is_port_in_use)
         monkeypatch.setattr(run_server.time, "sleep", fake_sleep)
         monkeypatch.setattr(run_server, "_probe_synth_peak", fake_probe)
-        monkeypatch.setattr(run_server.threading, "Thread", capture_thread)
 
-        run_server.ensure_gpt_sovits_running()
-        assert len(created) == 1
-        created[0].join(timeout=5)
-        assert not created[0].is_alive()
+        _run_captured_ensure_running(monkeypatch)
         return probe_snapshots, calibration_results
 
     def test_fp32_restart_waits_for_port_and_settle_before_probing(self, tmp_path, monkeypatch):
@@ -627,22 +612,8 @@ class TestSilenceCalibrationRestart:
 class TestReadinessMonitorCalibration:
     @staticmethod
     def _run_readiness_monitor(tmp_path, monkeypatch, proc, is_port_in_use_fn, sleep_fn=None):
-        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
-        monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", None)
         monkeypatch.setattr(run_server.time, "sleep", sleep_fn or (lambda *_args, **_kwargs: None))
-        endpoint = parse_sovits_endpoint("http://127.0.0.1:19231", source="db")
-        monkeypatch.setattr(
-            "galgame2voice.services.sovits_endpoint.resolve_effective_sovits_endpoint_sync",
-            lambda: endpoint,
-        )
-        engine = tmp_path / "engine"
-        engine.mkdir()
-        monkeypatch.setattr(run_server, "find_gpt_sovits_directory", lambda: engine)
-        monkeypatch.setattr(
-            run_server,
-            "resolve_initial_device_and_half",
-            lambda *_a, **_k: ("cuda", True, "default"),
-        )
+        engine = _patch_run_server_endpoint(tmp_path, monkeypatch)
 
         def fake_spawn(*_a, **_k):
             run_server._SPAWNED_SOVITS_PROC = proc
@@ -658,20 +629,7 @@ class TestReadinessMonitorCalibration:
             lambda *args, **kwargs: calibrate_calls.append((args, kwargs)),
         )
 
-        created = []
-        real_thread = threading.Thread
-
-        def capture(*args, **kwargs):
-            thread = real_thread(*args, **kwargs)
-            created.append(thread)
-            return thread
-
-        monkeypatch.setattr(run_server.threading, "Thread", capture)
-
-        run_server.ensure_gpt_sovits_running()
-        assert len(created) == 1
-        created[0].join(timeout=5)
-        assert not created[0].is_alive()
+        _run_captured_ensure_running(monkeypatch)
         return engine, calibrate_calls
 
     def test_port_opening_after_120s_triggers_calibration(self, tmp_path, monkeypatch, capsys):
