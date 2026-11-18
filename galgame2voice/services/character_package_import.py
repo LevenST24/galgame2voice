@@ -23,6 +23,7 @@ from galgame2voice.config import get_settings
 from galgame2voice.database.session import get_db
 from galgame2voice.services.character_identity import DuplicateCharacterId
 from galgame2voice.services.character_manager import (
+    CharacterManager,
     CharacterPackage,
     format_invalid_package_warning,
     get_character_manager,
@@ -38,6 +39,12 @@ MAX_PACKAGE_DISCOVERY_DEPTH = 3
 
 NO_PACKAGE_FOUND_DETAIL = "没有找到角色包：需要包含 manifest.json 的文件夹"
 SIZE_LIMIT_EXCEEDED_DETAIL = "角色包文件过大（上限 8 GiB），请精简无关文件后重试。"
+
+
+def _package_missing_voice_weights(pkg: CharacterPackage) -> bool:
+    """True when GPT or SoVITS does not resolve to a file the catalog accepts."""
+    missing = CharacterManager._weight_needs_healing
+    return missing(pkg.resolve_weight_path("gpt_weights")) or missing(pkg.resolve_weight_path("sovits_weights"))
 
 
 def _missing_package_detail(filename: str) -> str:
@@ -413,7 +420,13 @@ async def import_character_archive_file(
                                 f"角色包「{pkg.name}」未能同步为可用音色，请检查是否存在同名音色冲突。"
                             )
                         imported_items.append(
-                            {"name": pkg.name, "folder": pkg.folder.name, "character_id": pkg.id, "profile_id": prof.id}
+                            {
+                                "name": pkg.name,
+                                "folder": pkg.folder.name,
+                                "character_id": pkg.id,
+                                "profile_id": prof.id,
+                                "missing_voice_weights": await asyncio.to_thread(_package_missing_voice_weights, pkg),
+                            }
                         )
             except (_ImportValidationError, DuplicateCharacterId, HTTPException) as exc:
                 await await_protected(_rollback_and_rescan(placed, backups, catalog, char_mgr))

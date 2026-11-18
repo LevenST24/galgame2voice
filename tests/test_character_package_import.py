@@ -27,6 +27,7 @@ def _make_package_bytes(
     prefix: str = "",
     system_prompt: str | None = None,
     valid: bool = True,
+    include_weights: bool = True,
     extra_entries: dict[str, bytes] | None = None,
 ) -> bytes:
     wav_buf = io.BytesIO()
@@ -44,17 +45,15 @@ def _make_package_bytes(
                 "emotions": {"gentle": {"audio": "refs/gentle.wav", "text": f"{name}の優しい声。", "lang": "ja"}},
             }
         )
+    asset_entries: dict[str, bytes] = {}
+    if valid:
+        asset_entries[f"{prefix}refs/gentle.wav"] = wav_buf.getvalue()
+        if include_weights:
+            asset_entries[f"{prefix}gpt.ckpt"] = b"x" * 1024
+            asset_entries[f"{prefix}sovits.pth"] = b"y" * 1024
     entries: dict[str, bytes] = {
         f"{prefix}manifest.json": json.dumps(manifest, ensure_ascii=False).encode("utf-8"),
-        **(
-            {
-                f"{prefix}gpt.ckpt": b"x" * 1024,
-                f"{prefix}sovits.pth": b"y" * 1024,
-                f"{prefix}refs/gentle.wav": wav_buf.getvalue(),
-            }
-            if valid
-            else {}
-        ),
+        **asset_entries,
         **(extra_entries or {}),
     }
     buf = io.BytesIO()
@@ -233,6 +232,52 @@ async def test_missing_manifest_names_zip_and_folder(tmp_path, monkeypatch):
     assert zipped.status_code == 422 and zipped.json()["detail"] == "这个压缩包里没有 manifest.json"
     folder_detail = folder.json()["detail"]
     assert folder.status_code == 422 and "文件夹" in folder_detail and "压缩包" not in folder_detail
+
+
+@pytest.mark.asyncio
+async def test_import_without_voice_weights_succeeds_and_marks_them_missing(tmp_path, monkeypatch):
+    """A package whose manifest names weights, but does not contain the files, still imports.
+
+    The import response must say those weights are not usable. A package that
+    actually contains both files, and one that contains only the GPT file, use
+    the same flag.
+    """
+    root, app = _setup_app(tmp_path, monkeypatch)
+    await init_db()
+    weightless = _make_package_bytes(
+        "zip", "walk_noweight", "缺权重小灯", prefix="walk_noweight/", include_weights=False,
+    )
+    ready = _make_package_bytes("zip", "walk_alice", "星野爱丽丝", prefix="walk_alice/")
+    gpt_only = _make_package_bytes(
+        "zip", "walk_gpt_only", "只有一半", prefix="walk_gpt_only/", include_weights=False,
+        extra_entries={"walk_gpt_only/gpt.ckpt": b"x" * 1024},
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
+        missing_res = await client.post(
+            "/api/characters/import", params={"filename": "walk_noweight.zip"}, content=weightless,
+        )
+        ready_res = await client.post(
+            "/api/characters/import", params={"filename": "walk_alice.zip"}, content=ready,
+        )
+        half_res = await client.post(
+            "/api/characters/import", params={"filename": "walk_gpt_only.zip"}, content=gpt_only,
+        )
+        profiles = (await client.get("/api/voice/profiles")).json()["profiles"]
+    assert missing_res.status_code == 200, missing_res.text
+    assert ready_res.status_code == 200, ready_res.text
+    assert half_res.status_code == 200, half_res.text
+    missing_item = missing_res.json()["imported"][0]
+    assert missing_item["name"] == "缺权重小灯"
+    assert missing_item["missing_voice_weights"] is True
+    pkg_dir = root / "characters" / "walk_noweight"
+    assert (pkg_dir / "manifest.json").is_file()
+    assert (pkg_dir / "refs" / "gentle.wav").is_file()
+    assert not (pkg_dir / "gpt.ckpt").exists()
+    assert not (pkg_dir / "sovits.pth").exists()
+    assert ready_res.json()["imported"][0]["missing_voice_weights"] is False
+    assert half_res.json()["imported"][0]["missing_voice_weights"] is True
+    assert [p["name"] for p in profiles] == ["缺权重小灯", "星野爱丽丝", "只有一半"]
+    _assert_temp_empty()
 
 
 @pytest.mark.asyncio
