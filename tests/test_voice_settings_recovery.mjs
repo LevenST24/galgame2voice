@@ -166,11 +166,18 @@ async function editB(dom) {
   await dom.sVoice.fire('change');
   dom.sSystem.value = 'Only for B';
 }
-{
-  const { first, dom } = setup(); const writes = [];
+async function setupWithProfiles({ callbacks = {}, available = profiles, edit = false, sessionModal = false } = {}) {
+  const { first, dom } = setup(callbacks);
+  const writes = [];
   first.settings.voiceProfileId = 1;
-  globalThis.fetch = profileResponses(writes);
-  await loadSessionVoiceSelect(first); await editB(dom);
+  if (sessionModal) dom.sessionModal = element();
+  globalThis.fetch = profileResponses(writes, available);
+  await loadSessionVoiceSelect(first);
+  if (edit) await editB(dom);
+  return { first, dom, writes };
+}
+{
+  const { first, dom, writes } = await setupWithProfiles({ edit: true });
   await dom.sVoiceRescan.click();
   assert.equal(dom.sVoice.value, '2'); assert.equal(dom.sSystem.value, 'Only for B');
   await dom.sSave.click();
@@ -178,10 +185,7 @@ async function editB(dom) {
   assert.equal(first.settings.voiceProfileId, 2); passed++;
 }
 {
-  const { first, dom } = setup(); const writes = [];
-  first.settings.voiceProfileId = 1;
-  globalThis.fetch = profileResponses(writes);
-  await loadSessionVoiceSelect(first); await editB(dom);
+  const { dom, writes } = await setupWithProfiles({ edit: true });
   dom.sSystem.value = '';
   await handleRescanCharacters();
   assert.equal(dom.sVoice.value, '2'); assert.equal(dom.sSystem.value, '');
@@ -189,20 +193,14 @@ async function editB(dom) {
   assert.equal(writes.length, 0); assert.equal(dom.sSystem.value, ''); passed++;
 }
 {
-  const { first, dom } = setup(); const writes = [];
-  first.settings.voiceProfileId = 1;
-  globalThis.fetch = profileResponses(writes);
-  await loadSessionVoiceSelect(first); await editB(dom);
+  const { first, dom, writes } = await setupWithProfiles({ edit: true });
   globalThis.fetch = profileResponses(writes, [profiles[0]]);
   await handleRescanCharacters(); await dom.sSave.click();
   assert.equal(dom.sVoice.value, '2'); assert.equal(dom.sSystem.value, 'Only for B');
   assert.equal(writes.length, 0); assert.equal(first.settings.voiceProfileId, 1); passed++;
 }
 {
-  const { first, dom } = setup(); const writes = [];
-  first.settings.voiceProfileId = 1;
-  globalThis.fetch = profileResponses(writes);
-  await loadSessionVoiceSelect(first); await editB(dom);
+  const { dom } = await setupWithProfiles({ edit: true });
   globalThis.fetch = async url => url === '/api/characters/rescan'
     ? response({ discovered_count: 3 }) : response({ detail: '暂时无法读取音色列表' }, 503);
   await handleRescanCharacters();
@@ -210,10 +208,7 @@ async function editB(dom) {
   assert.equal(dom.sVoiceRescan.disabled, false); passed++;
 }
 {
-  const { first, dom } = setup(); const writes = [];
-  first.settings.voiceProfileId = 1;
-  globalThis.fetch = profileResponses(writes);
-  await loadSessionVoiceSelect(first); await editB(dom);
+  const { dom, writes } = await setupWithProfiles({ edit: true });
   const respond = globalThis.fetch; let complete;
   globalThis.fetch = (url, options) => url === '/api/characters/rescan'
     ? new Promise(resolve => { complete = resolve; }) : respond(url, options);
@@ -225,19 +220,13 @@ async function editB(dom) {
   assert.equal(writes[0].url, '/api/characters/3/system-prompt'); passed++;
 }
 {
-  const { first, dom } = setup(); const writes = [];
-  first.settings.voiceProfileId = 1;
-  globalThis.fetch = profileResponses(writes);
-  await loadSessionVoiceSelect(first); await editB(dom);
+  const { dom, writes } = await setupWithProfiles({ edit: true });
   dom.sVoice.value = '1'; // A programmatic change must not silently write B's draft.
   await dom.sSave.click();
   assert.equal(writes.length, 0); assert.equal(dom.sSystem.value, 'Only for B'); passed++;
 }
 {
-  const { first, dom } = setup(); const writes = [];
-  first.settings.voiceProfileId = 1;
-  globalThis.fetch = profileResponses(writes);
-  await loadSessionVoiceSelect(first);
+  const { first, dom } = await setupWithProfiles();
   let complete;
   globalThis.fetch = () => new Promise(resolve => { complete = resolve; });
   const pending = loadSessionVoiceSelect(first); await tick();
@@ -246,10 +235,7 @@ async function editB(dom) {
   assert.equal(dom.sVoice.value, '2'); assert.equal(dom.sSystem.value, 'Only for B'); passed++;
 }
 {
-  const { first, dom } = setup(); const writes = [];
-  first.settings.voiceProfileId = 1;
-  globalThis.fetch = profileResponses(writes);
-  await loadSessionVoiceSelect(first);
+  const { dom, writes } = await setupWithProfiles();
   globalThis.fetch = profileResponses(writes, [{ ...profiles[0], system_prompt: 'Updated in the rescanned package' }]);
   await handleRescanCharacters();
   assert.equal(dom.sVoice.value, '1');
@@ -265,12 +251,8 @@ for (const edit of [
   async dom => { dom.sVoice.value = '2'; await dom.sVoice.fire('change'); },
 ]) {
   let closed = 0;
-  const { first, dom } = setup({ closeModal() { closed++; } });
-  dom.sessionModal = element();
-  first.settings.voiceProfileId = 1;
   const available = [{ ...profiles[0], system_prompt: 'Original before save' }, { ...profiles[1] }];
-  globalThis.fetch = profileResponses([], available);
-  await loadSessionVoiceSelect(first);
+  const { first, dom } = await setupWithProfiles({ callbacks: { closeModal() { closed++; } }, available, sessionModal: true });
   dom.sSystem.value = 'Submitted draft';
   let complete; const writes = [];
   const respond = profileResponses(writes, available);
@@ -289,10 +271,7 @@ for (const edit of [
 }
 {
   let closed = 0, complete;
-  const { first, dom } = setup({ closeModal() { closed++; } });
-  first.settings.voiceProfileId = 1;
-  globalThis.fetch = profileResponses([], profiles);
-  await loadSessionVoiceSelect(first);
+  const { dom } = await setupWithProfiles({ callbacks: { closeModal() { closed++; } } });
   const respond = globalThis.fetch;
   globalThis.fetch = (url, options) => url === '/api/chat/sessions'
     ? new Promise(resolve => { complete = resolve; }) : respond(url, options);
@@ -303,18 +282,12 @@ for (const edit of [
 }
 {
   let closed = 0;
-  const { first, dom } = setup({ closeModal() { closed++; } });
-  first.settings.voiceProfileId = 1;
-  globalThis.fetch = profileResponses([], profiles);
-  await loadSessionVoiceSelect(first);
+  const { dom } = await setupWithProfiles({ callbacks: { closeModal() { closed++; } } });
   await dom.sSave.click();
   assert.equal(closed, 1, 'unchanged successful saves should still close the panel'); passed++;
 }
 {
-  const { first, dom } = setup();
-  first.settings.voiceProfileId = 1;
-  globalThis.fetch = profileResponses([], profiles);
-  await loadSessionVoiceSelect(first); await editB(dom);
+  const { dom } = await setupWithProfiles({ edit: true });
   dom.sTemp.value = '1.5';
   await dom.sReset.click();
   assert.equal(dom.sVoice.value, '2', 'resetting inference parameters must preserve the role');
@@ -322,10 +295,7 @@ for (const edit of [
   assert.equal(Number(dom.sTemp.value), DEFAULT_SESSION_SETTINGS.temperature); passed++;
 }
 for (const draft of ['', 'Custom persona draft']) {
-  const { first, dom } = setup();
-  first.settings.voiceProfileId = 1;
-  globalThis.fetch = profileResponses([], profiles);
-  await loadSessionVoiceSelect(first);
+  const { dom } = await setupWithProfiles();
   if (draft) { dom.sVoice.value = '__custom__'; await dom.sVoice.fire('change'); }
   const previous = dom.sVoice.value;
   dom.sSystem.value = draft;
@@ -339,10 +309,7 @@ for (const draft of ['', 'Custom persona draft']) {
 }
 {
   let closed = 0; const writes = [];
-  const { first, dom } = setup({ closeModal() { closed++; } });
-  first.settings.voiceProfileId = 1;
-  globalThis.fetch = profileResponses([], profiles);
-  await loadSessionVoiceSelect(first);
+  const { first, dom } = await setupWithProfiles({ callbacks: { closeModal() { closed++; } } });
   dom.sVoice.value = '__custom__'; await dom.sVoice.fire('change');
   globalThis.fetch = async (url, options) => { writes.push([url, options]); return response({}); };
   await dom.sSave.click();
@@ -461,34 +428,11 @@ const models = {
   assert.equal(first.settings.topP, 0.8);
   assert.equal(closed, 1); passed++;
 }
-{
-  // A rescan that rejected a package shows the server's notice, once, instead of the success toast.
-  setup();
-  const toastRoot = element();
-  toastRoot.querySelectorAll = () => toastRoot.children;
-  const getElementById = globalThis.document.getElementById;
-  globalThis.document.getElementById = id => (id === 'toastRoot' ? toastRoot : null);
-  const warning = "角色包「broken_folder（坏掉的角色）」不合格：情感 'gentle' 的参考音频时长 1.00 秒，不在 3 到 10 秒范围内: gentle.wav。";
-  try {
-    globalThis.fetch = async (url) => {
-      if (url === '/api/characters/rescan') return response({ status: 'ok', discovered_count: 1, catalog_warning: warning });
-      if (url === '/api/voice/profiles') {
-        return response({ profiles: [{ id: 1, name: '有效角色' }], active_profile_id: 1, catalog_warning: warning });
-      }
-      return response({});
-    };
-    await handleRescanCharacters();
-    assert.deepEqual(toastRoot.children.map(toast => [toast.className, toast.dataset.msg]), [['toast toast-error', warning]]);
-    passed++;
-  } finally {
-    for (const child of toastRoot.children) clearTimeout(child._timer);
-    globalThis.document.getElementById = getElementById;
-  }
-}
-{
-  const { dom } = setup();
+async function withToastEnv(fn, { captureError = false, callbacks = {} } = {}) {
+  const env = setup(callbacks);
   const toastRoot = element();
   toastRoot.id = 'toastRoot';
+  toastRoot.querySelectorAll = () => toastRoot.children;
   const previousDocument = globalThis.document;
   globalThis.document = {
     getElementById: id => (id === 'toastRoot' ? toastRoot : null),
@@ -496,158 +440,112 @@ const models = {
   };
   const errors = [];
   const originalError = console.error;
-  console.error = (...args) => errors.push(args);
-  globalThis.fetch = async () => response({ detail: 'Internal engine error 500' }, 500);
+  if (captureError) console.error = (...args) => errors.push(args);
   try {
-    await createCustomVoice();
-    assert.equal(toastRoot.children.length, 1);
-    const toast = toastRoot.children[0];
-    assert.equal(toast.dataset.msg, '音色创建失败：当前输入已保留，请检查参考音频与模型文件后重试');
-    assert.doesNotMatch(toast.dataset.msg, /Internal engine error|500/);
-    assert.ok(errors.length > 0);
-    passed++;
+    await fn({ ...env, toastRoot, errors });
   } finally {
     for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
-    console.error = originalError;
+    if (captureError) console.error = originalError;
     globalThis.document = previousDocument;
   }
 }
-{
-  const { dom } = setup();
-  const toastRoot = element();
-  toastRoot.id = 'toastRoot';
-  const previousDocument = globalThis.document;
-  globalThis.document = {
-    getElementById: id => (id === 'toastRoot' ? toastRoot : null),
-    createElement: () => element(),
+async function prepareDeleteProfileError(dom, detail) {
+  globalThis.window = { confirm: () => true };
+  dom.sVoiceDelete = element();
+  dom.sVoice.value = '2';
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/voice/profiles') return response({ profiles: [{ id: 1, name: 'A' }, { id: 2, name: 'B' }], active_profile_id: 1 });
+    if (url === '/api/voice/profiles/2' && options.method === 'DELETE') return response({ detail }, 500);
+    return response({});
   };
+  await loadSessionVoiceSelect();
+}
+const cnProfiles = [
+  { id: 1, name: '角色1', system_prompt: '人设1' },
+  { id: 2, name: '角色2', system_prompt: '人设2' },
+];
+function deferProfilesFetch(catalog, onPutPrompt = null) {
+  let resolveFetch;
+  let deferred = false;
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/voice/profiles' && !deferred) {
+      deferred = true;
+      return new Promise(resolve => {
+        resolveFetch = () => resolve(response({ profiles: catalog, active_profile_id: 1 }));
+      });
+    }
+    if (url === '/api/voice/profiles') return response({ profiles: catalog, active_profile_id: 1 });
+    if (onPutPrompt && url.includes('/system-prompt') && options.method === 'PUT') {
+      onPutPrompt(JSON.parse(options.body));
+      return response({ status: 'ok' });
+    }
+    return response({});
+  };
+  return () => resolveFetch();
+}
+// A rescan that rejected a package shows the server's notice, once, instead of the success toast.
+await withToastEnv(async ({ toastRoot }) => {
+  const warning = "角色包「broken_folder（坏掉的角色）」不合格：情感 'gentle' 的参考音频时长 1.00 秒，不在 3 到 10 秒范围内: gentle.wav。";
+  globalThis.fetch = async (url) => {
+    if (url === '/api/characters/rescan') return response({ status: 'ok', discovered_count: 1, catalog_warning: warning });
+    if (url === '/api/voice/profiles') {
+      return response({ profiles: [{ id: 1, name: '有效角色' }], active_profile_id: 1, catalog_warning: warning });
+    }
+    return response({});
+  };
+  await handleRescanCharacters();
+  assert.deepEqual(toastRoot.children.map(toast => [toast.className, toast.dataset.msg]), [['toast toast-error', warning]]);
+  passed++;
+});
+await withToastEnv(async ({ toastRoot, errors }) => {
+  globalThis.fetch = async () => response({ detail: 'Internal engine error 500' }, 500);
+  await createCustomVoice();
+  assert.equal(toastRoot.children.length, 1);
+  const toast = toastRoot.children[0];
+  assert.equal(toast.dataset.msg, '音色创建失败：当前输入已保留，请检查参考音频与模型文件后重试');
+  assert.doesNotMatch(toast.dataset.msg, /Internal engine error|500/);
+  assert.ok(errors.length > 0);
+  passed++;
+}, { captureError: true });
+await withToastEnv(async ({ toastRoot }) => {
   const full = '本机磁盘空间不足，数据没能保存。请清理磁盘空间后重试。';
   globalThis.fetch = async () => response({ detail: full }, 400);
-  const originalError = console.error;
-  console.error = () => {};
-  try {
-    await createCustomVoice();
-    assert.equal(toastRoot.children.length, 1);
-    assert.equal(toastRoot.children[0].dataset.msg, full);
-    passed++;
-  } finally {
-    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
-    console.error = originalError;
-    globalThis.document = previousDocument;
-  }
-}
-{
-  const { dom } = setup();
-  const toastRoot = element();
-  toastRoot.id = 'toastRoot';
-  const previousDocument = globalThis.document;
-  globalThis.document = {
-    getElementById: id => (id === 'toastRoot' ? toastRoot : null),
-    createElement: () => element(),
-  };
-  const errors = [];
-  const originalError = console.error;
-  console.error = (...args) => errors.push(args);
+  await createCustomVoice();
+  assert.equal(toastRoot.children.length, 1);
+  assert.equal(toastRoot.children[0].dataset.msg, full);
+  passed++;
+}, { captureError: true });
+await withToastEnv(async ({ toastRoot, errors }) => {
   globalThis.fetch = async () => response({ detail: 'Filesystem permission denied' }, 500);
-  try {
-    await handleRescanCharacters();
-    assert.equal(toastRoot.children.length, 1);
-    const toast = toastRoot.children[0];
-    assert.equal(toast.dataset.msg, '扫描角色包失败：现有角色包列表保持不变，请检查角色包目录后重试');
-    assert.doesNotMatch(toast.dataset.msg, /permission denied|Filesystem/);
-    assert.ok(errors.length > 0);
-    passed++;
-  } finally {
-    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
-    console.error = originalError;
-    globalThis.document = previousDocument;
-  }
-}
-{
-  const { dom } = setup();
-  const toastRoot = element();
-  toastRoot.id = 'toastRoot';
-  const previousDocument = globalThis.document;
-  globalThis.document = {
-    getElementById: id => (id === 'toastRoot' ? toastRoot : null),
-    createElement: () => element(),
-  };
-  globalThis.window = { confirm: () => true };
-  dom.sVoiceDelete = element();
-  dom.sVoice.value = '2';
-  globalThis.fetch = async (url, options = {}) => {
-    if (url === '/api/voice/profiles') return response({ profiles: [{ id: 1, name: 'A' }, { id: 2, name: 'B' }], active_profile_id: 1 });
-    if (url === '/api/voice/profiles/2' && options.method === 'DELETE') return response({ detail: 'SQLite disk I/O error' }, 500);
-    return response({});
-  };
-  await loadSessionVoiceSelect();
-  const errors = [];
-  const originalError = console.error;
-  console.error = (...args) => errors.push(args);
-  try {
-    await deleteVoiceProfile();
-    assert.equal(toastRoot.children.length, 1);
-    const toast = toastRoot.children[0];
-    assert.equal(toast.dataset.msg, '音色删除失败：该音色已被保留，请稍后重试；若仍失败，请打开「运行状态」检查服务');
-    assert.doesNotMatch(toast.dataset.msg, /disk I\/O|SQLite/);
-    assert.ok(errors.length > 0);
-    passed++;
-  } finally {
-    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
-    console.error = originalError;
-    globalThis.document = previousDocument;
-  }
-}
-{
-  const { dom } = setup();
-  const toastRoot = element();
-  toastRoot.id = 'toastRoot';
-  const previousDocument = globalThis.document;
-  globalThis.document = {
-    getElementById: id => (id === 'toastRoot' ? toastRoot : null),
-    createElement: () => element(),
-  };
-  globalThis.window = { confirm: () => true };
-  dom.sVoiceDelete = element();
-  dom.sVoice.value = '2';
+  await handleRescanCharacters();
+  assert.equal(toastRoot.children.length, 1);
+  const toast = toastRoot.children[0];
+  assert.equal(toast.dataset.msg, '扫描角色包失败：现有角色包列表保持不变，请检查角色包目录后重试');
+  assert.doesNotMatch(toast.dataset.msg, /permission denied|Filesystem/);
+  assert.ok(errors.length > 0);
+  passed++;
+}, { captureError: true });
+await withToastEnv(async ({ dom, toastRoot, errors }) => {
+  await prepareDeleteProfileError(dom, 'SQLite disk I/O error');
+  await deleteVoiceProfile();
+  assert.equal(toastRoot.children.length, 1);
+  const toast = toastRoot.children[0];
+  assert.equal(toast.dataset.msg, '音色删除失败：该音色已被保留，请稍后重试；若仍失败，请打开「运行状态」检查服务');
+  assert.doesNotMatch(toast.dataset.msg, /disk I\/O|SQLite/);
+  assert.ok(errors.length > 0);
+  passed++;
+}, { captureError: true });
+await withToastEnv(async ({ dom, toastRoot }) => {
   const full = '本机磁盘空间不足，数据没能保存。请清理磁盘空间后重试。';
-  globalThis.fetch = async (url, options = {}) => {
-    if (url === '/api/voice/profiles') return response({ profiles: [{ id: 1, name: 'A' }, { id: 2, name: 'B' }], active_profile_id: 1 });
-    if (url === '/api/voice/profiles/2' && options.method === 'DELETE') return response({ detail: full }, 500);
-    return response({});
-  };
-  await loadSessionVoiceSelect();
-  const originalError = console.error;
-  console.error = () => {};
-  try {
-    await deleteVoiceProfile();
-    assert.equal(toastRoot.children.length, 1);
-    assert.equal(toastRoot.children[0].dataset.msg, full);
-    passed++;
-  } finally {
-    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
-    console.error = originalError;
-    globalThis.document = previousDocument;
-  }
-}
-{
-  const { first, second, dom } = setup();
-  const toastRoot = element();
-  toastRoot.id = 'toastRoot';
-  toastRoot.querySelectorAll = () => toastRoot.children;
-  const previousDocument = globalThis.document;
-  globalThis.document = {
-    getElementById: id => (id === 'toastRoot' ? toastRoot : null),
-    createElement: () => element(),
-  };
-
-  const profiles = [
-    { id: 1, name: '角色1', system_prompt: '人设1' },
-    { id: 2, name: '角色2', system_prompt: '人设2' },
-  ];
-
+  await prepareDeleteProfileError(dom, full);
+  await deleteVoiceProfile();
+  assert.equal(toastRoot.children.length, 1);
+  assert.equal(toastRoot.children[0].dataset.msg, full);
+  passed++;
+}, { captureError: true });
+await withToastEnv(async ({ first, second, dom, toastRoot }) => {
   // 1. Initial catalog load to populate voiceProfiles cache
-  globalThis.fetch = async () => response({ profiles, active_profile_id: 1 });
+  globalThis.fetch = async () => response({ profiles: cnProfiles, active_profile_id: 1 });
   await loadSessionVoiceSelect(first);
 
   // Set second session with voiceProfileId: 2, leaving dom.sVoice with previous value ('1')
@@ -656,91 +554,62 @@ const models = {
   state.activeId = second.id;
   dom.sVoice.value = '1';
 
-  let resolveProfilesFetch;
   const promptWrites = [];
-  globalThis.fetch = async (url, options = {}) => {
-    if (url === '/api/voice/profiles') {
-      return new Promise(resolve => {
-        resolveProfilesFetch = () => resolve(response({ profiles, active_profile_id: 1 }));
-      });
-    }
-    if (url.includes('/system-prompt') && options.method === 'PUT') {
-      promptWrites.push(JSON.parse(options.body));
-      return response({ status: 'ok' });
-    }
-    return response({});
-  };
+  const resolveProfilesFetch = deferProfilesFetch(cnProfiles, body => promptWrites.push(body));
 
-  try {
-    // Open session settings for second session while GET /api/voice/profiles is pending
-    const openPromise = openSessionSettings();
+  // Open session settings for second session while GET /api/voice/profiles is pending
+  const openPromise = openSessionSettings();
 
-    // Verify: instantly upon opening, dom.sVoice.value must synchronously be '2'
-    assert.equal(dom.sVoice.value, '2', 'sVoice.value should be synchronously initialized to 2');
+  // Verify: instantly upon opening, dom.sVoice.value must synchronously be '2'
+  assert.equal(dom.sVoice.value, '2', 'sVoice.value should be synchronously initialized to 2');
 
-    // Case 1: Modify session parameters and save before voice profiles fetch finishes
-    second.title = '更新后的会话2';
-    dom.sTemp.value = '0.85';
-    await dom.sSave.click();
-    assert.equal(second.settings.voiceProfileId, 2, 'voiceProfileId should remain 2 after immediate save');
-    assert.equal(second.settings.temperature, 0.85, 'temperature should be saved');
-    assert.ok(!toastRoot.children.some(t => (t.dataset?.msg || '').includes('人设草稿与当前角色不一致')),
-      'should not falsely report persona draft mismatch');
+  // Case 1: Modify session parameters and save before voice profiles fetch finishes
+  second.title = '更新后的会话2';
+  dom.sTemp.value = '0.85';
+  await dom.sSave.click();
+  assert.equal(second.settings.voiceProfileId, 2, 'voiceProfileId should remain 2 after immediate save');
+  assert.equal(second.settings.temperature, 0.85, 'temperature should be saved');
+  assert.ok(!toastRoot.children.some(t => (t.dataset?.msg || '').includes('人设草稿与当前角色不一致')),
+    'should not falsely report persona draft mismatch');
 
-    // Case 2: Modify character persona in #sSystem while loadSessionVoiceSelect is in flight, then resolve fetch
-    dom.sSystem.value = '修改后的角色2人设';
-    resolveProfilesFetch();
-    await openPromise;
-    await tick();
+  // Case 2: Modify character persona in #sSystem while loadSessionVoiceSelect is in flight, then resolve fetch
+  dom.sSystem.value = '修改后的角色2人设';
+  resolveProfilesFetch();
+  await openPromise;
+  await tick();
 
-    assert.equal(dom.sVoice.value, '2', 'sVoice.value should remain 2 after profiles list resolves with edited persona');
-    await dom.sSave.click();
-    assert.equal(second.settings.voiceProfileId, 2, 'voiceProfileId should remain 2 after saving edited persona');
-    assert.equal(promptWrites.length, 1, 'edited prompt should be written to backend');
-    assert.equal(promptWrites[0].system_prompt, '修改后的角色2人设');
-    // Case 3: Session with deleted/missing role (id 99 not in profiles catalog)
-    // Synchronously initializes #sVoice to '99' and immediate save preserves voiceProfileId: 99
-    // without triggering a false "persona draft mismatch" error toast.
-    second.settings.voiceProfileId = 99;
-    dom.sVoice.value = '1';
-    let resolveMissingFetch;
-    globalThis.fetch = async (url) => {
-      if (url === '/api/voice/profiles') {
-        return new Promise(resolve => {
-          resolveMissingFetch = () => resolve(response({ profiles, active_profile_id: 1 }));
-        });
-      }
-      return response({});
-    };
+  assert.equal(dom.sVoice.value, '2', 'sVoice.value should remain 2 after profiles list resolves with edited persona');
+  await dom.sSave.click();
+  assert.equal(second.settings.voiceProfileId, 2, 'voiceProfileId should remain 2 after saving edited persona');
+  assert.equal(promptWrites.length, 1, 'edited prompt should be written to backend');
+  assert.equal(promptWrites[0].system_prompt, '修改后的角色2人设');
+  // Case 3: Session with deleted/missing role (id 99 not in profiles catalog)
+  // Synchronously initializes #sVoice to '99' and immediate save preserves voiceProfileId: 99
+  // without triggering a false "persona draft mismatch" error toast.
+  second.settings.voiceProfileId = 99;
+  dom.sVoice.value = '1';
+  const resolveMissingFetch = deferProfilesFetch(cnProfiles);
 
-    const openPromiseMissing = openSessionSettings();
-    assert.equal(dom.sVoice.value, '99', 'sVoice.value should be synchronously initialized to 99 for missing role');
+  const openPromiseMissing = openSessionSettings();
+  assert.equal(dom.sVoice.value, '99', 'sVoice.value should be synchronously initialized to 99 for missing role');
 
-    second.title = '缺少角色包的会话';
-    dom.sTemp.value = '0.9';
-    await dom.sSave.click();
-    assert.equal(second.settings.voiceProfileId, 99, 'voiceProfileId should remain 99 after immediate save');
-    assert.equal(second.settings.temperature, 0.9, 'temperature should be saved');
-    assert.ok(!toastRoot.children.some(t => (t.dataset?.msg || '').includes('人设草稿与当前角色不一致')),
-      'should not report persona draft mismatch for missing profile on immediate save');
+  second.title = '缺少角色包的会话';
+  dom.sTemp.value = '0.9';
+  await dom.sSave.click();
+  assert.equal(second.settings.voiceProfileId, 99, 'voiceProfileId should remain 99 after immediate save');
+  assert.equal(second.settings.temperature, 0.9, 'temperature should be saved');
+  assert.ok(!toastRoot.children.some(t => (t.dataset?.msg || '').includes('人设草稿与当前角色不一致')),
+    'should not report persona draft mismatch for missing profile on immediate save');
 
-    resolveMissingFetch();
-    await openPromiseMissing;
-    await tick();
+  resolveMissingFetch();
+  await openPromiseMissing;
+  await tick();
 
-    passed++;
-  } finally {
-    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
-    globalThis.document = previousDocument;
-  }
-}
+  passed++;
+});
 {
   const { first, second, dom } = setup();
-  const profiles = [
-    { id: 1, name: '角色1', system_prompt: '人设1' },
-    { id: 2, name: '角色2', system_prompt: '人设2' },
-  ];
-  globalThis.fetch = async () => response({ profiles, active_profile_id: 1 });
+  globalThis.fetch = async () => response({ profiles: cnProfiles, active_profile_id: 1 });
   await loadSessionVoiceSelect(first);
 
   // Test A: Session without character binding resets leftover selection to empty string
@@ -749,15 +618,7 @@ const models = {
   dom.sVoice.value = '2'; // leftover selection from prior session
   dom.sVoice.children = []; // simulate empty select without "" option
 
-  let resolveProfilesFetch;
-  globalThis.fetch = async (url) => {
-    if (url === '/api/voice/profiles') {
-      return new Promise(resolve => {
-        resolveProfilesFetch = () => resolve(response({ profiles, active_profile_id: 1 }));
-      });
-    }
-    return response({});
-  };
+  const resolveProfilesFetch = deferProfilesFetch(cnProfiles);
 
   const openPromise = openSessionSettings();
   assert.equal(dom.sVoice.value, '', 'sVoice.value should synchronously reset to empty string for unbound session');
@@ -772,15 +633,7 @@ const models = {
   dom.sVoice.value = '';
   dom.sVoice.children = [];
 
-  let resolveProfilesFetchB;
-  globalThis.fetch = async (url) => {
-    if (url === '/api/voice/profiles') {
-      return new Promise(resolve => {
-        resolveProfilesFetchB = () => resolve(response({ profiles, active_profile_id: 1 }));
-      });
-    }
-    return response({});
-  };
+  const resolveProfilesFetchB = deferProfilesFetch(cnProfiles);
 
   const openPromiseB = openSessionSettings();
   assert.equal(dom.sVoice.value, '2', 'sVoice.value should be 2 on first open even with empty select element');
@@ -793,22 +646,7 @@ const models = {
   await tick();
   passed++;
 }
-{
-  const { first, second, dom } = setup();
-  const toastRoot = element();
-  toastRoot.id = 'toastRoot';
-  toastRoot.querySelectorAll = () => toastRoot.children;
-  const previousDocument = globalThis.document;
-  globalThis.document = {
-    getElementById: id => (id === 'toastRoot' ? toastRoot : null),
-    createElement: () => element(),
-  };
-
-  const profiles = [
-    { id: 1, name: '角色1', system_prompt: '人设1' },
-    { id: 2, name: '角色2', system_prompt: '人设2' },
-  ];
-
+await withToastEnv(async ({ first, dom, toastRoot }) => {
   // Cold start: empty voiceProfiles cache in memory
   globalThis.fetch = async () => response({ profiles: [], active_profile_id: null });
   await fetchVoiceProfiles();
@@ -820,48 +658,30 @@ const models = {
   dom.sVoice.value = '';
   dom.sVoice.children = [];
 
-  let profilesFetchCount = 0;
-  let resolveColdFetch;
-  globalThis.fetch = async (url) => {
-    if (url === '/api/voice/profiles') {
-      profilesFetchCount++;
-      if (profilesFetchCount === 1) {
-        return new Promise(resolve => {
-          resolveColdFetch = () => resolve(response({ profiles, active_profile_id: 1 }));
-        });
-      }
-      return response({ profiles, active_profile_id: 1 });
-    }
-    return response({});
-  };
+  const resolveColdFetch = deferProfilesFetch(cnProfiles);
 
-  try {
-    const openPromise = openSessionSettings();
-    // Synchronously before catalog arrives:
-    assert.equal(dom.sVoice.value, '2', 'sVoice.value should be synchronously 2 even on cold catalog');
-    const placeholder = (dom.sVoice.options || dom.sVoice.children).find(o => String(o.value) === '2');
-    assert.ok(placeholder, 'placeholder option should exist before catalog loads');
-    assert.equal(placeholder.textContent, '#2', 'placeholder shows the voice id before the catalog loads');
+  const openPromise = openSessionSettings();
+  // Synchronously before catalog arrives:
+  assert.equal(dom.sVoice.value, '2', 'sVoice.value should be synchronously 2 even on cold catalog');
+  const placeholder = (dom.sVoice.options || dom.sVoice.children).find(o => String(o.value) === '2');
+  assert.ok(placeholder, 'placeholder option should exist before catalog loads');
+  assert.equal(placeholder.textContent, '#2', 'placeholder shows the voice id before the catalog loads');
 
-    // Immediate save before catalog resolves:
-    dom.sTemp.value = '0.65';
-    await dom.sSave.click();
-    assert.equal(first.settings.voiceProfileId, 2, 'voiceProfileId should remain 2 after immediate cold save');
-    assert.equal(first.settings.temperature, 0.65, 'temperature should be saved');
-    assert.ok(!toastRoot.children.some(t => (t.dataset?.msg || '').includes('人设草稿与当前角色不一致')),
-      'should not falsely report persona draft mismatch on cold save');
+  // Immediate save before catalog resolves:
+  dom.sTemp.value = '0.65';
+  await dom.sSave.click();
+  assert.equal(first.settings.voiceProfileId, 2, 'voiceProfileId should remain 2 after immediate cold save');
+  assert.equal(first.settings.temperature, 0.65, 'temperature should be saved');
+  assert.ok(!toastRoot.children.some(t => (t.dataset?.msg || '').includes('人设草稿与当前角色不一致')),
+    'should not falsely report persona draft mismatch on cold save');
 
-    resolveColdFetch();
-    await openPromise;
-    await tick();
+  resolveColdFetch();
+  await openPromise;
+  await tick();
 
-    assert.equal(dom.sVoice.value, '2', 'sVoice.value should remain 2 after cold catalog resolves');
-    passed++;
-  } finally {
-    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
-    globalThis.document = previousDocument;
-  }
-}
+  assert.equal(dom.sVoice.value, '2', 'sVoice.value should remain 2 after cold catalog resolves');
+  passed++;
+});
 {
   // (a) Failed voice switch clears loaded badge and allows deleting the voice;
   // (b) Sole voice profile in catalog can be deleted directly.
@@ -916,6 +736,26 @@ const models = {
   assert.deepEqual(deletedIds, [1, 2], 'sole remaining voice profile must be deletable without another voice to switch to');
   passed++;
 }
+async function setupDraftSaveSession({ voiceProfileId = null, catalog = [], activeProfileId = null, onClose }) {
+  const { first, dom } = setup({ closeModal: onClose });
+  dom.sessionModal = element();
+  first.settings.voiceProfileId = voiceProfileId;
+  first.settings.temperature = 0.7;
+  dom.sCvName.value = '';
+  dom.sCvPromptText.value = '';
+  dom.sSystem.value = '';
+  const saves = [];
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/voice/profiles') return response({ profiles: catalog, active_profile_id: activeProfileId });
+    if (url === '/api/chat/sessions') {
+      saves.push(JSON.parse(options.body));
+      return response({});
+    }
+    return response({});
+  };
+  await loadSessionVoiceSelect(first);
+  return { first, dom, saves };
+}
 {
   // First-use scenario: no voice profiles exist, session not bound to any voice.
   // sVoice defaults to '__custom__'. Modifying inference parameters like temperature
@@ -923,25 +763,7 @@ const models = {
   // while keeping voiceProfileId as null.
   // Conversely, if custom voice draft fields are filled (e.g. sCvName), saving must be blocked.
   let closed = 0;
-  const { first, dom } = setup({ closeModal() { closed++; } });
-  dom.sessionModal = element();
-  first.settings.voiceProfileId = null;
-  first.settings.temperature = 0.7;
-  dom.sCvName.value = '';
-  dom.sCvPromptText.value = '';
-  dom.sSystem.value = '';
-
-  const saves = [];
-  globalThis.fetch = async (url, options = {}) => {
-    if (url === '/api/voice/profiles') return response({ profiles: [], active_profile_id: null });
-    if (url === '/api/chat/sessions') {
-      saves.push(JSON.parse(options.body));
-      return response({});
-    }
-    return response({});
-  };
-
-  await loadSessionVoiceSelect(first);
+  const { first, dom, saves } = await setupDraftSaveSession({ onClose: () => { closed++; } });
   assert.equal(dom.sVoice.value, '__custom__', 'first-use without voices should auto-select __custom__');
 
   // 1. Without drafting custom voice (clean empty strings), user modifies temperature and saves:
@@ -1018,27 +840,11 @@ const models = {
   // When voice profiles DO exist but current session is unbound, switching to __custom__
   // must intercept save even if draft fields are empty.
   let closed = 0;
-  const { first, dom } = setup({ closeModal() { closed++; } });
-  dom.sessionModal = element();
-  first.settings.voiceProfileId = null;
-  first.settings.temperature = 0.7;
-  dom.sCvName.value = '';
-  dom.sCvPromptText.value = '';
-  dom.sSystem.value = '';
-
-  const saves = [];
-  globalThis.fetch = async (url, options = {}) => {
-    if (url === '/api/voice/profiles') {
-      return response({ profiles: [{ id: 1, name: 'Existing voice' }], active_profile_id: 1 });
-    }
-    if (url === '/api/chat/sessions') {
-      saves.push(JSON.parse(options.body));
-      return response({});
-    }
-    return response({});
-  };
-
-  await loadSessionVoiceSelect(first);
+  const { first, dom, saves } = await setupDraftSaveSession({
+    catalog: [{ id: 1, name: 'Existing voice' }],
+    activeProfileId: 1,
+    onClose: () => { closed++; },
+  });
   assert.equal(dom.sVoice.value, '', 'unbound session with profiles should default to ""');
   dom.sVoice.value = '__custom__';
   dom.sTemp.value = '0.45';
@@ -1055,25 +861,10 @@ const models = {
   // When no voice profiles exist but current session ALREADY has a voice bound (e.g. 99),
   // switching to __custom__ must intercept save to prevent accidental unbinding.
   let closed = 0;
-  const { first, dom } = setup({ closeModal() { closed++; } });
-  dom.sessionModal = element();
-  first.settings.voiceProfileId = 99;
-  first.settings.temperature = 0.7;
-  dom.sCvName.value = '';
-  dom.sCvPromptText.value = '';
-  dom.sSystem.value = '';
-
-  const saves = [];
-  globalThis.fetch = async (url, options = {}) => {
-    if (url === '/api/voice/profiles') return response({ profiles: [], active_profile_id: null });
-    if (url === '/api/chat/sessions') {
-      saves.push(JSON.parse(options.body));
-      return response({});
-    }
-    return response({});
-  };
-
-  await loadSessionVoiceSelect(first);
+  const { first, dom, saves } = await setupDraftSaveSession({
+    voiceProfileId: 99,
+    onClose: () => { closed++; },
+  });
   assert.equal(dom.sVoice.value, '99', 'already-bound session should retain binding even if catalog is empty');
   dom.sVoice.value = '__custom__';
   dom.sTemp.value = '0.55';
@@ -1087,17 +878,8 @@ const models = {
 
   passed++;
 }
-{
-  // Unbound session deduplicates repeated catalog_warning during turnstart background sync
-  const { first } = setup();
-  const toastRoot = element();
-  toastRoot.querySelectorAll = () => toastRoot.children;
-  const previousDocument = globalThis.document;
-  globalThis.document = {
-    getElementById: id => (id === 'toastRoot' ? toastRoot : null),
-    createElement: () => element(),
-  };
-
+// Unbound session deduplicates repeated catalog_warning during turnstart background sync
+await withToastEnv(async ({ first, toastRoot }) => {
   const poppedToasts = [];
   const originalAppendChild = toastRoot.appendChild.bind(toastRoot);
   toastRoot.appendChild = (child) => {
@@ -1127,56 +909,51 @@ const models = {
     return response({});
   };
 
-  try {
-    assert.equal(first.settings.voiceProfileId, null);
-    await ensureSessionVoice(first, { silent: true });
-    assert.equal(poppedToasts.length, 1, 'First silent turn should display catalog warning');
-    assert.equal(poppedToasts[0].dataset.msg, warningA);
+  assert.equal(first.settings.voiceProfileId, null);
+  await ensureSessionVoice(first, { silent: true });
+  assert.equal(poppedToasts.length, 1, 'First silent turn should display catalog warning');
+  assert.equal(poppedToasts[0].dataset.msg, warningA);
 
-    expireToasts();
-    await ensureSessionVoice(first, { silent: true });
-    assert.equal(poppedToasts.length, 1, 'Second silent turn with same catalog warning must not pop a new toast');
+  expireToasts();
+  await ensureSessionVoice(first, { silent: true });
+  assert.equal(poppedToasts.length, 1, 'Second silent turn with same catalog warning must not pop a new toast');
 
-    currentWarning = warningB;
-    await ensureSessionVoice(first, { silent: true });
-    assert.equal(poppedToasts.length, 2, 'Silent turn with changed catalog warning should pop new toast');
-    assert.equal(poppedToasts[1].dataset.msg, warningB);
+  currentWarning = warningB;
+  await ensureSessionVoice(first, { silent: true });
+  assert.equal(poppedToasts.length, 2, 'Silent turn with changed catalog warning should pop new toast');
+  assert.equal(poppedToasts[1].dataset.msg, warningB);
 
-    expireToasts();
-    await loadSessionVoiceSelect(first);
-    assert.equal(poppedToasts.length, 3, 'User active loadSessionVoiceSelect should pop toast even with same warning');
-    assert.equal(poppedToasts[2].dataset.msg, warningB);
+  expireToasts();
+  await loadSessionVoiceSelect(first);
+  assert.equal(poppedToasts.length, 3, 'User active loadSessionVoiceSelect should pop toast even with same warning');
+  assert.equal(poppedToasts[2].dataset.msg, warningB);
 
-    expireToasts();
-    await fetchVoiceProfiles();
-    assert.equal(poppedToasts.length, 4, 'User active fetchVoiceProfiles should pop toast');
-    assert.equal(poppedToasts[3].dataset.msg, warningB);
+  expireToasts();
+  await fetchVoiceProfiles();
+  assert.equal(poppedToasts.length, 4, 'User active fetchVoiceProfiles should pop toast');
+  assert.equal(poppedToasts[3].dataset.msg, warningB);
 
-    expireToasts();
-    await handleRescanCharacters();
-    assert.equal(poppedToasts.length, 5, 'User active handleRescanCharacters should pop toast with catalog warning');
-    assert.equal(poppedToasts[4].dataset.msg, warningB);
+  expireToasts();
+  await handleRescanCharacters();
+  assert.equal(poppedToasts.length, 5, 'User active handleRescanCharacters should pop toast with catalog warning');
+  assert.equal(poppedToasts[4].dataset.msg, warningB);
 
-    expireToasts();
-    await ensureSessionVoice(first, { silent: true });
-    assert.equal(poppedToasts.length, 5, 'Silent turn following user-initiated warning must not duplicate toast');
+  expireToasts();
+  await ensureSessionVoice(first, { silent: true });
+  assert.equal(poppedToasts.length, 5, 'Silent turn following user-initiated warning must not duplicate toast');
 
-    expireToasts();
-    currentWarning = null;
-    await ensureSessionVoice(first, { silent: true });
-    assert.equal(poppedToasts.length, 5, 'Silent turn when catalog warning is null should not pop toast');
+  expireToasts();
+  currentWarning = null;
+  await ensureSessionVoice(first, { silent: true });
+  assert.equal(poppedToasts.length, 5, 'Silent turn when catalog warning is null should not pop toast');
 
-    currentWarning = warningB;
-    await ensureSessionVoice(first, { silent: true });
-    assert.equal(poppedToasts.length, 6, 'Silent turn when warning returns after clear should pop toast again');
-    assert.equal(poppedToasts[5].dataset.msg, warningB);
+  currentWarning = warningB;
+  await ensureSessionVoice(first, { silent: true });
+  assert.equal(poppedToasts.length, 6, 'Silent turn when warning returns after clear should pop toast again');
+  assert.equal(poppedToasts[5].dataset.msg, warningB);
 
-    passed++;
-  } finally {
-    expireToasts();
-    globalThis.document = previousDocument;
-  }
-}
+  passed++;
+});
 {
   // Regression test for X3:
   // Switching from A (id=1) to B (id=2) fails -> delete failed voice B.
