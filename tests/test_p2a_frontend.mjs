@@ -41,15 +41,20 @@ function setupController({ voiceMode = false } = {}) {
     get voice() { return currentVoice; }, set control(value) { control = value; } };
 }
 
-test('Controller: line, line_audio and done.lines reconciliation', async () => {
-  const app = setupController({ });
-  const lineEvents = [], lineAudioEvents = [];
-  app.conversation.on('line', event => lineEvents.push(event));
-  app.conversation.on('line_audio', event => lineAudioEvents.push(event));
-
-  app.conversation.send('开始');
+async function startTurn(prompt, chunk, { voiceMode = false, on = {} } = {}) {
+  const app = setupController({ voiceMode });
+  for (const [event, handler] of Object.entries(on)) app.conversation.on(event, handler);
+  app.conversation.send(prompt);
   const request = app.stream.requests[0];
-  await request.onChunk('你好');
+  await request.onChunk(chunk);
+  return { app, request };
+}
+
+test('Controller: line, line_audio and done.lines reconciliation', async () => {
+  const lineEvents = [], lineAudioEvents = [];
+  const { app, request } = await startTurn('开始', '你好', {
+    on: { line: event => lineEvents.push(event), line_audio: event => lineAudioEvents.push(event) },
+  });
 
   // 1. Emit line 0
   const serverLine0 = { index: 0, zh: '你好', ja: 'こんにちは', emotion: 'gentle', act: {} };
@@ -85,13 +90,8 @@ test('Controller: line, line_audio and done.lines reconciliation', async () => {
 });
 
 test('Controller: audio_chunk arriving before its line', async () => {
-  const app = setupController({ });
   const lineEvents = [];
-  app.conversation.on('line', event => lineEvents.push(event));
-
-  app.conversation.send('早到音频');
-  const request = app.stream.requests[0];
-  await request.onChunk('你好');
+  const { app, request } = await startTurn('早到音频', '你好', { on: { line: event => lineEvents.push(event) } });
 
   // audio_chunk arrives before line 0
   await request.event('audio_chunk', {
@@ -111,13 +111,8 @@ test('Controller: audio_chunk arriving before its line', async () => {
 });
 
 test('Controller: failed with partial chunks', async () => {
-  const app = setupController({ });
   const lineAudioEvents = [];
-  app.conversation.on('line_audio', event => lineAudioEvents.push(event));
-
-  app.conversation.send('部分失败');
-  const request = app.stream.requests[0];
-  await request.onChunk('回复');
+  const { app, request } = await startTurn('部分失败', '回复', { on: { line_audio: event => lineAudioEvents.push(event) } });
 
   await request.event('line', { index: 0, zh: '回复', ja: 'へんじ', emotion: 'sad', act: {} });
   await request.event('line_audio', {
@@ -140,10 +135,7 @@ test('Controller: failed with partial chunks', async () => {
 
 test('Controller: pending lines becoming failed on error and on cancel', async () => {
   // 1. On error
-  const appError = setupController({ });
-  appError.conversation.send('错误测试');
-  const reqError = appError.stream.requests[0];
-  await reqError.onChunk('错误');
+  const { app: appError, request: reqError } = await startTurn('错误测试', '错误');
   await reqError.event('line', { index: 0, zh: '错误', ja: 'エラー', emotion: 'sad', act: {} });
   await reqError.onEnd('', { error: 'Network Error', errorCode: 'NETWORK_ERR' });
   assert.equal(appError.session.messages.length, 2);
@@ -152,10 +144,7 @@ test('Controller: pending lines becoming failed on error and on cancel', async (
   assert.equal(appError.conversation.busy, false);
 
   // 2. On cancel
-  const appCancel = setupController({ });
-  appCancel.conversation.send('取消测试');
-  const reqCancel = appCancel.stream.requests[0];
-  await reqCancel.onChunk('部分回复');
+  const { app: appCancel, request: reqCancel } = await startTurn('取消测试', '部分回复');
   await reqCancel.event('line', { index: 0, zh: '部分', ja: 'ぶぶん', emotion: 'gentle', act: {} });
   appCancel.conversation.stop();
   await tick();
@@ -165,13 +154,10 @@ test('Controller: pending lines becoming failed on error and on cancel', async (
 
 test('Controller: a truncated done stays a completion and settles pending lines', async () => {
   for (const meta of [{ truncated: true }, {}]) {
-    const app = setupController({ });
     const ends = [];
-    app.conversation.on('done', event => ends.push(['done', event]));
-    app.conversation.on('cancelled', event => ends.push(['cancelled', event]));
-    app.conversation.send('截断测试');
-    const request = app.stream.requests[0];
-    await request.onChunk('前半');
+    const { app, request } = await startTurn('截断测试', '前半', {
+      on: { done: event => ends.push(['done', event]), cancelled: event => ends.push(['cancelled', event]) },
+    });
     await request.event('line', { index: 0, zh: '前半', ja: 'ぜんはん', emotion: 'gentle', act: {} });
     await request.onEnd('前半', meta);
     // The old chat view must not treat a server-side truncation as a user cancel.
@@ -184,10 +170,7 @@ test('Controller: a truncated done stays a completion and settles pending lines'
 });
 
 test('Controller: an old server with no line events keeps lines undefined', async () => {
-  const app = setupController();
-  app.conversation.send('旧版服务器');
-  const request = app.stream.requests[0];
-  await request.onChunk('你好');
+  const { app, request } = await startTurn('旧版服务器', '你好');
   await request.event('audio_chunk', { audio_url: '/audio/legacy.wav', sentence: 'こんにちは' });
   await request.onEnd('你好');
 
@@ -198,10 +181,7 @@ test('Controller: an old server with no line events keeps lines undefined', asyn
 
 test('Controller: line audio never autoplays before the stage chooses it', async () => {
   // Lines mode does NOT autoplay
-  const appLines = setupController({ voiceMode: true, });
-  appLines.conversation.send('按行播放');
-  const reqLines = appLines.stream.requests[0];
-  await reqLines.onChunk('按行');
+  const { app: appLines, request: reqLines } = await startTurn('按行播放', '按行', { voiceMode: true });
   await reqLines.event('line', { index: 0, zh: '按行', ja: 'ぎょう', emotion: 'gentle', act: {} });
   await reqLines.event('audio_chunk', { index: 0, line: 0, audio_url: '/audio/line0.wav', sentence: 'ぎょう' });
   assert.equal(appLines.audio.length, 0); // No autoplay calls!
@@ -273,9 +253,14 @@ class FakeAudioContext {
 
 const blob = () => new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/wav' });
 
-test('AudioPlayer: every terminal path disconnects its line gain exactly once', async () => {
+function setupAudioPlayer(fetchImpl = async () => new Response(blob())) {
   globalThis.window = { AudioContext: FakeAudioContext };
-  const player = new StreamAudioController();
+  if (fetchImpl) globalThis.fetch = fetchImpl;
+  return new StreamAudioController();
+}
+
+test('AudioPlayer: every terminal path disconnects its line gain exactly once', async () => {
+  const player = setupAudioPlayer(null);
   for (const outcome of ['ended', 'stop', 'fade', 'decode', 'fetch']) {
     globalThis.fetch = async () => { if (outcome === 'fetch') throw new Error('fetch failure'); return new Response(blob()); };
     player.ensureContext().decodeAudioData = async () => { if (outcome === 'decode') throw new Error('decode failure'); return { duration: 1 }; };
@@ -292,9 +277,7 @@ test('AudioPlayer: every terminal path disconnects its line gain exactly once', 
 });
 
 test('AudioPlayer: playLine ended on completion of all chunks', async () => {
-  globalThis.window = { AudioContext: FakeAudioContext };
-  globalThis.fetch = async () => new Response(blob());
-  const player = new StreamAudioController();
+  const player = setupAudioPlayer();
 
   const playPromise = player.playLine(0, [
     { audio_url: '/audio/c0.wav', index: 0, sentence: '一' },
@@ -314,9 +297,7 @@ test('AudioPlayer: playLine ended on completion of all chunks', async () => {
 });
 
 test('AudioPlayer: playLine interrupted by stopLine', async () => {
-  globalThis.window = { AudioContext: FakeAudioContext };
-  globalThis.fetch = async () => new Response(blob());
-  const player = new StreamAudioController();
+  const player = setupAudioPlayer();
 
   const playPromise = player.playLine(0, [{ audio_url: '/audio/c0.wav', index: 0 }]);
   await tick(10);
@@ -328,9 +309,7 @@ test('AudioPlayer: playLine interrupted by stopLine', async () => {
 });
 
 test('AudioPlayer: playLine interrupted by a new playLine', async () => {
-  globalThis.window = { AudioContext: FakeAudioContext };
-  globalThis.fetch = async () => new Response(blob());
-  const player = new StreamAudioController();
+  const player = setupAudioPlayer();
 
   const p1 = player.playLine(0, [{ audio_url: '/audio/c0.wav', index: 0 }]);
   await tick(10);
@@ -347,8 +326,7 @@ test('AudioPlayer: playLine interrupted by a new playLine', async () => {
 });
 
 test('AudioPlayer: playLine failed if no chunk can play', async () => {
-  globalThis.window = { AudioContext: FakeAudioContext };
-  const player = new StreamAudioController();
+  const player = setupAudioPlayer(null);
 
   // Empty chunks
   const rEmpty = await player.playLine(0, []);
@@ -364,14 +342,12 @@ test('AudioPlayer: playLine failed if no chunk can play', async () => {
 });
 
 test('AudioPlayer: playLine partial-failure plays remaining chunks and ends', async () => {
-  globalThis.window = { AudioContext: FakeAudioContext };
   let calls = 0;
-  globalThis.fetch = async () => {
+  const player = setupAudioPlayer(async () => {
     calls++;
     if (calls === 1) throw new Error('Chunk 0 failed');
     return new Response(blob());
-  };
-  const player = new StreamAudioController();
+  });
 
   const playPromise = player.playLine(0, [
     { audio_url: '/audio/bad.wav', index: 0 },
@@ -388,9 +364,7 @@ test('AudioPlayer: playLine partial-failure plays remaining chunks and ends', as
 });
 
 test('AudioPlayer: satisfies adapter shape { play, stop }', async () => {
-  globalThis.window = { AudioContext: FakeAudioContext };
-  globalThis.fetch = async () => new Response(blob());
-  const controller = new StreamAudioController();
+  const controller = setupAudioPlayer();
 
   const adapter = {
     play: (i, chunks) => controller.playLine(i, chunks),
@@ -407,6 +381,21 @@ test('AudioPlayer: satisfies adapter shape { play, stop }', async () => {
 /* -------------------------------------------------------------
  * 3. Persistence Tests
  * -----------------------------------------------------------*/
+function makeSnapshotSession(id, title, messages, extra = {}) {
+  return { id, title, createdAt: 100, updatedAt: 200, settings: {}, messages, ...extra };
+}
+
+function makeReadyLine({ index = 0, zh, ja, emotion = 'gentle', act = {}, audioUrl, sentence = ja }) {
+  return {
+    index,
+    zh,
+    ja,
+    emotion,
+    act,
+    audio: { status: 'ready', chunks: audioUrl ? [{ index: 0, line: index, audio_url: audioUrl, sentence }] : [] },
+  };
+}
+
 test('Persistence: round trip through localStorage keeps lines', () => {
   const saved = new Map();
   globalThis.localStorage = {
@@ -421,16 +410,7 @@ test('Persistence: round trip through localStorage keeps lines', () => {
     id: 'm_test',
     role: 'assistant',
     content: '你好',
-    lines: [
-      {
-        index: 0,
-        zh: '你好',
-        ja: 'こんにちは',
-        emotion: 'gentle',
-        act: { face: 'smile' },
-        audio: { status: 'ready', chunks: [{ index: 0, line: 0, audio_url: '/a.wav', sentence: 'こんにちは' }] },
-      },
-    ],
+    lines: [makeReadyLine({ zh: '你好', ja: 'こんにちは', act: { face: 'smile' }, audioUrl: '/a.wav' })],
     ts: Date.now(),
   });
   saveState();
@@ -469,34 +449,22 @@ test('Persistence: normalizeLines defaults missing or non-object act to empty ob
 test('Persistence: normalizeSnapshot validates lines and drops invalid entries', () => {
   const rawData = {
     sessions: [
-      {
-        id: 's_test',
-        title: '测试',
-        createdAt: 100,
-        updatedAt: 200,
-        settings: {},
-        messages: [
-          {
-            id: 'm_valid',
-            role: 'assistant',
-            content: '有效',
-            lines: [
-              { index: 0, zh: '正确', ja: 'せいかい', emotion: 'gentle', act: { face: 'smile' }, audio: { status: 'ready', chunks: [] } },
-              { index: -1, zh: '负索引' }, // invalid index
-              { index: 1, zh: 123 }, // invalid zh
-              { index: 2, zh: '无act', ja: 'ja', emotion: 'gentle', act: 'not-an-object' }, // invalid act
-              { index: 3, zh: '未知状态', ja: 'ja', emotion: 'gentle', act: {}, audio: { status: 'weird' } }, // status becomes 'skipped'
-            ],
-            ts: 100,
-          },
-          {
-            id: 'm_no_lines',
-            role: 'user',
-            content: '无lines',
-            ts: 101,
-          },
-        ],
-      },
+      makeSnapshotSession('s_test', '测试', [
+        {
+          id: 'm_valid',
+          role: 'assistant',
+          content: '有效',
+          lines: [
+            makeReadyLine({ zh: '正确', ja: 'せいかい', act: { face: 'smile' } }),
+            { index: -1, zh: '负索引' }, // invalid index
+            { index: 1, zh: 123 }, // invalid zh
+            { index: 2, zh: '无act', ja: 'ja', emotion: 'gentle', act: 'not-an-object' }, // invalid act
+            { index: 3, zh: '未知状态', ja: 'ja', emotion: 'gentle', act: {}, audio: { status: 'weird' } }, // status becomes 'skipped'
+          ],
+          ts: 100,
+        },
+        { id: 'm_no_lines', role: 'user', content: '无lines', ts: 101 },
+      ]),
     ],
   };
 
@@ -517,31 +485,15 @@ test('Persistence: normalizeSnapshot validates lines and drops invalid entries',
 test('Persistence: portableSnapshot removes cache URLs and sets audio to skipped', () => {
   const snapshot = {
     sessions: [
-      {
-        id: 's_port',
-        title: '导出',
-        createdAt: 100,
-        updatedAt: 200,
-        settings: {},
-        messages: [
-          {
-            id: 'm_port',
-            role: 'assistant',
-            content: '导出内容',
-            lines: [
-              {
-                index: 0,
-                zh: '导出行',
-                ja: 'エクスポート',
-                emotion: 'happy',
-                act: { motion: 'nod' },
-                audio: { status: 'ready', chunks: [{ index: 0, line: 0, audio_url: '/cached/file.wav', sentence: 'エクスポート' }] },
-              },
-            ],
-            ts: 100,
-          },
-        ],
-      },
+      makeSnapshotSession('s_port', '导出', [
+        {
+          id: 'm_port',
+          role: 'assistant',
+          content: '导出内容',
+          lines: [makeReadyLine({ zh: '导出行', ja: 'エクスポート', emotion: 'happy', act: { motion: 'nod' }, audioUrl: '/cached/file.wav' })],
+          ts: 100,
+        },
+      ]),
     ],
   };
 
@@ -590,23 +542,12 @@ test('Persistence: mapBackendMessage with and without lines', () => {
 test('Persistence: normalizeSnapshot preserves unconfirmedSettingsVersion and portableSnapshot strips it', () => {
   const rawData = {
     sessions: [
-      {
-        id: 's_unconfirmed',
-        title: '未确认设置会话',
-        createdAt: 1000,
-        updatedAt: 2000,
-        unconfirmedSettingsVersion: 3,
-        settings: {},
-        messages: [{ id: 'm_1', role: 'user', content: '测试', ts: 1000 }],
-      },
-      {
-        id: 's_confirmed',
-        title: '已确认设置会话',
-        createdAt: 1000,
-        updatedAt: 2000,
-        settings: {},
-        messages: [{ id: 'm_2', role: 'user', content: '测试', ts: 1000 }],
-      },
+      makeSnapshotSession('s_unconfirmed', '未确认设置会话', [{ id: 'm_1', role: 'user', content: '测试', ts: 1000 }], {
+        createdAt: 1000, updatedAt: 2000, unconfirmedSettingsVersion: 3,
+      }),
+      makeSnapshotSession('s_confirmed', '已确认设置会话', [{ id: 'm_2', role: 'user', content: '测试', ts: 1000 }], {
+        createdAt: 1000, updatedAt: 2000,
+      }),
     ],
     activeId: 's_unconfirmed',
     global: {},

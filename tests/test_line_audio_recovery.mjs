@@ -121,13 +121,29 @@ test('a mismatched repair response preserves the old reference', async () => {
   assert.equal(f.saves, 0); assert.equal(f.message.lines[1].audio.status, 'failed');
 });
 
+function openBacklog(root, getSession, recover, {
+  character = { id: 7, name: '当前角色' },
+  onChooseVoice,
+  playLine = async () => 'ended',
+} = {}) {
+  return createBacklog(root, {
+    getSession,
+    getSettings: () => getSession().settings,
+    getCharacter: () => character,
+    getRecoveryVoice: () => getSession().settings.voiceProfileId ? character : null,
+    regenerateLineAudio: recover,
+    onChooseVoice,
+    voiceEnabled: () => true,
+    audio: { stopLine() {}, playLine },
+  });
+}
+
 function backlogFixture(t, recover) {
   const f = fixture(), doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
   const played = []; let chosen = 0;
-  const log = createBacklog(root, { getSession: () => f.session, getSettings: () => f.session.settings,
-    getCharacter: () => ({ id: 7, name: '当前角色' }), getRecoveryVoice: () => f.session.settings.voiceProfileId ? { id: 7, name: '当前角色' } : null,
-    regenerateLineAudio: recover || f.recover, onChooseVoice: () => { chosen++; }, voiceEnabled: () => true,
-    audio: { stopLine() {}, async playLine(index, chunks) { played.push(chunks); return 'ended'; } },
+  const log = openBacklog(root, () => f.session, recover || f.recover, {
+    onChooseVoice: () => { chosen++; },
+    playLine: async (_index, chunks) => { played.push(chunks); return 'ended'; },
   });
   t.after(() => log.destroy());
   return { ...f, log, root, doc, played, get chosen() { return chosen; } };
@@ -231,30 +247,22 @@ test('a server-persisted LOG repair does not suggest exporting a chat backup whe
       chunks: [{ index: 0, line: body.line_index, audio_url: '/audio/repair_persisted01.wav', sentence: body.text }],
     },
   });
-  const recover = createLineAudioRecovery({
-    getSession: () => loaded,
+  const makeRecover = (target, saveFn) => createLineAudioRecovery({
+    getSession: () => target,
     getVoiceProfiles: () => [{ id: 1, name: '角色A' }],
-    saveState,
+    saveState: saveFn,
     request: async (url, options) => {
       calls.push({ url, body: JSON.parse(options.body) });
       return repairReply(calls.at(-1).body);
     },
   });
-  const openLog = current => {
-    const log = createBacklog(root, {
-      getSession: () => current,
-      getSettings: () => current.settings,
-      getCharacter: () => ({ id: 1, name: '角色A' }),
-      getRecoveryVoice: () => ({ id: 1, name: '角色A' }),
-      regenerateLineAudio: recover,
-      voiceEnabled: () => true,
-      audio: { stopLine() {}, async playLine() { return 'ended'; } },
-    });
+  const openLog = (current, recoverFn) => {
+    const log = openBacklog(root, () => current, recoverFn, { character: { id: 1, name: '角色A' } });
     logs.push(log);
     return log;
   };
 
-  const persistedLog = openLog(loaded);
+  const persistedLog = openLog(loaded, makeRecover(loaded, saveState));
   await persistedLog.element.querySelector('.adv-log-regenerate-btn').onclick({ stopPropagation() {} });
   const persistedStatus = persistedLog.element.querySelector('.adv-log-audio-status').textContent;
   assert.equal(calls[0].url, '/api/voice/regenerate-line');
@@ -275,25 +283,7 @@ test('a server-persisted LOG repair does not suggest exporting a chat backup whe
       lines: [{ index: 0, zh: '仅浏览器', ja: 'ブラウザだけ', emotion: 'gentle', act: {}, audio: { status: 'failed', chunks: [] } }],
     }],
   };
-  const browserRecover = createLineAudioRecovery({
-    getSession: () => browserOnly,
-    getVoiceProfiles: () => [{ id: 1, name: '角色A' }],
-    saveState: () => false,
-    request: async (url, options) => {
-      calls.push({ url, body: JSON.parse(options.body) });
-      return repairReply(calls.at(-1).body);
-    },
-  });
-  const browserLogLive = createBacklog(root, {
-    getSession: () => browserOnly,
-    getSettings: () => browserOnly.settings,
-    getCharacter: () => ({ id: 1, name: '角色A' }),
-    getRecoveryVoice: () => ({ id: 1, name: '角色A' }),
-    regenerateLineAudio: browserRecover,
-    voiceEnabled: () => true,
-    audio: { stopLine() {}, async playLine() { return 'ended'; } },
-  });
-  logs.push(browserLogLive);
+  const browserLogLive = openLog(browserOnly, makeRecover(browserOnly, () => false));
   await browserLogLive.element.querySelector('.adv-log-regenerate-btn').onclick({ stopPropagation() {} });
   const browserStatus = browserLogLive.element.querySelector('.adv-log-audio-status').textContent;
   assert.equal(calls.at(-1).body.message_id, null);
@@ -322,44 +312,52 @@ test('a completed SSE reply carries its real database ID into a subsequent repai
   assert.equal(JSON.parse(f.calls[0][1].body).message_id, 88);
 });
 
-test('when another tab already repaired a line, receiving 409 fetches the latest audio and updates LOG without asking to reopen', async (t) => {
-  const calls = [];
-  const remoteRepairedAudio = {
+function makeValidRemoteSnapshot(sessionId, messageId, lineIndex, text, profileId, { audioUrl = '/audio/repair_valid.wav', ...extra } = {}) {
+  const audio = {
     status: 'ready',
     generated_at: Date.now(),
-    voice_profile_id: 7,
+    voice_profile_id: profileId,
     voice_name: '当前角色',
-    chunks: [{ index: 0, line: 1, audio_url: '/audio/repair_tab1.wav', sentence: '日本語1。' }],
+    chunks: [{ index: 0, line: lineIndex, sentence: text, audio_url: audioUrl }],
   };
+  const message = {
+    id: messageId,
+    role: 'assistant',
+    lines: [
+      { index: 0, zh: '原中文0', ja: '日本語0。', emotion: 'neutral', act: {}, audio: { status: 'failed', chunks: [] } },
+      { index: lineIndex, zh: '原中文1', ja: text, emotion: 'neutral', act: {}, audio },
+    ],
+  };
+  return { session_id: sessionId, messages: [message], ...extra };
+}
 
+function conflictBacklogFixture(t, { audioUrl, saveState, historyExtra = {} }) {
+  const calls = [];
   const recover = createLineAudioRecovery({
     getSession: () => f.session,
     getVoiceProfiles: () => [{ id: 7, name: '当前角色' }],
-    saveState: () => { f.savesCount++; return true; },
+    saveState: () => saveState(f),
     request: trackConflictRequest(calls, {
-      onHistory: () => ({
-        session_id: f.session.id,
-        count: 1,
-        has_more: false,
-        oldest_id: 42,
-        messages: [{
-          id: 42,
-          role: 'assistant',
-          lines: [
-            { index: 0, zh: '原中文0', ja: '日本語0。', emotion: 'neutral', act: {}, audio: { status: 'failed', chunks: [] } },
-            { index: 1, zh: '原中文1', ja: '日本語1。', emotion: 'neutral', act: {}, audio: remoteRepairedAudio },
-          ],
-        }],
-      }),
+      onHistory: () => makeValidRemoteSnapshot(f.session.id, 42, 1, '日本語1。', 7, { audioUrl, count: 1, ...historyExtra }),
     }),
   });
-
   const f = backlogFixture(t, recover);
   f.savesCount = 0;
   const entries = f.log.element.querySelectorAll('.adv-log-entry');
-  const regenBtn = entries[1].querySelector('.adv-log-regenerate-btn');
-  const replayBtn = entries[1].querySelector('.adv-log-replay-btn');
-  const statusSpan = entries[1].querySelector('.adv-log-audio-status');
+  return {
+    f, calls, recover, entries,
+    regenBtn: entries[1].querySelector('.adv-log-regenerate-btn'),
+    replayBtn: entries[1].querySelector('.adv-log-replay-btn'),
+    statusSpan: entries[1].querySelector('.adv-log-audio-status'),
+  };
+}
+
+test('when another tab already repaired a line, receiving 409 fetches the latest audio and updates LOG without asking to reopen', async (t) => {
+  const { f, calls, recover, regenBtn, replayBtn, statusSpan } = conflictBacklogFixture(t, {
+    audioUrl: '/audio/repair_tab1.wav',
+    saveState: target => { target.savesCount++; return true; },
+    historyExtra: { has_more: false, oldest_id: 42 },
+  });
 
   assert.equal(replayBtn.disabled, true);
   await regenBtn.onclick({ stopPropagation() {} });
@@ -379,14 +377,8 @@ test('when another tab already repaired a line, receiving 409 fetches the latest
 
   // Reopen LOG and ensure repair is not requested again
   f.log.destroy();
-  const log2 = createBacklog(f.root, {
-    getSession: () => f.session,
-    getSettings: () => f.session.settings,
-    getCharacter: () => ({ id: 7, name: '当前角色' }),
-    getRecoveryVoice: () => ({ id: 7, name: '当前角色' }),
-    regenerateLineAudio: recover,
-    voiceEnabled: () => true,
-    audio: { stopLine() {}, async playLine(index, chunks) { f.played.push(chunks); return 'ended'; } },
+  const log2 = openBacklog(f.root, () => f.session, recover, {
+    playLine: async (_index, chunks) => { f.played.push(chunks); return 'ended'; },
   });
   t.after(() => log2.destroy());
 
@@ -399,40 +391,10 @@ test('when another tab already repaired a line, receiving 409 fetches the latest
 });
 
 test('when remote repair succeeds but saveState returns false, surfaces local cache failure while allowing playback', async (t) => {
-  const calls = [];
-  const remoteRepairedAudio = {
-    status: 'ready',
-    generated_at: Date.now(),
-    voice_profile_id: 7,
-    voice_name: '当前角色',
-    chunks: [{ index: 0, line: 1, audio_url: '/audio/repair_tab_unsaved.wav', sentence: '日本語1。' }],
-  };
-
-  const recover = createLineAudioRecovery({
-    getSession: () => f.session,
-    getVoiceProfiles: () => [{ id: 7, name: '当前角色' }],
+  const { f, regenBtn, replayBtn, statusSpan } = conflictBacklogFixture(t, {
+    audioUrl: '/audio/repair_tab_unsaved.wav',
     saveState: () => false,
-    request: trackConflictRequest(calls, {
-      onHistory: () => ({
-        session_id: f.session.id,
-        count: 1,
-        messages: [{
-          id: 42,
-          role: 'assistant',
-          lines: [
-            { index: 0, zh: '原中文0', ja: '日本語0。', emotion: 'neutral', act: {}, audio: { status: 'failed', chunks: [] } },
-            { index: 1, zh: '原中文1', ja: '日本語1。', emotion: 'neutral', act: {}, audio: remoteRepairedAudio },
-          ],
-        }],
-      }),
-    }),
   });
-
-  const f = backlogFixture(t, recover);
-  const entries = f.log.element.querySelectorAll('.adv-log-entry');
-  const regenBtn = entries[1].querySelector('.adv-log-regenerate-btn');
-  const replayBtn = entries[1].querySelector('.adv-log-replay-btn');
-  const statusSpan = entries[1].querySelector('.adv-log-audio-status');
 
   await regenBtn.onclick({ stopPropagation() {} });
 
@@ -446,23 +408,30 @@ test('when remote repair succeeds but saveState returns false, surfaces local ca
   assert.equal(f.played[0][0].audio_url, '/audio/repair_tab_unsaved.wav');
 });
 
-function makeValidRemoteSnapshot(sessionId, messageId, lineIndex, text, profileId) {
-  const audio = {
-    status: 'ready',
-    generated_at: Date.now(),
-    voice_profile_id: profileId,
-    voice_name: '当前角色',
-    chunks: [{ index: 0, line: lineIndex, sentence: text, audio_url: '/audio/repair_valid.wav' }],
-  };
-  const message = {
-    id: messageId,
-    role: 'assistant',
-    lines: [
-      { index: 0, zh: '原中文0', ja: '日本語0。', emotion: 'neutral', act: {}, audio: { status: 'failed', chunks: [] } },
-      { index: lineIndex, zh: '原中文1', ja: text, emotion: 'neutral', act: {}, audio },
-    ],
-  };
-  return { session_id: sessionId, messages: [message] };
+function setupConflictCase({
+  sessionId,
+  message,
+  voiceProfiles = [{ id: 7, name: '当前角色' }],
+  saveState = () => true,
+  isSessionDeleting,
+  conflictMessage,
+  onHistory,
+}) {
+  const calls = [];
+  const session = { id: sessionId, settings: { voiceProfileId: 7 }, messages: [message] };
+  let currentSession = session;
+  const recover = createLineAudioRecovery({
+    getSession: () => currentSession,
+    getVoiceProfiles: () => voiceProfiles,
+    saveState,
+    isSessionDeleting,
+    request: trackConflictRequest(calls, {
+      conflictMessage,
+      unexpected: url => `Unexpected ${url}`,
+      onHistory: onHistory ? () => onHistory(session) : undefined,
+    }),
+  });
+  return { session, calls, recover, switchSession: next => { currentSession = next; } };
 }
 
 const invalidRemoteCases = [
@@ -483,10 +452,13 @@ const invalidRemoteCases = [
   { name: 'missing generated_at timestamp', mutate: base => { delete base.messages[0].lines[1].audio.generated_at; return { data: base }; } },
 ];
 
+const makeFailedLine = (index = 0, zh = `原中文${index}`, ja = `日本語${index}。`) => ({
+  index, zh, ja, emotion: 'neutral', act: {}, audio: { status: 'failed', chunks: [] },
+});
+
 for (const tc of invalidRemoteCases) {
   test(`409 when ${tc.name} preserves original error and keeps old audio`, async () => {
     let saves = 0;
-    const calls = [];
     const message = {
       id: 'm_local_inv',
       serverMessageId: 42,
@@ -494,26 +466,18 @@ for (const tc of invalidRemoteCases) {
       content: '原中文',
       japanese: '全文日文',
       ts: Date.now() - 3600000,
-      lines: [
-        { index: 0, zh: '原中文0', ja: '日本語0。', emotion: 'neutral', act: {}, audio: { status: 'failed', chunks: [] } },
-        { index: 1, zh: '原中文1', ja: '日本語1。', emotion: 'neutral', act: {}, audio: { status: 'failed', chunks: [] } },
-      ],
+      lines: [makeFailedLine(0), makeFailedLine(1)],
     };
-    const session = { id: 'session_inv', settings: { voiceProfileId: 7 }, messages: [message] };
-
-    const recover = createLineAudioRecovery({
-      getSession: () => session,
-      getVoiceProfiles: () => [{ id: 7, name: '当前角色' }],
+    const { calls, recover } = setupConflictCase({
+      sessionId: 'session_inv',
+      message,
       saveState: () => { saves++; return true; },
-      request: trackConflictRequest(calls, {
-        unexpected: url => `Unexpected ${url}`,
-        onHistory: () => {
-          const valid = makeValidRemoteSnapshot(session.id, 42, 1, '日本語1。', 7);
-          const outcome = tc.mutate(structuredClone(valid));
-          if (outcome.error) throw outcome.error;
-          return outcome.data;
-        },
-      }),
+      onHistory: session => {
+        const valid = makeValidRemoteSnapshot(session.id, 42, 1, '日本語1。', 7);
+        const outcome = tc.mutate(structuredClone(valid));
+        if (outcome.error) throw outcome.error;
+        return outcome.data;
+      },
     });
 
     await assert.rejects(
@@ -527,23 +491,17 @@ for (const tc of invalidRemoteCases) {
 }
 
 test('409 on an unpersisted local line does not make a history GET and surfaces original 409 error', async () => {
-  const calls = [];
   const message = {
     id: 'm_local_unpersisted',
     role: 'assistant',
     content: '本地未保存',
     ts: Date.now(),
-    lines: [{ index: 0, zh: '本地', ja: 'ローカル', emotion: 'neutral', act: {}, audio: { status: 'failed', chunks: [] } }],
+    lines: [makeFailedLine(0, '本地', 'ローカル')],
   };
-  const session = { id: 'session_unpersisted', settings: { voiceProfileId: 7 }, messages: [message] };
-  const recover = createLineAudioRecovery({
-    getSession: () => session,
-    getVoiceProfiles: () => [{ id: 7, name: '当前角色' }],
-    saveState: () => true,
-    request: trackConflictRequest(calls, {
-      conflictMessage: '单句冲突',
-      unexpected: url => `Unexpected ${url}`,
-    }),
+  const { calls, recover } = setupConflictCase({
+    sessionId: 'session_unpersisted',
+    message,
+    conflictMessage: '单句冲突',
   });
 
   await assert.rejects(
@@ -569,10 +527,8 @@ for (const change of lateChangeCases) {
   test(`409 when ${change} occurs during history GET throws AbortError and discards remote repair`, async () => {
     let saves = 0;
     let deleting = false;
-    let currentSession;
     const controller = new AbortController();
     const gate = deferred();
-    const calls = [];
 
     const message = {
       id: 'm_local_late',
@@ -582,27 +538,22 @@ for (const change of lateChangeCases) {
       content: '原中文',
       japanese: '全文日文',
       ts: Date.now() - 3600000,
-      lines: [{ index: 0, zh: '原中文', ja: '日本語。', emotion: 'neutral', act: {}, audio: { status: 'failed', chunks: [] } }],
+      lines: [makeFailedLine(0, '原中文', '日本語。')],
     };
-    const session = { id: 'session_late', settings: { voiceProfileId: 7 }, messages: [message] };
-    currentSession = session;
-
-    const recover = createLineAudioRecovery({
-      getSession: () => currentSession,
-      getVoiceProfiles: () => [{ id: 7, name: '当前角色' }, { id: 9, name: '新角色' }],
+    const { session, recover, switchSession } = setupConflictCase({
+      sessionId: 'session_late',
+      message,
+      voiceProfiles: [{ id: 7, name: '当前角色' }, { id: 9, name: '新角色' }],
       saveState: () => { saves++; return true; },
       isSessionDeleting: () => deleting,
-      request: trackConflictRequest(calls, {
-        unexpected: url => `Unexpected ${url}`,
-        onHistory: () => gate.promise,
-      }),
+      onHistory: () => gate.promise,
     });
 
     const pending = recover({ messageId: message.id, lineIndex: 0, signal: controller.signal });
     await tick();
 
     if (change === 'abort') controller.abort();
-    if (change === 'session') currentSession = { ...session, id: 'session_switched' };
+    if (change === 'session') switchSession({ ...session, id: 'session_switched' });
     if (change === 'profile') session.settings.voiceProfileId = 9;
     if (change === 'line') message.lines[0].ja = '台词已变化';
     if (change === 'deletion') deleting = true;
@@ -734,6 +685,8 @@ test('legacy repair validates preconditions: wrong index, empty japanese, overlo
   await assert.rejects(f.recover({ messageId: f.message.id, lineIndex: 0 }), /这句缺少日文台词/);
 });
 
+const throwHttp409 = () => { const err = new Error('HTTP 409'); err.status = 409; throw err; };
+
 test('when another tab already repaired legacy line, receiving 409 fetches remote line 0 and updates local message', async () => {
   const remoteAudio = {
     status: 'ready',
@@ -760,14 +713,7 @@ test('when another tab already repaired legacy line, receiving 409 fetches remot
       }],
     }],
   };
-  const f = legacyFixture(
-    () => {
-      const err = new Error('HTTP 409');
-      err.status = 409;
-      throw err;
-    },
-    { fetchHistory: async () => historyResponse }
-  );
+  const f = legacyFixture(throwHttp409, { fetchHistory: async () => historyResponse });
 
   const result = await f.recover({ messageId: f.message.id, lineIndex: 0 });
   assert.equal(result.remoteUpdated, true);
@@ -779,14 +725,7 @@ test('when another tab already repaired legacy line, receiving 409 fetches remot
 });
 
 test('legacy repair 409 history fetch abort or failure preserves original error and keeps lines undefined', async () => {
-  const f = legacyFixture(
-    () => {
-      const err = new Error('HTTP 409');
-      err.status = 409;
-      throw err;
-    },
-    { fetchHistory: async () => { throw new Error('网络异常'); } }
-  );
+  const f = legacyFixture(throwHttp409, { fetchHistory: async () => { throw new Error('网络异常'); } });
 
   await assert.rejects(f.recover({ messageId: f.message.id, lineIndex: 0 }), /HTTP 409/);
   assert.equal(f.message.lines, undefined);
