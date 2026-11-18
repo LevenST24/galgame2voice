@@ -295,10 +295,7 @@ for (const [label, profile, speed] of [
 }
 
 test('real startup wiring silences both startup switches and all-session entry retries with an ADV status action', async t => {
-  const doc = fakeDocument(); globalThis.document = doc;
-  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-  const root = doc.createElement('div'); root.id = 'advRoot'; doc.body.appendChild(root);
-  const toasts = doc.createElement('div'); toasts.id = 'toastRoot'; doc.body.appendChild(toasts);
+  const { doc, root, toasts } = mountAdvDocument();
   // Fixed times keep 全部会话 in this order; times filled in at load can land a millisecond apart.
   storedState.sessions = [{ id: 'startup_home', title: '假启动会话', updatedAt: 2000, settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: 1 },
     messages: [{ id: 'startup_msg', role: 'user', content: '你好' }] },
@@ -352,10 +349,7 @@ test('real startup wiring silences both startup switches and all-session entry r
 
 test('a startup voice switch that fails before home opens stays quiet', async t => {
   // The switch starts before the session sync, and a stopped engine answers at once.
-  const doc = fakeDocument(); globalThis.document = doc;
-  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-  const root = doc.createElement('div'); root.id = 'advRoot'; doc.body.appendChild(root);
-  const toasts = doc.createElement('div'); toasts.id = 'toastRoot'; doc.body.appendChild(toasts);
+  const { doc, root, toasts } = mountAdvDocument();
   storedState.sessions = [{ id: 'early_home', title: '假启动会话', settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: 1 },
     messages: [{ id: 'early_msg', role: 'user', content: '你好' }] }];
   storedState.activeId = 'early_home';
@@ -397,15 +391,7 @@ test('a startup voice switch that fails before home opens stays quiet', async t 
 });
 
 test('startup sync reloads session history when server has more messages than local copy (refresh keeps server reply)', async t => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-  const root = doc.createElement('div');
-  root.id = 'advRoot';
-  doc.body.appendChild(root);
-  const toasts = doc.createElement('div');
-  toasts.id = 'toastRoot';
-  doc.body.appendChild(toasts);
+  const { doc, root, toasts } = mountAdvDocument();
 
   const session = {
     id: 's_refresh',
@@ -426,24 +412,12 @@ test('startup sync reloads session history when server has more messages than lo
     settings: { ...session.settings },
   };
 
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
+  const storage = installChatStorage({
     sessions: [session],
     activeId: session.id,
     global: { ...DEFAULT_GLOBAL },
-  })]]);
-
-  globalThis.localStorage = {
-    getItem: key => storage.get(key) ?? null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: key => storage.delete(key),
-  };
-  globalThis.location = { origin: 'http://127.0.0.1:8000' };
-  globalThis.window = {
-    innerWidth: 1280,
-    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
-    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
-    prompt: () => null,
-  };
+  });
+  installAdvHost();
 
   const calls = [];
   globalThis.window.fetch = async (url, options = {}) => {
@@ -464,34 +438,11 @@ test('startup sync reloads session history when server has more messages than lo
         ],
       });
     }
-    if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
-    if (target.includes('/api/providers')) return Response.json({
-      providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
-      active_provider: 'p1',
-    });
-    if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-    if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
-    return Response.json({});
+    return startupApiFallback(target);
   };
   globalThis.fetch = (...args) => globalThis.window.fetch(...args);
 
-  const app = initApp({
-    dom: { advRoot: root },
-    renderSessionList() {},
-  });
-
-  t.after(() => {
-    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
-    for (const toast of toasts.children) clearTimeout(toast._timer);
-    delete globalThis.document;
-    delete globalThis.window;
-    delete globalThis.localStorage;
-    delete globalThis.fetch;
-    delete globalThis.location;
-  });
-
-  await app.ready;
-  for (let i = 0; i < 5; i++) await tick();
+  const app = await bootAdvApp(t, { root, toasts });
 
   // 1. 断言首页最后一句包含服务端已保存的回复
   const homeQuote = doc.querySelector('.home-quote')?.textContent || '';
@@ -524,15 +475,7 @@ test('startup sync reloads session history when server has more messages than lo
 });
 
 test('startup sync resets messages of non-active session when server has more messages and loads on switch', async t => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-  const root = doc.createElement('div');
-  root.id = 'advRoot';
-  doc.body.appendChild(root);
-  const toasts = doc.createElement('div');
-  toasts.id = 'toastRoot';
-  doc.body.appendChild(toasts);
+  const { doc, root, toasts } = mountAdvDocument();
 
   const activeSession = {
     id: 's_active',
@@ -577,24 +520,12 @@ test('startup sync resets messages of non-active session when server has more me
     },
   ];
 
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
+  const storage = installChatStorage({
     sessions: [activeSession, otherSession],
     activeId: activeSession.id,
     global: { ...DEFAULT_GLOBAL },
-  })]]);
-
-  globalThis.localStorage = {
-    getItem: key => storage.get(key) ?? null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: key => storage.delete(key),
-  };
-  globalThis.location = { origin: 'http://127.0.0.1:8000' };
-  globalThis.window = {
-    innerWidth: 1280,
-    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
-    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
-    prompt: () => null,
-  };
+  });
+  installAdvHost();
 
   globalThis.window.fetch = async (url) => {
     const target = String(url);
@@ -613,34 +544,11 @@ test('startup sync resets messages of non-active session when server has more me
         ],
       });
     }
-    if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
-    if (target.includes('/api/providers')) return Response.json({
-      providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
-      active_provider: 'p1',
-    });
-    if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-    if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
-    return Response.json({});
+    return startupApiFallback(target);
   };
   globalThis.fetch = (...args) => globalThis.window.fetch(...args);
 
-  const app = initApp({
-    dom: { advRoot: root },
-    renderSessionList() {},
-  });
-
-  t.after(() => {
-    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
-    for (const toast of toasts.children) clearTimeout(toast._timer);
-    delete globalThis.document;
-    delete globalThis.window;
-    delete globalThis.localStorage;
-    delete globalThis.fetch;
-    delete globalThis.location;
-  });
-
-  await app.ready;
-  for (let i = 0; i < 5; i++) await tick();
+  const app = await bootAdvApp(t, { root, toasts });
 
   // 1. 验证 actions.listSessions() 中 s_other 的 lastLine 来自服务端
   const sessionsList = app.actions.listSessions();
@@ -665,15 +573,7 @@ test('startup sync resets messages of non-active session when server has more me
 });
 
 test('startup sync failure retains local messages in memory and storage, and retrying reloads server reply', async t => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-  const root = doc.createElement('div');
-  root.id = 'advRoot';
-  doc.body.appendChild(root);
-  const toasts = doc.createElement('div');
-  toasts.id = 'toastRoot';
-  doc.body.appendChild(toasts);
+  const { doc, root, toasts } = mountAdvDocument();
 
   const session = {
     id: 's_fail_then_retry',
@@ -694,24 +594,12 @@ test('startup sync failure retains local messages in memory and storage, and ret
     settings: { ...session.settings },
   };
 
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
+  const storage = installChatStorage({
     sessions: [session],
     activeId: session.id,
     global: { ...DEFAULT_GLOBAL },
-  })]]);
-
-  globalThis.localStorage = {
-    getItem: key => storage.get(key) ?? null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: key => storage.delete(key),
-  };
-  globalThis.location = { origin: 'http://127.0.0.1:8000' };
-  globalThis.window = {
-    innerWidth: 1280,
-    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
-    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
-    prompt: () => null,
-  };
+  });
+  installAdvHost();
 
   let historyShouldFail = true;
 
@@ -735,34 +623,11 @@ test('startup sync failure retains local messages in memory and storage, and ret
         ],
       });
     }
-    if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
-    if (target.includes('/api/providers')) return Response.json({
-      providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
-      active_provider: 'p1',
-    });
-    if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-    if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
-    return Response.json({});
+    return startupApiFallback(target);
   };
   globalThis.fetch = (...args) => globalThis.window.fetch(...args);
 
-  const app = initApp({
-    dom: { advRoot: root },
-    renderSessionList() {},
-  });
-
-  t.after(() => {
-    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
-    for (const toast of toasts.children) clearTimeout(toast._timer);
-    delete globalThis.document;
-    delete globalThis.window;
-    delete globalThis.localStorage;
-    delete globalThis.fetch;
-    delete globalThis.location;
-  });
-
-  await app.ready;
-  for (let i = 0; i < 5; i++) await tick();
+  const app = await bootAdvApp(t, { root, toasts });
 
   // 1. 历史请求失败后：内存中本地原消息保留
   const activeSession = storedActive();
@@ -792,15 +657,7 @@ test('startup sync failure retains local messages in memory and storage, and ret
 });
 
 test('startup sync correctly pairs voiceKey when earlier of duplicate messages had voice', async t => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-  const root = doc.createElement('div');
-  root.id = 'advRoot';
-  doc.body.appendChild(root);
-  const toasts = doc.createElement('div');
-  toasts.id = 'toastRoot';
-  doc.body.appendChild(toasts);
+  const { doc, root, toasts } = mountAdvDocument();
 
   const session = {
     id: 's_voice_duplicate',
@@ -842,24 +699,12 @@ test('startup sync correctly pairs voiceKey when earlier of duplicate messages h
     settings: { ...session.settings },
   };
 
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
+  const storage = installChatStorage({
     sessions: [session],
     activeId: session.id,
     global: { ...DEFAULT_GLOBAL },
-  })]]);
-
-  globalThis.localStorage = {
-    getItem: key => storage.get(key) ?? null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: key => storage.delete(key),
-  };
-  globalThis.location = { origin: 'http://127.0.0.1:8000' };
-  globalThis.window = {
-    innerWidth: 1280,
-    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
-    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
-    prompt: () => null,
-  };
+  });
+  installAdvHost();
 
   globalThis.window.fetch = async (url) => {
     const target = String(url);
@@ -880,34 +725,11 @@ test('startup sync correctly pairs voiceKey when earlier of duplicate messages h
         ],
       });
     }
-    if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
-    if (target.includes('/api/providers')) return Response.json({
-      providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
-      active_provider: 'p1',
-    });
-    if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-    if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
-    return Response.json({});
+    return startupApiFallback(target);
   };
   globalThis.fetch = (...args) => globalThis.window.fetch(...args);
 
-  const app = initApp({
-    dom: { advRoot: root },
-    renderSessionList() {},
-  });
-
-  t.after(() => {
-    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
-    for (const toast of toasts.children) clearTimeout(toast._timer);
-    delete globalThis.document;
-    delete globalThis.window;
-    delete globalThis.localStorage;
-    delete globalThis.fetch;
-    delete globalThis.location;
-  });
-
-  await app.ready;
-  for (let i = 0; i < 5; i++) await tick();
+  const app = await bootAdvApp(t, { root, toasts });
 
   const activeSession = storedActive();
   assert.equal(activeSession.messages.length, 4);
@@ -922,15 +744,7 @@ test('startup sync correctly pairs voiceKey when earlier of duplicate messages h
 });
 
 test('title screen excerpt presents server last_message when multi-turn session is behind server', async t => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-  const root = doc.createElement('div');
-  root.id = 'advRoot';
-  doc.body.appendChild(root);
-  const toasts = doc.createElement('div');
-  toasts.id = 'toastRoot';
-  doc.body.appendChild(toasts);
+  const { doc, root, toasts } = mountAdvDocument();
 
   const session = {
     id: 's_multiturn_behind',
@@ -955,24 +769,12 @@ test('title screen excerpt presents server last_message when multi-turn session 
     settings: { ...session.settings },
   };
 
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
+  const storage = installChatStorage({
     sessions: [session],
     activeId: session.id,
     global: { ...DEFAULT_GLOBAL },
-  })]]);
-
-  globalThis.localStorage = {
-    getItem: key => storage.get(key) ?? null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: key => storage.delete(key),
-  };
-  globalThis.location = { origin: 'http://127.0.0.1:8000' };
-  globalThis.window = {
-    innerWidth: 1280,
-    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
-    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
-    prompt: () => null,
-  };
+  });
+  installAdvHost();
 
   globalThis.window.fetch = async (url) => {
     const target = String(url);
@@ -982,34 +784,11 @@ test('title screen excerpt presents server last_message when multi-turn session 
     if (target.includes('/api/chat/history')) {
       throw new Error('网络连接超时');
     }
-    if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
-    if (target.includes('/api/providers')) return Response.json({
-      providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
-      active_provider: 'p1',
-    });
-    if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-    if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
-    return Response.json({});
+    return startupApiFallback(target);
   };
   globalThis.fetch = (...args) => globalThis.window.fetch(...args);
 
-  const app = initApp({
-    dom: { advRoot: root },
-    renderSessionList() {},
-  });
-
-  t.after(() => {
-    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
-    for (const toast of toasts.children) clearTimeout(toast._timer);
-    delete globalThis.document;
-    delete globalThis.window;
-    delete globalThis.localStorage;
-    delete globalThis.fetch;
-    delete globalThis.location;
-  });
-
-  await app.ready;
-  for (let i = 0; i < 5; i++) await tick();
+  const app = await bootAdvApp(t, { root, toasts });
 
   // 1. 验证 actions.listSessions() 中该会话的 excerpt 来自服务端的 lastLine，并且对应最后的 user 提问
   const sessionsList = app.actions.listSessions();
@@ -1024,15 +803,7 @@ test('title screen excerpt presents server last_message when multi-turn session 
 });
 
 test('startup sync preserves voiceKey on message with matching server ID when server has duplicate text', async t => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-  const root = doc.createElement('div');
-  root.id = 'advRoot';
-  doc.body.appendChild(root);
-  const toasts = doc.createElement('div');
-  toasts.id = 'toastRoot';
-  doc.body.appendChild(toasts);
+  const { doc, root, toasts } = mountAdvDocument();
 
   const session = {
     id: 's_voice_id_pair',
@@ -1070,24 +841,12 @@ test('startup sync preserves voiceKey on message with matching server ID when se
     settings: { ...session.settings },
   };
 
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
+  const storage = installChatStorage({
     sessions: [session],
     activeId: session.id,
     global: { ...DEFAULT_GLOBAL },
-  })]]);
-
-  globalThis.localStorage = {
-    getItem: key => storage.get(key) ?? null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: key => storage.delete(key),
-  };
-  globalThis.location = { origin: 'http://127.0.0.1:8000' };
-  globalThis.window = {
-    innerWidth: 1280,
-    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
-    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
-    prompt: () => null,
-  };
+  });
+  installAdvHost();
 
   globalThis.window.fetch = async (url) => {
     const target = String(url);
@@ -1108,34 +867,11 @@ test('startup sync preserves voiceKey on message with matching server ID when se
         ],
       });
     }
-    if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
-    if (target.includes('/api/providers')) return Response.json({
-      providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
-      active_provider: 'p1',
-    });
-    if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-    if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
-    return Response.json({});
+    return startupApiFallback(target);
   };
   globalThis.fetch = (...args) => globalThis.window.fetch(...args);
 
-  const app = initApp({
-    dom: { advRoot: root },
-    renderSessionList() {},
-  });
-
-  t.after(() => {
-    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
-    for (const toast of toasts.children) clearTimeout(toast._timer);
-    delete globalThis.document;
-    delete globalThis.window;
-    delete globalThis.localStorage;
-    delete globalThis.fetch;
-    delete globalThis.location;
-  });
-
-  await app.ready;
-  for (let i = 0; i < 5; i++) await tick();
+  const app = await bootAdvApp(t, { root, toasts });
 
   const activeSession = storedActive();
   assert.equal(activeSession.messages.length, 4);
@@ -1147,15 +883,7 @@ test('startup sync preserves voiceKey on message with matching server ID when se
 });
 
 test('startup sync pulls history and retains failed question at end when server adds message after retention', async t => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-  const root = doc.createElement('div');
-  root.id = 'advRoot';
-  doc.body.appendChild(root);
-  const toasts = doc.createElement('div');
-  toasts.id = 'toastRoot';
-  doc.body.appendChild(toasts);
+  const { doc, root, toasts } = mountAdvDocument();
 
   const session = {
     id: 's_failed_retained_more',
@@ -1188,24 +916,12 @@ test('startup sync pulls history and retains failed question at end when server 
     settings: { ...session.settings },
   };
 
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
+  const storage = installChatStorage({
     sessions: [session],
     activeId: session.id,
     global: { ...DEFAULT_GLOBAL },
-  })]]);
-
-  globalThis.localStorage = {
-    getItem: key => storage.get(key) ?? null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: key => storage.delete(key),
-  };
-  globalThis.location = { origin: 'http://127.0.0.1:8000' };
-  globalThis.window = {
-    innerWidth: 1280,
-    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
-    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
-    prompt: () => null,
-  };
+  });
+  installAdvHost();
 
   globalThis.window.fetch = async (url) => {
     const target = String(url);
@@ -1227,34 +943,11 @@ test('startup sync pulls history and retains failed question at end when server 
         ],
       });
     }
-    if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
-    if (target.includes('/api/providers')) return Response.json({
-      providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
-      active_provider: 'p1',
-    });
-    if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-    if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
-    return Response.json({});
+    return startupApiFallback(target);
   };
   globalThis.fetch = (...args) => globalThis.window.fetch(...args);
 
-  const app = initApp({
-    dom: { advRoot: root },
-    renderSessionList() {},
-  });
-
-  t.after(() => {
-    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
-    for (const toast of toasts.children) clearTimeout(toast._timer);
-    delete globalThis.document;
-    delete globalThis.window;
-    delete globalThis.localStorage;
-    delete globalThis.fetch;
-    delete globalThis.location;
-  });
-
-  await app.ready;
-  for (let i = 0; i < 5; i++) await tick();
+  const app = await bootAdvApp(t, { root, toasts });
 
   const activeSession = storedActive();
   // 1. 保留失败提问之后服务端再多 1 条，刷新仍会拉历史且失败提问仍在末尾
@@ -1280,15 +973,7 @@ test('startup sync pulls history and retains failed question at end when server 
 });
 
 test('startup sync discards interrupted partial assistant reply and retains complete server reply without duplication', async t => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-  const root = doc.createElement('div');
-  root.id = 'advRoot';
-  doc.body.appendChild(root);
-  const toasts = doc.createElement('div');
-  toasts.id = 'toastRoot';
-  doc.body.appendChild(toasts);
+  const { doc, root, toasts } = mountAdvDocument();
 
   const session = {
     id: 's_interrupted_assistant',
@@ -1312,24 +997,12 @@ test('startup sync discards interrupted partial assistant reply and retains comp
     settings: { ...session.settings },
   };
 
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
+  const storage = installChatStorage({
     sessions: [session],
     activeId: session.id,
     global: { ...DEFAULT_GLOBAL },
-  })]]);
-
-  globalThis.localStorage = {
-    getItem: key => storage.get(key) ?? null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: key => storage.delete(key),
-  };
-  globalThis.location = { origin: 'http://127.0.0.1:8000' };
-  globalThis.window = {
-    innerWidth: 1280,
-    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
-    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
-    prompt: () => null,
-  };
+  });
+  installAdvHost();
 
   globalThis.window.fetch = async (url) => {
     const target = String(url);
@@ -1350,34 +1023,11 @@ test('startup sync discards interrupted partial assistant reply and retains comp
         ],
       });
     }
-    if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
-    if (target.includes('/api/providers')) return Response.json({
-      providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
-      active_provider: 'p1',
-    });
-    if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-    if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
-    return Response.json({});
+    return startupApiFallback(target);
   };
   globalThis.fetch = (...args) => globalThis.window.fetch(...args);
 
-  const app = initApp({
-    dom: { advRoot: root },
-    renderSessionList() {},
-  });
-
-  t.after(() => {
-    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
-    for (const toast of toasts.children) clearTimeout(toast._timer);
-    delete globalThis.document;
-    delete globalThis.window;
-    delete globalThis.localStorage;
-    delete globalThis.fetch;
-    delete globalThis.location;
-  });
-
-  await app.ready;
-  for (let i = 0; i < 5; i++) await tick();
+  const app = await bootAdvApp(t, { root, toasts });
 
   const activeSession = storedActive();
   assert.equal(activeSession.messages.length, 4);
@@ -1387,15 +1037,7 @@ test('startup sync discards interrupted partial assistant reply and retains comp
 });
 
 test('startup sync keeps the cached failed question when it is retried while history is still loading', async t => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-  const root = doc.createElement('div');
-  root.id = 'advRoot';
-  doc.body.appendChild(root);
-  const toasts = doc.createElement('div');
-  toasts.id = 'toastRoot';
-  doc.body.appendChild(toasts);
+  const { doc, root, toasts } = mountAdvDocument();
 
   const session = {
     id: 's_retry_during_history',
@@ -1426,24 +1068,12 @@ test('startup sync keeps the cached failed question when it is retried while his
     settings: { ...session.settings },
   };
 
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
+  const storage = installChatStorage({
     sessions: [session],
     activeId: session.id,
     global: { ...DEFAULT_GLOBAL },
-  })]]);
-
-  globalThis.localStorage = {
-    getItem: key => storage.get(key) ?? null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: key => storage.delete(key),
-  };
-  globalThis.location = { origin: 'http://127.0.0.1:8000' };
-  globalThis.window = {
-    innerWidth: 1280,
-    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
-    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
-    prompt: () => null,
-  };
+  });
+  installAdvHost();
 
   let releaseHistory = () => {};
   const historyGate = new Promise(resolve => {
@@ -1497,14 +1127,7 @@ test('startup sync keeps the cached failed question when it is retried while his
       streamRequests.push(request);
       return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } });
     }
-    if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
-    if (target.includes('/api/providers')) return Response.json({
-      providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
-      active_provider: 'p1',
-    });
-    if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-    if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
-    return Response.json({});
+    return startupApiFallback(target);
   };
   globalThis.fetch = (...args) => globalThis.window.fetch(...args);
 
@@ -1558,12 +1181,8 @@ test('startup sync keeps the cached failed question when it is retried while his
   assert.equal(storedActive().messages.at(-1), question);
 });
 
-function storedSessionSnapshot(session) {
-  return { sessions: [session], activeId: session.id, global: { ...DEFAULT_GLOBAL } };
-}
 
-// Real startup: localStorage, then initApp's default boot sync against the session list.
-async function bootSessionSync(t, { session, server, postHandler = null }) {
+function mountAdvDocument() {
   const doc = fakeDocument();
   globalThis.document = doc;
   doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
@@ -1573,20 +1192,88 @@ async function bootSessionSync(t, { session, server, postHandler = null }) {
   const toasts = doc.createElement('div');
   toasts.id = 'toastRoot';
   doc.body.appendChild(toasts);
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify(storedSessionSnapshot(session))]]);
+  return { doc, root, toasts };
+}
+
+function installChatStorage(snapshot) {
+  const storage = new Map([['gal2voice.chat.v1', JSON.stringify(snapshot)]]);
   globalThis.localStorage = {
     getItem: key => storage.get(key) ?? null,
     setItem: (key, value) => storage.set(key, value),
     removeItem: key => storage.delete(key),
   };
-  const calls = [];
+  return storage;
+}
+
+function installAdvHost() {
   globalThis.location = { origin: 'http://127.0.0.1:8000' };
   globalThis.window = {
     innerWidth: 1280,
     location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
     sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
     prompt: () => null,
-    fetch: async (url, options = {}) => {
+  };
+}
+
+function assignAdvWindow(fetchImpl) {
+  globalThis.window = {
+    innerWidth: 1280,
+    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
+    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
+    prompt: () => null,
+    fetch: fetchImpl,
+  };
+  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+}
+
+function installAdvWindow(fetchImpl) {
+  globalThis.location = { origin: 'http://127.0.0.1:8000' };
+  assignAdvWindow(fetchImpl);
+}
+
+function startupApiFallback(target, { providers = 'demo', engineStatus = true } = {}) {
+  if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
+  if (target.includes('/api/providers')) {
+    if (providers === 'demo') {
+      return Response.json({
+        providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
+        active_provider: 'p1',
+      });
+    }
+    return Response.json({ providers: [], active_provider: null });
+  }
+  if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
+  if (engineStatus && target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
+  return Response.json({});
+}
+
+async function bootAdvApp(t, { root, toasts, onCleanup } = {}) {
+  const app = initApp({ dom: { advRoot: root }, renderSessionList() {} });
+  t.after(() => {
+    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
+    for (const toast of toasts.children) clearTimeout(toast._timer);
+    if (onCleanup) onCleanup();
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.localStorage;
+    delete globalThis.fetch;
+    delete globalThis.location;
+  });
+  await app.ready;
+  for (let i = 0; i < 5; i++) await tick();
+  return app;
+}
+
+function storedSessionSnapshot(session) {
+  return { sessions: [session], activeId: session.id, global: { ...DEFAULT_GLOBAL } };
+}
+
+// Real startup: localStorage, then initApp's default boot sync against the session list.
+async function bootSessionSync(t, { session, server, postHandler = null }) {
+  const { doc, root, toasts } = mountAdvDocument();
+  const storage = installChatStorage(storedSessionSnapshot(session));
+  const calls = [];
+  installAdvWindow(async (url, options = {}) => {
       const target = String(url);
       calls.push({ url: target, method: options.method || 'GET', body: options.body });
       if (target.includes('/api/chat/sessions') && (options.method || 'GET') === 'POST') {
@@ -1596,25 +1283,9 @@ async function bootSessionSync(t, { session, server, postHandler = null }) {
       if (target.includes('/api/chat/sessions')) {
         return Response.json({ sessions: [server], has_more: false, count: 1 });
       }
-      if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
-      if (target.includes('/api/providers')) return Response.json({ providers: [], active_provider: null });
-      if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-      return Response.json({});
-    },
-  };
-  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
-  const app = initApp({ dom: { advRoot: root }, renderSessionList() {} });
-  t.after(() => {
-    try { app.conversation.stop(); app.adv?.unmount(); } catch { /* already gone */ }
-    for (const toast of toasts.children) clearTimeout(toast._timer);
-    delete globalThis.document;
-    delete globalThis.window;
-    delete globalThis.localStorage;
-    delete globalThis.fetch;
-    delete globalThis.location;
-  });
-  await app.ready;
-  for (let i = 0; i < 5; i++) await tick();
+      return startupApiFallback(target, { providers: 'empty', engineStatus: false });
+    });
+  await bootAdvApp(t, { root, toasts });
   const live = storedState.sessions.find(item => item.id === session.id);
   const stored = JSON.parse(storage.get('gal2voice.chat.v1')).sessions[0];
   const saves = calls.filter(call => call.method === 'POST' && call.url.includes('/api/chat/sessions'))
@@ -1734,15 +1405,7 @@ test('startup sync retains unconfirmed settings flag in storage when follow-up p
 });
 
 test('startup sync unconfirmed version is preserved and newer settings kept if edited while in-flight boot post resolves', async t => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-  const root = doc.createElement('div');
-  root.id = 'advRoot';
-  doc.body.appendChild(root);
-  const toasts = doc.createElement('div');
-  toasts.id = 'toastRoot';
-  doc.body.appendChild(toasts);
+  const { doc, root, toasts } = mountAdvDocument();
 
   const session = {
     id: 's_version_race',
@@ -1775,12 +1438,7 @@ test('startup sync unconfirmed version is preserved and newer settings kept if e
     },
   };
 
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify(storedSessionSnapshot(session))]]);
-  globalThis.localStorage = {
-    getItem: key => storage.get(key) ?? null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: key => storage.delete(key),
-  };
+  const storage = installChatStorage(storedSessionSnapshot(session));
 
   let resolveBootPost;
   const bootPostPromise = new Promise(resolve => { resolveBootPost = resolve; });
@@ -1788,13 +1446,7 @@ test('startup sync unconfirmed version is preserved and newer settings kept if e
   const promptPutPromise = new Promise(resolve => { resolvePromptPut = resolve; });
 
   const calls = [];
-  globalThis.location = { origin: 'http://127.0.0.1:8000' };
-  globalThis.window = {
-    innerWidth: 1280,
-    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
-    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
-    prompt: () => null,
-    fetch: async (url, options = {}) => {
+  installAdvWindow(async (url, options = {}) => {
       const target = String(url);
       calls.push({ url: target, method: options.method || 'GET', body: options.body });
       if (target.includes('/api/chat/sessions') && (options.method || 'GET') === 'POST') {
@@ -1814,12 +1466,8 @@ test('startup sync unconfirmed version is preserved and newer settings kept if e
           active_profile_id: 101,
         });
       }
-      if (target.includes('/api/providers')) return Response.json({ providers: [], active_provider: null });
-      if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-      return Response.json({});
-    },
-  };
-  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+      return startupApiFallback(target, { providers: 'empty', engineStatus: false });
+    });
 
   const dom = {
     advRoot: root,
@@ -1892,9 +1540,7 @@ test('startup sync unconfirmed version is preserved and newer settings kept if e
         active_profile_id: 101,
       });
     }
-    if (target.includes('/api/providers')) return Response.json({ providers: [], active_provider: null });
-    if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-    return Response.json({});
+    return startupApiFallback(target, { providers: 'empty', engineStatus: false });
   };
   app2 = initApp({ dom, renderSessionList() {} });
   await app2.ready;
@@ -1977,15 +1623,7 @@ test('getErrorMessage: FastAPI 422 prompt validation errors return specific char
 });
 
 test('startup sync marks unanswered user prompt as failed when pruned by server and preserves retry and sync baseline', async t => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-  const root = doc.createElement('div');
-  root.id = 'advRoot';
-  doc.body.appendChild(root);
-  const toasts = doc.createElement('div');
-  toasts.id = 'toastRoot';
-  doc.body.appendChild(toasts);
+  const { doc, root, toasts } = mountAdvDocument();
 
   const session = {
     id: 's_unanswered_pruned',
@@ -2032,24 +1670,12 @@ test('startup sync marks unanswered user prompt as failed when pruned by server 
     settings: { ...session.settings },
   };
 
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
+  const storage = installChatStorage({
     sessions: [session, remSession],
     activeId: session.id,
     global: { ...DEFAULT_GLOBAL },
-  })]]);
-
-  globalThis.localStorage = {
-    getItem: key => storage.get(key) ?? null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: key => storage.delete(key),
-  };
-  globalThis.location = { origin: 'http://127.0.0.1:8000' };
-  globalThis.window = {
-    innerWidth: 1280,
-    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
-    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
-    prompt: () => null,
-  };
+  });
+  installAdvHost();
 
   const streamRequests = [];
   const encoder = new TextEncoder();
@@ -2081,14 +1707,7 @@ test('startup sync marks unanswered user prompt as failed when pruned by server 
       streamRequests.push(request);
       return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } });
     }
-    if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
-    if (target.includes('/api/providers')) return Response.json({
-      providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
-      active_provider: 'p1',
-    });
-    if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-    if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
-    return Response.json({});
+    return startupApiFallback(target);
   };
   globalThis.fetch = (...args) => globalThis.window.fetch(...args);
 
@@ -2175,14 +1794,7 @@ test('startup sync marks unanswered user prompt as failed when pruned by server 
         ],
       });
     }
-    if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
-    if (target.includes('/api/providers')) return Response.json({
-      providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
-      active_provider: 'p1',
-    });
-    if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-    if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
-    return Response.json({});
+    return startupApiFallback(target);
   };
 
   app2 = initApp({
@@ -2203,15 +1815,7 @@ test('startup sync marks unanswered user prompt as failed when pruned by server 
 });
 
 test('startup sync does not mark user prompt failed when server count covers local messages', async t => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-  const root = doc.createElement('div');
-  root.id = 'advRoot';
-  doc.body.appendChild(root);
-  const toasts = doc.createElement('div');
-  toasts.id = 'toastRoot';
-  doc.body.appendChild(toasts);
+  const { doc, root, toasts } = mountAdvDocument();
 
   const session = {
     id: 's_equal_count',
@@ -2235,45 +1839,16 @@ test('startup sync does not mark user prompt failed when server count covers loc
     settings: { ...session.settings },
   };
 
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify(storedSessionSnapshot(session))]]);
-  globalThis.localStorage = {
-    getItem: key => storage.get(key) ?? null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: key => storage.delete(key),
-  };
-  globalThis.location = { origin: 'http://127.0.0.1:8000' };
-  globalThis.window = {
-    innerWidth: 1280,
-    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
-    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
-    prompt: () => null,
-    fetch: async (url) => {
+  const storage = installChatStorage(storedSessionSnapshot(session));
+  installAdvWindow(async (url) => {
       const target = String(url);
       if (target.includes('/api/chat/sessions')) {
         return Response.json({ sessions: [server], has_more: false, count: 1 });
       }
-      if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
-      if (target.includes('/api/providers')) return Response.json({ providers: [], active_provider: null });
-      if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-      if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
-      return Response.json({});
-    },
-  };
-  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+      return startupApiFallback(target, { providers: 'empty' });
+    });
 
-  const app = initApp({ dom: { advRoot: root }, renderSessionList() {} });
-  t.after(() => {
-    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
-    for (const toast of toasts.children) clearTimeout(toast._timer);
-    delete globalThis.document;
-    delete globalThis.window;
-    delete globalThis.localStorage;
-    delete globalThis.fetch;
-    delete globalThis.location;
-  });
-
-  await app.ready;
-  for (let i = 0; i < 5; i++) await tick();
+  const app = await bootAdvApp(t, { root, toasts });
 
   const activeSession = storedActive();
   const lastMsg = activeSession.messages.at(-1);
@@ -2281,15 +1856,7 @@ test('startup sync does not mark user prompt failed when server count covers loc
 });
 
 test('unbound session syncs active voice profile on turnstart and updates stage without cancelling the live turn', async t => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-  const root = doc.createElement('div');
-  root.id = 'advRoot';
-  doc.body.appendChild(root);
-  const toasts = doc.createElement('div');
-  toasts.id = 'toastRoot';
-  doc.body.appendChild(toasts);
+  const { doc, root, toasts } = mountAdvDocument();
 
   const session = {
     id: 's_unbound_follow',
@@ -2318,22 +1885,12 @@ test('unbound session syncs active voice profile on turnstart and updates stage 
     expressionSets: { gentle: [{ id: 'smile' }] },
   });
 
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify(storedSessionSnapshot(session))]]);
-  globalThis.localStorage = {
-    getItem: key => storage.get(key) ?? null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: key => storage.delete(key),
-  };
+  const storage = installChatStorage(storedSessionSnapshot(session));
   globalThis.location = { origin: 'http://127.0.0.1:8000' };
   let activeProfile = 1;
   const portraitUrls = [];
   const stream = fakeChatStream();
-  globalThis.window = {
-    innerWidth: 1280,
-    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
-    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
-    prompt: () => null,
-    fetch: async (url) => {
+  assignAdvWindow(async (url) => {
       const target = String(url);
       if (target.includes('/api/chat/sessions')) {
         return Response.json({ sessions: [server], has_more: false, count: 1 });
@@ -2349,13 +1906,8 @@ test('unbound session syncs active voice profile on turnstart and updates stage 
         portraitUrls.push(`/api/characters/${portraitMatch[1]}/portrait`);
         return Response.json(portrait(portraitMatch[1]));
       }
-      if (target.includes('/api/providers')) return Response.json({ providers: [], active_provider: null });
-      if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-      if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
-      return Response.json({});
-    },
-  };
-  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+      return startupApiFallback(target, { providers: 'empty' });
+    });
 
   await fetchVoiceProfiles();
   const app = initApp({
@@ -2446,15 +1998,7 @@ test('chat stream request omits fixed tts sliders in adaptive voice mode and tra
 });
 
 test('startup sync clears cached messages for both active and inactive sessions when server message_count is 0', async t => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-  const root = doc.createElement('div');
-  root.id = 'advRoot';
-  doc.body.appendChild(root);
-  const toasts = doc.createElement('div');
-  toasts.id = 'toastRoot';
-  doc.body.appendChild(toasts);
+  const { doc, root, toasts } = mountAdvDocument();
 
   const tg1001 = {
     id: 'tg_1001',
@@ -2504,24 +2048,12 @@ test('startup sync clears cached messages for both active and inactive sessions 
     },
   ];
 
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
+  const storage = installChatStorage({
     sessions: [tg1001, tg1002],
     activeId: 'tg_1001',
     global: { ...DEFAULT_GLOBAL },
-  })]]);
-
-  globalThis.localStorage = {
-    getItem: key => storage.get(key) ?? null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: key => storage.delete(key),
-  };
-  globalThis.location = { origin: 'http://127.0.0.1:8000' };
-  globalThis.window = {
-    innerWidth: 1280,
-    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
-    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
-    prompt: () => null,
-    fetch: async (url) => {
+  });
+  installAdvWindow(async (url) => {
       const target = String(url);
       if (target.includes('/api/chat/sessions')) {
         return Response.json({ sessions: serverSessions, has_more: false, count: 2 });
@@ -2530,28 +2062,10 @@ test('startup sync clears cached messages for both active and inactive sessions 
         const sid = new URL(target, 'http://127.0.0.1:8000').searchParams.get('session_id') || '';
         return Response.json({ session_id: sid, messages: [], has_more: false, oldest_id: null, count: 0 });
       }
-      if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
-      if (target.includes('/api/providers')) return Response.json({ providers: [], active_provider: null });
-      if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-      if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
-      return Response.json({});
-    },
-  };
-  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+      return startupApiFallback(target, { providers: 'empty' });
+    });
 
-  const app = initApp({ dom: { advRoot: root }, renderSessionList() {} });
-  t.after(() => {
-    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
-    for (const toast of toasts.children) clearTimeout(toast._timer);
-    delete globalThis.document;
-    delete globalThis.window;
-    delete globalThis.localStorage;
-    delete globalThis.fetch;
-    delete globalThis.location;
-  });
-
-  await app.ready;
-  for (let i = 0; i < 5; i++) await tick();
+  const app = await bootAdvApp(t, { root, toasts });
 
   assert.deepEqual(storedSession('tg_1001').messages, [], '激活会话 tg_1001 内存中的旧消息应已清空');
   assert.equal(storedSession('tg_1001').lastLine, '');
@@ -2580,15 +2094,7 @@ test('startup sync clears cached messages for both active and inactive sessions 
 });
 
 test('switching to a session cleared on server empties cached messages via loadSessionHistory', async t => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-  const root = doc.createElement('div');
-  root.id = 'advRoot';
-  doc.body.appendChild(root);
-  const toasts = doc.createElement('div');
-  toasts.id = 'toastRoot';
-  doc.body.appendChild(toasts);
+  const { doc, root, toasts } = mountAdvDocument();
 
   const activeSession = {
     id: 's_active_keep',
@@ -2659,24 +2165,12 @@ test('switching to a session cleared on server empties cached messages via loadS
     },
   ];
 
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
+  const storage = installChatStorage({
     sessions: [activeSession, tgLess, tgMore],
     activeId: activeSession.id,
     global: { ...DEFAULT_GLOBAL },
-  })]]);
-
-  globalThis.localStorage = {
-    getItem: key => storage.get(key) ?? null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: key => storage.delete(key),
-  };
-  globalThis.location = { origin: 'http://127.0.0.1:8000' };
-  globalThis.window = {
-    innerWidth: 1280,
-    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
-    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
-    prompt: () => null,
-    fetch: async (url) => {
+  });
+  installAdvWindow(async (url) => {
       const target = String(url);
       if (target.includes('/api/chat/sessions')) {
         return Response.json({ sessions: serverSessions, has_more: false, count: 3 });
@@ -2686,28 +2180,10 @@ test('switching to a session cleared on server empties cached messages via loadS
         // 会话已在运行期被清空，返回空历史列表
         return Response.json({ session_id: sid, messages: [], has_more: false, oldest_id: null, count: 0 });
       }
-      if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
-      if (target.includes('/api/providers')) return Response.json({ providers: [], active_provider: null });
-      if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-      if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
-      return Response.json({});
-    },
-  };
-  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+      return startupApiFallback(target, { providers: 'empty' });
+    });
 
-  const app = initApp({ dom: { advRoot: root }, renderSessionList() {} });
-  t.after(() => {
-    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
-    for (const toast of toasts.children) clearTimeout(toast._timer);
-    delete globalThis.document;
-    delete globalThis.window;
-    delete globalThis.localStorage;
-    delete globalThis.fetch;
-    delete globalThis.location;
-  });
-
-  await app.ready;
-  for (let i = 0; i < 5; i++) await tick();
+  const app = await bootAdvApp(t, { root, toasts });
 
   await app.switchSession('tg_more_cleared');
   for (let i = 0; i < 5; i++) await tick();
@@ -2725,15 +2201,7 @@ test('switching to a session cleared on server empties cached messages via loadS
 });
 
 test('startup sync with server message_count 0 preserves local starter GREETING and unanswered user prompt for retry', async t => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-  const root = doc.createElement('div');
-  root.id = 'advRoot';
-  doc.body.appendChild(root);
-  const toasts = doc.createElement('div');
-  toasts.id = 'toastRoot';
-  doc.body.appendChild(toasts);
+  const { doc, root, toasts } = mountAdvDocument();
 
   const starterSession = {
     id: 's_local_greeting',
@@ -2779,25 +2247,14 @@ test('startup sync with server message_count 0 preserves local starter GREETING 
     settings: { ...s.settings },
   }));
 
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
+  const storage = installChatStorage({
     sessions: [unansweredOnlySession, clearedWithTailPending, starterSession],
     activeId: unansweredOnlySession.id,
     global: { ...DEFAULT_GLOBAL },
-  })]]);
-
-  globalThis.localStorage = {
-    getItem: key => storage.get(key) ?? null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: key => storage.delete(key),
-  };
+  });
   globalThis.location = { origin: 'http://127.0.0.1:8000' };
   const streamRequests = [];
-  globalThis.window = {
-    innerWidth: 1280,
-    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
-    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
-    prompt: () => null,
-    fetch: async (url, options = {}) => {
+  assignAdvWindow(async (url, options = {}) => {
       const target = String(url);
       if (target.includes('/api/chat/sessions')) {
         return Response.json({ sessions: serverSessions, has_more: false, count: serverSessions.length });
@@ -2818,31 +2275,10 @@ test('startup sync with server message_count 0 preserves local starter GREETING 
         streamRequests.push({ url: target, prompt: JSON.parse(options.body).prompt });
         return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } });
       }
-      if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
-      if (target.includes('/api/providers')) return Response.json({
-        providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
-        active_provider: 'p1',
-      });
-      if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-      if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
-      return Response.json({});
-    },
-  };
-  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+      return startupApiFallback(target);
+    });
 
-  const app = initApp({ dom: { advRoot: root }, renderSessionList() {} });
-  t.after(() => {
-    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
-    for (const toast of toasts.children) clearTimeout(toast._timer);
-    delete globalThis.document;
-    delete globalThis.window;
-    delete globalThis.localStorage;
-    delete globalThis.fetch;
-    delete globalThis.location;
-  });
-
-  await app.ready;
-  for (let i = 0; i < 5; i++) await tick();
+  const app = await bootAdvApp(t, { root, toasts });
 
   // (a) 仅含初始本地 GREETING 的新会话欢迎语不被误删
   const liveStarter = storedSession('s_local_greeting');
@@ -2883,15 +2319,7 @@ test('startup sync with server message_count 0 preserves local starter GREETING 
 
 for (const totalServerMessages of [150, 101]) {
   test(`startup sync preserves unanswered local prompt and enables retry when server has ${totalServerMessages} messages (>100)`, async t => {
-    const doc = fakeDocument();
-    globalThis.document = doc;
-    doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-    const root = doc.createElement('div');
-    root.id = 'advRoot';
-    doc.body.appendChild(root);
-    const toasts = doc.createElement('div');
-    toasts.id = 'toastRoot';
-    doc.body.appendChild(toasts);
+    const { doc, root, toasts } = mountAdvDocument();
 
     const oldestWindowId = totalServerMessages - 100 + 1;
     const serverWindow = Array.from({ length: 100 }, (_, idx) => {
@@ -2948,22 +2376,12 @@ for (const totalServerMessages of [150, 101]) {
       settings: { ...session.settings },
     };
 
-    const storage = new Map([['gal2voice.chat.v1', JSON.stringify(storedSessionSnapshot(session))]]);
-    globalThis.localStorage = {
-      getItem: key => storage.get(key) ?? null,
-      setItem: (key, value) => storage.set(key, value),
-      removeItem: key => storage.delete(key),
-    };
+    const storage = installChatStorage(storedSessionSnapshot(session));
     globalThis.location = { origin: 'http://127.0.0.1:8000' };
 
     let historyFetches = 0;
     const streamRequests = [];
-    globalThis.window = {
-      innerWidth: 1280,
-      location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
-      sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
-      prompt: () => null,
-      fetch: async (url, options = {}) => {
+    assignAdvWindow(async (url, options = {}) => {
         const target = String(url);
         if (target.includes('/api/chat/sessions')) {
           return Response.json({ sessions: [server], has_more: false, count: 1 });
@@ -2990,31 +2408,10 @@ for (const totalServerMessages of [150, 101]) {
           streamRequests.push({ url: target, prompt: JSON.parse(options.body).prompt });
           return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } });
         }
-        if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
-        if (target.includes('/api/providers')) return Response.json({
-          providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
-          active_provider: 'p1',
-        });
-        if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-        if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
-        return Response.json({});
-      },
-    };
-    globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+        return startupApiFallback(target);
+      });
 
-    const app = initApp({ dom: { advRoot: root }, renderSessionList() {} });
-    t.after(() => {
-      try { app.conversation.stop(); app.adv?.unmount(); } catch {}
-      for (const toast of toasts.children) clearTimeout(toast._timer);
-      delete globalThis.document;
-      delete globalThis.window;
-      delete globalThis.localStorage;
-      delete globalThis.fetch;
-      delete globalThis.location;
-    });
-
-    await app.ready;
-    for (let i = 0; i < 5; i++) await tick();
+    const app = await bootAdvApp(t, { root, toasts });
 
     assert.equal(historyFetches, 1, `服务端 message_count=${totalServerMessages} 时应拉取最近 100 条历史做核对`);
     const activeSession = storedActive();
@@ -3047,15 +2444,7 @@ for (const totalServerMessages of [150, 101]) {
 }
 
 test('startup sync in >100 message session merges answered local prompt without duplication or false failure', async t => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-  const root = doc.createElement('div');
-  root.id = 'advRoot';
-  doc.body.appendChild(root);
-  const toasts = doc.createElement('div');
-  toasts.id = 'toastRoot';
-  doc.body.appendChild(toasts);
+  const { doc, root, toasts } = mountAdvDocument();
 
   const initialWindow = Array.from({ length: 100 }, (_, idx) => {
     const id = 51 + idx;
@@ -3121,19 +2510,8 @@ test('startup sync in >100 message session merges answered local prompt without 
     settings: { ...session.settings },
   };
 
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify(storedSessionSnapshot(session))]]);
-  globalThis.localStorage = {
-    getItem: key => storage.get(key) ?? null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: key => storage.delete(key),
-  };
-  globalThis.location = { origin: 'http://127.0.0.1:8000' };
-  globalThis.window = {
-    innerWidth: 1280,
-    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
-    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
-    prompt: () => null,
-    fetch: async (url) => {
+  const storage = installChatStorage(storedSessionSnapshot(session));
+  installAdvWindow(async (url) => {
       const target = String(url);
       if (target.includes('/api/chat/sessions')) {
         return Response.json({ sessions: [server], has_more: false, count: 1 });
@@ -3147,31 +2525,10 @@ test('startup sync in >100 message session merges answered local prompt without 
           messages: serverWindow,
         });
       }
-      if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
-      if (target.includes('/api/providers')) return Response.json({
-        providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
-        active_provider: 'p1',
-      });
-      if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-      if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
-      return Response.json({});
-    },
-  };
-  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+      return startupApiFallback(target);
+    });
 
-  const app = initApp({ dom: { advRoot: root }, renderSessionList() {} });
-  t.after(() => {
-    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
-    for (const toast of toasts.children) clearTimeout(toast._timer);
-    delete globalThis.document;
-    delete globalThis.window;
-    delete globalThis.localStorage;
-    delete globalThis.fetch;
-    delete globalThis.location;
-  });
-
-  await app.ready;
-  for (let i = 0; i < 5; i++) await tick();
+  const app = await bootAdvApp(t, { root, toasts });
 
   const activeSession = storedActive();
   assert.equal(activeSession.messages.length, 100, '服务端已完成该轮问答时不应重复追加本地提问');
@@ -3194,15 +2551,7 @@ test('startup sync in >100 message session merges answered local prompt without 
 });
 
 test('startup sync merges answered local prompt even when previously marked failed without duplication', async t => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-  const root = doc.createElement('div');
-  root.id = 'advRoot';
-  doc.body.appendChild(root);
-  const toasts = doc.createElement('div');
-  toasts.id = 'toastRoot';
-  doc.body.appendChild(toasts);
+  const { doc, root, toasts } = mountAdvDocument();
 
   const initialMessages = [
     { id: 'm_10', serverMessageId: 10, role: 'assistant', content: '之前历史消息', ts: 1_700_000_000_000 },
@@ -3246,19 +2595,8 @@ test('startup sync merges answered local prompt even when previously marked fail
     settings: { ...session.settings },
   };
 
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify(storedSessionSnapshot(session))]]);
-  globalThis.localStorage = {
-    getItem: key => storage.get(key) ?? null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: key => storage.delete(key),
-  };
-  globalThis.location = { origin: 'http://127.0.0.1:8000' };
-  globalThis.window = {
-    innerWidth: 1280,
-    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
-    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
-    prompt: () => null,
-    fetch: async (url) => {
+  const storage = installChatStorage(storedSessionSnapshot(session));
+  installAdvWindow(async (url) => {
       const target = String(url);
       if (target.includes('/api/chat/sessions')) {
         return Response.json({ sessions: [server], has_more: false, count: 1 });
@@ -3272,35 +2610,15 @@ test('startup sync merges answered local prompt even when previously marked fail
           messages: serverMessages,
         });
       }
-      if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
-      if (target.includes('/api/providers')) return Response.json({
-        providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
-        active_provider: 'p1',
-      });
-      if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-      if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
-      return Response.json({});
-    },
-  };
-  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+      return startupApiFallback(target);
+    });
 
   const fakeAudioBlob = { url: 'blob:http://localhost/fake_user_voice', dur: 1.5 };
   audioStore.set('m_local_failed_prompt', fakeAudioBlob);
-  const app = initApp({ dom: { advRoot: root }, renderSessionList() {} });
-  t.after(() => {
-    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
-    for (const toast of toasts.children) clearTimeout(toast._timer);
-    audioStore.delete('m_local_failed_prompt');
-    audioStore.delete('m_11');
-    delete globalThis.document;
-    delete globalThis.window;
-    delete globalThis.localStorage;
-    delete globalThis.fetch;
-    delete globalThis.location;
+  const app = await bootAdvApp(t, {
+    root, toasts,
+    onCleanup() { audioStore.delete('m_local_failed_prompt'); audioStore.delete('m_11'); },
   });
-
-  await app.ready;
-  for (let i = 0; i < 5; i++) await tick();
 
   const activeSession = storedActive();
   assert.equal(activeSession.messages.filter(m => m.content === newPrompt).length, 1, '提问在服务端已保存时只应出现一次');
@@ -3324,15 +2642,7 @@ test('startup sync merges answered local prompt even when previously marked fail
 });
 
 test('startup sync preserves failed local prompt at end when content matches earlier history but server has no new messages', async t => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-  const root = doc.createElement('div');
-  root.id = 'advRoot';
-  doc.body.appendChild(root);
-  const toasts = doc.createElement('div');
-  toasts.id = 'toastRoot';
-  doc.body.appendChild(toasts);
+  const { doc, root, toasts } = mountAdvDocument();
 
   const repeatedPrompt = '重复历史提问';
   const initialMessages = [
@@ -3375,19 +2685,8 @@ test('startup sync preserves failed local prompt at end when content matches ear
     settings: { ...session.settings },
   };
 
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify(storedSessionSnapshot(session))]]);
-  globalThis.localStorage = {
-    getItem: key => storage.get(key) ?? null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: key => storage.delete(key),
-  };
-  globalThis.location = { origin: 'http://127.0.0.1:8000' };
-  globalThis.window = {
-    innerWidth: 1280,
-    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
-    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
-    prompt: () => null,
-    fetch: async (url) => {
+  const storage = installChatStorage(storedSessionSnapshot(session));
+  installAdvWindow(async (url) => {
       const target = String(url);
       if (target.includes('/api/chat/sessions')) {
         return Response.json({ sessions: [server], has_more: false, count: 1 });
@@ -3401,31 +2700,10 @@ test('startup sync preserves failed local prompt at end when content matches ear
           messages: serverMessages,
         });
       }
-      if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
-      if (target.includes('/api/providers')) return Response.json({
-        providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
-        active_provider: 'p1',
-      });
-      if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-      if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
-      return Response.json({});
-    },
-  };
-  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+      return startupApiFallback(target);
+    });
 
-  const app = initApp({ dom: { advRoot: root }, renderSessionList() {} });
-  t.after(() => {
-    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
-    for (const toast of toasts.children) clearTimeout(toast._timer);
-    delete globalThis.document;
-    delete globalThis.window;
-    delete globalThis.localStorage;
-    delete globalThis.fetch;
-    delete globalThis.location;
-  });
-
-  await app.ready;
-  for (let i = 0; i < 5; i++) await tick();
+  const app = await bootAdvApp(t, { root, toasts });
 
   const activeSession = storedActive();
   assert.equal(activeSession.messages.length, 3, '应保留历史2条 + 末尾1条未发送成功的失败提问');
@@ -3437,15 +2715,7 @@ test('startup sync preserves failed local prompt at end when content matches ear
 });
 
 test('startup sync reconciles multiple unpersisted failed prompts correctly when only a subset was persisted on server', async t => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
-  const root = doc.createElement('div');
-  root.id = 'advRoot';
-  doc.body.appendChild(root);
-  const toasts = doc.createElement('div');
-  toasts.id = 'toastRoot';
-  doc.body.appendChild(toasts);
+  const { doc, root, toasts } = mountAdvDocument();
 
   const initialMessages = [
     { id: 'm_10', serverMessageId: 10, role: 'assistant', content: '之前历史消息', ts: 1_700_000_000_000 },
@@ -3496,19 +2766,8 @@ test('startup sync reconciles multiple unpersisted failed prompts correctly when
     settings: { ...session.settings },
   };
 
-  const storage = new Map([['gal2voice.chat.v1', JSON.stringify(storedSessionSnapshot(session))]]);
-  globalThis.localStorage = {
-    getItem: key => storage.get(key) ?? null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: key => storage.delete(key),
-  };
-  globalThis.location = { origin: 'http://127.0.0.1:8000' };
-  globalThis.window = {
-    innerWidth: 1280,
-    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
-    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
-    prompt: () => null,
-    fetch: async (url) => {
+  const storage = installChatStorage(storedSessionSnapshot(session));
+  installAdvWindow(async (url) => {
       const target = String(url);
       if (target.includes('/api/chat/sessions')) {
         return Response.json({ sessions: [server], has_more: false, count: 1 });
@@ -3522,31 +2781,10 @@ test('startup sync reconciles multiple unpersisted failed prompts correctly when
           messages: serverMessages,
         });
       }
-      if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
-      if (target.includes('/api/providers')) return Response.json({
-        providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
-        active_provider: 'p1',
-      });
-      if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
-      if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
-      return Response.json({});
-    },
-  };
-  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+      return startupApiFallback(target);
+    });
 
-  const app = initApp({ dom: { advRoot: root }, renderSessionList() {} });
-  t.after(() => {
-    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
-    for (const toast of toasts.children) clearTimeout(toast._timer);
-    delete globalThis.document;
-    delete globalThis.window;
-    delete globalThis.localStorage;
-    delete globalThis.fetch;
-    delete globalThis.location;
-  });
-
-  await app.ready;
-  for (let i = 0; i < 5; i++) await tick();
+  const app = await bootAdvApp(t, { root, toasts });
 
   const activeSession = storedActive();
   assert.equal(activeSession.messages.length, 4, '应包含历史1条 + 新问答2条 + 末尾1条未落库失败提问');
