@@ -257,6 +257,10 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     gBrowseSovitsDirectory: $('gBrowseSovitsDirectory'),
     gSaveSovitsDirectory: $('gSaveSovitsDirectory'),
     gResetBtn: $('gResetBtn'),
+    gMemoryTitle: $('gMemoryTitle'),
+    gMemoryNote: $('gMemoryNote'),
+    gMemoryError: $('gMemoryError'),
+    gMemoryList: $('gMemoryList'),
     // 系统版本与更新
     gDashVersionBadge: $('gDashVersionBadge'),
     gDashVersionCommit: $('gDashVersionCommit'),
@@ -794,6 +798,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     fetchVoiceProfiles,
     getVoiceProfiles,
     getActiveProfileId,
+    getActiveSession: getActive,
     updateBadge: () => {
       updateBadge();
       onModelStatus?.(sampleModel());

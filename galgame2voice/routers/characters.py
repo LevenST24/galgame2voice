@@ -25,6 +25,7 @@ from galgame2voice.security.media_urls import (
 from galgame2voice.services.character_manager import get_character_manager, get_character_work
 from galgame2voice.services.character_package_import import import_character_archive
 from galgame2voice.services.character_voice_catalog import get_character_voice_catalog
+from galgame2voice.services.chat_pipelines.context_builder import _resolve_context_voice_profile
 from galgame2voice.services.package_redeem import get_redeem_progress, redeem_download, redeem_list
 from galgame2voice.schemas.character_manifest import clean_character_work
 from galgame2voice.services.portrait_manifest import (
@@ -273,6 +274,59 @@ async def download_redeem_package(request: Request, req: RedeemCodeRequest) -> A
 @router.get("/redeem/progress")
 async def get_redeem_download_progress() -> dict[str, Any]:
     return get_redeem_progress()
+
+
+async def _get_memory_session(conn: aiosqlite.Connection, session_id: str | None) -> tuple[Any | None, str]:
+    """Returns the stored session and the user_id chat uses for its memories (same rule as build_chat_context)."""
+    session = await crud.get_session(conn, session_id) if session_id else None
+    return session, session.user_id if session and session.user_id else "default_user"
+
+
+@router.get(
+    "/memories",
+    summary="List Character Memories",
+    description="Lists the long-term memories of the character the given session chats with, newest first.",
+)
+async def list_character_memories_endpoint(
+    session_id: str | None = Query(default=None, max_length=128, description="Current session ID"),
+    character_id: int | None = Query(
+        default=None, ge=1, description="Character bound to a session the server has not stored yet"
+    ),
+) -> dict[str, Any]:
+    async with get_db() as conn:
+        session, user_id = await _get_memory_session(conn, session_id)
+        hinted = await crud.get_voice_profile(conn, character_id) if session is None and character_id else None
+        profile = await _resolve_context_voice_profile(conn, session, None, active_profile=hinted)
+        resolved_char_id = profile.id if profile else 1
+        memories = await crud.list_character_memories(conn, user_id, resolved_char_id)
+        return {
+            "character_id": resolved_char_id,
+            "character_name": profile.name if profile else None,
+            "memories": [
+                {"id": mem.id, "category": mem.category, "fact_value": mem.fact_value}
+                for mem in memories
+            ],
+        }
+
+
+@router.delete(
+    "/{character_id}/memories/{memory_id}",
+    summary="Delete Character Memory",
+    description="Deletes one memory of the given character, clearing the matching custom_nickname.",
+)
+async def delete_character_memory_endpoint(
+    character_id: int,
+    memory_id: int,
+    session_id: str | None = Query(default=None, max_length=128, description="Current session ID"),
+) -> dict[str, Any]:
+    async with get_db() as conn:
+        _, user_id = await _get_memory_session(conn, session_id)
+        if not await crud.delete_character_memory(conn, memory_id, user_id, character_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="这条记忆不存在或已被删除",
+            )
+    return {"status": "deleted"}
 
 
 @router.get(

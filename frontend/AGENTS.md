@@ -60,6 +60,7 @@
 - `provider_settings.js`：`ProviderSettingsController`，大模型提供商清单、参数草稿、API Key 脱敏/可见性、连通性测试及模型启用生命周期。
 - `telemetry_settings.js`：`TelemetrySettingsController`，运行状态与硬件遥测轮询（5秒周期），持有独立 AbortController，关闭/后台/新刷新时取消旧 GET；引擎卡独立更新，核对操作归属。详见 `docs/development/TELEMETRY.md`。
 - `engine_settings.js`：`EngineSettingsController`，GPT-SoVITS 推理精度自动保存/设备切换、引擎热重启（POST 结合 `waitForEngine` 轮询）及离线音频缓存清理。
+- `src/controllers/memory_settings.js`：`MemorySettingsController`，「长期记忆」页控制器，按当前会话所属角色读取并列出记忆，支持二次确认逐条删除；切页时通过 AbortController 与递增编号作废进行中的读取。
 - `voice_settings.js`：会话设置弹窗（`#sessionModal`，配置当前会话的角色人设、音色绑定、LLM 采样参数及 TTS 推理参数）。
   同一页面的音色切换串行执行，排队期间过时的会话选择直接跳过；列表目录与当前启用状态分别防止迟到响应覆盖。首页进入聊天会通过切换接口核验模型，已保存的音色 ID 仅作界面提示。
 - `audio_player_ui.js`：输入端麦克风录音控制与播放器 UI 状态协调。
@@ -116,7 +117,7 @@
      - **运行状态**（`gp-dashboard`）：GPT-SoVITS 连通性、计算精度切换与重启、硬件资源与缓存清空。
      - **语音服务**（`gp-inference`）：引擎地址、本机 SoVITS 目录选择、全局计算精度与缓存保留时长。
      - **对话模型**（`gp-models`）：全厂商模型卡片（API Key、Base URL、模型选择、思考强度、连通性测试与一键启用、允许私网 LLM 端点开关）。
-     - **长期记忆**（`gp-memory`）：长期记忆说明。
+     - **长期记忆**（`gp-memory`）：列出当前会话所属角色记住的称呼、喜好、讨厌、约定与身份等内容，支持二次确认逐条删除。
      - **备份与更新**（`gp-update`）：完整聊天备份导出/导入，以及 GitHub Releases 新版本提示与下载页入口。
 
 ---

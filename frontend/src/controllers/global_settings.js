@@ -14,6 +14,9 @@ import {
 import {
   createEngineSettingsController,
 } from './engine_settings.js';
+import {
+  createMemorySettingsController,
+} from './memory_settings.js';
 import { initSettingsTabs } from '../settings_ui.js';
 import { createSettingsDraftStore } from './settings_draft_store.js';
 
@@ -24,6 +27,7 @@ let _callbacks = {};
 let providerController = null;
 let telemetryController = null;
 let engineController = null;
+let memoryController = null;
 let engineDirectory = null;
 let tabsCleanup = null;
 let coordinatorCleanups = [];
@@ -110,6 +114,7 @@ export function initGlobalSettings(dom, callbacks = {}) {
   telemetryController?.dispose();
   engineController?.dispose();
   providerController?.dispose();
+  memoryController?.dispose();
   engineDirectory?.dispose?.();
   if (typeof tabsCleanup === 'function') {
     tabsCleanup();
@@ -174,6 +179,11 @@ export function initGlobalSettings(dom, callbacks = {}) {
     },
   });
 
+  memoryController = createMemorySettingsController(_dom, {
+    getActiveSession: _callbacks.getActiveSession,
+    showToast,
+  });
+
   updateSaveButtons();
 
   // 4. Bind coordinator-owned controls
@@ -196,7 +206,10 @@ export function initGlobalSettings(dom, callbacks = {}) {
   engineDirectory = initEngineDirectory(_dom, showToast, () => _callbacks.onSovitsDirectorySaved?.());
 
   // Tabs
-  tabsCleanup = initSettingsTabs(_dom.gTabs, (name) => _callbacks.onSettingsTabChange?.(name));
+  tabsCleanup = initSettingsTabs(_dom.gTabs, (name) => {
+    memoryController.onTabChange(name);
+    _callbacks.onSettingsTabChange?.(name);
+  });
 
   // Settings cross-navigation
   for (const id of ['gOpenSessionSettings', 'gOpenCharacterSettings']) {
@@ -280,7 +293,9 @@ export function openGlobalSettings(tabName = null) {
     const tabBtn = _dom.gTabs.querySelector(`[data-gtab="${tabName}"]`);
     if (tabBtn) tabBtn.click();
   } else {
-    _callbacks.onSettingsTabChange?.(_dom.gTabs?.querySelector('.active')?.dataset.gtab);
+    const activeTab = _dom.gTabs?.querySelector('.active')?.dataset.gtab;
+    memoryController?.onTabChange(activeTab);
+    _callbacks.onSettingsTabChange?.(activeTab);
   }
   loadProviders();
   loadGlobalConfig();
