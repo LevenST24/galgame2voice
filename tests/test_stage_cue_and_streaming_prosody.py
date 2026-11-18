@@ -88,18 +88,30 @@ def test_emotion_classifier_integration():
 # 2. Streaming Dialogue Dynamic Prosody Tests
 # ============================================================================
 
+def _get_streaming_prosody_options(
+    chunk: str,
+    sentence_text: str,
+    *,
+    base_options: dict | None = None,
+    adaptive_enabled: bool = True,
+) -> dict:
+    parser = StreamingBilingualParser()
+    parser.feed_chunk(chunk)
+    return parser.get_dynamic_tts_options(
+        base_options={} if base_options is None else base_options,
+        adaptive_enabled=adaptive_enabled,
+        sentence_text=sentence_text,
+    )
+
+
 def test_streaming_parser_plain_dialogue_adaptive_prosody():
     """
     Validates that plain text dialogue streams without explicit JSON tags
     automatically receive fine-grained dynamic prosody calculation.
     """
-    parser = StreamingBilingualParser()
-    parser.feed_chunk("「（脸红）那、那个……我才没有想你呢！」")
-
-    opts = parser.get_dynamic_tts_options(
-        base_options={},
-        adaptive_enabled=True,
-        sentence_text="那、那个……我才没有想你呢！",
+    opts = _get_streaming_prosody_options(
+        "「（脸红）那、那个……我才没有想你呢！」",
+        "那、那个……我才没有想你呢！",
     )
 
     assert opts["emotion"] == "shy"
@@ -116,14 +128,7 @@ def test_streaming_parser_plain_dialogue_adaptive_prosody():
 
 def test_streaming_parser_exclamation_acceleration():
     """Validates that exclamations accelerate speed and raise temperature."""
-    parser = StreamingBilingualParser()
-    parser.feed_chunk("「（高兴）太棒了！终于做到了！」")
-
-    opts = parser.get_dynamic_tts_options(
-        base_options={},
-        adaptive_enabled=True,
-        sentence_text="太棒了！终于做到了！",
-    )
+    opts = _get_streaming_prosody_options("「（高兴）太棒了！终于做到了！」", "太棒了！终于做到了！")
 
     assert opts["emotion"] == "happy"
     # Happy baseline is 1.05; exclamation raises it by +0.05 -> ~1.10
@@ -133,20 +138,12 @@ def test_streaming_parser_exclamation_acceleration():
 
 def test_streaming_parser_user_pinned_options_respected():
     """Validates that manual overrides in base_options are strictly preserved."""
-    parser = StreamingBilingualParser()
-    parser.feed_chunk("「（脸红）那、那个……」")
-
     custom_options = {
         "speed": 1.45,
         "temperature": 0.55,
         "top_k": 30,
     }
-
-    opts = parser.get_dynamic_tts_options(
-        base_options=custom_options,
-        adaptive_enabled=True,
-        sentence_text="那、那个……",
-    )
+    opts = _get_streaming_prosody_options("「（脸红）那、那个……」", "那、那个……", base_options=custom_options)
 
     assert opts["speed"] == 1.45
     assert opts["temperature"] == 0.55
@@ -156,14 +153,11 @@ def test_streaming_parser_user_pinned_options_respected():
 
 def test_streaming_parser_adaptive_disabled():
     """Validates that disabling adaptive_enabled returns base options unmodified."""
-    parser = StreamingBilingualParser()
-    parser.feed_chunk("「（脸红）那、那个……」")
-
-    base = {"speed": 1.0}
-    opts = parser.get_dynamic_tts_options(
-        base_options=base,
+    opts = _get_streaming_prosody_options(
+        "「（脸红）那、那个……」",
+        "那、那个……",
+        base_options={"speed": 1.0},
         adaptive_enabled=False,
-        sentence_text="那、那个……",
     )
 
     assert opts.get("speed") == 1.0
