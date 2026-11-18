@@ -116,6 +116,65 @@ async def coordinator_setup(tmp_path: Path):
     return make_coordinator
 
 
+def _make_lines_tokens(*pairs: tuple[str, str], cancel_event: asyncio.Event):
+    """Builds an async token stream yielding lines-format JSON and waiting for cancel."""
+
+    async def tokens(*args, **kwargs):
+        yield '{"lines": ['
+        for idx, (zh, ja) in enumerate(pairs):
+            comma = "," if idx < len(pairs) - 1 else ""
+            yield f'{{"zh": "{zh}", "ja": "{ja}", "emotion": "gentle", "act": {{}}}}{comma}'
+        yield "]}"
+        try:
+            await asyncio.wait_for(cancel_event.wait(), timeout=3.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass
+
+    return tokens
+
+
+async def _get_assistant_messages(database: Path) -> list[Any]:
+    """Fetches persisted assistant messages for snap_session from SQLite."""
+    async with get_db(database) as conn:
+        messages = await crud.get_recent_messages(conn, "snap_session")
+        return [m for m in messages if m.role == "assistant"]
+
+
+async def _run_cancel_stream(
+    coordinator_setup,
+    tokens_fn,
+    synthesize_fn,
+    cancel_event: asyncio.Event,
+    *,
+    line0_announced: asyncio.Event | None = None,
+    match_index0: bool = False,
+    cancel_after_line: bool = True,
+) -> list[Any]:
+    """Runs a coordinator stream until a line event, triggers cancel, drains, and returns assistant messages."""
+    coord, _, database = coordinator_setup(
+        tokens_fn=tokens_fn,
+        synthesize_fn=synthesize_fn,
+        cancel_event=cancel_event,
+        reply_format="lines",
+    )
+    until_predicate = (
+        (lambda ev, _: ev.get("event") == "line" and ev.get("data", {}).get("index") == 0)
+        if match_index0
+        else (lambda ev, _: ev.get("event") == "line")
+    )
+    stream = coord.stream()
+    try:
+        events = await consume_stream_bounded(stream, until_predicate=until_predicate, timeout=3.0, close_on_exit=False)
+        if line0_announced is not None:
+            line0_announced.set()
+        if cancel_after_line:
+            cancel_event.set()
+        events.extend(await consume_stream_bounded(stream, timeout=3.0, close_on_exit=True))
+    finally:
+        await asyncio.wait_for(stream.aclose(), timeout=3.0)
+    return await _get_assistant_messages(database)
+
+
 @pytest.mark.asyncio
 async def test_completed_unemitted_audio_is_ready_on_cancel(coordinator_setup, tmp_path: Path):
     """When a line's audio is fully synthesized before cancel but line_audio SSE frame
@@ -128,16 +187,7 @@ async def test_completed_unemitted_audio_is_ready_on_cancel(coordinator_setup, t
     chunk0_settled = asyncio.Event()
     created_wav_path: Path | None = None
 
-    async def tokens(*args, **kwargs):
-        # Two lines in lines format
-        yield '{"lines": ['
-        yield '{"zh": "第一句。", "ja": "一番です。", "emotion": "gentle", "act": {}},'
-        yield '{"zh": "第二句。", "ja": "二番です。", "emotion": "gentle", "act": {}}'
-        yield ']}'
-        try:
-            await asyncio.wait_for(cancel_event.wait(), timeout=3.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            pass
+    tokens = _make_lines_tokens(("第一句。", "一番です。"), ("第二句。", "二番です。"), cancel_event=cancel_event)
 
     async def synth_mock(sentence, **kwargs):
         nonlocal created_wav_path
@@ -154,8 +204,7 @@ async def test_completed_unemitted_audio_is_ready_on_cancel(coordinator_setup, t
         except (asyncio.TimeoutError, asyncio.CancelledError) as err:
             raise asyncio.CancelledError() from err
 
-    make_coord = coordinator_setup
-    coord, tts, database = make_coord(
+    coord, _, database = coordinator_setup(
         tokens_fn=tokens,
         synthesize_fn=synth_mock,
         cancel_event=cancel_event,
@@ -196,51 +245,40 @@ async def test_completed_unemitted_audio_is_ready_on_cancel(coordinator_setup, t
         await asyncio.wait_for(stream.aclose(), timeout=3.0)
 
     # Read SQLite to check the persisted partial message
-    async with get_db(database) as conn:
-        messages = await crud.get_recent_messages(conn, "snap_session")
-        assistant_msgs = [m for m in messages if m.role == "assistant"]
-        assert len(assistant_msgs) == 1, "Assistant partial message should be persisted"
-        persisted_lines = assistant_msgs[0].lines
-        assert persisted_lines is not None and len(persisted_lines) >= 1
+    assistant_msgs = await _get_assistant_messages(database)
+    assert len(assistant_msgs) == 1, "Assistant partial message should be persisted"
+    persisted_lines = assistant_msgs[0].lines
+    assert persisted_lines is not None and len(persisted_lines) >= 1
 
-        line0 = persisted_lines[0]
-        # Line 0 audio was fully synthesized (chunks populated, pending=0, sealed=True, errors=[]).
-        # It must be recorded as 'ready', never 'failed'.
-        assert line0["audio"]["chunks"], "Line 0 should have chunks"
-        assert line0["audio"]["status"] == "ready", (
-            f"Line 0 status was '{line0['audio']['status']}', expected 'ready' "
-            "because its audio was fully synthesized before cancel."
-        )
+    line0 = persisted_lines[0]
+    # Line 0 audio was fully synthesized (chunks populated, pending=0, sealed=True, errors=[]).
+    # It must be recorded as 'ready', never 'failed'.
+    assert line0["audio"]["chunks"], "Line 0 should have chunks"
+    assert line0["audio"]["status"] == "ready", (
+        f"Line 0 status was '{line0['audio']['status']}', expected 'ready' "
+        "because its audio was fully synthesized before cancel."
+    )
 
-        # Verify persisted ready chunk resolves to the real created non-empty WAV file on disk
-        chunk0 = line0["audio"]["chunks"][0]
-        audio_url = chunk0["audio_url"]
-        filename = audio_url.removeprefix("/audio/")
-        resolved_file = tmp_path / filename
-        assert await asyncio.to_thread(resolved_file.is_file), f"Expected audio file to exist on disk: {resolved_file}"
-        if created_wav_path is not None:
-            assert resolved_file.name == created_wav_path.name
+    # Verify persisted ready chunk resolves to the real created non-empty WAV file on disk
+    chunk0 = line0["audio"]["chunks"][0]
+    audio_url = chunk0["audio_url"]
+    filename = audio_url.removeprefix("/audio/")
+    resolved_file = tmp_path / filename
+    assert await asyncio.to_thread(resolved_file.is_file), f"Expected audio file to exist on disk: {resolved_file}"
+    if created_wav_path is not None:
+        assert resolved_file.name == created_wav_path.name
 
-        nchannels, sampwidth, nframes = await asyncio.to_thread(read_wav_properties, resolved_file)
-        assert nchannels == 1, f"Expected mono audio (1 channel), got {nchannels}"
-        assert sampwidth == 2, f"Expected 16-bit PCM (sample width 2), got {sampwidth}"
-        assert nframes == DEFAULT_FRAME_COUNT, f"Expected {DEFAULT_FRAME_COUNT} frames, got {nframes}"
+    nchannels, sampwidth, nframes = await asyncio.to_thread(read_wav_properties, resolved_file)
+    assert nchannels == 1, f"Expected mono audio (1 channel), got {nchannels}"
+    assert sampwidth == 2, f"Expected 16-bit PCM (sample width 2), got {sampwidth}"
+    assert nframes == DEFAULT_FRAME_COUNT, f"Expected {DEFAULT_FRAME_COUNT} frames, got {nframes}"
 
 
 @pytest.mark.asyncio
 async def test_unsealed_or_pending_audio_is_failed_on_cancel(coordinator_setup, tmp_path: Path):
     """Lines whose audio was still pending or unsealed at cancel time must be marked failed."""
     cancel_event = asyncio.Event()
-    line0_announced = asyncio.Event()
-
-    async def tokens(*args, **kwargs):
-        yield '{"lines": ['
-        yield '{"zh": "第一句。", "ja": "一番です。", "emotion": "gentle", "act": {}}'
-        yield ']}'
-        try:
-            await asyncio.wait_for(cancel_event.wait(), timeout=3.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            pass
+    tokens = _make_lines_tokens(("第一句。", "一番です。"), cancel_event=cancel_event)
 
     async def synth_mock(sentence, **kwargs):
         # Pending in synthesis until cancel
@@ -251,34 +289,12 @@ async def test_unsealed_or_pending_audio_is_failed_on_cancel(coordinator_setup, 
         except (asyncio.TimeoutError, asyncio.CancelledError) as err:
             raise asyncio.CancelledError() from err
 
-    make_coord = coordinator_setup
-    coord, tts, database = make_coord(
-        tokens_fn=tokens,
-        synthesize_fn=synth_mock,
-        cancel_event=cancel_event,
-        reply_format="lines",
+    assistant_msgs = await _run_cancel_stream(
+        coordinator_setup, tokens, synth_mock, cancel_event, match_index0=True
     )
-
-    stream = coord.stream()
-    try:
-        events = await consume_stream_bounded(
-            stream,
-            until_predicate=lambda ev, _: ev.get("event") == "line" and ev.get("data", {}).get("index") == 0,
-            timeout=3.0,
-            close_on_exit=False,
-        )
-        line0_announced.set()
-        cancel_event.set()
-        events.extend(await consume_stream_bounded(stream, timeout=3.0, close_on_exit=True))
-    finally:
-        await asyncio.wait_for(stream.aclose(), timeout=3.0)
-
-    async with get_db(database) as conn:
-        messages = await crud.get_recent_messages(conn, "snap_session")
-        assistant_msgs = [m for m in messages if m.role == "assistant"]
-        assert len(assistant_msgs) == 1
-        line0 = assistant_msgs[0].lines[0]
-        assert line0["audio"]["status"] == "failed"
+    assert len(assistant_msgs) == 1
+    line0 = assistant_msgs[0].lines[0]
+    assert line0["audio"]["status"] == "failed"
 
 
 @pytest.mark.asyncio
@@ -286,48 +302,24 @@ async def test_audio_with_error_is_failed_on_cancel(coordinator_setup):
     """Lines with synthesis errors must be marked failed even if cancelled later."""
     cancel_event = asyncio.Event()
     line0_announced = asyncio.Event()
-
-    async def tokens(*args, **kwargs):
-        yield '{"lines": ['
-        yield '{"zh": "失败句。", "ja": "失败です。", "emotion": "gentle", "act": {}}'
-        yield ']}'
-        try:
-            await asyncio.wait_for(cancel_event.wait(), timeout=3.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            pass
+    tokens = _make_lines_tokens(("失败句。", "失败です。"), cancel_event=cancel_event)
 
     async def synth_mock(sentence, **kwargs):
         await asyncio.wait_for(line0_announced.wait(), timeout=3.0)
         cancel_event.set()
         raise RuntimeError("Synthetic synthesis failure")
 
-    make_coord = coordinator_setup
-    coord, tts, database = make_coord(
-        tokens_fn=tokens,
-        synthesize_fn=synth_mock,
-        cancel_event=cancel_event,
-        reply_format="lines",
+    assistant_msgs = await _run_cancel_stream(
+        coordinator_setup,
+        tokens,
+        synth_mock,
+        cancel_event,
+        line0_announced=line0_announced,
+        cancel_after_line=False,
     )
-
-    stream = coord.stream()
-    try:
-        events = await consume_stream_bounded(
-            stream,
-            until_predicate=lambda ev, _: ev.get("event") == "line",
-            timeout=3.0,
-            close_on_exit=False,
-        )
-        line0_announced.set()
-        events.extend(await consume_stream_bounded(stream, timeout=3.0, close_on_exit=True))
-    finally:
-        await asyncio.wait_for(stream.aclose(), timeout=3.0)
-
-    async with get_db(database) as conn:
-        messages = await crud.get_recent_messages(conn, "snap_session")
-        assistant_msgs = [m for m in messages if m.role == "assistant"]
-        assert len(assistant_msgs) == 1
-        line0 = assistant_msgs[0].lines[0]
-        assert line0["audio"]["status"] == "failed"
+    assert len(assistant_msgs) == 1
+    line0 = assistant_msgs[0].lines[0]
+    assert line0["audio"]["status"] == "failed"
 
 
 @pytest.mark.asyncio
@@ -345,8 +337,7 @@ async def test_normal_completion_status_ready_and_skipped(coordinator_setup, tmp
         wav_path = create_synthetic_wav(tmp_path, kwargs.get("filename_prefix", "chunk"))
         return f"/audio/{wav_path.name}", wav_path, {}
 
-    make_coord = coordinator_setup
-    coord, tts, database = make_coord(
+    coord, _, _ = coordinator_setup(
         tokens_fn=tokens,
         synthesize_fn=synth_mock,
         reply_format="lines",
@@ -369,48 +360,15 @@ async def test_normal_completion_status_ready_and_skipped(coordinator_setup, tmp
 async def test_nonvocal_line_is_skipped_on_cancel(coordinator_setup, tmp_path: Path):
     """Non-vocal completed line before cancel records status='skipped', not 'failed'."""
     cancel_event = asyncio.Event()
-    line0_announced = asyncio.Event()
-
-    async def tokens(*args, **kwargs):
-        yield '{"lines": ['
-        yield '{"zh": "……", "ja": "……", "emotion": "gentle", "act": {}}'
-        yield ']}'
-        try:
-            await asyncio.wait_for(cancel_event.wait(), timeout=3.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            pass
+    tokens = _make_lines_tokens(("……", "……"), cancel_event=cancel_event)
 
     async def synth_mock(sentence, **kwargs):
         wav_path = create_synthetic_wav(tmp_path, "chunk_nonvocal")
         return f"/audio/{wav_path.name}", wav_path, {}
 
-    make_coord = coordinator_setup
-    coord, tts, database = make_coord(
-        tokens_fn=tokens,
-        synthesize_fn=synth_mock,
-        cancel_event=cancel_event,
-        reply_format="lines",
-    )
-
-    stream = coord.stream()
-    try:
-        events = await consume_stream_bounded(
-            stream,
-            until_predicate=lambda ev, _: ev.get("event") == "line",
-            timeout=3.0,
-            close_on_exit=False,
-        )
-        line0_announced.set()
-        cancel_event.set()
-        events.extend(await consume_stream_bounded(stream, timeout=3.0, close_on_exit=True))
-    finally:
-        await asyncio.wait_for(stream.aclose(), timeout=3.0)
-
-    async with get_db(database) as conn:
-        messages = await crud.get_recent_messages(conn, "snap_session")
-        assistant_msgs = [m for m in messages if m.role == "assistant"]
-        assert len(assistant_msgs) == 1
-        line0 = assistant_msgs[0].lines[0]
-        # Non-vocal line was settled with chunks=[] and errors=[] before cancel.
-        # It must be 'skipped', not 'failed'.
-        assert line0["audio"]["status"] == "skipped"
+    assistant_msgs = await _run_cancel_stream(coordinator_setup, tokens, synth_mock, cancel_event)
+    assert len(assistant_msgs) == 1
+    line0 = assistant_msgs[0].lines[0]
+    # Non-vocal line was settled with chunks=[] and errors=[] before cancel.
+    # It must be 'skipped', not 'failed'.
+    assert line0["audio"]["status"] == "skipped"
