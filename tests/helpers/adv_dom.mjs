@@ -51,9 +51,15 @@ export class Element {
     event.target ||= this;
     event.preventDefault ||= () => { event.defaultPrevented = true; };
     event.stopPropagation ||= () => { event.stopped = true; };
-    for (const fn of [...this.listeners.get(event.type) || []]) fn(event);
-    if (event.type === 'click') this.onclick?.(event);
-    if (event.bubbles !== false && !event.stopped) this.parentNode?.dispatchEvent(event);
+    // Browsers freeze the ancestor chain before listeners run. Removing a node
+    // mid-click must not drop the rest of that chain; stopPropagation still cuts it.
+    const path = [];
+    for (let node = this; node; node = node.parentNode) path.push(node);
+    for (const node of path) {
+      for (const fn of [...node.listeners.get(event.type) || []]) fn(event);
+      if (event.type === 'click') node.onclick?.(event);
+      if (event.bubbles === false || event.stopped) break;
+    }
     return !event.defaultPrevented;
   }
   click() { if (!this.disabled) this.dispatchEvent({ type: 'click', button: 0 }); }
