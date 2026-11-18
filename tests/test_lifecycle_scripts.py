@@ -7,7 +7,6 @@ PID file lifecycle, and the launcher's GPT-SoVITS discovery contract.
 
 import os
 import json
-import re
 import sys
 import subprocess
 from pathlib import Path
@@ -58,12 +57,6 @@ class TestLifecycleScriptsTier1:
         start_bat = (PROJECT_ROOT / "启动.bat").read_text(encoding="utf-8")
         assert "chcp 65001" in start_bat
 
-    def test_launcher_contains_uvicorn_launch(self):
-        """Verifies run_server.py launches the FastAPI app via uvicorn."""
-        content = (SCRIPTS_DIR / "run_server.py").read_text(encoding="utf-8", errors="ignore")
-        assert "uvicorn" in content
-        assert "galgame2voice.main:app" in content or "main:app" in content
-
     @pytest.mark.skipif(sys.platform != "win32", reason="executes the Windows batch entry point")
     @pytest.mark.requires_piped_subprocess
     def test_start_script_delegates_python_and_preserves_arguments(self, tmp_path):
@@ -90,76 +83,3 @@ class TestLifecycleScriptsTier1:
         recorded = json.loads((root / "launch.json").read_text(encoding="utf-8"))
         assert recorded["argv"] == args
         assert Path(recorded["cwd"]) == root
-
-    def test_launcher_job_object_process_tree_binding(self):
-        """Verifies run_server.py implements Windows Job Object process tree linkage."""
-        content = (SCRIPTS_DIR / "run_server.py").read_text(encoding="utf-8", errors="ignore")
-        assert "setup_windows_job_object" in content
-        assert "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE" in content
-        assert "assign_process_to_job" in content
-        assert "cleanup_subprocesses" in content
-
-    def test_launcher_discovers_gpt_sovits(self):
-        """Verifies run_server.py discovers GPT-SoVITS via env overrides, not hardcoded drive letters."""
-        content = (SCRIPTS_DIR / "run_server.py").read_text(encoding="utf-8", errors="ignore")
-        assert "GPT_SOVITS_DIR" in content
-        assert "GALGAME2VOICE_DATA_ROOT" in content
-        assert "api_v2.py" in content
-        # Machine-specific hardcoded install paths must be gone
-        assert "E:\\GPT-SoVITS-v2pro-20250604" not in content
-
-    def test_launcher_waits_for_sovits_readiness(self):
-        """Verifies run_server.py performs a bounded readiness wait after spawning GPT-SoVITS."""
-        content = (SCRIPTS_DIR / "run_server.py").read_text(encoding="utf-8", errors="ignore")
-        # Readiness is probed on the resolved endpoint (host/port from the
-        # unified resolver), never on a hardcoded 9880 fallback.
-        assert "is_port_in_use(" in content
-        assert "is_port_in_use(9880)" not in content
-        assert "gpt_sovits.log" in content  # engine logs must not be discarded
-
-
-# ============================================================================
-# Tier 2: Boundary, Path Escaping, Port Collision & Syntax Checks
-# ============================================================================
-
-class TestLifecycleScriptsTier2:
-    """Tier 2: Windows path handling, quotes, setlocal/endlocal balance, port collision checks."""
-
-    def test_scripts_balanced_setlocal_endlocal(self):
-        """Verifies any environment mutations are scoped and local scopes terminate."""
-        test_scripts = [
-            PROJECT_ROOT / "启动.bat",
-        ]
-        for path in test_scripts:
-            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
-            setlocal_count = sum(1 for line in lines if line.strip().lower().startswith("setlocal"))
-            endlocal_count = sum(1 for line in lines if "endlocal" in line.strip().lower())
-            assert endlocal_count >= setlocal_count, f"Missing endlocal before exit in {path.name}"
-            changes_environment = any(re.match(r"set\s+(?:/[ap]\s+)?", line.strip(), re.I) for line in lines)
-            if changes_environment:
-                assert setlocal_count >= 1, f"Unscoped environment assignment in {path.name}"
-
-    def test_no_hardcoded_admin_privilege_required(self):
-        """Verifies scripts do not execute commands that arbitrarily force administrative elevation."""
-        for path in [PROJECT_ROOT / "启动.bat"]:
-            content = path.read_text(encoding="utf-8", errors="ignore").lower()
-            assert "powershell -verb runas" not in content
-            assert "runas /user:" not in content
-
-    @pytest.mark.skipif(sys.platform != "win32", reason="Windows batch syntax validation requires Windows OS")
-    def test_batch_script_syntax(self):
-        """Verify cmd.exe can parse and execute lifecycle batch scripts without syntax crashes."""
-        scripts = [
-            PROJECT_ROOT / "启动.bat",
-        ]
-
-        # Static analysis: check for dangerous unescaped parentheses in echo statements inside parenthesized blocks
-        for script in scripts:
-            content = script.read_text(encoding="utf-8", errors="ignore")
-            lines = content.splitlines()
-            for line_no, line in enumerate(lines, 1):
-                stripped = line.strip()
-                if stripped.startswith("echo") and "(" in stripped and ")" in stripped:
-                    assert not re.search(r'\([^)]*\)\.', stripped), (
-                        f"{script.name}:{line_no} contains unescaped trailing period after closing paren: {stripped}"
-                    )

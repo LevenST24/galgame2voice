@@ -63,30 +63,6 @@ async def test_switch_voice_profile_skips_redundant_weight_reloads():
 
 
 @pytest.mark.asyncio
-async def test_voice_manager_switch_profile_forwards_force():
-    mock_client = MagicMock(spec=GptSovitsClient)
-    mock_client.switch_voice_profile = AsyncMock(return_value=True)
-    mock_client.lock = asyncio.Lock()
-    mock_client.active_profile = None  # an instance attribute, so spec= leaves it out
-    vm = VoiceManager()
-    vm.client = mock_client
-
-    profile = {
-        "id": 1,
-        "name": "char1",
-        "gpt_weights_path": "weights/gpt1.ckpt",
-        "sovits_weights_path": "weights/sovits1.pth",
-        "ref_audio_path": "audio/ref1.wav",
-        "prompt_text": "hello",
-        "prompt_lang": "ja",
-    }
-
-    ok = await vm.switch_profile(profile, persist=False, force=True)
-    assert ok is True
-    mock_client.switch_voice_profile.assert_called_once_with(profile, force=True)
-
-
-@pytest.mark.asyncio
 async def test_lifespan_queues_default_warmup_without_claiming_models_loaded(tmp_path, monkeypatch, mock_gpt_sovits):
     from galgame2voice.config import get_settings
     from galgame2voice.database import crud

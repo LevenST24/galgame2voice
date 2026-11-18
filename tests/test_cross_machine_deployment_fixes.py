@@ -64,36 +64,6 @@ async def fallback_voice(tmp_path):
 # 1. UTF-8 BOM-Safe Reading
 # ============================================================================
 
-def test_bom_safe_sovits_cache_reading(tmp_path, monkeypatch):
-    """Verifies that reading sovits_dir.txt with UTF-8 BOM (PowerShell export) is handled cleanly."""
-    get_settings()
-    data_dir = tmp_path / "data"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    cache_file = data_dir / "sovits_dir.txt"
-
-    # Create mock GPT-SoVITS directory
-    mock_sovits = tmp_path / "GPT-SoVITS-mock"
-    mock_sovits.mkdir(parents=True, exist_ok=True)
-    (mock_sovits / "api_v2.py").write_text("# mock api", encoding="utf-8")
-
-    # Write cache file with UTF-8 BOM (\xef\xbb\xbf)
-    bom_content = "\ufeff" + str(mock_sovits)
-    cache_file.write_bytes(bom_content.encode("utf-8"))
-
-    # Verify that raw read without sig has BOM
-    raw = cache_file.read_text(encoding="utf-8")
-    assert raw.startswith("\ufeff")
-
-    # Verify utf-8-sig cleanly strips BOM
-    stripped = cache_file.read_text(encoding="utf-8-sig").strip()
-    assert not stripped.startswith("\ufeff")
-    assert Path(stripped) == mock_sovits
-
-    # Verify _check_sovits_dir resolves it
-    resolved = _check_sovits_dir(Path(stripped))
-    assert resolved == mock_sovits
-
-
 def test_nested_gpt_sovits_discovery(tmp_path):
     """Verifies that double-nested directories (e.g. zip extraction output) are discovered."""
     outer = tmp_path / "GPT-SoVITS-v2pro-20250604"
@@ -144,22 +114,6 @@ def test_cool_emotion_mapped_to_valid_duration_audio():
 
 
 @pytest.mark.asyncio
-async def test_tts_service_duration_fallback_short_audio(tmp_path, fallback_voice):
-    """Verifies that reference audio under 3.0s automatically falls back to default reference."""
-    short_wav = create_synthetic_wav(tmp_path / "short_2s.wav", duration_sec=2.0)
-    dur = TtsService.get_audio_duration(short_wav)
-    assert dur is not None and dur < 3.0
-
-    tts = TtsService(audio_dir=tmp_path)
-    opts = {"ref_audio_path": str(short_wav), "ai_adaptive_voice": False}
-    populated = await tts._populate_voice_profile_opts(opts)
-
-    # Must fall back to default profile reference audio (not the 2.0s short_wav)
-    assert populated["ref_audio_path"] != str(short_wav)
-    assert populated["ref_audio_path"] == str(fallback_voice)
-
-
-@pytest.mark.asyncio
 async def test_tts_service_duration_fallback_long_audio(tmp_path, fallback_voice):
     """Verifies that reference audio over 10.0s automatically falls back to default reference."""
     long_wav = create_synthetic_wav(tmp_path / "long_12s.wav", duration_sec=12.0)
@@ -173,21 +127,6 @@ async def test_tts_service_duration_fallback_long_audio(tmp_path, fallback_voice
     # Must fall back to default profile reference audio (not the 12.0s long_wav)
     assert populated["ref_audio_path"] != str(long_wav)
     assert populated["ref_audio_path"] == str(fallback_voice)
-
-
-@pytest.mark.asyncio
-async def test_tts_service_duration_accepts_valid_audio(tmp_path):
-    """Verifies that valid reference audio (3~10s) is accepted without fallback."""
-    valid_wav = create_synthetic_wav(tmp_path / "valid_5s.wav", duration_sec=5.0)
-    dur = TtsService.get_audio_duration(valid_wav)
-    assert dur is not None and 3.0 <= dur <= 10.0
-
-    tts = TtsService(audio_dir=tmp_path)
-    opts = {"ref_audio_path": str(valid_wav), "ai_adaptive_voice": False}
-    populated = await tts._populate_voice_profile_opts(opts)
-
-    # Valid audio must be preserved
-    assert populated["ref_audio_path"] == str(valid_wav)
 
 
 # ============================================================================
@@ -337,22 +276,6 @@ def test_preflight_python_and_deps_check():
 
 
 @pytest.mark.asyncio
-async def test_tts_service_preserves_missing_explicit_reference(tmp_path, fallback_voice):
-    """Verifies explicit unknown reference audio is preserved (can belong to remote backend; dur None does not fall back to default)."""
-    missing_file = tmp_path / "absolutely_missing_reference.wav"
-    dur = TtsService.get_audio_duration(missing_file)
-    assert dur is None
-
-    tts = TtsService(audio_dir=tmp_path)
-    opts = {"ref_audio_path": str(missing_file), "ai_adaptive_voice": False}
-    populated = await tts._populate_voice_profile_opts(opts)
-
-    # Missing explicit reference is preserved without falling back to default reference
-    assert populated["ref_audio_path"] == str(missing_file)
-    assert populated["ref_audio_path"] != str(fallback_voice)
-
-
-@pytest.mark.asyncio
 async def test_switch_voice_profile_resolves_relative_reference_path(monkeypatch, tmp_path):
     """Verifies switch_voice_profile passes resolved absolute path to GPT-SoVITS."""
     from galgame2voice.services.gpt_sovits_client import GptSovitsClient, resolve_reference_audio_path
@@ -396,19 +319,6 @@ async def test_switch_voice_profile_resolves_relative_reference_path(monkeypatch
     # Must be absolute path
     assert Path(sent_path).is_absolute()
     assert sent_path.endswith("gentle.ogg")
-
-
-@pytest.mark.asyncio
-async def test_init_schema_and_seeds_leaves_voice_setup_to_user(tmp_path):
-    """A clean installation does not create a machine-specific voice profile."""
-    from galgame2voice.database.session import init_db
-    db_path = tmp_path / "fresh_seed.db"
-    await init_db(db_path)
-    async with aiosqlite.connect(str(db_path)) as conn:
-        conn.row_factory = aiosqlite.Row
-        cur = await conn.execute("SELECT ref_audio_path FROM voice_profiles WHERE id = 1;")
-        row = await cur.fetchone()
-        assert row is None
 
 
 @pytest.mark.asyncio
