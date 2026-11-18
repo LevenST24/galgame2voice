@@ -10,6 +10,30 @@ import { DEFAULT_GLOBAL, DEFAULT_SESSION_SETTINGS, GREETING, LEGACY_GREETINGS, s
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 const response = data => ({ ok: true, json: async () => data });
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
+const STORAGE_KEY = 'gal2voice.chat.v1';
+class MemoryStorage {
+  values = new Map();
+  constructor(limit = Infinity) { this.limit = limit; }
+  getItem(key) { return this.values.get(key) ?? null; }
+  removeItem(key) { this.values.delete(key); }
+  setItem(key, value) {
+    if (value.length > this.limit) {
+      const err = new Error('quota');
+      err.name = 'QuotaExceededError';
+      throw err;
+    }
+    this.values.set(key, String(value));
+  }
+}
+const makeSession = (id, title, messages = [], extra = {}) => ({
+  id, title, createdAt: 1000, updatedAt: 2000, settings: {}, messages, ...extra,
+});
+function installStorageSnapshot(sessions, activeId = sessions[0]?.id, { limit = Infinity, global = {} } = {}) {
+  const storage = new MemoryStorage(limit);
+  storage.values.set(STORAGE_KEY, JSON.stringify({ sessions, activeId, global }));
+  globalThis.localStorage = storage;
+  return storage;
+}
 let passed = 0;
 
 {
@@ -237,14 +261,7 @@ const backup = sessions => ({ format: 'galgame2voice.chat', version: 1, sessions
 // The export button calls exportCompleteChatBackup, which reads /api/chat/export
 // and the in-memory browser snapshot. A prefix must not drop the newer settings.
 function installChatStorage(session) {
-  const values = new Map([['gal2voice.chat.v1', JSON.stringify({
-    sessions: [session], activeId: session.id, global: {},
-  })]]);
-  globalThis.localStorage = {
-    getItem: key => values.get(key) ?? null,
-    setItem: (key, value) => values.set(key, value),
-    removeItem: key => values.delete(key),
-  };
+  installStorageSnapshot([session], session.id);
 }
 const prefixMessages = [
   { id: 'm_10', role: 'user', content: '今天去哪', japanese: '', ts: 1_700_000_000_000, lines: null },
@@ -334,66 +351,23 @@ async function exportPrefix(localSettings, localUpdatedAt) {
   passed++;
 }
 {
-  class MemoryStorage {
-    values = new Map();
-    getItem(key) { return this.values.get(key) ?? null; }
-    removeItem(key) { this.values.delete(key); }
-    setItem(key, value) { this.values.set(key, String(value)); }
-  }
-  globalThis.localStorage = new MemoryStorage();
-  const STORAGE_KEY = 'gal2voice.chat.v1';
-
-  const storedSessions = [
-    {
-      id: 's_legacy_1',
-      title: '旧会话 1',
-      createdAt: 1000,
-      updatedAt: 1001,
-      settings: { temperature: 0.7 },
-      messages: [
-        { id: 'm_1_1', role: 'assistant', content: LEGACY_GREETINGS[0], noVoice: true, ts: 1000 },
-        { id: 'm_1_2', role: 'user', content: '用户发问', ts: 1001 },
-        { id: 'm_1_3', role: 'assistant', content: '后续回复保持原样', ts: 1002 },
-      ],
-    },
-    {
-      id: 's_legacy_2',
-      title: '旧会话 2',
-      createdAt: 2000,
-      updatedAt: 2001,
-      settings: { temperature: 0.7 },
-      messages: [
-        { id: 'm_2_1', role: 'assistant', content: LEGACY_GREETINGS[1], noVoice: true, ts: 2000 },
-      ],
-    },
-    {
-      id: 's_custom',
-      title: '自定义开场白会话',
-      createdAt: 3000,
-      updatedAt: 3001,
-      settings: { temperature: 0.7 },
-      messages: [
-        { id: 'm_3_1', role: 'assistant', content: '自定义开场白，不得被替换', ts: 3000 },
-      ],
-    },
-    {
-      id: 's_user_matching',
-      title: '用户发了旧欢迎语文案',
-      createdAt: 4000,
-      updatedAt: 4001,
-      settings: { temperature: 0.7 },
-      messages: [
-        { id: 'm_4_1', role: 'user', content: LEGACY_GREETINGS[0], ts: 4000 },
-        { id: 'm_4_2', role: 'assistant', content: '用户输入不得被修改', ts: 4001 },
-      ],
-    },
-  ];
-
-  globalThis.localStorage.setItem(STORAGE_KEY, JSON.stringify({
-    sessions: storedSessions,
-    activeId: 's_legacy_1',
-    global: {},
-  }));
+  installStorageSnapshot([
+    makeSession('s_legacy_1', '旧会话 1', [
+      { id: 'm_1_1', role: 'assistant', content: LEGACY_GREETINGS[0], noVoice: true, ts: 1000 },
+      { id: 'm_1_2', role: 'user', content: '用户发问', ts: 1001 },
+      { id: 'm_1_3', role: 'assistant', content: '后续回复保持原样', ts: 1002 },
+    ], { createdAt: 1000, updatedAt: 1001, settings: { temperature: 0.7 } }),
+    makeSession('s_legacy_2', '旧会话 2', [
+      { id: 'm_2_1', role: 'assistant', content: LEGACY_GREETINGS[1], noVoice: true, ts: 2000 },
+    ], { createdAt: 2000, updatedAt: 2001, settings: { temperature: 0.7 } }),
+    makeSession('s_custom', '自定义开场白会话', [
+      { id: 'm_3_1', role: 'assistant', content: '自定义开场白，不得被替换', ts: 3000 },
+    ], { createdAt: 3000, updatedAt: 3001, settings: { temperature: 0.7 } }),
+    makeSession('s_user_matching', '用户发了旧欢迎语文案', [
+      { id: 'm_4_1', role: 'user', content: LEGACY_GREETINGS[0], ts: 4000 },
+      { id: 'm_4_2', role: 'assistant', content: '用户输入不得被修改', ts: 4001 },
+    ], { createdAt: 4000, updatedAt: 4001, settings: { temperature: 0.7 } }),
+  ], 's_legacy_1');
 
   loadState();
 
@@ -428,19 +402,10 @@ async function exportPrefix(localSettings, localUpdatedAt) {
   const legacyBackupRaw = JSON.stringify({
     format: 'galgame2voice.chat',
     version: 1,
-    sessions: [
-      {
-        id: 's_imported_legacy',
-        title: '导入的旧会话',
-        createdAt: 5000,
-        updatedAt: 5001,
-        settings: {},
-        messages: [
-          { id: 'm_imp_1', role: 'assistant', content: LEGACY_GREETINGS[0], noVoice: true, ts: 5000 },
-          { id: 'm_imp_2', role: 'user', content: '导入的用户提问', ts: 5001 },
-        ],
-      },
-    ],
+    sessions: [makeSession('s_imported_legacy', '导入的旧会话', [
+      { id: 'm_imp_1', role: 'assistant', content: LEGACY_GREETINGS[0], noVoice: true, ts: 5000 },
+      { id: 'm_imp_2', role: 'user', content: '导入的用户提问', ts: 5001 },
+    ], { createdAt: 5000, updatedAt: 5001 })],
     global: {},
   });
   const importedData = prepareSessionImport(legacyBackupRaw);
@@ -458,42 +423,15 @@ async function exportPrefix(localSettings, localUpdatedAt) {
   passed++;
 }
 {
-  class MemoryStorage {
-    values = new Map();
-    getItem(key) { return this.values.get(key) ?? null; }
-    removeItem(key) { this.values.delete(key); }
-    setItem(key, value) { this.values.set(key, String(value)); }
-  }
-  globalThis.localStorage = new MemoryStorage();
-  const STORAGE_KEY = 'gal2voice.chat.v1';
-
   const greeting20260909 =
     '你好，我是 **Gal2Voice**。\n\n支持语音输入与朗读回复：点输入框旁的麦克风说话会自动转成文字，点顶栏喇叭可以朗读我的回复。右上角`会话设置`可配置专属人设与采样参数，侧边栏底部齿轮可切换音色与对话模型。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。';
   const greeting20261003 =
     '你好，我是 **Gal2Voice**。\n\n支持语音输入与朗读回复：点输入框旁的麦克风说话会自动转成文字，点顶栏喇叭可以朗读我的回复。右上角`会话设置`可绑定角色音色并配置人设与采样参数，侧边栏底部齿轮可切换对话模型。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。';
 
-  globalThis.localStorage.setItem(STORAGE_KEY, JSON.stringify({
-    sessions: [
-      {
-        id: 's_hist_1',
-        title: '历史会话 1',
-        createdAt: 1000,
-        updatedAt: 1001,
-        settings: {},
-        messages: [{ id: 'm_h_1', role: 'assistant', content: greeting20260909, noVoice: true, ts: 1000 }],
-      },
-      {
-        id: 's_hist_2',
-        title: '历史会话 2',
-        createdAt: 2000,
-        updatedAt: 2001,
-        settings: {},
-        messages: [{ id: 'm_h_2', role: 'assistant', content: greeting20261003, noVoice: true, ts: 2000 }],
-      },
-    ],
-    activeId: 's_hist_1',
-    global: {},
-  }));
+  installStorageSnapshot([
+    makeSession('s_hist_1', '历史会话 1', [{ id: 'm_h_1', role: 'assistant', content: greeting20260909, noVoice: true, ts: 1000 }], { createdAt: 1000, updatedAt: 1001 }),
+    makeSession('s_hist_2', '历史会话 2', [{ id: 'm_h_2', role: 'assistant', content: greeting20261003, noVoice: true, ts: 2000 }], { createdAt: 2000, updatedAt: 2001 }),
+  ], 's_hist_1');
 
   loadState();
 
@@ -568,73 +506,19 @@ async function exportPrefix(localSettings, localUpdatedAt) {
   try {
     const rawData = {
       sessions: [
-        {
-          id: 's_sync_lastline',
-          title: '已同步历史会话',
-          createdAt: 1000,
-          updatedAt: 2000,
-          messages: [],
-          lastLine: '今天天气真不错，我们去散步吧。',
-          settings: {},
-        },
-        {
-          id: 's_empty_lastline',
-          title: '空消息且无摘要会话',
-          createdAt: 1000,
-          updatedAt: 2000,
-          messages: [],
-          lastLine: '',
-          settings: {},
-        },
-        {
-          id: 's_active_msgs',
-          title: '有完整消息会话',
-          createdAt: 1000,
-          updatedAt: 2000,
-          messages: [{ id: 'm_1', role: 'user', content: '测试消息内容', ts: 1000 }],
-          lastLine: '旧的服务端摘要',
-          settings: {},
-        },
-        {
-          id: 's_empty_content_msg',
-          title: '末条消息内容为空且含摘要',
-          createdAt: 1000,
-          updatedAt: 2000,
-          messages: [{ id: 'm_2', role: 'assistant', content: '', ts: 1000 }],
-          lastLine: '后备摘要文本',
-          settings: {},
-        },
-        {
-          id: 's_markdown_lastline',
-          title: 'Markdown摘要清理截断',
-          createdAt: 1000,
-          updatedAt: 2000,
-          messages: [],
-          lastLine: '# 标题*强调*`代码`\n超出二十六个字符之后的内容应当被干净截断显示',
-          settings: {},
-        },
-        {
-          id: 's_japanese_lines',
-          title: '纯日文台词lines会话',
-          createdAt: 1000,
-          updatedAt: 2000,
-          messages: [
-            { id: 'm_ja_u1', role: 'user', content: '你好', ts: 1000 },
-            { id: 'm_ja_a1', role: 'assistant', content: '', lines: [{ index: 0, zh: '', ja: 'おかえりなさい！', emotion: 'gentle' }], ts: 1001 },
-          ],
-          settings: {},
-        },
-        {
-          id: 's_japanese_field',
-          title: '纯日文台词japanese属性会话',
-          createdAt: 1000,
-          updatedAt: 2000,
-          messages: [
-            { id: 'm_ja_u2', role: 'user', content: '你好', ts: 1000 },
-            { id: 'm_ja_a2', role: 'assistant', content: '', japanese: 'ただいま。', ts: 1001 },
-          ],
-          settings: {},
-        },
+        makeSession('s_sync_lastline', '已同步历史会话', [], { lastLine: '今天天气真不错，我们去散步吧。' }),
+        makeSession('s_empty_lastline', '空消息且无摘要会话', [], { lastLine: '' }),
+        makeSession('s_active_msgs', '有完整消息会话', [{ id: 'm_1', role: 'user', content: '测试消息内容', ts: 1000 }], { lastLine: '旧的服务端摘要' }),
+        makeSession('s_empty_content_msg', '末条消息内容为空且含摘要', [{ id: 'm_2', role: 'assistant', content: '', ts: 1000 }], { lastLine: '后备摘要文本' }),
+        makeSession('s_markdown_lastline', 'Markdown摘要清理截断', [], { lastLine: '# 标题*强调*`代码`\n超出二十六个字符之后的内容应当被干净截断显示' }),
+        makeSession('s_japanese_lines', '纯日文台词lines会话', [
+          { id: 'm_ja_u1', role: 'user', content: '你好', ts: 1000 },
+          { id: 'm_ja_a1', role: 'assistant', content: '', lines: [{ index: 0, zh: '', ja: 'おかえりなさい！', emotion: 'gentle' }], ts: 1001 },
+        ]),
+        makeSession('s_japanese_field', '纯日文台词japanese属性会话', [
+          { id: 'm_ja_u2', role: 'user', content: '你好', ts: 1000 },
+          { id: 'm_ja_a2', role: 'assistant', content: '', japanese: 'ただいま。', ts: 1001 },
+        ]),
       ],
       activeId: 's_sync_lastline',
       global: {},
@@ -677,50 +561,15 @@ async function exportPrefix(localSettings, localUpdatedAt) {
   }
 }
 {
-  class QuotaStorage {
-    values = new Map();
-    limit = 100000;
-    getItem(key) { return this.values.get(key) ?? null; }
-    removeItem(key) { this.values.delete(key); }
-    setItem(key, value) {
-      if (value.length > this.limit) {
-        const err = new Error('quota');
-        err.name = 'QuotaExceededError';
-        throw err;
-      }
-      this.values.set(key, String(value));
-    }
-  }
   const prevStorage = globalThis.localStorage;
-  const storage = new QuotaStorage();
-  globalThis.localStorage = storage;
-  const STORAGE_KEY = 'gal2voice.chat.v1';
   try {
-    storage.values.set(STORAGE_KEY, JSON.stringify({
-      sessions: [
-        {
-          id: 's_active_now',
-          title: '当前会话',
-          createdAt: 2000,
-          updatedAt: 2000,
-          settings: {},
-          messages: [{ id: 'm_act', role: 'user', content: '继续聊天', ts: 2000 }],
-        },
-        {
-          id: 's_inactive_ja_only',
-          title: '日文兜底淘汰会话',
-          createdAt: 1000,
-          updatedAt: 1000,
-          settings: {},
-          messages: [
-            { id: 'm_ja_u', role: 'user', content: '你好', ts: 1000 },
-            { id: 'm_ja_a', role: 'assistant', content: '', japanese: 'ただいま。', ts: 1001 },
-          ],
-        },
-      ],
-      activeId: 's_active_now',
-      global: {},
-    }));
+    const storage = installStorageSnapshot([
+      makeSession('s_active_now', '当前会话', [{ id: 'm_act', role: 'user', content: '继续聊天', ts: 2000 }], { createdAt: 2000 }),
+      makeSession('s_inactive_ja_only', '日文兜底淘汰会话', [
+        { id: 'm_ja_u', role: 'user', content: '你好', ts: 1000 },
+        { id: 'm_ja_a', role: 'assistant', content: '', japanese: 'ただいま。', ts: 1001 },
+      ], { updatedAt: 1000 }),
+    ], 's_active_now', { limit: 100000 });
     loadState();
     const sInactive = state.sessions.find(s => s.id === 's_inactive_ja_only');
     assert.equal(sInactive.lastLine, undefined);

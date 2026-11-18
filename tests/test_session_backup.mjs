@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { state, loadState, saveState, getStorageStatus, getDamagedSessionData, resumeLocalSaving,
-  exportSessionData, prepareSessionImport, applySessionImport,
+  exportSessionData, prepareSessionImport, applySessionImport, deleteSession, getSession,
   DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL } from '../frontend/src/store.js';
+import { deletePersistedSession, persistSession } from '../frontend/src/session_api.js';
 import { normalizeSnapshot } from '../frontend/src/session_data.js';
 import { initSessionBackup } from '../frontend/src/controllers/session_backup.js';
 import { fakeDocument } from './helpers/adv_dom.mjs';
@@ -19,14 +20,21 @@ class Storage {
     this.values.set(key, value);
   }
 }
-const saved = () => ({ sessions: [{ id: 's_old', title: '聊天', createdAt: 1, updatedAt: 2,
-  settings: { voiceProfileId: 99, temperature: 0.7, apiKey: 'must-not-export' },
-  messages: [{ id: 'm_old', role: 'user', content: 'Original message', ts: 1 }] }], activeId: 's_old', global: {} });
+const makeSession = (id, title = id, settings = {}, messages = [], extra = {}) => ({
+  id, title, createdAt: 1, updatedAt: 2, settings, messages, ...extra,
+});
+const saved = () => ({ sessions: [makeSession('s_old', '聊天', { voiceProfileId: 99, temperature: 0.7, apiKey: 'must-not-export' },
+  [{ id: 'm_old', role: 'user', content: 'Original message', ts: 1 }])], activeId: 's_old', global: {} });
 const storage = raw => {
   globalThis.localStorage = new Storage();
   if (raw !== undefined) localStorage.setItem(KEY, typeof raw === 'string' ? raw : JSON.stringify(raw));
   return localStorage;
 };
+const loadSessions = (sessions, activeId = sessions[0]?.id, global = {}) => {
+  storage({ sessions, activeId, global });
+  loadState();
+};
+const normSnap = (sessions, global) => normalizeSnapshot({ sessions, global }, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL);
 globalThis.document = { getElementById: () => null };
 
 {
@@ -343,17 +351,20 @@ function importServer() {
   return { ids, calls, state: state_ };
 }
 
-const backupOf = (sessions) => JSON.stringify({ format: 'galgame2voice.chat', version: 1, global: {}, sessions });
+const backupOf = (sessions, global = {}) => JSON.stringify({ format: 'galgame2voice.chat', version: 1, global, sessions });
 const sessionOf = (id, texts) => ({
   id, title: id, createdAt: 1, updatedAt: 2, settings: {},
   messages: texts.map((content, index) => ({ id: `${id}_m${index}`, role: 'user', content, ts: index + 1 })),
 });
+function setupImportScenario() {
+  storage(saved()); loadState();
+  const server = importServer();
+  return { server, ...importDom() };
+}
 
 // importing a newer backup where only one session grew is not blocked by the older import
 {
-  storage(saved()); loadState();
-  const server = importServer();
-  const { choose, toastText, clearToasts, imported } = importDom();
+  const { server, choose, toastText, clearToasts, imported } = setupImportScenario();
   await choose(backupOf([sessionOf('s_a', ['甲']), sessionOf('s_b', ['乙'])]));
   await choose(backupOf([sessionOf('s_a', ['甲']), sessionOf('s_b', ['乙', '乙又说了一句'])]));
   const toasts = toastText();
@@ -366,9 +377,7 @@ const sessionOf = (id, texts) => ({
 
 // the same backup file lacking timestamps, imported again after a lost response, adds nothing twice
 {
-  storage(saved()); loadState();
-  const server = importServer();
-  const { choose, clearToasts, imported } = importDom();
+  const { server, choose, clearToasts, imported } = setupImportScenario();
   const noTimes = backupOf([{ id: 's_t', title: '没有时间的对话', settings: {}, messages: [{ id: 'm_t', role: 'user', content: '你好' }] }]);
   const realNow = Date.now;
   let clock = 1_000_000;
@@ -387,11 +396,7 @@ const sessionOf = (id, texts) => ({
 
 // deleting an imported session and importing the same file again must leave it saveable
 {
-  storage(saved()); loadState();
-  const server = importServer();
-  const { choose, clearToasts, imported } = importDom();
-  const { deletePersistedSession, persistSession } = await import('../frontend/src/session_api.js');
-  const { deleteSession, getSession } = await import('../frontend/src/store.js');
+  const { server, choose, clearToasts, imported } = setupImportScenario();
   const text = backupOf([sessionOf('s_d', ['要删的对话'])]);
   await choose(text);
   const first = state.sessions[0];
@@ -409,11 +414,7 @@ const sessionOf = (id, texts) => ({
 }
 // deleting with delayed server ack must not let concurrent re-import lose the restored session or be deleted later
 {
-  storage(saved()); loadState();
-  const server = importServer();
-  const { choose, toastText, clearToasts, imported } = importDom();
-  const { deletePersistedSession, persistSession } = await import('../frontend/src/session_api.js');
-  const { deleteSession, getSession } = await import('../frontend/src/store.js');
+  const { server, choose, toastText, clearToasts, imported } = setupImportScenario();
   const text = backupOf([sessionOf('s_race', ['竞态测试对话'])]);
   await choose(text);
   assert.equal(imported(), 1);
@@ -453,11 +454,7 @@ const sessionOf = (id, texts) => ({
 
 // reverse interleaving: deletion and persistence are rejected while import is in-flight, released after import
 {
-  storage(saved()); loadState();
-  const server = importServer();
-  const { choose, clearToasts, imported } = importDom();
-  const { deletePersistedSession, persistSession } = await import('../frontend/src/session_api.js');
-  const { getSession } = await import('../frontend/src/store.js');
+  const { server, choose, clearToasts, imported } = setupImportScenario();
   const text = backupOf([sessionOf('s_rev', ['反向交错测试'])]);
 
   server.state.delayImport = true;
@@ -493,10 +490,7 @@ const sessionOf = (id, texts) => ({
 
 // failed or timed out import releases reservation without permanently blocking subsequent operations
 {
-  storage(saved()); loadState();
-  const server = importServer();
-  const { choose, clearToasts } = importDom();
-  const { deletePersistedSession } = await import('../frontend/src/session_api.js');
+  const { server, choose, clearToasts } = setupImportScenario();
   const text = backupOf([sessionOf('s_fail_release', ['失败释放测试'])]);
   const incoming = prepareSessionImport(text);
   const targetId = incoming.sessions[0].id;
@@ -514,72 +508,28 @@ const sessionOf = (id, texts) => ({
 {
   // 1. normalizeSnapshot directly:
   // global without advSubtitleLanguage
-  const snap1 = normalizeSnapshot(
-    { sessions: [], global: { voiceMode: true, autoTranslate: false } },
-    DEFAULT_SESSION_SETTINGS,
-    DEFAULT_GLOBAL
-  );
+  const snap1 = normSnap([], { voiceMode: true, autoTranslate: false });
   assert.equal('advSubtitleLanguage' in snap1.global, false, 'global without advSubtitleLanguage should not have it added');
   assert.equal(snap1.global.advSubtitleLanguage, undefined);
 
   // global with existing polluted advSubtitleLanguage should be cleaned
-  const snap2 = normalizeSnapshot(
-    { sessions: [], global: { voiceMode: true, advSubtitleLanguage: 'zh' } },
-    DEFAULT_SESSION_SETTINGS,
-    DEFAULT_GLOBAL
-  );
+  const snap2 = normSnap([], { voiceMode: true, advSubtitleLanguage: 'zh' });
   assert.equal('advSubtitleLanguage' in snap2.global, false, 'global with polluted advSubtitleLanguage should have it stripped');
   assert.equal(snap2.global.advSubtitleLanguage, undefined);
 
   // session settings with identical primary and subtitle languages are still resolved
-  const snap3 = normalizeSnapshot(
-    {
-      sessions: [{
-        id: 's_conflict_zh',
-        title: '冲突zh',
-        createdAt: 1,
-        updatedAt: 2,
-        settings: { advPrimaryLanguage: 'zh', advSubtitleLanguage: 'zh' },
-        messages: [],
-      }],
-      global: { voiceMode: true },
-    },
-    DEFAULT_SESSION_SETTINGS,
-    DEFAULT_GLOBAL
-  );
+  const snap3 = normSnap([makeSession('s_conflict_zh', '冲突zh', { advPrimaryLanguage: 'zh', advSubtitleLanguage: 'zh' })], { voiceMode: true });
   assert.equal(snap3.sessions[0].settings.advSubtitleLanguage, 'ja', 'session zh/zh conflict should resolve subtitle to ja');
 
-  const snap4 = normalizeSnapshot(
-    {
-      sessions: [{
-        id: 's_conflict_ja',
-        title: '冲突ja',
-        createdAt: 1,
-        updatedAt: 2,
-        settings: { advPrimaryLanguage: 'ja', advSubtitleLanguage: 'ja' },
-        messages: [],
-      }],
-      global: { voiceMode: true },
-    },
-    DEFAULT_SESSION_SETTINGS,
-    DEFAULT_GLOBAL
-  );
+  const snap4 = normSnap([makeSession('s_conflict_ja', '冲突ja', { advPrimaryLanguage: 'ja', advSubtitleLanguage: 'ja' })], { voiceMode: true });
   assert.equal(snap4.sessions[0].settings.advSubtitleLanguage, 'zh', 'session ja/ja conflict should resolve subtitle to zh');
 
   // 2. Real wiring through storage(), loadState() and exportSessionData()
-  storage({
-    sessions: [{
-      id: 's_wire',
-      title: '真实链路',
-      createdAt: 1,
-      updatedAt: 2,
-      settings: { advPrimaryLanguage: 'zh', advSubtitleLanguage: 'zh' },
-      messages: [{ id: 'm_wire', role: 'user', content: 'test', ts: 1 }],
-    }],
-    activeId: 's_wire',
-    global: { voiceMode: true, advSubtitleLanguage: 'zh' },
-  });
-  loadState();
+  loadSessions(
+    [makeSession('s_wire', '真实链路', { advPrimaryLanguage: 'zh', advSubtitleLanguage: 'zh' }, [{ id: 'm_wire', role: 'user', content: 'test', ts: 1 }])],
+    's_wire',
+    { voiceMode: true, advSubtitleLanguage: 'zh' }
+  );
 
   assert.equal('advSubtitleLanguage' in state.global, false, 'state.global should not contain advSubtitleLanguage');
   assert.equal(state.global.advSubtitleLanguage, undefined);
@@ -596,19 +546,10 @@ const sessionOf = (id, texts) => ({
   assert.equal(exported.sessions[0].settings.advSubtitleLanguage, 'ja');
 
   // 3. prepareSessionImport strips polluted advSubtitleLanguage from imported backup
-  const importedSnapshot = prepareSessionImport(JSON.stringify({
-    format: 'galgame2voice.chat',
-    version: 1,
-    sessions: [{
-      id: 's_polluted_import',
-      title: '污染备份导入',
-      createdAt: 1,
-      updatedAt: 2,
-      settings: { advPrimaryLanguage: 'zh', advSubtitleLanguage: 'zh' },
-      messages: [{ id: 'm_imp', role: 'user', content: '导入测试', ts: 1 }],
-    }],
-    global: { voiceMode: true, advSubtitleLanguage: 'zh' },
-  }));
+  const importedSnapshot = prepareSessionImport(backupOf(
+    [makeSession('s_polluted_import', '污染备份导入', { advPrimaryLanguage: 'zh', advSubtitleLanguage: 'zh' }, [{ id: 'm_imp', role: 'user', content: '导入测试', ts: 1 }])],
+    { voiceMode: true, advSubtitleLanguage: 'zh' }
+  ));
   assert.equal('advSubtitleLanguage' in importedSnapshot.global, false, 'prepareSessionImport should strip advSubtitleLanguage from global');
   assert.equal(importedSnapshot.global.advSubtitleLanguage, undefined);
   assert.equal(importedSnapshot.sessions[0].settings.advSubtitleLanguage, 'ja');
@@ -618,14 +559,11 @@ const sessionOf = (id, texts) => ({
 
 {
   // Old stored data containing obsolete autoTranslate in global or session settings loads safely and drops it
-  storage({
-    sessions: [{ id: 's_old', title: '聊天', createdAt: 1, updatedAt: 2,
-      settings: { voiceProfileId: 99, temperature: 0.7, autoTranslate: true },
-      messages: [{ id: 'm_old', role: 'user', content: 'Original message', ts: 1 }] }],
-    activeId: 's_old',
-    global: { voiceMode: true, autoTranslate: true },
-  });
-  loadState();
+  loadSessions(
+    [makeSession('s_old', '聊天', { voiceProfileId: 99, temperature: 0.7, autoTranslate: true }, [{ id: 'm_old', role: 'user', content: 'Original message', ts: 1 }])],
+    's_old',
+    { voiceMode: true, autoTranslate: true }
+  );
   assert.equal(state.global.autoTranslate, undefined, 'loadState must drop obsolete autoTranslate from global');
   assert.equal(state.sessions[0].settings.autoTranslate, undefined, 'loadState must drop obsolete autoTranslate from session settings');
   passed++;
@@ -652,17 +590,12 @@ const sessionOf = (id, texts) => ({
       : {}),
   }));
 
-  storage({
-    sessions: [
-      { id: 's_oldest', title: '最早会话', createdAt: 100, updatedAt: 1000, settings: { voiceProfileId: 11, temperature: 0.5 }, messages: [] },
-      { id: 's_failed', title: '含失败提问会话', createdAt: 200, updatedAt: 1500, settings: { voiceProfileId: 12, temperature: 0.6 }, messages: [] },
-      { id: 's_newer', title: '较新会话', createdAt: 300, updatedAt: 2000, settings: { voiceProfileId: 13, temperature: 0.9 }, messages: [] },
-      { id: 's_latest', title: '当前激活会话', createdAt: 400, updatedAt: 3000, settings: { voiceProfileId: 14, temperature: 0.8 }, messages: [] },
-    ],
-    activeId: 's_oldest',
-    global: {},
-  });
-  loadState();
+  loadSessions([
+    makeSession('s_oldest', '最早会话', { voiceProfileId: 11, temperature: 0.5 }, [], { createdAt: 100, updatedAt: 1000 }),
+    makeSession('s_failed', '含失败提问会话', { voiceProfileId: 12, temperature: 0.6 }, [], { createdAt: 200, updatedAt: 1500 }),
+    makeSession('s_newer', '较新会话', { voiceProfileId: 13, temperature: 0.9 }, [], { createdAt: 300, updatedAt: 2000 }),
+    makeSession('s_latest', '当前激活会话', { voiceProfileId: 14, temperature: 0.8 }, [], { createdAt: 400, updatedAt: 3000 }),
+  ], 's_oldest');
 
   const sOldest = state.sessions.find((s) => s.id === 's_oldest');
   const sFailed = state.sessions.find((s) => s.id === 's_failed');
@@ -735,32 +668,13 @@ const sessionOf = (id, texts) => ({
 
 // saveState rolls back in-memory messages and lastLine when eviction still fails due to QuotaExceededError
 {
-  storage({
-    sessions: [
-      {
-        id: 's_active',
-        title: '活跃会话',
-        createdAt: 200,
-        updatedAt: 2000,
-        settings: { voiceProfileId: 1, temperature: 0.7 },
-        messages: [{ id: 'm_act_1', role: 'user', content: '活跃提问', ts: 201 }],
-      },
-      {
-        id: 's_inactive',
-        title: '历史会话',
-        createdAt: 100,
-        updatedAt: 1000,
-        settings: { voiceProfileId: 2, temperature: 0.5 },
-        messages: [
-          { id: 'm_inact_1', role: 'user', content: '历史提问', ts: 101 },
-          { id: 'm_inact_2', role: 'assistant', content: '历史回答', ts: 102 },
-        ],
-      },
-    ],
-    activeId: 's_active',
-    global: {},
-  });
-  loadState();
+  loadSessions([
+    makeSession('s_active', '活跃会话', { voiceProfileId: 1, temperature: 0.7 }, [{ id: 'm_act_1', role: 'user', content: '活跃提问', ts: 201 }], { createdAt: 200, updatedAt: 2000 }),
+    makeSession('s_inactive', '历史会话', { voiceProfileId: 2, temperature: 0.5 }, [
+      { id: 'm_inact_1', role: 'user', content: '历史提问', ts: 101 },
+      { id: 'm_inact_2', role: 'assistant', content: '历史回答', ts: 102 },
+    ], { createdAt: 100, updatedAt: 1000 }),
+  ], 's_active');
 
   const sActive = state.sessions.find((s) => s.id === 's_active');
   const sInactive = state.sessions.find((s) => s.id === 's_inactive');
@@ -793,44 +707,17 @@ const sessionOf = (id, texts) => ({
 
 // saveState rolls back multiple inactive sessions and preserves pre-existing lastLine across consecutive eviction failures
 {
-  storage({
-    sessions: [
-      {
-        id: 's_active',
-        title: '活跃会话',
-        createdAt: 300,
-        updatedAt: 3000,
-        settings: { voiceProfileId: 1, temperature: 0.7 },
-        messages: [{ id: 'm_act_1', role: 'user', content: '活跃提问', ts: 301 }],
-      },
-      {
-        id: 's_inactive_old',
-        title: '较旧历史会话',
-        createdAt: 100,
-        updatedAt: 1000,
-        lastLine: '已有历史摘要',
-        settings: { voiceProfileId: 2, temperature: 0.5 },
-        messages: [
-          { id: 'm_old_1', role: 'user', content: '旧历史提问', ts: 101 },
-          { id: 'm_old_2', role: 'assistant', content: '旧历史回答', ts: 102 },
-        ],
-      },
-      {
-        id: 's_inactive_new',
-        title: '较新历史会话',
-        createdAt: 200,
-        updatedAt: 2000,
-        settings: { voiceProfileId: 3, temperature: 0.6 },
-        messages: [
-          { id: 'm_new_1', role: 'user', content: '新历史提问', ts: 201 },
-          { id: 'm_new_2', role: 'assistant', content: '新历史回答', ts: 202 },
-        ],
-      },
-    ],
-    activeId: 's_active',
-    global: {},
-  });
-  loadState();
+  loadSessions([
+    makeSession('s_active', '活跃会话', { voiceProfileId: 1, temperature: 0.7 }, [{ id: 'm_act_1', role: 'user', content: '活跃提问', ts: 301 }], { createdAt: 300, updatedAt: 3000 }),
+    makeSession('s_inactive_old', '较旧历史会话', { voiceProfileId: 2, temperature: 0.5 }, [
+      { id: 'm_old_1', role: 'user', content: '旧历史提问', ts: 101 },
+      { id: 'm_old_2', role: 'assistant', content: '旧历史回答', ts: 102 },
+    ], { createdAt: 100, updatedAt: 1000, lastLine: '已有历史摘要' }),
+    makeSession('s_inactive_new', '较新历史会话', { voiceProfileId: 3, temperature: 0.6 }, [
+      { id: 'm_new_1', role: 'user', content: '新历史提问', ts: 201 },
+      { id: 'm_new_2', role: 'assistant', content: '新历史回答', ts: 202 },
+    ], { createdAt: 200, updatedAt: 2000 }),
+  ], 's_active');
 
   const sInactiveOld = state.sessions.find((s) => s.id === 's_inactive_old');
   const sInactiveNew = state.sessions.find((s) => s.id === 's_inactive_new');
