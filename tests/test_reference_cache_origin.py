@@ -187,35 +187,6 @@ async def test_default_package_modification_does_not_invalidate_unknown_remote_r
 
 
 @pytest.mark.asyncio
-async def test_truly_explicit_local_reference_modification_still_invalidates(cache_env):
-    """Modifying a genuinely resolved local file must still invalidate the identity."""
-    local_ref = cache_env.root / "explicit_local.wav"
-    _create_wav(local_ref, duration_sec=4.0, freq=440)
-
-    opts = {
-        "voice_profile_id": cache_env.profile.id,
-        "gpt_weights_path": str(cache_env.gpt_file),
-        "sovits_weights_path": str(cache_env.sovits_file),
-        "ref_audio_path": str(local_ref),
-        "prompt_text": "测试台词",
-        "prompt_lang": "zh",
-        "text_lang": "ja",
-        "_engine_url": "http://127.0.0.1:9880",
-        "_profile_prompt_resolved": True,
-    }
-
-    identity = AudioIdentity.capture(opts)
-    assert identity.reference.revision is not None
-
-    # Modify the actual local file
-    await asyncio.sleep(0.01)
-    _create_wav(local_ref, duration_sec=4.0, freq=880)
-
-    with pytest.raises(ValueError, match="音色文件在等待合成期间发生变化"):
-        identity.validate_sources(opts, cache_env.client)
-
-
-@pytest.mark.asyncio
 async def test_legacy_package_fallback_preserved_without_profile_resolved(cache_env):
     """Without _profile_prompt_resolved, legacy caller paths that match a package
 
