@@ -737,6 +737,16 @@ function confirmPackageOverwrite(data, filename) {
   return window.confirm(`已有同名角色包「${names}」，覆盖它吗？旧的会先备份。`);
 }
 
+function characterImportSuccessMessage(label, imported) {
+  const missing = imported.filter((item) => item.missing_voice_weights);
+  if (!missing.length) return `已导入${label}，点「保存」即可使用`;
+  if (missing.length === imported.length) {
+    return `已导入${label}，但还不能出声，需要补上模型权重`;
+  }
+  const who = missing.map((item) => `「${item.name}」`).join('、');
+  return `已导入${label}，其中${who}还不能出声，需要补上模型权重`;
+}
+
 async function finishCharacterImport(data, filename) {
   invalidateScannedModels();
   await loadSessionVoiceSelect(getActive(), { preserveDraft: true, syncCustomBox: false });
@@ -746,7 +756,7 @@ async function finishCharacterImport(data, filename) {
     handleVoiceSelectionChange();
   } else syncCustomVoiceBox();
   const label = imported.length ? imported.map((item) => `「${item.name}」`).join('、') : `「${filename || '角色包'}」`;
-  showToast(`已导入${label}，点「保存」即可使用`, 'success');
+  showToast(characterImportSuccessMessage(label, imported), 'success');
 }
 
 async function importCharacterArchive(blob, filename) {

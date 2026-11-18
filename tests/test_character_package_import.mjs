@@ -142,8 +142,65 @@ try {
   await pFail;
   assert.equal(toastRoot.children.at(-1)?.dataset.msg, '缺少参考音频');
   assert.match(toastRoot.children.at(-1)?.className || '', /toast-error/);
+
+  // Manifest names gpt.ckpt / sovits.pth, but the import response says neither file is usable.
+  // The success toast must say the character still cannot speak. A package with weights keeps the old text.
+  profiles = [{ id: 9, name: '缺权重小灯', system_prompt: '你是缺权重小灯。' }];
+  dom.sVoiceImportZipInput.files = [z1];
+  const pMissing = dom.sVoiceImportZipInput.fire('change');
+  await tick();
+  const missingXhr = xhrs.at(-1);
+  missingXhr.status = 200;
+  missingXhr.responseText = JSON.stringify({
+    status: 'ok',
+    imported: [{ name: '缺权重小灯', folder: 'walk_noweight', character_id: 'walk_noweight', profile_id: 9, missing_voice_weights: true }],
+  });
+  missingXhr.onload();
+  await pMissing;
+  assert.equal(dom.sVoice.value, '9');
+  assert.equal(toastRoot.children.at(-1)?.dataset.msg, '已导入「缺权重小灯」，但还不能出声，需要补上模型权重');
+  assert.match(toastRoot.children.at(-1)?.className || '', /toast-success/);
+
+  profiles = [{ id: 10, name: '爱丽丝', system_prompt: '你是爱丽丝' }];
+  dom.sVoiceImportZipInput.files = [z1];
+  const pReady = dom.sVoiceImportZipInput.fire('change');
+  await tick();
+  const readyXhr = xhrs.at(-1);
+  readyXhr.status = 200;
+  readyXhr.responseText = JSON.stringify({
+    status: 'ok',
+    imported: [{ name: '爱丽丝', profile_id: 10, missing_voice_weights: false }],
+  });
+  readyXhr.onload();
+  await pReady;
+  assert.equal(toastRoot.children.at(-1)?.dataset.msg, '已导入「爱丽丝」，点「保存」即可使用');
+  assert.match(toastRoot.children.at(-1)?.className || '', /toast-success/);
+
+  profiles = [
+    { id: 11, name: '爱丽丝', system_prompt: '你是爱丽丝' },
+    { id: 12, name: '缺权重小灯', system_prompt: '你是缺权重小灯。' },
+  ];
+  dom.sVoiceImportZipInput.files = [z1];
+  const pMixed = dom.sVoiceImportZipInput.fire('change');
+  await tick();
+  const mixedXhr = xhrs.at(-1);
+  mixedXhr.status = 200;
+  mixedXhr.responseText = JSON.stringify({
+    status: 'ok',
+    imported: [
+      { name: '爱丽丝', profile_id: 11, missing_voice_weights: false },
+      { name: '缺权重小灯', profile_id: 12, missing_voice_weights: true },
+    ],
+  });
+  mixedXhr.onload();
+  await pMixed;
+  assert.equal(
+    toastRoot.children.at(-1)?.dataset.msg,
+    '已导入「爱丽丝」、「缺权重小灯」，其中「缺权重小灯」还不能出声，需要补上模型权重',
+  );
 } finally {
   globalThis.XMLHttpRequest = prevXHR; globalThis.window = prevWin;
   cleanup();
 }
 console.log('character_package_import simplified frontend tests: passed');
+console.log('missing voice weights import hint: 1 scenario passed');
