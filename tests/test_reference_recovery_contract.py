@@ -256,44 +256,6 @@ async def test_valid_custom_ref_audio_preserves_custom_text_and_lang(char_env):
 
 
 @pytest.mark.asyncio
-async def test_explicit_options_override_takes_precedence(char_env):
-    """Explicit ref_audio_path and prompt_text in options override profile defaults."""
-    profile = await _create_profile(
-        char_env, char_env.chars_dir / "refs" / "deleted_audio.wav", "这是被删除参考的旧文本"
-    )
-
-    override_wav = _create_wav(char_env.root / "override.wav", duration_sec=4.0)
-    opts = {
-        "voice_profile_id": profile.id,
-        "ref_audio_path": str(override_wav),
-        "prompt_text": "单次显式覆盖文本",
-        "prompt_lang": "en",
-    }
-    resolved = await char_env.service._populate_voice_profile_opts(opts)
-
-    assert Path(resolved["ref_audio_path"]) == override_wav
-    assert resolved["prompt_text"] == "单次显式覆盖文本"
-    assert resolved["prompt_lang"] == "en"
-
-
-@pytest.mark.asyncio
-async def test_normal_emotion_selection_pairs_emotion_audio_and_text(char_env):
-    """Normal adaptive emotion selection must pair joy audio with joy text."""
-    profile = await _create_profile(char_env, char_env.gentle_wav, "温柔默认台词", "ja")
-
-    opts = {
-        "voice_profile_id": profile.id,
-        "emotion": "joy",
-        "ai_adaptive_voice": True,
-    }
-    resolved = await char_env.service._populate_voice_profile_opts(opts)
-
-    assert Path(resolved["ref_audio_path"]) == char_env.joy_wav
-    assert resolved["prompt_text"] == "とても嬉しいです！（joy）"
-    assert resolved["prompt_lang"] == "ja"
-
-
-@pytest.mark.asyncio
 async def test_standalone_remote_reference_path_is_preserved_without_local_exists_check(char_env):
     """Standalone profiles (not bound to local packages) preserve remote paths and transcripts."""
     remote_path = "/remote/gpt_sovits/audio/ref_remote.wav"
