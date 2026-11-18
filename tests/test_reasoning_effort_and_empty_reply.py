@@ -12,6 +12,7 @@ Covers:
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 import json
 import time
 from types import SimpleNamespace
@@ -46,6 +47,72 @@ from galgame2voice.utils.error_diagnostics import (
     chat_error_payload,
 )
 from tests.test_stream_reply_lines import coordinator_factory as coordinator_factory
+
+
+def _provider_payload(
+    provider_id: str = "api_test_p",
+    name: str = "API Test",
+    api_key: str = "sk-12345678",
+    **extra,
+) -> dict:
+    return {
+        "id": provider_id,
+        "name": name,
+        "api_base_url": "https://api.test.com/v1",
+        "api_key": api_key,
+        "chat_model": "test-model",
+        **extra,
+    }
+
+
+async def _run_coordinator_case(
+    db_file,
+    session_id: str,
+    prompt: str,
+    stream_chat,
+    *,
+    last_finish_reason: str | None = None,
+    cancel_event: asyncio.Event | None = None,
+):
+    await init_db(db_file)
+    async with get_db(str(db_file)) as conn:
+        user_msg = await crud.add_message(
+            conn,
+            MessageCreate(session_id=session_id, role="user", content_chinese=prompt),
+        )
+    adapter_kwargs = {"stream_chat": stream_chat, "api_key": "synthetic"}
+    if last_finish_reason is not None:
+        adapter_kwargs["last_finish_reason"] = last_finish_reason
+    coordinator = StreamCoordinator(
+        adapter=SimpleNamespace(**adapter_kwargs),
+        messages=[],
+        model_name="test",
+        actual_provider_id="custom",
+        session_id=session_id,
+        prompt=prompt,
+        user_msg=user_msg,
+        db_path=str(db_file),
+        cancel_event=cancel_event,
+        metrics_collector=SimpleNamespace(record_chat_turn=AsyncMock(return_value={})),
+        affection_service=SimpleNamespace(handle_turn_affection=AsyncMock(return_value={"emotion": "gentle"})),
+        tts_service=None,
+        concat_wav_fn=lambda *args: True,
+    )
+    return [e async for e in coordinator]
+
+
+@asynccontextmanager
+async def _mock_probe_client():
+    import httpx
+
+    probed: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        probed.append(json.loads(req.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        yield client, probed
 
 
 @pytest.mark.asyncio
@@ -194,17 +261,7 @@ async def test_provider_api_endpoints():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         # Create with reasoning_effort="medium"
-        create_resp = await client.post(
-            "/api/providers",
-            json={
-                "id": "api_test_p",
-                "name": "API Test",
-                "api_base_url": "https://api.test.com/v1",
-                "api_key": "sk-12345678",
-                "chat_model": "test-model",
-                "reasoning_effort": "medium",
-            },
-        )
+        create_resp = await client.post("/api/providers", json=_provider_payload(reasoning_effort="medium"))
         assert create_resp.status_code == 200
         assert create_resp.json()["provider"]["reasoning_effort"] == "medium"
 
@@ -224,13 +281,7 @@ async def test_provider_api_endpoints():
         # Update omitting reasoning_effort keeps medium
         update_omit = await client.post(
             "/api/providers",
-            json={
-                "id": "api_test_p",
-                "name": "API Test Renamed",
-                "api_base_url": "https://api.test.com/v1",
-                "api_key": "sk-****5678",
-                "chat_model": "test-model",
-            },
+            json=_provider_payload(name="API Test Renamed", api_key="sk-****5678"),
         )
         assert update_omit.status_code == 200
         assert update_omit.json()["provider"]["reasoning_effort"] == "medium"
@@ -238,14 +289,7 @@ async def test_provider_api_endpoints():
         # Update with explicit null clears to null
         update_null = await client.post(
             "/api/providers",
-            json={
-                "id": "api_test_p",
-                "name": "API Test Renamed",
-                "api_base_url": "https://api.test.com/v1",
-                "api_key": "sk-****5678",
-                "chat_model": "test-model",
-                "reasoning_effort": None,
-            },
+            json=_provider_payload(name="API Test Renamed", api_key="sk-****5678", reasoning_effort=None),
         )
         assert update_null.status_code == 200
         assert update_null.json()["provider"]["reasoning_effort"] is None
@@ -253,14 +297,7 @@ async def test_provider_api_endpoints():
         # Invalid value returns 422
         bad_resp = await client.post(
             "/api/providers",
-            json={
-                "id": "bad_p",
-                "name": "Bad Provider",
-                "api_base_url": "https://api.test.com/v1",
-                "api_key": "sk-12345678",
-                "chat_model": "test-model",
-                "reasoning_effort": "minimal",
-            },
+            json=_provider_payload("bad_p", "Bad Provider", reasoning_effort="minimal"),
         )
         assert bad_resp.status_code == 422
         bad_update = await client.put("/api/providers/api_test_p", json={"reasoning_effort": "minimal"})
@@ -354,15 +391,6 @@ async def test_llm_pipeline_and_coordinator_forward_reasoning_effort():
 @pytest.mark.asyncio
 async def test_streaming_cancellation_stays_cancelled(tmp_path):
     """Verifies that user cancellation before content emits done with truncated: True, not empty_reply."""
-    db_file = tmp_path / "stream_cancel.db"
-    await init_db(db_file)
-
-    async with get_db(str(db_file)) as conn:
-        user_msg = await crud.add_message(
-            conn,
-            MessageCreate(session_id="cancel_sess", role="user", content_chinese="取消测试"),
-        )
-
     cancel_event = asyncio.Event()
 
     async def cancel_tokens(*args, **kwargs):
@@ -370,23 +398,13 @@ async def test_streaming_cancellation_stays_cancelled(tmp_path):
         if False:
             yield ""
 
-    coordinator = StreamCoordinator(
-        adapter=SimpleNamespace(stream_chat=cancel_tokens, api_key="synthetic"),
-        messages=[],
-        model_name="test",
-        actual_provider_id="custom",
-        session_id="cancel_sess",
-        prompt="取消测试",
-        user_msg=user_msg,
-        db_path=str(db_file),
+    events = await _run_coordinator_case(
+        tmp_path / "stream_cancel.db",
+        "cancel_sess",
+        "取消测试",
+        cancel_tokens,
         cancel_event=cancel_event,
-        metrics_collector=SimpleNamespace(record_chat_turn=AsyncMock(return_value={})),
-        affection_service=SimpleNamespace(handle_turn_affection=AsyncMock(return_value={"emotion": "gentle"})),
-        tts_service=None,
-        concat_wav_fn=lambda *args: True,
     )
-
-    events = [e async for e in coordinator]
     assert len(events) >= 1
     last_event = events[-1]
     assert last_event["event"] == "done"
@@ -591,15 +609,6 @@ async def test_streaming_content_filter_emits_error_and_truncated_done(tmp_path,
     """Verifies stream_chat emits error event with content filter message and done with truncated: True."""
     from galgame2voice.adapters.base import validate_stream_completion
 
-    db_file = tmp_path / f"stream_cf_{finish_reason}.db"
-    await init_db(db_file)
-
-    async with get_db(str(db_file)) as conn:
-        user_msg = await crud.add_message(
-            conn,
-            MessageCreate(session_id="cf_sess", role="user", content_chinese="触发过滤"),
-        )
-
     async def cf_stream(*args, **kwargs):
         yield '{"lines": [{"zh": "你好呀", "ja": "こんにちは"}], "unclosed": "'
         validate_stream_completion(
@@ -608,28 +617,13 @@ async def test_streaming_content_filter_emits_error_and_truncated_done(tmp_path,
             finish_reason=finish_reason,
         )
 
-    adapter = SimpleNamespace(
-        stream_chat=cf_stream,
-        api_key="synthetic",
+    events = await _run_coordinator_case(
+        tmp_path / f"stream_cf_{finish_reason}.db",
+        "cf_sess",
+        "触发过滤",
+        cf_stream,
         last_finish_reason=finish_reason,
     )
-
-    coordinator = StreamCoordinator(
-        adapter=adapter,
-        messages=[],
-        model_name="test",
-        actual_provider_id="custom",
-        session_id="cf_sess",
-        prompt="触发过滤",
-        user_msg=user_msg,
-        db_path=str(db_file),
-        metrics_collector=SimpleNamespace(record_chat_turn=AsyncMock(return_value={})),
-        affection_service=SimpleNamespace(handle_turn_affection=AsyncMock(return_value={"emotion": "gentle"})),
-        tts_service=None,
-        concat_wav_fn=lambda *args: True,
-    )
-
-    events = [e async for e in coordinator]
     error_events = [e for e in events if e.get("event") == "error"]
     done_events = [e for e in events if e.get("event") == "done"]
 
@@ -648,40 +642,18 @@ async def test_streaming_content_filter_emits_error_and_truncated_done(tmp_path,
 async def test_streaming_empty_reply_content_filtered(tmp_path, finish_reason):
     """Verifies that empty reply with content filter finish reason uses content-filtered explanation."""
     db_file = tmp_path / f"stream_empty_cf_{finish_reason}.db"
-    await init_db(db_file)
-
-    async with get_db(str(db_file)) as conn:
-        user_msg = await crud.add_message(
-            conn,
-            MessageCreate(session_id="empty_cf", role="user", content_chinese="违规问题"),
-        )
 
     async def empty_tokens(*args, **kwargs):
         if False:
             yield ""
 
-    adapter = SimpleNamespace(
-        stream_chat=empty_tokens,
-        api_key="synthetic",
+    events = await _run_coordinator_case(
+        db_file,
+        "empty_cf",
+        "违规问题",
+        empty_tokens,
         last_finish_reason=finish_reason,
     )
-
-    coordinator = StreamCoordinator(
-        adapter=adapter,
-        messages=[],
-        model_name="test",
-        actual_provider_id="custom",
-        session_id="empty_cf",
-        prompt="违规问题",
-        user_msg=user_msg,
-        db_path=str(db_file),
-        metrics_collector=SimpleNamespace(record_chat_turn=AsyncMock(return_value={})),
-        affection_service=SimpleNamespace(handle_turn_affection=AsyncMock(return_value={"emotion": "gentle"})),
-        tts_service=None,
-        concat_wav_fn=lambda *args: True,
-    )
-
-    events = [e async for e in coordinator]
     assert len(events) >= 1
     last_event = events[-1]
     assert last_event["event"] == "error"
@@ -725,15 +697,7 @@ def test_deepseek_payload_translates_reasoning_effort():
 
 @pytest.mark.asyncio
 async def test_deepseek_connectivity_probe_translates_reasoning_effort():
-    import httpx
-
-    sent: list[dict] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        sent.append(json.loads(request.content))
-        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+    async with _mock_probe_client() as (client, sent):
         ds_off = get_llm_adapter("deepseek", api_key="sk-test", reasoning_effort="none")
         await ds_off._probe_chat_fallback(client, "deepseek-flash", {}, "deepseek", time.perf_counter())
         ds_low = get_llm_adapter("deepseek", api_key="sk-test", reasoning_effort="low")
@@ -747,7 +711,6 @@ async def test_deepseek_connectivity_probe_translates_reasoning_effort():
 
 @pytest.mark.asyncio
 async def test_openai_gpt6_payload_and_probe_rules():
-    import httpx
     from galgame2voice.adapters.llm import OpenAILLMAdapter
 
     oa = get_llm_adapter("openai", api_key="sk-test")
@@ -778,13 +741,7 @@ async def test_openai_gpt6_payload_and_probe_rules():
     assert custom_payload["max_tokens"] == 1024 and "max_completion_tokens" not in custom_payload
     assert custom_payload["temperature"] == 0.7
 
-    probed: list[dict] = []
-
-    def handler(req: httpx.Request) -> httpx.Response:
-        probed.append(json.loads(req.content))
-        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+    async with _mock_probe_client() as (client, probed):
         await oa._probe_chat_fallback(client, "gpt-6.1-sol", {}, "openai", time.perf_counter())
         await custom._probe_chat_fallback(client, "qwen3:latest", {}, "custom", time.perf_counter())
     assert probed[0].get("max_completion_tokens") == 1 and "max_tokens" not in probed[0]
@@ -818,7 +775,6 @@ def test_gemini_payload_translates_none_reasoning_effort_to_minimal():
 
 @pytest.mark.asyncio
 async def test_moonshot_k3_payload_and_probe_rules():
-    import httpx
     from galgame2voice.adapters.llm import MoonshotLLMAdapter
 
     kimi = get_llm_adapter("moonshot", api_key="sk-test", reasoning_effort="none")
@@ -841,13 +797,7 @@ async def test_moonshot_k3_payload_and_probe_rules():
     assert (p_k26["frequency_penalty"], p_k26["presence_penalty"], p_k26["reasoning_effort"]) == (0, 0, "none")
     assert "max_completion_tokens" not in p_k26
 
-    probed: list[dict] = []
-
-    def handler(req: httpx.Request) -> httpx.Response:
-        probed.append(json.loads(req.content))
-        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+    async with _mock_probe_client() as (client, probed):
         await kimi._probe_chat_fallback(client, "kimi-k3.1-pro", {}, "moonshot", time.perf_counter())
     assert (probed[0].get("max_completion_tokens"), probed[0].get("reasoning_effort")) == (1, "low")
     assert "max_tokens" not in probed[0]

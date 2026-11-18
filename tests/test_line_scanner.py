@@ -17,150 +17,96 @@ from galgame2voice.services.chat_pipelines.line_scanner import (
     validate_line,
 )
 
+def _line(zh: str, ja: str, emotion: str | None = None, act: dict | None = None) -> dict:
+    item: dict = {"zh": zh, "ja": ja}
+    if emotion is not None:
+        item["emotion"] = emotion
+    if act is not None:
+        item["act"] = act
+    return item
+
+
+def _lines_fixture(
+    *lines,
+    tts: dict | None = None,
+    tts_after: bool = False,
+    ensure_ascii: bool = True,
+    prefix: str = "",
+    suffix: str = "",
+) -> str:
+    payload: dict = {}
+    if tts is not None and not tts_after:
+        payload["tts"] = tts
+    payload["lines"] = list(lines)
+    if tts is not None and tts_after:
+        payload["tts"] = tts
+    return prefix + json.dumps(payload, ensure_ascii=ensure_ascii) + suffix
+
+
+def _scan_fixture(name: str):
+    scanner = LineScanner()
+    lines = scanner.feed(FIXTURES[name])
+    return lines, scanner.finish()
+
+
 FIXTURES: dict[str, str] = {
-    "normal": json.dumps({
-        "tts": {"speed": 1.05, "temp": 0.95, "emotion": "gentle"},
-        "lines": [
-            {
-                "zh": "你好呀，指挥官！",
-                "ja": "こんにちは、指揮官！",
-                "emotion": "gentle",
-                "act": {"face": "smile", "pose": "b", "motion": "nod", "blush": False, "fx": None},
-            },
-            {
-                "zh": "今天天气真好呢。",
-                "ja": "今日はいい天気ですね。",
-                "emotion": "happy",
-                "act": {"face": "happy", "pose": "a", "motion": "bounce", "blush": True, "fx": "sparkle"},
-            },
-        ],
-    }),
-    "fenced": (
-        "```json\n"
-        + json.dumps({
-            "tts": {"speed": 1.0, "temp": 1.0, "emotion": "happy"},
-            "lines": [
-                {"zh": "测试围栏", "ja": "フェンスのテスト", "emotion": "happy", "act": {"face": "smile"}},
-            ],
-        })
-        + "\n```"
+    "normal": _lines_fixture(
+        _line("你好呀，指挥官！", "こんにちは、指揮官！", "gentle", {"face": "smile", "pose": "b", "motion": "nod", "blush": False, "fx": None}),
+        _line("今天天气真好呢。", "今日はいい天気ですね。", "happy", {"face": "happy", "pose": "a", "motion": "bounce", "blush": True, "fx": "sparkle"}),
+        tts={"speed": 1.05, "temp": 0.95, "emotion": "gentle"},
     ),
-    "preamble": (
-        "好的，这是为你准备的回复内容：\n```json\n"
-        + json.dumps({
-            "tts": {"speed": 0.9, "temp": 1.0, "emotion": "cool"},
-            "lines": [
-                {"zh": "有前导文字的回复", "ja": "前置きのある返信", "emotion": "cool", "act": {"face": "neutral"}},
-            ],
-        })
-        + "\n```"
+    "fenced": _lines_fixture(
+        _line("测试围栏", "フェンスのテスト", "happy", {"face": "smile"}),
+        tts={"speed": 1.0, "temp": 1.0, "emotion": "happy"},
+        prefix="```json\n",
+        suffix="\n```",
     ),
-    "tts_after_lines": json.dumps({
-        "lines": [
-            {"zh": "第一行", "ja": "一行目", "emotion": "gentle", "act": {"face": "smile"}},
-            {"zh": "第二行", "ja": "二行目", "emotion": "happy", "act": {"face": "smile"}},
-        ],
-        "tts": {"speed": 1.1, "temp": 0.9, "emotion": "happy"},
-    }),
+    "preamble": _lines_fixture(
+        _line("有前导文字的回复", "前置きのある返信", "cool", {"face": "neutral"}),
+        tts={"speed": 0.9, "temp": 1.0, "emotion": "cool"},
+        prefix="好的，这是为你准备的回复内容：\n```json\n",
+        suffix="\n```",
+    ),
+    "tts_after_lines": _lines_fixture(
+        _line("第一行", "一行目", "gentle", {"face": "smile"}),
+        _line("第二行", "二行目", "happy", {"face": "smile"}),
+        tts={"speed": 1.1, "temp": 0.9, "emotion": "happy"},
+        tts_after=True,
+    ),
     "escaped_quotes_and_backslashes": (
         '{"lines": [{"zh": "她说：\\"你好\\\\世界\\"！", "ja": "彼女は「こんにちは\\\\世界」と言った！", "emotion": "gentle", "act": {"face": "smile"}}]}'
     ),
     "unicode_and_surrogate_pairs": (
         '{"lines": [{"zh": "\\u4f60\\u597d \\uD83D\\uDE0A", "ja": "\\u3053\\u3093\\u306b\\u3061\\u306f \\uD83D\\uDE0A", "emotion": "happy", "act": {"face": "smile"}}]}'
     ),
-    "raw_emoji": json.dumps({
-        "lines": [
-            {
-                "zh": "指挥官，加油！🎉✨😊",
-                "ja": "指揮官、頑張って！🎉✨😊",
-                "emotion": "happy",
-                "act": {"face": "wink", "fx": "sparkle"},
-            }
-        ]
-    }, ensure_ascii=False),
-    "braces_and_brackets_in_strings": json.dumps({
-        "lines": [
-            {
-                "zh": "代码是 function() { return [1, 2]; } 哦",
-                "ja": "コードは function() { return [1, 2]; } ですよ",
-                "emotion": "gentle",
-                "act": {"face": "smile"},
-            }
-        ]
-    }),
-    "nested_act": json.dumps({
-        "lines": [
-            {
-                "zh": "嵌套动作测试",
-                "ja": "ネストされたアクションのテスト",
-                "emotion": "shy",
-                "act": {
-                    "face": "blush",
-                    "pose": "pose_shy",
-                    "motion": "fidget",
-                    "blush": True,
-                    "fx": "heart",
-                },
-            }
-        ]
-    }),
-    "invalid_act_values": json.dumps({
-        "lines": [
-            {
-                "zh": "部分非法 act 字段",
-                "ja": "一部不正な act フィールド",
-                "emotion": "gentle",
-                "act": {
-                    "face": "invalid/face/with/slashes",
-                    "pose": "valid_pose",
-                    "motion": "flying_high",
-                    "blush": "yes_very_blushing",
-                    "fx": 999,
-                },
-            }
-        ]
-    }),
-    "outfit_and_extra_act_keys": json.dumps({
-        "lines": [
-            {
-                "zh": "非法 keys 测试",
-                "ja": "不正なキーのテスト",
-                "emotion": "gentle",
-                "act": {
-                    "face": "smile",
-                    "outfit": "maid_uniform",
-                    "extra_param": 42,
-                },
-            }
-        ]
-    }),
-    "missing_or_invalid_emotion": json.dumps({
-        "lines": [
-            {
-                "zh": "没有有效情绪",
-                "ja": "有効な感情なし",
-                "emotion": "super_excited",
-                "act": {"face": "smile"},
-            },
-            {
-                "zh": "缺失情绪字段",
-                "ja": "感情フィールドなし",
-                "act": {"face": "smile"},
-            },
-        ]
-    }),
-    "empty_zh_and_ja": json.dumps({
-        "lines": [
-            {"zh": "   ", "ja": "", "emotion": "gentle"},
-            {"zh": "有效行", "ja": "有効な行", "emotion": "gentle"},
-        ]
-    }),
-    "non_object_element": json.dumps({
-        "lines": [
-            "invalid non-object element string",
-            {"zh": "第二行", "ja": "二行目", "emotion": "gentle"},
-        ]
-    }),
+    "raw_emoji": _lines_fixture(
+        _line("指挥官，加油！🎉✨😊", "指揮官、頑張って！🎉✨😊", "happy", {"face": "wink", "fx": "sparkle"}),
+        ensure_ascii=False,
+    ),
+    "braces_and_brackets_in_strings": _lines_fixture(
+        _line("代码是 function() { return [1, 2]; } 哦", "コードは function() { return [1, 2]; } ですよ", "gentle", {"face": "smile"}),
+    ),
+    "nested_act": _lines_fixture(
+        _line("嵌套动作测试", "ネストされたアクションのテスト", "shy", {"face": "blush", "pose": "pose_shy", "motion": "fidget", "blush": True, "fx": "heart"}),
+    ),
+    "invalid_act_values": _lines_fixture(
+        _line("部分非法 act 字段", "一部不正な act フィールド", "gentle", {"face": "invalid/face/with/slashes", "pose": "valid_pose", "motion": "flying_high", "blush": "yes_very_blushing", "fx": 999}),
+    ),
+    "outfit_and_extra_act_keys": _lines_fixture(
+        _line("非法 keys 测试", "不正なキーのテスト", "gentle", {"face": "smile", "outfit": "maid_uniform", "extra_param": 42}),
+    ),
+    "missing_or_invalid_emotion": _lines_fixture(
+        _line("没有有效情绪", "有効な感情なし", "super_excited", {"face": "smile"}),
+        _line("缺失情绪字段", "感情フィールドなし", act={"face": "smile"}),
+    ),
+    "empty_zh_and_ja": _lines_fixture(
+        _line("   ", "", "gentle"),
+        _line("有效行", "有効な行", "gentle"),
+    ),
+    "non_object_element": _lines_fixture(
+        "invalid non-object element string",
+        _line("第二行", "二行目", "gentle"),
+    ),
     "truncated_inside_element": '{"lines": [{"zh": "行1", "ja": "行1", "emotion": "gentle"}, {"zh": "截断行", "ja": "中',
     "truncated_inside_string": '{"lines": [{"zh": "截断字符串',
     "truncated_between_elements": '{"lines": [{"zh": "行1", "ja": "行1", "emotion": "gentle"}, ',
@@ -169,15 +115,11 @@ FIXTURES: dict[str, str] = {
         "chinese": "旧格式中文内容",
         "japanese": "旧フォーマット日本語内容",
     }),
-    "trailing_chatter": (
-        json.dumps({
-            "lines": [
-                {"zh": "回答结束", "ja": "回答終了", "emotion": "gentle"}
-            ]
-        })
-        + "\n希望这个回答对您有帮助！如果有其他问题请随时问我。"
+    "trailing_chatter": _lines_fixture(
+        _line("回答结束", "回答終了", "gentle"),
+        suffix="\n希望这个回答对您有帮助！如果有其他问题请随时问我。",
     ),
-    "empty_lines_array": json.dumps({"lines": []}),
+    "empty_lines_array": _lines_fixture(),
 }
 
 
@@ -276,9 +218,7 @@ def test_validate_line_non_object() -> None:
 # =====================================================================
 
 def test_fixture_normal() -> None:
-    scanner = LineScanner()
-    lines = scanner.feed(FIXTURES["normal"])
-    result = scanner.finish()
+    lines, result = _scan_fixture("normal")
     assert result.format == "lines"
     assert len(result.lines) == 2
     assert len(lines) == 2
@@ -288,27 +228,21 @@ def test_fixture_normal() -> None:
 
 
 def test_fixture_fenced() -> None:
-    scanner = LineScanner()
-    scanner.feed(FIXTURES["fenced"])
-    result = scanner.finish()
+    _, result = _scan_fixture("fenced")
     assert result.format == "lines"
     assert len(result.lines) == 1
     assert result.truncated is False
 
 
 def test_fixture_preamble() -> None:
-    scanner = LineScanner()
-    scanner.feed(FIXTURES["preamble"])
-    result = scanner.finish()
+    _, result = _scan_fixture("preamble")
     assert result.format == "lines"
     assert len(result.lines) == 1
     assert result.truncated is False
 
 
 def test_fixture_tts_after_lines() -> None:
-    scanner = LineScanner()
-    scanner.feed(FIXTURES["tts_after_lines"])
-    result = scanner.finish()
+    _, result = _scan_fixture("tts_after_lines")
     assert result.format == "lines"
     assert len(result.lines) == 2
     assert result.tts == {"speed": 1.1, "temp": 0.9, "emotion": "happy"}
@@ -316,69 +250,53 @@ def test_fixture_tts_after_lines() -> None:
 
 
 def test_fixture_braces_and_brackets_in_strings() -> None:
-    scanner = LineScanner()
-    scanner.feed(FIXTURES["braces_and_brackets_in_strings"])
-    result = scanner.finish()
+    _, result = _scan_fixture("braces_and_brackets_in_strings")
     assert len(result.lines) == 1
     assert "{ return [1, 2]; }" in result.lines[0].zh
 
 
 def test_fixture_nested_act() -> None:
-    scanner = LineScanner()
-    scanner.feed(FIXTURES["nested_act"])
-    result = scanner.finish()
+    _, result = _scan_fixture("nested_act")
     assert len(result.lines) == 1
     assert result.lines[0].act["face"] == "blush"
     assert result.lines[0].act["blush"] is True
 
 
 def test_fixture_invalid_act_values() -> None:
-    scanner = LineScanner()
-    scanner.feed(FIXTURES["invalid_act_values"])
-    result = scanner.finish()
+    _, result = _scan_fixture("invalid_act_values")
     assert len(result.lines) == 1
     assert result.lines[0].act == {"pose": "valid_pose"}
 
 
 def test_fixture_outfit_and_extra_act_keys() -> None:
-    scanner = LineScanner()
-    scanner.feed(FIXTURES["outfit_and_extra_act_keys"])
-    result = scanner.finish()
+    _, result = _scan_fixture("outfit_and_extra_act_keys")
     assert len(result.lines) == 1
     assert result.lines[0].act == {"face": "smile"}
 
 
 def test_fixture_missing_or_invalid_emotion() -> None:
-    scanner = LineScanner()
-    scanner.feed(FIXTURES["missing_or_invalid_emotion"])
-    result = scanner.finish()
+    _, result = _scan_fixture("missing_or_invalid_emotion")
     assert len(result.lines) == 2
     assert result.lines[0].emotion is None
     assert result.lines[1].emotion is None
 
 
 def test_fixture_empty_zh_and_ja() -> None:
-    scanner = LineScanner()
-    scanner.feed(FIXTURES["empty_zh_and_ja"])
-    result = scanner.finish()
+    _, result = _scan_fixture("empty_zh_and_ja")
     assert len(result.lines) == 1
     assert result.lines[0].ordinal == 1
     assert result.lines[0].zh == "有效行"
 
 
 def test_fixture_non_object_element() -> None:
-    scanner = LineScanner()
-    scanner.feed(FIXTURES["non_object_element"])
-    result = scanner.finish()
+    _, result = _scan_fixture("non_object_element")
     assert len(result.lines) == 1
     assert result.lines[0].ordinal == 1
     assert result.lines[0].zh == "第二行"
 
 
 def test_fixture_legacy_format() -> None:
-    scanner = LineScanner()
-    lines = scanner.feed(FIXTURES["legacy_format"])
-    result = scanner.finish()
+    lines, result = _scan_fixture("legacy_format")
     assert result.format == "unknown"
     assert lines == []
     assert result.lines == []
@@ -387,18 +305,14 @@ def test_fixture_legacy_format() -> None:
 
 
 def test_fixture_trailing_chatter() -> None:
-    scanner = LineScanner()
-    scanner.feed(FIXTURES["trailing_chatter"])
-    result = scanner.finish()
+    _, result = _scan_fixture("trailing_chatter")
     assert len(result.lines) == 1
     assert "希望这个回答对您有帮助" in result.trailing_text
     assert result.truncated is False
 
 
 def test_fixture_empty_lines_array() -> None:
-    scanner = LineScanner()
-    scanner.feed(FIXTURES["empty_lines_array"])
-    result = scanner.finish()
+    _, result = _scan_fixture("empty_lines_array")
     assert result.format == "lines"
     assert result.lines == []
     assert result.truncated is False
