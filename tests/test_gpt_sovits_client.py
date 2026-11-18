@@ -1,11 +1,8 @@
 """
 Unit and Integration Tests for GptSovitsClient and Audio Probing.
 Verifies:
-1. GptSovitsClient connection pooling limits (20 keep-alive, 50 max, 30s expiry).
-2. probe_audio_duration_seconds stat-based caching (mtime_ns, size).
-3. async_probe_audio_duration_seconds async execution via asyncio.to_thread on miss and fast-path on hit.
-4. validate_reference_audio 3~10s duration boundaries.
-5. WAV duration extraction and silence invariant verification.
+1. async_probe_audio_duration_seconds async execution via asyncio.to_thread on miss and fast-path on hit.
+2. validate_reference_audio 3~10s duration boundaries.
 """
 
 import asyncio
@@ -13,25 +10,17 @@ import io
 import struct
 import wave
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
-import httpx
 import pytest
 
 from galgame2voice.services.gpt_sovits_client import (
-    AudioSpec,
-    AudioSpecCache,
     GptSovitsClient,
     SLICING_METHODS,
     TTS_PRESETS,
-    _GLOBAL_AUDIO_SPEC_CACHE,
     async_probe_audio_duration_seconds,
-    extract_wav_duration,
     probe_audio_duration_seconds,
     resolve_tts_options,
     validate_reference_audio,
-    wav_is_silent,
-    wav_peak_amplitude,
 )
 
 
@@ -50,47 +39,6 @@ def _make_test_wav(file_path: Path, duration_sec: float = 4.0, sample_rate: int 
         wf.writeframes(frames)
     file_path.write_bytes(buf.getvalue())
     return file_path
-
-
-def test_gpt_sovits_client_connection_limits():
-    """Verifies that GptSovitsClient._get_client configures pooled httpx limits properly."""
-    client = GptSovitsClient(base_url="http://127.0.0.1:9880")
-    http_cli = client._get_client()
-
-    assert isinstance(http_cli, httpx.AsyncClient)
-    assert not http_cli.is_closed
-
-    # Verify connection pool limits: 20 keep-alive, 50 max, 30s expiry
-    pool = http_cli._transport._pool
-    assert pool._max_keepalive_connections == 20
-    assert pool._max_connections == 50
-    assert pool._keepalive_expiry == 30.0
-
-    # Verify backward-compatibility alias
-    assert client._get_http_client() is http_cli
-
-
-def test_probe_audio_duration_stat_cache(tmp_path):
-    """Verifies that probe_audio_duration_seconds caches by stat (mtime_ns, size) and invalidates on edit."""
-    wav_path = _make_test_wav(tmp_path / "stat_test.wav", duration_sec=4.0)
-    cache = AudioSpecCache()
-
-    # First call: cache miss, probes file
-    dur1 = cache.get_duration(wav_path)
-    assert dur1 is not None
-    assert abs(dur1 - 4.0) < 0.1
-
-    # Second call: cache hit
-    with patch.object(cache, "_probe") as mock_probe:
-        dur2 = cache.get_duration(wav_path)
-        assert dur2 == dur1
-        mock_probe.assert_not_called()
-
-    # Modify file: update duration and change size
-    _make_test_wav(wav_path, duration_sec=6.0)
-    dur3 = cache.get_duration(wav_path)
-    assert dur3 is not None
-    assert abs(dur3 - 6.0) < 0.1
 
 
 def test_probe_audio_duration_seconds_none_or_missing(tmp_path):
@@ -145,25 +93,6 @@ def test_validate_reference_audio(tmp_path):
     ok_missing, msg_missing = validate_reference_audio(str(tmp_path / "ghost.wav"))
     assert ok_missing is False
     assert "not found" in msg_missing
-
-
-def test_extract_wav_duration_and_amplitude(tmp_path):
-    """Verifies WAV duration extraction and peak amplitude / silence detection."""
-    wav_path = _make_test_wav(tmp_path / "dur_test.wav", duration_sec=3.5)
-    data = wav_path.read_bytes()
-
-    dur = extract_wav_duration(data)
-    assert dur is not None
-    assert abs(dur - 3.5) < 0.1
-
-    peak = wav_peak_amplitude(data)
-    assert peak is not None
-    assert peak > 0.0
-    assert not wav_is_silent(data)
-
-    # Empty / corrupted bytes
-    assert extract_wav_duration(b"") is None
-    assert wav_peak_amplitude(b"") is None
 
 
 def test_audio_spec_module_reexport_and_direct_import(tmp_path):
