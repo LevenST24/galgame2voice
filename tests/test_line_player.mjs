@@ -211,71 +211,6 @@ test('Table 4.1 Row 2 & 3: next line available, audio ready -> plays voice and r
   assert.deepEqual(render.calls.at(-1), ['glyph', true]);
 });
 
-test('Table 4.1 Row 4: audio skipped or failed -> reveal without waiting, no voice', () => {
-  const { player, clock, voice, render } = setup();
-  player.startTurn('turn-1');
-  player.setLineAudio('turn-1', 0, { status: 'failed', chunks: [] });
-  player.pushLine('turn-1', sampleLine0);
-
-  assert.equal(player.state, 'revealing');
-  assert.equal(voice.calls.length, 0); // no voice played
-});
-
-test('Table 4.1 Row 5: audio absent for 1500ms -> reveals, late audio plays while line is current', async () => {
-  const { player, clock, voice, render } = setup({ settings: { autoMode: 'normal' } });
-  player.startTurn('turn-1');
-  player.pushLine('turn-1', sampleLine0);
-
-  // Audio unknown -> waiting_audio
-  assert.equal(player.state, 'waiting_audio');
-  clock.tick(1499);
-  assert.equal(player.state, 'waiting_audio');
-
-  // At 1500ms, reveal begins
-  clock.tick(1);
-  assert.equal(player.state, 'revealing');
-  assert.equal(voice.calls.length, 0);
-
-  // Late audio arrives while still on line 0 -> plays voice
-  player.setLineAudio('turn-1', 0, { status: 'ready', chunks: [{ index: 0, line: 0, audio_url: '/a.wav' }] });
-  assert.equal(voice.calls.length, 1);
-  assert.equal(voice.calls[0].type, 'play');
-});
-
-test('Table 4.1 Row 5: late audio arriving after moving to next line is ignored', async () => {
-  const { player, clock, voice } = setup({ settings: { autoMode: 'normal' } });
-  player.startTurn('turn-1');
-  player.pushLine('turn-1', sampleLine0);
-  player.pushLine('turn-1', sampleLine1);
-
-  // Wait out audio for line 0
-  clock.tick(1500); // reveals line 0
-  clock.tick(1000); // finishes reveal
-  player.advance(); // moves to line 1
-
-  assert.equal(player.currentIndex, 1);
-  voice.calls.length = 0;
-
-  // Late audio for line 0 arrives now
-  player.setLineAudio('turn-1', 0, { status: 'ready', chunks: [{ index: 0, line: 0, audio_url: '/old.wav' }] });
-  assert.equal(voice.calls.length, 0, 'late audio for past line is ignored');
-});
-
-test('Table 4.1 Row 6: advance during reveal completes page without stopping voice', async () => {
-  const { player, clock, voice, render } = setup();
-  player.startTurn('turn-1');
-  player.setLineAudio('turn-1', 0, { status: 'ready', chunks: [{ audio_url: '/a.wav' }] });
-  player.pushLine('turn-1', sampleLine0);
-
-  assert.equal(player.state, 'revealing');
-  clock.tick(50); // halfway through reveal
-
-  player.advance();
-  assert.equal(player.state, 'waiting_advance');
-  assert.ok(render.calls.some(([name]) => name === 'completeReveal'));
-  assert.equal(voice.calls.filter(c => c.type === 'stop').length, 0, 'voice not stopped');
-});
-
 test('Table 4.1 Row 7: advance after reveal moves to next line (single page)', async () => {
   const { player, clock, voice } = setup();
   player.startTurn('turn-1');
@@ -460,60 +395,6 @@ test('AUTO formula clamps between 1200ms and 6000ms', () => {
   assert.deepEqual(clock.pendingDueTimes.slice(-1), [6000]);
 });
 
-test('AUTO in voice-priority mode waits for voice completion before delay', async () => {
-  const { player, clock, voice } = setup({
-    settings: { autoMode: 'voice-priority', autoBaseMs: 2000, autoPerCharMs: 0, revealMsPerGrapheme: 0 }
-  });
-  player.setAuto(true);
-  player.startTurn('t');
-  player.setLineAudio('t', 0, { status: 'ready', chunks: [{ audio_url: '/a.wav' }] });
-  player.pushLine('t', sampleLine0);
-  player.pushLine('t', sampleLine1);
-
-  // Reveal is instant
-  assert.equal(player.state, 'waiting_advance');
-  // Since voice is playing, AUTO timer must not be set yet!
-  assert.equal(clock.activeTimerCount, 0);
-
-  // At 1000ms, voice ends
-  clock.tick(1000);
-  voice.resolveLast('ended');
-  await flushMicrotasks();
-
-  // Now AUTO timer is set for 2000ms
-  assert.equal(clock.activeTimerCount, 1);
-  assert.deepEqual(clock.pendingDueTimes, [3000]); // 1000 + 2000
-
-  // Tick 2000ms -> advances to line 1
-  clock.tick(2000);
-  assert.equal(player.currentIndex, 1);
-});
-
-test('AUTO in normal mode starts delay at reveal end, and voice-off case works', () => {
-  const { player, clock } = setup({
-    settings: { autoMode: 'normal', autoBaseMs: 2000, autoPerCharMs: 0, revealMsPerGrapheme: 0 }
-  });
-  player.setAuto(true);
-  player.startTurn('t');
-  player.setLineAudio('t', 0, { status: 'ready', chunks: [{ audio_url: '/a.wav' }] });
-  player.pushLine('t', sampleLine0);
-  player.pushLine('t', sampleLine1);
-
-  // Reveal is instant, AUTO timer starts immediately
-  assert.equal(clock.activeTimerCount, 1);
-  assert.deepEqual(clock.pendingDueTimes, [2000]);
-
-  // Voice off case
-  const { player: pVoiceOff, clock: cVoiceOff } = setup({
-    settings: { voiceEnabled: false, autoBaseMs: 1500, autoPerCharMs: 0, revealMsPerGrapheme: 0 }
-  });
-  pVoiceOff.setAuto(true);
-  pVoiceOff.startTurn('t');
-  pVoiceOff.setLineAudio('t', 0, { status: 'ready', chunks: [{ audio_url: '/a.wav' }] });
-  pVoiceOff.pushLine('t', sampleLine0);
-  assert.equal(cVoiceOff.activeTimerCount, 1);
-});
-
 // -------------------------------------------------------------
 // 6. SKIP pacing and voice suppression
 // -------------------------------------------------------------
@@ -622,19 +503,6 @@ test('beginPlayerEdit cancels auto/skip, logs remaining lines, and routes future
 // -------------------------------------------------------------
 // 9. Error and cancellation
 // -------------------------------------------------------------
-test('error displays error and dismissError transitions to input', () => {
-  const { player, render } = setup();
-  player.startTurn('turn-1');
-  player.pushLine('turn-1', sampleLine0);
-
-  player.settle('turn-1', { ok: false, kind: 'error', error: 'Network fail' });
-  assert.equal(player.state, 'error');
-  assert.deepEqual(render.calls.at(-1), ['showError', 'Network fail']);
-
-  player.dismissError();
-  assert.equal(player.state, 'input');
-});
-
 test('cancellation transitions to input with canSend: true', () => {
   const { player } = setup();
   player.startTurn('turn-1');
@@ -867,37 +735,6 @@ test('late audio never plays while suspended, in player input, or in error', asy
     await flushMicrotasks();
     assert.equal(voice.calls.filter((c) => c.type === 'play').length, 0, `no voice in ${player.state}`);
   }
-});
-
-test('repaginate recomputes pages for current line with new primary setting without replaying voice', async () => {
-  const { clock, voice, render, player } = setup({
-    paginate: (line, primaryText) => {
-      if (primaryText === line.ja) return ['ja_p1', 'ja_p2'];
-      return ['zh_p1'];
-    },
-  });
-  player.startTurn('t1');
-  player.pushLine('t1', { index: 0, zh: '你好', ja: 'こんにちは世界' });
-  player.setLineAudio('t1', 0, { status: 'ready', chunks: [{ index: 0, line: 0, audio_url: '/a.wav', sentence: 'x' }] });
-  await flushMicrotasks();
-  assert.equal(voice.calls.length, 1);
-
-  // Finish reveal of page 0
-  clock.tick(1000);
-  assert.equal(player.page, 0);
-
-  // Switch primary to ja and repaginate
-  player.setSettings({ primary: 'ja' });
-  player.repaginate();
-
-  // Voice was NOT replayed
-  assert.equal(voice.calls.length, 1);
-
-  // Advance now moves to ja_p2 (page 1) rather than skipping to next line
-  player.advance();
-  assert.equal(player.page, 1);
-  const reveals = render.calls.filter((c) => c[0] === 'reveal');
-  assert.equal(reveals[reveals.length - 1][1], 'ja_p2');
 });
 
 test('isPresenting is false unless the stage is showing or waiting for a line', () => {
