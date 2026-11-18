@@ -20,6 +20,10 @@ import { DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL } from '../frontend/src/store.
 import { mergeChatBackup } from '../frontend/src/chat_backup.js';
 const { openModal, closeModal, hasOpenModal } = settingsUi;
 
+function okJson(data) {
+  return { ok: true, status: 200, json: async () => data };
+}
+
 function centerFixture(t) {
   let home;
   const h = setup(t, { callbacks: { showTitle: actions => {
@@ -189,20 +193,16 @@ test('settings center: reset button is visible only on inference tab, and resets
   globalThis.fetch = async (url, options = {}) => {
     if (url === '/api/config' && options.method === 'POST') {
       savedPayload = JSON.parse(options.body);
-      return { ok: true, status: 200, json: async () => ({ status: 'ok' }) };
+      return okJson({ status: 'ok' });
     }
     if (url === '/api/config') {
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          status: 'ok',
-          settings: { inference_precision: 'fp16', audio_retention_minutes: 60 },
-        }),
-      };
+      return okJson({
+        status: 'ok',
+        settings: { inference_precision: 'fp16', audio_retention_minutes: 60 },
+      });
     }
-    if (url === '/api/providers') return { ok: true, status: 200, json: async () => ({ providers: [], presets: [] }) };
-    return { ok: true, status: 200, json: async () => ({}) };
+    if (url === '/api/providers') return okJson({ providers: [], presets: [] });
+    return okJson({});
   };
   globalThis.confirm = () => true;
 
@@ -358,50 +358,46 @@ test('global settings mounted from real index.html saves exact POST /api/config 
     if (url === '/api/config' && options.method === 'POST') {
       savedRawBody = options.body;
       savedPayload = JSON.parse(options.body);
-      return { ok: true, status: 200, json: async () => ({ status: 'ok' }) };
+      return okJson({ status: 'ok' });
     }
     if (url === '/api/config') {
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          status: 'ok',
-          settings: {
-            gpt_sovits_url: 'http://127.0.0.1:9880',
-            inference_precision: 'fp16',
-            audio_retention_minutes: 45,
-            speed_factor: 1.25,
-            top_k: 20,
-            top_p: 0.85,
-            temperature: 0.9,
-            text_split_method: 'cut5',
-            fragment_interval: 0.3,
-            allow_private_llm_endpoints: false,
-            telegram_enabled: false,
-            telegram_chat_id: '987654321',
-            telegram_admin_ids: '987654321',
-            telegram_bot_token: '12****EF',
-            telegram_proxy_enabled: true,
-            telegram_proxy_host: '127.0.0.1',
-            telegram_proxy_port: 10809,
-          },
-          active_provider: null,
-        }),
-      };
+      return okJson({
+        status: 'ok',
+        settings: {
+          gpt_sovits_url: 'http://127.0.0.1:9880',
+          inference_precision: 'fp16',
+          audio_retention_minutes: 45,
+          speed_factor: 1.25,
+          top_k: 20,
+          top_p: 0.85,
+          temperature: 0.9,
+          text_split_method: 'cut5',
+          fragment_interval: 0.3,
+          allow_private_llm_endpoints: false,
+          telegram_enabled: false,
+          telegram_chat_id: '987654321',
+          telegram_admin_ids: '987654321',
+          telegram_bot_token: '12****EF',
+          telegram_proxy_enabled: true,
+          telegram_proxy_host: '127.0.0.1',
+          telegram_proxy_port: 10809,
+        },
+        active_provider: null,
+      });
     }
     if (url === '/api/providers') {
-      return { ok: true, status: 200, json: async () => ({ providers: [], presets: [] }) };
+      return okJson({ providers: [], presets: [] });
     }
     if (String(url).includes('/api/system/engine-directory')) {
-      return { ok: true, status: 200, json: async () => ({ directory: '', configured: false }) };
+      return okJson({ directory: '', configured: false });
     }
     if (String(url).includes('/api/system/engine-status')) {
-      return { ok: true, status: 200, json: async () => ({ state: 'ready', ready: true, message: '已就绪' }) };
+      return okJson({ state: 'ready', ready: true, message: '已就绪' });
     }
     if (String(url).includes('/api/system/status')) {
-      return { ok: true, status: 200, json: async () => ({}) };
+      return okJson({});
     }
-    return { ok: true, status: 200, json: async () => ({}) };
+    return okJson({});
   };
 
   t.after(async () => {
@@ -548,38 +544,34 @@ async function setupVoiceFooterSaveFixture(t, { secondProvider }) {
         p.id === body.id ? { ...p, ...body, api_key: body.api_key ? 'sk-****new' : p.api_key, is_active: true } : { ...p, is_active: false }
       ));
       const updated = providers.find(p => p.id === body.id) || { ...body, is_active: true };
-      return { ok: true, status: 200, json: async () => ({ provider: updated }) };
+      return okJson({ provider: updated });
     }
     if (url.startsWith('/api/providers/') && url.endsWith('/activate') && method === 'POST') {
       const targetId = url.split('/')[3];
       providers = providers.map(p => ({ ...p, is_active: p.id === targetId }));
-      return { ok: true, status: 200, json: async () => ({ active_provider: providers.find(p => p.is_active) }) };
+      return okJson({ active_provider: providers.find(p => p.is_active) });
     }
     if (url === '/api/providers') {
-      return { ok: true, status: 200, json: async () => ({ providers, presets: BUILTIN_PRESETS }) };
+      return okJson({ providers, presets: BUILTIN_PRESETS });
     }
     if (url === '/api/config' && method === 'POST') {
       savedConfig = { ...savedConfig, ...body };
-      return { ok: true, status: 200, json: async () => ({ status: 'ok', settings: savedConfig }) };
+      return okJson({ status: 'ok', settings: savedConfig });
     }
     if (url === '/api/config') {
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          status: 'ok',
-          settings: savedConfig,
-          active_provider: providers.find(p => p.is_active) || null,
-        }),
-      };
+      return okJson({
+        status: 'ok',
+        settings: savedConfig,
+        active_provider: providers.find(p => p.is_active) || null,
+      });
     }
     if (String(url).includes('/api/system/sovits-directory')) {
-      return { ok: true, status: 200, json: async () => ({ directory: '', valid: false, message: '' }) };
+      return okJson({ directory: '', valid: false, message: '' });
     }
     if (String(url).includes('/api/system/engine-status')) {
-      return { ok: true, status: 200, json: async () => ({ state: 'ready', ready: true, message: '已就绪' }) };
+      return okJson({ state: 'ready', ready: true, message: '已就绪' });
     }
-    return { ok: true, status: 200, json: async () => ({}) };
+    return okJson({});
   };
 
   t.after(async () => {
@@ -602,19 +594,18 @@ async function setupVoiceFooterSaveFixture(t, { secondProvider }) {
   return { dom, toastRoot, requests };
 }
 
-test('footer saveGlobalConfig saves only voice service page when user inspected unconfigured OpenAI in models tab', async t => {
-  const { dom, toastRoot, requests } = await setupVoiceFooterSaveFixture(t, {
-    secondProvider: {
-      id: 'openai',
-      name: 'OpenAI',
-      api_key: '',
-      api_base_url: 'https://api.openai.com/v1',
-      chat_model: 'gpt-6-luna',
-      is_active: false,
-    },
-  });
+function secondOpenAiProvider(apiKey) {
+  return {
+    id: 'openai',
+    name: 'OpenAI',
+    api_key: apiKey,
+    api_base_url: 'https://api.openai.com/v1',
+    chat_model: 'gpt-6-luna',
+    is_active: false,
+  };
+}
 
-  assert.equal(dom.gProvider.value, 'deepseek');
+async function inspectOtherProviderAndSaveVoicePage(dom, toastRoot, requests) {
   dom.gProvider.value = 'openai';
   dom.gProvider.dispatchEvent({ type: 'change' });
 
@@ -630,6 +621,16 @@ test('footer saveGlobalConfig saves only voice service page when user inspected 
     msg: el.dataset.msg || el.textContent,
     isError: el.classList.contains('toast-error'),
   }));
+  return { configPosts, providerWrites, toasts };
+}
+
+test('footer saveGlobalConfig saves only voice service page when user inspected unconfigured OpenAI in models tab', async t => {
+  const { dom, toastRoot, requests } = await setupVoiceFooterSaveFixture(t, {
+    secondProvider: secondOpenAiProvider(''),
+  });
+
+  assert.equal(dom.gProvider.value, 'deepseek');
+  const { configPosts, providerWrites, toasts } = await inspectOtherProviderAndSaveVoicePage(dom, toastRoot, requests);
 
   assert.equal(configPosts.length, 1, `expected exactly 1 POST /api/config, got ${configPosts.length}`);
   assert.equal(configPosts[0].body.audio_retention_minutes, 60);
@@ -640,32 +641,11 @@ test('footer saveGlobalConfig saves only voice service page when user inspected 
 
 test('footer saveGlobalConfig saves only voice service page when user inspected another configured provider in models tab', async t => {
   const { dom, toastRoot, requests } = await setupVoiceFooterSaveFixture(t, {
-    secondProvider: {
-      id: 'openai',
-      name: 'OpenAI',
-      api_key: 'sk-****5678',
-      api_base_url: 'https://api.openai.com/v1',
-      chat_model: 'gpt-6-luna',
-      is_active: false,
-    },
+    secondProvider: secondOpenAiProvider('sk-****5678'),
   });
 
   assert.equal(dom.gProvider.value, 'deepseek');
-  dom.gProvider.value = 'openai';
-  dom.gProvider.dispatchEvent({ type: 'change' });
-
-  dom.gTabs.querySelector('[data-gtab="inference"]').click();
-  dom.gAudioRetention.value = '60';
-  dom.gAudioRetention.dispatchEvent({ type: 'input' });
-
-  await saveGlobalConfig();
-
-  const configPosts = requests.filter(r => r.url === '/api/config' && r.method === 'POST');
-  const providerWrites = requests.filter(r => r.method !== 'GET' && r.url.startsWith('/api/providers'));
-  const toasts = [...toastRoot.children].map(el => ({
-    msg: el.dataset.msg || el.textContent,
-    isError: el.classList.contains('toast-error'),
-  }));
+  const { configPosts, providerWrites, toasts } = await inspectOtherProviderAndSaveVoicePage(dom, toastRoot, requests);
 
   assert.equal(configPosts.length, 1, `expected exactly 1 POST /api/config, got ${configPosts.length}`);
   assert.equal(configPosts[0].body.audio_retention_minutes, 60);

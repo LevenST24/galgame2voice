@@ -2,19 +2,29 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { resolveTurnReplyIdentity } from '../frontend/src/controllers/turn_reply_identity.js';
 
-test('resolveTurnReplyIdentity: returns messageId on ready with matching keys', async () => {
-  const calls = [];
-  const result = await resolveTurnReplyIdentity({
+function turnReply(status, extra = {}) {
+  return {
+    status,
+    session_id: 'session_1',
+    user_message_id: 101,
+    ...extra,
+  };
+}
+
+function resolveIdentity(overrides = {}) {
+  return resolveTurnReplyIdentity({
     sessionId: 'session_1',
     userMessageId: 101,
+    ...overrides,
+  });
+}
+
+test('resolveTurnReplyIdentity: returns messageId on ready with matching keys', async () => {
+  const calls = [];
+  const result = await resolveIdentity({
     request: async (url, options) => {
       calls.push({ url, options });
-      return {
-        status: 'ready',
-        session_id: 'session_1',
-        user_message_id: 101,
-        message_id: 202,
-      };
+      return turnReply('ready', { message_id: 202 });
     },
   });
 
@@ -25,25 +35,12 @@ test('resolveTurnReplyIdentity: returns messageId on ready with matching keys', 
 
 test('resolveTurnReplyIdentity: pending retries until ready within budget', async () => {
   let attempts = 0;
-  const result = await resolveTurnReplyIdentity({
-    sessionId: 'session_1',
-    userMessageId: 101,
+  const result = await resolveIdentity({
     delayMs: 10,
     request: async () => {
       attempts++;
-      if (attempts < 2) {
-        return {
-          status: 'pending',
-          session_id: 'session_1',
-          user_message_id: 101,
-        };
-      }
-      return {
-        status: 'ready',
-        session_id: 'session_1',
-        user_message_id: 101,
-        message_id: 202,
-      };
+      if (attempts < 2) return turnReply('pending');
+      return turnReply('ready', { message_id: 202 });
     },
   });
 
@@ -55,18 +52,12 @@ test('resolveTurnReplyIdentity: pending retries until ready within budget', asyn
 test('resolveTurnReplyIdentity: pending times out with Chinese message after max 3 attempts', async () => {
   let attempts = 0;
   await assert.rejects(
-    resolveTurnReplyIdentity({
-      sessionId: 'session_1',
-      userMessageId: 101,
+    resolveIdentity({
       maxAttempts: 3,
       delayMs: 5,
       request: async () => {
         attempts++;
-        return {
-          status: 'pending',
-          session_id: 'session_1',
-          user_message_id: 101,
-        };
+        return turnReply('pending');
       },
     }),
     /中断回复尚未就绪，原记录已保留，请稍后重试。/
@@ -77,25 +68,12 @@ test('resolveTurnReplyIdentity: pending times out with Chinese message after max
 
 test('resolveTurnReplyIdentity: unavailable retries within budget', async () => {
   let attempts = 0;
-  const result = await resolveTurnReplyIdentity({
-    sessionId: 'session_1',
-    userMessageId: 101,
+  const result = await resolveIdentity({
     delayMs: 10,
     request: async () => {
       attempts++;
-      if (attempts === 1) {
-        return {
-          status: 'unavailable',
-          session_id: 'session_1',
-          user_message_id: 101,
-        };
-      }
-      return {
-        status: 'ready',
-        session_id: 'session_1',
-        user_message_id: 101,
-        message_id: 303,
-      };
+      if (attempts === 1) return turnReply('unavailable');
+      return turnReply('ready', { message_id: 303 });
     },
   });
 
@@ -107,17 +85,11 @@ test('resolveTurnReplyIdentity: unavailable retries within budget', async () => 
 test('resolveTurnReplyIdentity: gone immediately stops without retry', async () => {
   let attempts = 0;
   await assert.rejects(
-    resolveTurnReplyIdentity({
-      sessionId: 'session_1',
-      userMessageId: 101,
+    resolveIdentity({
       maxAttempts: 3,
       request: async () => {
         attempts++;
-        return {
-          status: 'gone',
-          session_id: 'session_1',
-          user_message_id: 101,
-        };
+        return turnReply('gone');
       },
     }),
     /已被删除或清空/
@@ -129,17 +101,11 @@ test('resolveTurnReplyIdentity: gone immediately stops without retry', async () 
 test('resolveTurnReplyIdentity: ambiguous immediately stops without retry', async () => {
   let attempts = 0;
   await assert.rejects(
-    resolveTurnReplyIdentity({
-      sessionId: 'session_1',
-      userMessageId: 101,
+    resolveIdentity({
       maxAttempts: 3,
       request: async () => {
         attempts++;
-        return {
-          status: 'ambiguous',
-          session_id: 'session_1',
-          user_message_id: 101,
-        };
+        return turnReply('ambiguous');
       },
     }),
     /多条匹配/
@@ -150,29 +116,15 @@ test('resolveTurnReplyIdentity: ambiguous immediately stops without retry', asyn
 
 test('resolveTurnReplyIdentity: mismatched session_id or user_message_id is rejected', async () => {
   await assert.rejects(
-    resolveTurnReplyIdentity({
-      sessionId: 'session_1',
-      userMessageId: 101,
-      request: async () => ({
-        status: 'ready',
-        session_id: 'wrong_session',
-        user_message_id: 101,
-        message_id: 202,
-      }),
+    resolveIdentity({
+      request: async () => turnReply('ready', { session_id: 'wrong_session', message_id: 202 }),
     }),
     /不匹配/
   );
 
   await assert.rejects(
-    resolveTurnReplyIdentity({
-      sessionId: 'session_1',
-      userMessageId: 101,
-      request: async () => ({
-        status: 'ready',
-        session_id: 'session_1',
-        user_message_id: 999,
-        message_id: 202,
-      }),
+    resolveIdentity({
+      request: async () => turnReply('ready', { user_message_id: 999, message_id: 202 }),
     }),
     /不匹配/
   );
@@ -183,9 +135,7 @@ test('resolveTurnReplyIdentity: aborted signal immediately rejects with AbortErr
   controller.abort();
 
   await assert.rejects(
-    resolveTurnReplyIdentity({
-      sessionId: 'session_1',
-      userMessageId: 101,
+    resolveIdentity({
       signal: controller.signal,
       request: async () => {
         throw new Error('should not be called');
@@ -198,20 +148,13 @@ test('resolveTurnReplyIdentity: aborted signal immediately rejects with AbortErr
 test('resolveTurnReplyIdentity: checkCurrent failure aborts and does not claim ID', async () => {
   let valid = true;
   await assert.rejects(
-    resolveTurnReplyIdentity({
-      sessionId: 'session_1',
-      userMessageId: 101,
+    resolveIdentity({
       checkCurrent: () => {
         if (!valid) throw new DOMException('操作已取消', 'AbortError');
       },
       request: async () => {
         valid = false; // session switched or line edited during fetch
-        return {
-          status: 'ready',
-          session_id: 'session_1',
-          user_message_id: 101,
-          message_id: 202,
-        };
+        return turnReply('ready', { message_id: 202 });
       },
     }),
     { name: 'AbortError' }

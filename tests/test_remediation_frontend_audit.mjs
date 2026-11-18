@@ -13,16 +13,62 @@ import { initAudioPlayerUi, toggleMic, cancelMic } from '../frontend/src/control
 import { BoundedAudioStore, startListening, stopListening } from '../frontend/src/voice.js';
 import { StreamAudioController } from '../frontend/src/audio_player.js';
 
+class FakeSpeechRecognition {
+  start() {}
+  stop() { this.onend?.(); }
+}
+
+function captureGlobals(keys) {
+  const saved = {};
+  for (const key of keys) saved[key] = globalThis[key];
+  return saved;
+}
+
+function restoreGlobals(saved, keys) {
+  for (const key of keys) {
+    if (key === 'navigator') {
+      Object.defineProperty(globalThis, 'navigator', {
+        value: saved.navigator,
+        configurable: true,
+        writable: true,
+      });
+    } else {
+      globalThis[key] = saved[key];
+    }
+  }
+}
+
+function installNavigator(value) {
+  Object.defineProperty(globalThis, 'navigator', {
+    value,
+    configurable: true,
+    writable: true,
+  });
+}
+
+function installMediaRecorder(Ctor, windowValue) {
+  Ctor.isTypeSupported = () => true;
+  globalThis.MediaRecorder = Ctor;
+  globalThis.window = windowValue;
+}
+
+function mountMicControls() {
+  const input = globalThis.document.createElement('textarea');
+  const micBtn = globalThis.document.createElement('button');
+  initAudioPlayerUi({ input }, {
+    getInput: () => input,
+    getMicButton: () => micBtn,
+    isBusy: () => false,
+    sendMessage: () => {},
+  });
+}
+
 // ============================================================================
 // 1. Microphone Blob URL Leak Remediation in audio_player_ui.js
 // ============================================================================
 
 test('audio_player_ui: toggleMic revokes previously allocated pendingVoice.audio Blob URL', async (t) => {
-  const originalDoc = globalThis.document;
-  const originalWin = globalThis.window;
-  const originalNav = globalThis.navigator;
-  const originalURL = globalThis.URL;
-  const originalMediaRecorder = globalThis.MediaRecorder;
+  const saved = captureGlobals(['document', 'window', 'navigator', 'URL', 'MediaRecorder']);
 
   const revokedUrls = [];
   const createdUrls = [];
@@ -43,11 +89,6 @@ test('audio_player_ui: toggleMic revokes previously allocated pendingVoice.audio
     let activeRecorder = null;
     let activeStream = null;
 
-    class FakeSpeechRecognition {
-      start() {}
-      stop() { this.onend?.(); }
-    }
-
     class FakeMediaRecorder {
       constructor(stream, opts) {
         activeRecorder = this;
@@ -59,37 +100,22 @@ test('audio_player_ui: toggleMic revokes previously allocated pendingVoice.audio
         this.onstop?.();
       }
     }
-    FakeMediaRecorder.isTypeSupported = () => true;
-
-    globalThis.MediaRecorder = FakeMediaRecorder;
-    globalThis.window = {
+    installMediaRecorder(FakeMediaRecorder, {
       SpeechRecognition: FakeSpeechRecognition,
       MediaRecorder: FakeMediaRecorder,
       URL: globalThis.URL,
-    };
+    });
 
-    Object.defineProperty(globalThis, 'navigator', {
-      value: {
-        mediaDevices: {
-          getUserMedia: async () => {
-            activeStream = { getTracks: () => [{ stop() {} }] };
-            return activeStream;
-          },
+    installNavigator({
+      mediaDevices: {
+        getUserMedia: async () => {
+          activeStream = { getTracks: () => [{ stop() {} }] };
+          return activeStream;
         },
       },
-      configurable: true,
-      writable: true,
     });
 
-    const input = globalThis.document.createElement('textarea');
-    const micBtn = globalThis.document.createElement('button');
-
-    initAudioPlayerUi({ input }, {
-      getInput: () => input,
-      getMicButton: () => micBtn,
-      isBusy: () => false,
-      sendMessage: () => {},
-    });
+    mountMicControls();
 
     // Step 1: Start recording
     toggleMic();
@@ -118,11 +144,7 @@ test('audio_player_ui: toggleMic revokes previously allocated pendingVoice.audio
     cancelMic();
   } finally {
     cancelMic();
-    globalThis.document = originalDoc;
-    globalThis.window = originalWin;
-    globalThis.MediaRecorder = originalMediaRecorder;
-    Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true, writable: true });
-    globalThis.URL = originalURL;
+    restoreGlobals(saved, ['document', 'window', 'MediaRecorder', 'navigator', 'URL']);
   }
 });
 
@@ -284,11 +306,7 @@ test('audio_player: nextStartTime <= now applies adaptive buffer lead margin', a
 // ============================================================================
 
 test('voice.js: recorder.onstop does not throw TypeError when cancelMic() executes before onstop', async () => {
-  const originalDoc = globalThis.document;
-  const originalWin = globalThis.window;
-  const originalNav = globalThis.navigator;
-  const originalURL = globalThis.URL;
-  const originalMediaRecorder = globalThis.MediaRecorder;
+  const saved = captureGlobals(['document', 'window', 'navigator', 'URL', 'MediaRecorder']);
 
   try {
     globalThis.document = fakeDocument();
@@ -296,11 +314,6 @@ test('voice.js: recorder.onstop does not throw TypeError when cancelMic() execut
       createObjectURL: () => 'blob:mock-audio',
       revokeObjectURL: () => {},
     };
-
-    class FakeSpeechRecognition {
-      start() {}
-      stop() { this.onend?.(); }
-    }
 
     class FakeMediaRecorder {
       constructor(stream) {
@@ -317,34 +330,19 @@ test('voice.js: recorder.onstop does not throw TypeError when cancelMic() execut
         }, 10);
       }
     }
-    FakeMediaRecorder.isTypeSupported = () => true;
-
-    globalThis.MediaRecorder = FakeMediaRecorder;
-    globalThis.window = {
+    installMediaRecorder(FakeMediaRecorder, {
       SpeechRecognition: FakeSpeechRecognition,
       MediaRecorder: FakeMediaRecorder,
       URL: globalThis.URL,
-    };
+    });
 
-    Object.defineProperty(globalThis, 'navigator', {
-      value: {
-        mediaDevices: {
-          getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }),
-        },
+    installNavigator({
+      mediaDevices: {
+        getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }),
       },
-      configurable: true,
-      writable: true,
     });
 
-    const input = globalThis.document.createElement('textarea');
-    const micBtn = globalThis.document.createElement('button');
-
-    initAudioPlayerUi({ input }, {
-      getInput: () => input,
-      getMicButton: () => micBtn,
-      isBusy: () => false,
-      sendMessage: () => {},
-    });
+    mountMicControls();
 
     // Start mic and wait for recorder to be initialized
     toggleMic();
@@ -359,11 +357,7 @@ test('voice.js: recorder.onstop does not throw TypeError when cancelMic() execut
     assert.ok(true, 'Asynchronous onstop completed without TypeError');
   } finally {
     cancelMic();
-    globalThis.document = originalDoc;
-    globalThis.window = originalWin;
-    globalThis.MediaRecorder = originalMediaRecorder;
-    Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true, writable: true });
-    globalThis.URL = originalURL;
+    restoreGlobals(saved, ['document', 'window', 'MediaRecorder', 'navigator', 'URL']);
   }
 });
 
@@ -372,9 +366,7 @@ test('voice.js: recorder.onstop does not throw TypeError when cancelMic() execut
 // ============================================================================
 
 test('voice.js: startListening reports unsupported with MediaRecorder but no SpeechRecognition (nothing could be sent)', async () => {
-  const originalWin = globalThis.window;
-  const originalNav = globalThis.navigator;
-  const originalMediaRecorder = globalThis.MediaRecorder;
+  const saved = captureGlobals(['window', 'navigator', 'MediaRecorder']);
 
   try {
     let recorderStarted = false;
@@ -391,25 +383,18 @@ test('voice.js: startListening reports unsupported with MediaRecorder but no Spe
         this.onstop?.();
       }
     }
-    FakeMediaRecorder.isTypeSupported = () => true;
-
-    globalThis.MediaRecorder = FakeMediaRecorder;
     // Environment without SpeechRecognition or webkitSpeechRecognition
-    globalThis.window = {
+    installMediaRecorder(FakeMediaRecorder, {
       MediaRecorder: FakeMediaRecorder,
-    };
+    });
 
-    Object.defineProperty(globalThis, 'navigator', {
-      value: {
-        mediaDevices: {
-          getUserMedia: async () => {
-            gumCalls++;
-            return { getTracks: () => [{ stop() {} }] };
-          },
+    installNavigator({
+      mediaDevices: {
+        getUserMedia: async () => {
+          gumCalls++;
+          return { getTracks: () => [{ stop() {} }] };
         },
       },
-      configurable: true,
-      writable: true,
     });
 
     // Only the transcript is sent; a recording alone would always end in "no speech recognized".
@@ -422,40 +407,28 @@ test('voice.js: startListening reports unsupported with MediaRecorder but no Spe
     assert.equal(recorderStarted, false, 'no MediaRecorder may start');
   } finally {
     stopListening();
-    globalThis.window = originalWin;
-    globalThis.MediaRecorder = originalMediaRecorder;
-    Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true, writable: true });
+    restoreGlobals(saved, ['window', 'MediaRecorder', 'navigator']);
   }
 });
 
 test('voice.js: startListening returns ok: false when neither MediaRecorder nor SpeechRecognition is supported', () => {
-  const originalWin = globalThis.window;
-  const originalNav = globalThis.navigator;
-  const originalMediaRecorder = globalThis.MediaRecorder;
+  const saved = captureGlobals(['window', 'navigator', 'MediaRecorder']);
 
   try {
     delete globalThis.MediaRecorder;
     globalThis.window = {};
-    Object.defineProperty(globalThis, 'navigator', {
-      value: {},
-      configurable: true,
-      writable: true,
-    });
+    installNavigator({});
 
     const res = startListening({});
     assert.equal(res.ok, false);
     assert.ok(res.reason.includes('不支持语音输入'));
   } finally {
-    globalThis.window = originalWin;
-    globalThis.MediaRecorder = originalMediaRecorder;
-    Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true, writable: true });
+    restoreGlobals(saved, ['window', 'MediaRecorder', 'navigator']);
   }
 });
 
 test('voice.js: rapid startListening -> stopListening -> startListening stops stale stream tracks and preserves active recorder', async () => {
-  const originalWin = globalThis.window;
-  const originalNav = globalThis.navigator;
-  const originalMediaRecorder = globalThis.MediaRecorder;
+  const saved = captureGlobals(['window', 'navigator', 'MediaRecorder']);
 
   try {
     let resolveFirstGUM;
@@ -479,32 +452,28 @@ test('voice.js: rapid startListening -> stopListening -> startListening stops st
         this.onstop?.();
       }
     }
-    FakeMediaRecorder.isTypeSupported = () => true;
     class FakeRecognition { start() {} stop() {} }
+    installMediaRecorder(FakeMediaRecorder, {
+      MediaRecorder: FakeMediaRecorder,
+      SpeechRecognition: FakeRecognition,
+    });
 
-    globalThis.MediaRecorder = FakeMediaRecorder;
-    globalThis.window = { MediaRecorder: FakeMediaRecorder, SpeechRecognition: FakeRecognition };
-
-    Object.defineProperty(globalThis, 'navigator', {
-      value: {
-        mediaDevices: {
-          getUserMedia: () => {
-            gumCallCount++;
-            if (gumCallCount === 1) {
-              return new Promise((resolve) => {
-                resolveFirstGUM = () => resolve({
-                  getTracks: () => [{ stop() { firstStreamTrackStopped = true; } }],
-                });
+    installNavigator({
+      mediaDevices: {
+        getUserMedia: () => {
+          gumCallCount++;
+          if (gumCallCount === 1) {
+            return new Promise((resolve) => {
+              resolveFirstGUM = () => resolve({
+                getTracks: () => [{ stop() { firstStreamTrackStopped = true; } }],
               });
-            }
-            return Promise.resolve({
-              getTracks: () => [{ stop() { secondStreamTrackStopped = true; } }],
             });
-          },
+          }
+          return Promise.resolve({
+            getTracks: () => [{ stop() { secondStreamTrackStopped = true; } }],
+          });
         },
       },
-      configurable: true,
-      writable: true,
     });
 
     // Session 1 starts (GUM #1 pending), then immediately stops
@@ -527,9 +496,7 @@ test('voice.js: rapid startListening -> stopListening -> startListening stops st
     assert.equal(secondStreamTrackStopped, true);
   } finally {
     stopListening();
-    globalThis.window = originalWin;
-    globalThis.MediaRecorder = originalMediaRecorder;
-    Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true, writable: true });
+    restoreGlobals(saved, ['window', 'MediaRecorder', 'navigator']);
   }
 });
 
