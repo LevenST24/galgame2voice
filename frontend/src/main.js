@@ -663,10 +663,12 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         }
       }
     }
+    const switched = id === state.activeId && state.sessions.some((item) => item.id !== id);
     deleteSession(id);
     fullRender();
-    ensureSessionVoice(getActive());
-    showToast('对话已删除');
+    const active = getActive();
+    ensureSessionVoice(active);
+    showToast(switched ? `对话已删除，现在是「${active.title}」。` : '对话已删除');
   }
 
   function newChat(selection, { enterFromHome = false } = {}) {

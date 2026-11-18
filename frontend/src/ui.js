@@ -71,7 +71,12 @@ export function showToast(message, type = 'info', options = null) {
   }, duration);
 }
 
+// 第一次点击只进入确认，几秒内再点才真正删除。列表重绘会丢掉这次确认。
+const DELETE_CONFIRM_MS = 5000;
+let disarmPending = () => {};
+
 export function renderSessionList(container, { sessions, activeId, onSelect, onDelete }) {
+  disarmPending();
   container.innerHTML = '';
   const frag = document.createDocumentFragment();
   sessions.forEach((s, idx) => {
@@ -108,9 +113,29 @@ export function renderSessionList(container, { sessions, activeId, onSelect, onD
     item.addEventListener('keydown', (e) => {
       if (e.target === item && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onSelect(s.id); }
     });
-    item.querySelector('.si-del').addEventListener('click', (e) => {
+    const del = item.querySelector('.si-del');
+    del.addEventListener('click', (e) => {
       e.stopPropagation();
-      onDelete(s.id);
+      if (del.classList.contains('si-del-confirm')) {
+        disarmPending();
+        onDelete(s.id);
+        return;
+      }
+      disarmPending();
+      const label = `再点一次删除「${s.title}」`;
+      del.classList.add('si-del-confirm');
+      del.setAttribute('title', label);
+      del.setAttribute('aria-label', label);
+      del.textContent = '确认删除';
+      const timer = setTimeout(() => disarmPending(), DELETE_CONFIRM_MS);
+      disarmPending = () => {
+        clearTimeout(timer);
+        disarmPending = () => {};
+        del.classList.remove('si-del-confirm');
+        del.setAttribute('title', '删除对话');
+        del.setAttribute('aria-label', '删除对话');
+        del.innerHTML = '<svg class="icon"><use href="#i-trash"></use></svg>';
+      };
     });
     frag.appendChild(item);
   });

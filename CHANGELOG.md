@@ -5,9 +5,12 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
-### Fixed
 - 修复发出一句话后模型一直不回答或连接提前断开、舞台上一个字都没出现时，提示仍写「已保留收到的内容」的问题；现在会写明没有收到回复，已收到过台词时仍提示台词留在记录里。
 
+
+### Fixed
+### Fixed
+- 修复会话列表里点垃圾桶会立刻删掉整段对话，删掉正在看的那一段后只提示「对话已删除」、看不出还停在哪一段的问题；现在第一次点击只变成「确认删除」，几秒内再点一次才删除，删掉当前对话且还有其他对话时会写明现在显示的是哪一段。
 
 ## [3.2.6] - 2026-11-18
 ### Fixed
