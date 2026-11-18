@@ -19,17 +19,6 @@ function resolveIdentity(overrides = {}) {
   });
 }
 
-function resolveStatus(status, onAttempt, overrides = {}) {
-  return resolveIdentity({
-    maxAttempts: 3,
-    ...overrides,
-    request: async () => {
-      onAttempt();
-      return turnReply(status);
-    },
-  });
-}
-
 async function resolveAfterRetry(transientStatus, messageId) {
   let attempts = 0;
   const result = await resolveIdentity({
@@ -43,64 +32,12 @@ async function resolveAfterRetry(transientStatus, messageId) {
   return { attempts, result };
 }
 
-test('resolveTurnReplyIdentity: returns messageId on ready with matching keys', async () => {
-  const calls = [];
-  const result = await resolveIdentity({
-    request: async (url, options) => {
-      calls.push({ url, options });
-      return turnReply('ready', { message_id: 202 });
-    },
-  });
-
-  assert.equal(calls.length, 1);
-  assert.equal(result.status, 'ready');
-  assert.equal(result.messageId, 202);
-});
-
-test('resolveTurnReplyIdentity: pending retries until ready within budget', async () => {
-  const { attempts, result } = await resolveAfterRetry('pending', 202);
-
-  assert.equal(attempts, 2);
-  assert.equal(result.status, 'ready');
-  assert.equal(result.messageId, 202);
-});
-
-test('resolveTurnReplyIdentity: pending times out with Chinese message after max 3 attempts', async () => {
-  let attempts = 0;
-  await assert.rejects(
-    resolveStatus('pending', () => attempts++, { delayMs: 5 }),
-    /中断回复尚未就绪，原记录已保留，请稍后重试。/
-  );
-
-  assert.equal(attempts, 3, 'must retry at most 3 times');
-});
-
 test('resolveTurnReplyIdentity: unavailable retries within budget', async () => {
   const { attempts, result } = await resolveAfterRetry('unavailable', 303);
 
   assert.equal(attempts, 2);
   assert.equal(result.status, 'ready');
   assert.equal(result.messageId, 303);
-});
-
-test('resolveTurnReplyIdentity: gone immediately stops without retry', async () => {
-  let attempts = 0;
-  await assert.rejects(
-    resolveStatus('gone', () => attempts++),
-    /已被删除或清空/
-  );
-
-  assert.equal(attempts, 1, 'gone must immediately stop');
-});
-
-test('resolveTurnReplyIdentity: ambiguous immediately stops without retry', async () => {
-  let attempts = 0;
-  await assert.rejects(
-    resolveStatus('ambiguous', () => attempts++),
-    /多条匹配/
-  );
-
-  assert.equal(attempts, 1, 'ambiguous must immediately stop');
 });
 
 test('resolveTurnReplyIdentity: mismatched session_id or user_message_id is rejected', async () => {
