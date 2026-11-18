@@ -6,7 +6,9 @@ import threading
 
 import pytest
 
-from test_home_layout_browser import LayoutHandler, browser_path, make_layout_server, run_layout_browser
+from test_home_layout_browser import (
+    BROWSER_TIMEOUT_SECONDS, LayoutHandler, browser_path, make_layout_server, run_layout_browser,
+)
 
 
 SCRIPT = """
@@ -79,7 +81,10 @@ class AudioRecoveryHandler(LayoutHandler):
         if self.path == "/hold-image":
             # Hold the load event until native decoding/storage finishes. A
             # virtual clock would advance JS deadlines while native I/O waits.
-            self.ready.wait(timeout=15)
+            # Hold almost as long as Chrome may run: on CI (four workers plus
+            # coverage) a page sometimes needed more than the old 15 s, and the
+            # released load event then ended the run before the page posted.
+            self.ready.wait(timeout=BROWSER_TIMEOUT_SECONDS - 5)
             self.send_response(204)
             self.end_headers()
         else:
