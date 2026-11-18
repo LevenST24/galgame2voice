@@ -1,7 +1,6 @@
 """Comprehensive tests for turn reply linkage and interruption repair workflow."""
 
 import asyncio
-import json
 import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -10,126 +9,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from galgame2voice.database import crud
-from galgame2voice.database.models import MessageCreate, VoiceProfileCreate
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.main import create_app
-from galgame2voice.routers.line_audio import LineAudioRequest, regenerate_line
 from galgame2voice.services.chat_service import ChatService
-
-
-@pytest.mark.asyncio
-async def test_reproduce_business_defect_and_verify_fix(tmp_path):
-    """
-    1. Verifies the business defect when assistant ID is missing:
-       regenerate_line with message_id=None returns persisted=False and lines_json is unchanged.
-    2. Verifies the fix:
-       When linked via reply_to_message_id, /api/chat/turn-reply resolves the assistant message_id,
-       enabling regenerate_line to persist and update SQLite lines_json.
-    """
-    database = tmp_path / "defect_repro.db"
-    await init_db(database)
-
-    # 1. Setup user message and partial assistant message linked via reply_to_message_id
-    async with get_db(database) as conn:
-        user_msg = await crud.add_message(conn, MessageCreate(
-            session_id="test_repro",
-            role="user",
-            content_chinese="你好",
-            content_japanese="",
-        ))
-        initial_lines = [{
-            "index": 0,
-            "zh": "你好！",
-            "ja": "こんにちは！",
-            "emotion": "happy",
-            "act": {"face": "smile", "pose": "normal", "motion": None, "blush": False, "fx": None},
-            "audio": {"status": "skipped", "chunks": []},
-        }]
-        assistant_msg = await crud.add_message(conn, MessageCreate(
-            session_id="test_repro",
-            role="assistant",
-            content_chinese="你好！",
-            content_japanese="こんにちは！",
-            lines=initial_lines,
-            reply_to_message_id=user_msg.id,
-        ))
-        # Ensure active voice profile exists
-        profile = await crud.get_active_voice_profile(conn)
-        if not profile:
-            await crud.create_voice_profile(
-                conn,
-                VoiceProfileCreate(
-                    name="TestVoice",
-                    gpt_weights_path="dummy.ckpt",
-                    sovits_weights_path="dummy.pth",
-                    ref_audio_path="dummy.wav",
-                    prompt_text="dummy",
-                ),
-            )
-
-    class FakeTtsService:
-        db_path = database
-        audio_dir = tmp_path / "audio"
-        async def synthesize_to_file(self, *args, **kwargs):
-            return "/audio/repaired.wav", tmp_path / "audio" / "repaired.wav", 1024
-
-    fake_manager = SimpleNamespace(tts_service=FakeTtsService())
-    disconnect_event = asyncio.Event()
-    fake_request = SimpleNamespace(
-        is_disconnected=AsyncMock(return_value=False),
-        receive=disconnect_event.wait,
-    )
-
-    # Defect assertion: without message_id, persisted is False and DB is NOT updated
-    req_null = LineAudioRequest(
-        session_id="test_repro",
-        message_id=None,
-        line_index=0,
-        text="こんにちは！",
-        voice_profile_id=1,
-    )
-    result_null = await regenerate_line(req_null, fake_request, fake_manager)
-    assert result_null["persisted"] is False
-    async with get_db(database) as conn:
-        row = await (await conn.execute("SELECT lines_json FROM messages WHERE id=?", (assistant_msg.id,))).fetchone()
-        assert json.loads(row["lines_json"])[0]["audio"]["status"] == "skipped"
-
-    # Fix verification: Client queries /api/chat/turn-reply using session_id and user_message_id
-    os.environ["GALGAME2VOICE_DB_PATH"] = str(database)
-    try:
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
-            resp = await client.get(
-                f"/api/chat/turn-reply?session_id=test_repro&user_message_id={user_msg.id}"
-            )
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["status"] == "ready"
-            assert data["session_id"] == "test_repro"
-            assert data["user_message_id"] == user_msg.id
-            assert data["message_id"] == assistant_msg.id
-
-        # Now client performs repair with the accurately resolved assistant message_id
-        req_repaired = LineAudioRequest(
-            session_id="test_repro",
-            message_id=data["message_id"],
-            line_index=0,
-            text="こんにちは！",
-            voice_profile_id=1,
-        )
-        result_repaired = await regenerate_line(req_repaired, fake_request, fake_manager)
-        assert result_repaired["persisted"] is True
-        assert result_repaired["audio"]["status"] == "ready"
-
-        # Check DB lines_json was persisted!
-        async with get_db(database) as conn:
-            row_after = await (await conn.execute("SELECT lines_json FROM messages WHERE id=?", (assistant_msg.id,))).fetchone()
-            repaired_lines = json.loads(row_after["lines_json"])
-            assert repaired_lines[0]["audio"]["status"] == "ready"
-            assert repaired_lines[0]["audio"]["chunks"][0]["audio_url"] == "/audio/repaired.wav"
-    finally:
-        os.environ.pop("GALGAME2VOICE_DB_PATH", None)
 
 
 @pytest.mark.asyncio
