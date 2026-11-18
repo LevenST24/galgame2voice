@@ -149,28 +149,62 @@ function fixture(t, extraCallbacks = {}) {
   return { dom, toasts };
 }
 
-test('cross-provider switch invalidates in-flight test and prevents result/toast/button pollution', async t => {
-  let resolveTest;
-  const testPromise = new Promise(resolve => { resolveTest = resolve; });
-  t.after(() => resolveTest?.(response({})));
+const DEFAULT_PROVIDERS = [
+  { id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o' },
+];
+const CUSTOM_MODEL_PROVIDERS = [
+  { id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o', api_base_url: 'https://api.openai.com/v1' },
+  { id: 'custom', name: '自定义模型', is_active: false, chat_model: 'old-draft', api_base_url: 'https://synthetic.invalid/v1' },
+];
 
-  globalThis.fetch = async url => {
-    if (url.includes('/api/providers/test')) return testPromise;
+function deferred(t, onCleanup = resolve => resolve(response({}))) {
+  let resolve, reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  t.after(() => onCleanup(resolve, reject));
+  return { promise, resolve, reject };
+}
+
+function installFetch({
+  providers = DEFAULT_PROVIDERS,
+  onTest,
+  onProviderPost,
+  onRequest,
+}) {
+  globalThis.fetch = async (url, options = {}) => {
+    if (onTest && url.includes('/api/providers/test')) return onTest(url, options);
+    if (onProviderPost && url === '/api/providers' && options.method === 'POST') return onProviderPost(url, options);
+    if (onRequest) {
+      const res = await onRequest(url, options);
+      if (res !== undefined) return res;
+    }
     if (url === '/api/providers') {
-      return response({
-        providers: [
-          { id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o' },
-          { id: 'deepseek', name: 'DeepSeek', is_active: false, chat_model: 'deepseek-chat' },
-        ],
-        presets: [],
-      });
+      return response({ providers, presets: [] });
     }
     return response({});
   };
+}
 
-  const { dom, toasts } = fixture(t);
-  openModal(dom.globalModal);
+async function openFixture(t, extraCallbacks = {}) {
+  const res = fixture(t, extraCallbacks);
+  openModal(res.dom.globalModal);
   await loadProviders();
+  return res;
+}
+
+async function setupPendingTest(t, { providers = DEFAULT_PROVIDERS } = {}) {
+  const { promise: testPromise, resolve: resolveTest } = deferred(t);
+  installFetch({ providers, onTest: () => testPromise });
+  const { dom, toasts } = await openFixture(t);
+  return { dom, toasts, resolveTest };
+}
+
+test('cross-provider switch invalidates in-flight test and prevents result/toast/button pollution', async t => {
+  const { dom, toasts, resolveTest } = await setupPendingTest(t, {
+    providers: [
+      { id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o' },
+      { id: 'deepseek', name: 'DeepSeek', is_active: false, chat_model: 'deepseek-chat' },
+    ],
+  });
 
   // 1. Start test on OpenAI
   dom.gProvider.value = 'openai';
@@ -196,24 +230,7 @@ test('cross-provider switch invalidates in-flight test and prevents result/toast
 });
 
 test('editing model draft while test is in flight invalidates old test and enables immediate new test', async t => {
-  let resolveTest;
-  const testPromise = new Promise(resolve => { resolveTest = resolve; });
-  t.after(() => resolveTest?.(response({})));
-
-  globalThis.fetch = async url => {
-    if (url.includes('/api/providers/test')) return testPromise;
-    if (url === '/api/providers') {
-      return response({
-        providers: [{ id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o' }],
-        presets: [],
-      });
-    }
-    return response({});
-  };
-
-  const { dom, toasts } = fixture(t);
-  openModal(dom.globalModal);
-  await loadProviders();
+  const { dom, toasts, resolveTest } = await setupPendingTest(t);
 
   // 1. Start test with gpt-4o
   dom.gChatModel.value = 'gpt-4o';
@@ -236,24 +253,7 @@ test('editing model draft while test is in flight invalidates old test and enabl
 });
 
 test('editing api_key draft while test is in flight invalidates old test', async t => {
-  let resolveTest;
-  const testPromise = new Promise(resolve => { resolveTest = resolve; });
-  t.after(() => resolveTest?.(response({})));
-
-  globalThis.fetch = async url => {
-    if (url.includes('/api/providers/test')) return testPromise;
-    if (url === '/api/providers') {
-      return response({
-        providers: [{ id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o' }],
-        presets: [],
-      });
-    }
-    return response({});
-  };
-
-  const { dom, toasts } = fixture(t);
-  openModal(dom.globalModal);
-  await loadProviders();
+  const { dom, toasts, resolveTest } = await setupPendingTest(t);
 
   // 1. Start test with old key
   dom.gApiKey.value = 'sk-old-wrong-key';
@@ -275,24 +275,7 @@ test('editing api_key draft while test is in flight invalidates old test', async
 });
 
 test('closing modal while test is in flight invalidates test and prevents toast outside modal', async t => {
-  let resolveTest;
-  const testPromise = new Promise(resolve => { resolveTest = resolve; });
-  t.after(() => resolveTest?.(response({})));
-
-  globalThis.fetch = async url => {
-    if (url.includes('/api/providers/test')) return testPromise;
-    if (url === '/api/providers') {
-      return response({
-        providers: [{ id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o' }],
-        presets: [],
-      });
-    }
-    return response({});
-  };
-
-  const { dom, toasts } = fixture(t);
-  openModal(dom.globalModal);
-  await loadProviders();
+  const { dom, toasts, resolveTest } = await setupPendingTest(t);
 
   // 1. Start test
   const testing = handleProviderTest();
@@ -314,29 +297,15 @@ test('closing modal while test is in flight invalidates test and prevents toast 
 });
 
 test('older test finally cannot clear busy state of a newer test', async t => {
-  let resolveTest1, resolveTest2;
-  const testPromise1 = new Promise(resolve => { resolveTest1 = resolve; });
-  const testPromise2 = new Promise(resolve => { resolveTest2 = resolve; });
-  t.after(() => { resolveTest1?.(response({})); resolveTest2?.(response({})); });
+  const { promise: testPromise1, resolve: resolveTest1 } = deferred(t);
+  const { promise: testPromise2, resolve: resolveTest2 } = deferred(t);
 
   let callCount = 0;
-  globalThis.fetch = async url => {
-    if (url.includes('/api/providers/test')) {
-      callCount++;
-      return callCount === 1 ? testPromise1 : testPromise2;
-    }
-    if (url === '/api/providers') {
-      return response({
-        providers: [{ id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o' }],
-        presets: [],
-      });
-    }
-    return response({});
-  };
+  installFetch({
+    onTest: () => (++callCount === 1 ? testPromise1 : testPromise2),
+  });
 
-  const { dom, toasts } = fixture(t);
-  openModal(dom.globalModal);
-  await loadProviders();
+  const { dom, toasts } = await openFixture(t);
 
   // 1. Initiate Test 1
   dom.gChatModel.value = 'model-1';
@@ -370,22 +339,11 @@ test('older test finally cannot clear busy state of a newer test', async t => {
 });
 
 test('normal current test success renders result box, latency, and success toast', async t => {
-  globalThis.fetch = async url => {
-    if (url.includes('/api/providers/test')) {
-      return response({ success: true, latency_ms: 45, models: ['gpt-4o', 'gpt-4o-mini'] });
-    }
-    if (url === '/api/providers') {
-      return response({
-        providers: [{ id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o' }],
-        presets: [],
-      });
-    }
-    return response({});
-  };
+  installFetch({
+    onTest: () => response({ success: true, latency_ms: 45, models: ['gpt-4o', 'gpt-4o-mini'] }),
+  });
 
-  const { dom, toasts } = fixture(t);
-  openModal(dom.globalModal);
-  await loadProviders();
+  const { dom, toasts } = await openFixture(t);
 
   await handleProviderTest();
 
@@ -398,29 +356,18 @@ test('normal current test success renders result box, latency, and success toast
 });
 
 test('normal current test failure renders error title, guidance, and error toast', async t => {
-  globalThis.fetch = async url => {
-    if (url.includes('/api/providers/test')) {
-      return response({
-        success: false,
-        error_code: 'OPENAI_AUTH_FAILED',
-        error_title: 'OpenAI API Key 身份验证失败 (401 Unauthorized)',
-        error: 'OpenAI API Key 身份验证失败 (401 Unauthorized)',
-        diagnostic: '请前往控制台检查',
-        status_code: 401,
-      });
-    }
-    if (url === '/api/providers') {
-      return response({
-        providers: [{ id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o' }],
-        presets: [],
-      });
-    }
-    return response({});
-  };
+  installFetch({
+    onTest: () => response({
+      success: false,
+      error_code: 'OPENAI_AUTH_FAILED',
+      error_title: 'OpenAI API Key 身份验证失败 (401 Unauthorized)',
+      error: 'OpenAI API Key 身份验证失败 (401 Unauthorized)',
+      diagnostic: '请前往控制台检查',
+      status_code: 401,
+    }),
+  });
 
-  const { dom, toasts } = fixture(t);
-  openModal(dom.globalModal);
-  await loadProviders();
+  const { dom, toasts } = await openFixture(t);
 
   await handleProviderTest();
 
@@ -433,23 +380,14 @@ test('normal current test failure renders error title, guidance, and error toast
 
 test('calling initGlobalSettings twice with same controls does not issue duplicate test requests on single click', async t => {
   const testCalls = [];
-  globalThis.fetch = async (url, options = {}) => {
-    if (url.includes('/api/providers/test')) {
+  installFetch({
+    onTest: (url, options) => {
       testCalls.push({ url, aborted: options.signal?.aborted });
       return response({ success: true, latency_ms: 40 });
-    }
-    if (url === '/api/providers') {
-      return response({
-        providers: [{ id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o' }],
-        presets: [],
-      });
-    }
-    return response({});
-  };
+    },
+  });
 
-  const { dom, toasts } = fixture(t);
-  openModal(dom.globalModal);
-  await loadProviders();
+  const { dom, toasts } = await openFixture(t);
 
   // Re-initialize with the SAME dom controls
   initGlobalSettings(dom, { openModal, closeModal });
@@ -462,27 +400,15 @@ test('calling initGlobalSettings twice with same controls does not issue duplica
 
 test('reinit disposes previous controller: events on old DOM cannot mutate new controls or issue tests', async t => {
   const testCalls = [];
-  globalThis.fetch = async (url, options = {}) => {
-    if (url.includes('/api/providers/test')) {
+  installFetch({
+    onTest: (url, options) => {
       testCalls.push({ url, options });
       return response({ success: true, latency_ms: 40 });
-    }
-    if (url === '/api/providers') {
-      return response({
-        providers: [{ id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o' }],
-        presets: [],
-      });
-    }
-    return response({});
-  };
+    },
+  });
 
-  const fixture1 = fixture(t);
-  openModal(fixture1.dom.globalModal);
-  await loadProviders();
-
-  const fixture2 = fixture(t);
-  openModal(fixture2.dom.globalModal);
-  await loadProviders();
+  const fixture1 = await openFixture(t);
+  const fixture2 = await openFixture(t);
 
   // Now click old button on fixture1
   await fixture1.dom.gProviderTest.dispatch('click');
@@ -492,35 +418,17 @@ test('reinit disposes previous controller: events on old DOM cannot mutate new c
 });
 
 test('reinit disposes previous controller: old in-flight test resolving after reinit cannot mutate new DOM or toasts', async t => {
-  let resolveOldTest;
-  const oldTestPromise = new Promise(resolve => { resolveOldTest = resolve; });
-  t.after(() => resolveOldTest?.(response({})));
+  const { promise: oldTestPromise, resolve: resolveOldTest } = deferred(t);
+  installFetch({ onTest: () => oldTestPromise });
 
-  globalThis.fetch = async (url) => {
-    if (url.includes('/api/providers/test')) {
-      return oldTestPromise;
-    }
-    if (url === '/api/providers') {
-      return response({
-        providers: [{ id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o' }],
-        presets: [],
-      });
-    }
-    return response({});
-  };
-
-  const fixture1 = fixture(t);
-  openModal(fixture1.dom.globalModal);
-  await loadProviders();
+  const fixture1 = await openFixture(t);
 
   // Start test on fixture1
   const pending1 = handleProviderTest();
   assert.equal(fixture1.dom.gProviderTest.disabled, true);
 
   // Re-initialize with new fixture2
-  const fixture2 = fixture(t);
-  openModal(fixture2.dom.globalModal);
-  await loadProviders();
+  const fixture2 = await openFixture(t);
 
   // Resolve old test with success
   resolveOldTest(response({ success: true, latency_ms: 35, models: ['gpt-4o'] }));
@@ -533,33 +441,17 @@ test('reinit disposes previous controller: old in-flight test resolving after re
 });
 
 test('reinit disposes previous controller: in-flight save resolving with acknowledged success cannot mutate new coordinator', async t => {
-  let releaseOldSave;
-  const oldSavePromise = new Promise(resolve => { releaseOldSave = resolve; });
-  t.after(() => releaseOldSave?.(response({})));
-
-  globalThis.fetch = async (url, options = {}) => {
-    if (url === '/api/providers' && options.method === 'POST') {
-      return oldSavePromise;
-    }
-    if (url === '/api/providers') {
-      return response({
-        providers: [
-          { id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o', api_base_url: 'https://api.openai.com/v1' },
-          { id: 'custom', name: '自定义模型', is_active: false, chat_model: 'old-draft', api_base_url: 'https://synthetic.invalid/v1' },
-        ],
-        presets: [],
-      });
-    }
-    return response({});
-  };
+  const { promise: oldSavePromise, resolve: releaseOldSave } = deferred(t);
+  installFetch({
+    providers: CUSTOM_MODEL_PROVIDERS,
+    onProviderPost: () => oldSavePromise,
+  });
 
   let badgeUpdates1 = 0;
   let badgeUpdates2 = 0;
 
   // Initialize fixture 1
-  const fixture1 = fixture(t, { updateBadge: () => { badgeUpdates1++; } });
-  openModal(fixture1.dom.globalModal);
-  await loadProviders();
+  const fixture1 = await openFixture(t, { updateBadge: () => { badgeUpdates1++; } });
 
   // Switch to custom model and start save
   fixture1.dom.gProvider.value = 'custom';
@@ -571,9 +463,7 @@ test('reinit disposes previous controller: in-flight save resolving with acknowl
   assert.equal(fixture1.dom.gProviderActivate.disabled, true, 'fixture1 activate button busy while saving');
 
   // Re-initialize with fixture 2 before network response arrives
-  const fixture2 = fixture(t, { updateBadge: () => { badgeUpdates2++; } });
-  openModal(fixture2.dom.globalModal);
-  await loadProviders();
+  const fixture2 = await openFixture(t, { updateBadge: () => { badgeUpdates2++; } });
 
   // Prepare a new draft on fixture 2
   fixture2.dom.gProvider.value = 'openai';
@@ -604,30 +494,17 @@ test('reinit disposes previous controller: in-flight save resolving with acknowl
 });
 
 test('reinit disposes previous controller: in-flight save rejecting or unconfirmed cannot leak error toast or disable new controls', async t => {
-  let rejectOldSave;
-  const oldSavePromise = new Promise((_, reject) => { rejectOldSave = reject; });
-  t.after(() => rejectOldSave?.(new Error('cleanup')));
-
-  globalThis.fetch = async (url, options = {}) => {
-    if (url === '/api/providers' && options.method === 'POST') {
-      return oldSavePromise;
-    }
-    if (url === '/api/providers') {
-      return response({
-        providers: [
-          { id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o', api_base_url: 'https://api.openai.com/v1' },
-          { id: 'custom', name: '自定义模型', is_active: false, chat_model: 'old-draft', api_base_url: 'https://synthetic.invalid/v1' },
-        ],
-        presets: [],
-      });
-    }
-    return response({});
-  };
+  const { promise: oldSavePromise, reject: rejectOldSave } = deferred(
+    t,
+    (_resolve, reject) => reject(new Error('cleanup')),
+  );
+  installFetch({
+    providers: CUSTOM_MODEL_PROVIDERS,
+    onProviderPost: () => oldSavePromise,
+  });
 
   let badgeUpdates2 = 0;
-  const fixture1 = fixture(t);
-  openModal(fixture1.dom.globalModal);
-  await loadProviders();
+  const fixture1 = await openFixture(t);
 
   fixture1.dom.gProvider.value = 'custom';
   fixture1.dom.gChatModel.value = 'failing-draft';
@@ -636,9 +513,7 @@ test('reinit disposes previous controller: in-flight save rejecting or unconfirm
   await settle();
 
   // Re-initialize with fixture 2
-  const fixture2 = fixture(t, { updateBadge: () => { badgeUpdates2++; } });
-  openModal(fixture2.dom.globalModal);
-  await loadProviders();
+  const fixture2 = await openFixture(t, { updateBadge: () => { badgeUpdates2++; } });
 
   fixture2.dom.gChatModel.value = 'stable-model';
 
@@ -657,49 +532,34 @@ test('reinit disposes previous controller: in-flight save rejecting or unconfirm
 });
 
 test('reinit disposes previous controller: in-flight footer save cannot leak success toast or clear new busy state', async t => {
-  let releaseOldConfigSave;
-  let releaseNewConfigSave;
-
-  const oldConfigPromise = new Promise(resolve => { releaseOldConfigSave = resolve; });
-  const newConfigPromise = new Promise(resolve => { releaseNewConfigSave = resolve; });
-
-  t.after(() => {
-    releaseOldConfigSave?.(response({}));
-    releaseNewConfigSave?.(response({}));
-  });
+  const { promise: oldConfigPromise, resolve: releaseOldConfigSave } = deferred(t);
+  const { promise: newConfigPromise, resolve: releaseNewConfigSave } = deferred(t);
 
   let providerPosts = 0;
   let configPosts = 0;
 
-  globalThis.fetch = async (url, options = {}) => {
-    if (url === '/api/providers' && options.method === 'POST') {
+  installFetch({
+    providers: [
+      { id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o', api_base_url: 'https://api.openai.com/v1' },
+      { id: 'custom', name: '自定义模型', is_active: false, chat_model: 'custom-model', api_base_url: 'https://custom.api/v1' },
+    ],
+    onProviderPost: (_url, options) => {
       providerPosts++;
       return response({ provider: { ...JSON.parse(options.body), is_active: true } });
-    }
-    if (url === '/api/config' && options.method === 'POST') {
-      configPosts++;
-      if (configPosts === 1) return oldConfigPromise;
-      return newConfigPromise;
-    }
-    if (url === '/api/providers') {
-      return response({
-        providers: [
-          { id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o', api_base_url: 'https://api.openai.com/v1' },
-          { id: 'custom', name: '自定义模型', is_active: false, chat_model: 'custom-model', api_base_url: 'https://custom.api/v1' },
-        ],
-        presets: [],
-      });
-    }
-    if (url === '/api/config') {
-      return response({ status: 'ok', settings: { audio_retention_minutes: 30 } });
-    }
-    return response({});
-  };
+    },
+    onRequest: (url, options) => {
+      if (url === '/api/config' && options.method === 'POST') {
+        configPosts++;
+        return configPosts === 1 ? oldConfigPromise : newConfigPromise;
+      }
+      if (url === '/api/config') {
+        return response({ status: 'ok', settings: { audio_retention_minutes: 30 } });
+      }
+    },
+  });
 
   // 1. Initialize fixture 1 and load both providers and global config
-  const fixture1 = fixture(t);
-  openModal(fixture1.dom.globalModal);
-  await loadProviders();
+  const fixture1 = await openFixture(t);
   await loadGlobalConfig();
 
   fixture1.dom.gAudioRetention.value = '45';
@@ -716,9 +576,7 @@ test('reinit disposes previous controller: in-flight footer save cannot leak suc
 
   // 2. Re-initialize with fixture 2 and load its configuration
   let badgeUpdates2 = 0;
-  const fixture2 = fixture(t, { updateBadge: () => { badgeUpdates2++; } });
-  openModal(fixture2.dom.globalModal);
-  await loadProviders();
+  const fixture2 = await openFixture(t, { updateBadge: () => { badgeUpdates2++; } });
   await loadGlobalConfig();
 
   // Leave a dirty provider draft and a new config draft on fixture 2
@@ -765,34 +623,21 @@ test('reinit disposes previous controller: in-flight footer save cannot leak suc
 });
 
 test('reinit disposes previous controller: in-flight save lacking active confirmation does not issue fallback activation after disposal', async t => {
-  let releaseOldSave;
-  const oldSavePromise = new Promise(resolve => { releaseOldSave = resolve; });
-  t.after(() => releaseOldSave?.(response({})));
+  const { promise: oldSavePromise, resolve: releaseOldSave } = deferred(t);
   let activationCalls = 0;
 
-  globalThis.fetch = async (url, options = {}) => {
-    if (url === '/api/providers' && options.method === 'POST') {
-      return oldSavePromise;
-    }
-    if (url.includes('/activate')) {
-      activationCalls++;
-      return response({ active_provider: { id: 'custom', name: '自定义模型' } });
-    }
-    if (url === '/api/providers') {
-      return response({
-        providers: [
-          { id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o', api_base_url: 'https://api.openai.com/v1' },
-          { id: 'custom', name: '自定义模型', is_active: false, chat_model: 'old-draft', api_base_url: 'https://synthetic.invalid/v1' },
-        ],
-        presets: [],
-      });
-    }
-    return response({});
-  };
+  installFetch({
+    providers: CUSTOM_MODEL_PROVIDERS,
+    onProviderPost: () => oldSavePromise,
+    onRequest: url => {
+      if (url.includes('/activate')) {
+        activationCalls++;
+        return response({ active_provider: { id: 'custom', name: '自定义模型' } });
+      }
+    },
+  });
 
-  const fixture1 = fixture(t);
-  openModal(fixture1.dom.globalModal);
-  await loadProviders();
+  const fixture1 = await openFixture(t);
 
   fixture1.dom.gProvider.value = 'custom';
   fixture1.dom.gChatModel.value = 'fallback-draft';
@@ -801,9 +646,7 @@ test('reinit disposes previous controller: in-flight save lacking active confirm
   await settle();
 
   // Re-initialize with fixture 2
-  const fixture2 = fixture(t);
-  openModal(fixture2.dom.globalModal);
-  await loadProviders();
+  const fixture2 = await openFixture(t);
 
   // Release old save with is_active: false (would normally require fallback activation)
   releaseOldSave(response({
