@@ -2,11 +2,10 @@
 Token Usage & Latency Telemetry Collector for galgame2voice.
 Tracks real-time prompt/completion tokens, model pricing costs (USD/CNY),
 TTFT (Time To First Token), TTS first chunk latency, and total E2E duration.
-Employs a dual-tier architecture: an in-memory ring buffer for instant UI queries
-and SQLite persistent storage for long-term historical analytics.
+Each record is persisted to SQLite (token_usage_metrics).
 """
 
-from collections import Counter, deque
+from collections import Counter
 from datetime import datetime, timezone
 import logging
 from typing import Any
@@ -112,12 +111,11 @@ def _safe_nonneg_float(val: Any) -> float:
 class MetricsCollector:
     """
     Coordinates real-time metric emission, token estimation, cost calculation,
-    in-memory ring buffering, and asynchronous database persistence.
+    and asynchronous database persistence.
     """
 
-    def __init__(self, db_path: str | Path | None = None, ring_buffer_size: int = 100) -> None:
+    def __init__(self, db_path: str | Path | None = None) -> None:
         self.db_path = str(db_path) if db_path is not None else get_database_path()
-        self.ring_buffer: deque = deque(maxlen=ring_buffer_size)
 
     def calculate_cost(
         self,
@@ -193,8 +191,7 @@ class MetricsCollector:
         tts_generated_chunks: int = 0,
     ) -> dict[str, Any]:
         """
-        Records telemetry for an end-to-end request.
-        Updates in-memory ring buffer and persists asynchronously to SQLite.
+        Records telemetry for an end-to-end request and persists it to SQLite.
         """
         safe_prompt_tok = _safe_nonneg_int(prompt_tokens)
         safe_comp_tok = _safe_nonneg_int(completion_tokens)
@@ -229,9 +226,6 @@ class MetricsCollector:
             "tts_cached_chunks": _safe_nonneg_int(tts_cached_chunks),
             "tts_generated_chunks": _safe_nonneg_int(tts_generated_chunks),
         }
-
-        # Add to in-memory ring buffer
-        self.ring_buffer.append(metric_record)
 
         # Asynchronously persist to SQLite
         try:
