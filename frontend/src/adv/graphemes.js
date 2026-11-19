@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Text and grapheme helpers for the visual-novel line player.
  */

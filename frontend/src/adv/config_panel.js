@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * config_panel.js - ADV settings overlay component.
  *

@@ -1,3 +1,4 @@
+// @ts-check
 import { validAdvSetting } from '../session_data.js';
 
 // Same field/label structure as the existing session panel. Values are inert text.

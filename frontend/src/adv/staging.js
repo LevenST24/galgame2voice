@@ -1,3 +1,4 @@
+// @ts-check
 // Per-view ephemeral stage direction. Explicit moves take precedence over the director.
 export const MOVES = ['approach', 'retreat', 'closeup', 'left', 'right', 'center'];
 export const DEPTHS = [0.84, 1, 1.12, 1.24];
@@ -9,6 +10,7 @@ export function createStaging({ random = Math.random } = {}) {
     reset() { x = 0; depth = 1; quiet = 0; },
     enter({ enabled = true } = {}) { x = enabled ? Math.floor(random() * 3) - 1 : 0; depth = 1; quiet = 0; return { x, depth }; },
     current() { return { x, depth }; },
+    /** @param {{ move?: any, emotion?: any, enabled?: boolean }} [opts] */
     next({ move, emotion, enabled = true } = {}) {
       if (!enabled) { x = 0; depth = 1; quiet = 0; return { x, depth }; }
       quiet++;

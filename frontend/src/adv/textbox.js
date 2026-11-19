@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * textbox.js - ADV message window component and line_player render adapter.
  */
@@ -29,14 +30,19 @@ function formatDisplayQuote(text, mode) {
  * Creates the ADV textbox inside container.
  *
  * @param {HTMLElement} container
- * @param {object} opts
- * @param {() => object} [opts.getSettings]
+ * @param {object} [opts]
+ * @param {() => any} [opts.getSettings]
+ * @param {() => boolean} [opts.isOverlayOpen]
  * @param {() => void} [opts.onAdvance]
  * @param {(text: string) => boolean} [opts.onSend] Return true only after accepting the send.
  * @param {() => void} [opts.onMic]
  * @param {(action: string, data?: any) => void} [opts.onAction]
- * @param {object} [opts.clock]
+ * @param {any} [opts.clock]
+ * @param {(query: string) => any} [opts.matchMedia]
+ * @param {any} [opts.player]
+ * @param {() => any} [opts.getPlayer]
  * @param {(candidate: string) => boolean} [opts.fits]
+ * @param {(candidate: string) => boolean} [opts.fitsSubtitle]
  * @returns {object} line_player render adapter + extras
  */
 export function createTextbox(container, opts = {}) {
@@ -143,12 +149,14 @@ export function createTextbox(container, opts = {}) {
   textareaEl.placeholder = '请输入你的回答（Enter 发送，Shift+Enter 换行）';
 
   function isOverlayBlocked() {
+    /** @type {any} */
     let cur = rootEl;
     while (cur) {
       if (cur.inert || (cur.getAttribute?.('inert') ?? null) !== null) return true;
       cur = cur.parentNode;
     }
     if (container) {
+      /** @type {any} */
       let curC = container;
       while (curC) {
         if (curC.inert || (curC.getAttribute?.('inert') ?? null) !== null) return true;
@@ -682,6 +690,7 @@ export function createTextbox(container, opts = {}) {
     return finalPrimaryPages;
   }
 
+  /** @param {{ name?: string, mode?: string }} [speaker] */
   function setSpeaker({ name, mode = 'character' } = {}) {
     currentSpeaker = {
       name: name !== undefined ? name : currentSpeaker.name,
@@ -690,6 +699,7 @@ export function createTextbox(container, opts = {}) {
     updateSpeakerUI();
   }
 
+  /** @param {{ active?: boolean, progress?: number | string }} [voice] */
   function setVoice({ active = false, progress } = {}) {
     if (active) {
       voiceDisplayEl.classList.remove('is-hidden');

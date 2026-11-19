@@ -1,3 +1,4 @@
+// @ts-check
 // Filled by main at initialization; also exported by adv_app for home integration.
 export const advActions = {};
 
@@ -17,7 +18,27 @@ export function homeExcerpt(messages = []) {
   return { zh: '', ja: '', user: '', line: null };
 }
 
-/** Read fresh snapshots; no mutable session or settings object leaves this boundary. */
+/**
+ * Read fresh snapshots; no mutable session or settings object leaves this boundary.
+ * @param {object} deps
+ * @param {() => any[]} deps.getSessions
+ * @param {() => any[]} deps.getProfiles
+ * @param {() => any} [deps.getActiveId]
+ * @param {(options?: any) => any} deps.startNew
+ * @param {(id: any) => any} deps.loadSession
+ * @param {(id: any) => any} [deps.previewSession]
+ * @param {() => any} deps.openCharacters
+ * @param {(page?: string) => any} deps.openSettings
+ * @param {(id?: string, time?: string, work?: string | null) => string} [deps.getBackgroundUrl]
+ * @param {(onUpdate?: (next: any) => void) => any} [deps.getStatus]
+ * @param {() => any[]} [deps.getBackgrounds]
+ * @param {(session?: any) => Promise<any>} [deps.getAvatar]
+ * @param {(session?: any, line?: any) => Promise<any>} [deps.playExcerpt]
+ * @param {() => any} [deps.stopExcerpt]
+ * @param {(fn?: (open: boolean) => void) => () => void} [deps.subscribeSettings]
+ * @param {() => boolean} [deps.voiceEnabled]
+ * @param {(id?: any) => boolean} [deps.isBehindServer]
+ */
 export function createTitleActions({ getSessions, getProfiles, getActiveId = () => null,
   startNew, loadSession, previewSession = loadSession, openCharacters, openSettings,
   getBackgroundUrl = () => '', getStatus = () => ({}), getBackgrounds = () => [],

@@ -1,3 +1,4 @@
+// @ts-check
 /** Home is a transparent overlay on the active session's real ADV stage. */
 import { canReplayLine } from './replay.js';
 
@@ -24,6 +25,15 @@ function createInitialStatus() {
   };
 }
 
+/**
+ * @param {Element} root
+ * @param {object} [options]
+ * @param {Record<string, any>} [options.actions]
+ * @param {Document} [options.documentObj]
+ * @param {any} [options.matchMedia]
+ * @param {any} [options.clock]
+ * @param {() => Date} [options.now]
+ */
 export function createTitleScreen(root, { actions = {}, documentObj = globalThis.document,
   matchMedia = globalThis.matchMedia, clock = globalThis, now = () => new Date() } = {}) {
   const doc = documentObj || root.ownerDocument;
@@ -94,7 +104,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
   function main() { return sessions.find(s => s.id === mainId); }
   function chatOK() { return status.modelLoaded && status.hasModel !== false && status.model?.state === 'ok'; }
   function readSessions() {
-    sessions = (actions.listSessions?.() || []).slice().sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0));
+    sessions = (actions.listSessions?.() || []).slice().sort((a, b) => /** @type {any} */ (new Date(b.updatedAt || 0)) - /** @type {any} */ (new Date(a.updatedAt || 0)));
     const active = actions.getActiveId?.();
     if (sessions.some(s => s.id === active)) mainId = active;
     else if (!sessions.some(s => s.id === mainId)) mainId = sessions[0]?.id ?? null;
@@ -434,8 +444,8 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
   }
   function setStageHome(on) {
     stage?.classList.toggle('is-home', on);
-    const controls = [...(stage?.querySelectorAll('.adv-layer-textbox, .adv-layer-quickmenu, .adv-app-tools, .adv-art-status') || []),
-      ...[...root.children].filter(node => node !== screen && !node.classList.contains('adv-config-overlay'))];
+    const controls = /** @type {HTMLElement[]} */ ([...(stage?.querySelectorAll('.adv-layer-textbox, .adv-layer-quickmenu, .adv-app-tools, .adv-art-status') || []),
+      ...[...root.children].filter(node => node !== screen && !node.classList.contains('adv-config-overlay'))]);
     for (const layer of controls) {
       if (on) { if (!stageControls.has(layer)) stageControls.set(layer, layer.inert); layer.inert = true; }
       else layer.inert = stageControls.get(layer) ?? false;

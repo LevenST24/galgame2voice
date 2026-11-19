@@ -1,3 +1,4 @@
+// @ts-check
 import { createTitleScreen } from './title.js';
 
 let screen = null;

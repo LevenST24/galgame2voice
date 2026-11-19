@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * backlog.js - ADV dedicated LOG (backlog) overlay component.
  *
@@ -131,6 +132,7 @@ export function createBacklog(container, deps = {}) {
     network: '音频加载失败，请稍后在 LOG 里再点「语音」重试。',
   };
 
+  /** @param {{ feedback?: any }} [opts] */
   function cancelRegeneration({ feedback } = {}) {
     if (!activeRegeneration) return;
     const pending = activeRegeneration;

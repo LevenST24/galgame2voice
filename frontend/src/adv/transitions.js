@@ -1,4 +1,9 @@
-// Web Animations keep transitions disposable and leave the settled layout alone.
+// @ts-check
+/**
+ * Web Animations keep transitions disposable and leave the settled layout alone.
+ * @param {HTMLElement} layer
+ * @param {{ reducedMotion?: () => boolean }} [options]
+ */
 export function createSpriteTransition(layer, { reducedMotion = () => false } = {}) {
   let revision = 0, animation = null, destroyed = false;
   const cancel = () => { animation?.cancel(); animation = null; };

@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * line_player.js - DOM-free line state machine for the visual-novel (ADV) UI.
  */
@@ -26,9 +27,9 @@ const PRESENTING_STATES = new Set(['waiting_line', 'waiting_audio', 'revealing',
 /**
  * Creates a deterministic visual-novel line player state machine.
  *
- * @param {object} params
- * @param {object} params.clock { now(): number, setTimeout(fn, ms): id, clearTimeout(id) }
- * @param {object} params.voice { play(lineIndex, chunks): Promise<'ended'|'interrupted'|'failed'>, stop({ fadeMs }): void,
+ * @param {object} [params]
+ * @param {any} [params.clock] { now(): number, setTimeout(fn, ms): id, clearTimeout(id) }
+ * @param {any} [params.voice] { play(lineIndex, chunks): Promise<'ended'|'interrupted'|'failed'>, stop({ fadeMs }): void,
  *   progress?(): number|null } progress is the share of the playing line's voice already heard.
  * @param {object} [params.render] Render adapter (all methods optional)
  * @param {(line: object, primaryText: string) => string[]} [params.paginate] Split text into display pages
