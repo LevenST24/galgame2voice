@@ -23,9 +23,15 @@ disabled, logging why so the misconfiguration stays visible.
 
 Explicitly passed ``proxy=...`` arguments are unaffected, because httpx skips
 environment parsing entirely in that case.
+
+Clients built here also share one SSL context, so the CA bundle is loaded once
+per process instead of once per client and proxy transport (see
+``_shared_ssl_context``).
 """
 
+import functools
 import logging
+import ssl
 from typing import Any
 
 import httpx
@@ -60,15 +66,37 @@ def _build_with_fallback(factory: Any, kwargs: dict) -> Any:
         return factory(**retry_kwargs)
 
 
+@functools.cache
+def _shared_ssl_context(trust_env: bool) -> ssl.SSLContext:
+    """
+    The CA-loaded SSL context that every client built here shares.
+
+    httpx loads the CA bundle again for every client, once per transport: the
+    default one plus one for each proxy in the environment (HTTP_PROXY,
+    HTTPS_PROXY, ALL_PROXY). With OpenSSL 3.0, which python.org's Windows builds
+    and so the portable package ship, one load measured about 0.2 s of work that
+    blocks the event loop, and a client is built for every chat request.
+    httpcore sets ALPN on the context per connection; that is the same value
+    for every client here, because none of them enables HTTP/2.
+    """
+    return httpx.create_ssl_context(trust_env=trust_env)
+
+
+def _async_client_with_shared_ssl(**kwargs: Any) -> httpx.AsyncClient:
+    kwargs.setdefault("verify", _shared_ssl_context(kwargs.get("trust_env", True)))
+    return httpx.AsyncClient(**kwargs)
+
+
 def create_async_client(**kwargs: Any) -> httpx.AsyncClient:
     """
     Builds an ``httpx.AsyncClient`` that survives a broken proxy environment.
 
     Equivalent to ``httpx.AsyncClient(**kwargs)``, except that an unusable
     ambient proxy configuration (see module docstring) falls back to
-    ``trust_env=False`` instead of raising ``httpx.InvalidURL``.
+    ``trust_env=False`` instead of raising ``httpx.InvalidURL``, and that the
+    default certificate verification reuses one shared SSL context.
     """
-    return _build_with_fallback(httpx.AsyncClient, kwargs)
+    return _build_with_fallback(_async_client_with_shared_ssl, kwargs)
 
 
 def proxy_environment_is_usable() -> bool:

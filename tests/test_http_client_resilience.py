@@ -18,6 +18,8 @@ startup simultaneously. These tests pin both halves of the contract:
   leave a healthy environment untouched.
 """
 
+import ssl
+
 import httpx
 import pytest
 
@@ -94,6 +96,30 @@ async def test_explicit_trust_env_false_is_respected(clean_proxy_environment):
         assert client.trust_env is False
     finally:
         await client.aclose()
+
+
+async def test_clients_share_one_ca_bundle_load(clean_proxy_environment, monkeypatch):
+    """httpx loads the CA bundle for every client, once per transport (one more for each proxy variable).
+
+    With the OpenSSL 3.0 of python.org's Python 3.13 one load blocks the event loop for about 0.2 s, and a
+    client is built for every chat request, so the factory must load the bundle once and reuse it.
+    """
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        monkeypatch.setenv(name, PROXY_URL)
+    loads = []
+    real_load = ssl.SSLContext.load_verify_locations
+
+    def counting_load(self, *args, **kwargs):
+        loads.append(args or kwargs)
+        return real_load(self, *args, **kwargs)
+
+    monkeypatch.setattr(ssl.SSLContext, "load_verify_locations", counting_load)
+    clients = [create_async_client(timeout=5.0) for _ in range(3)]
+    try:
+        assert len(loads) <= 1
+    finally:
+        for client in clients:
+            await client.aclose()
 
 
 def test_proxy_environment_is_usable_false_under_broken_environment(broken_proxy_environment):
