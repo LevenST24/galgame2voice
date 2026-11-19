@@ -1,3 +1,4 @@
+// @ts-check
 import { requestJson } from './api.js';
 
 const writes = new Map();
@@ -84,18 +85,23 @@ export async function fetchAllSessions() {
   }
 }
 
+/**
+ * @param {string} sessionId
+ * @param {{ limit?: number, beforeId?: number | null, signal?: AbortSignal | null }} [options]
+ */
 export async function fetchSessionHistoryPage(sessionId, { limit = 100, beforeId = null, signal = null } = {}) {
   const params = new URLSearchParams({
     session_id: sessionId,
     limit: String(limit),
   });
-  if (Number.isInteger(beforeId) && beforeId > 0) {
+  if (Number.isInteger(beforeId) && /** @type {number} */ (beforeId) > 0) {
     params.set('before_id', String(beforeId));
   }
-  return requestJson(`/api/chat/history?${params.toString()}`, { signal });
+  return requestJson(`/api/chat/history?${params.toString()}`, /** @type {RequestInit} */ ({ signal }));
 }
 
 export function earliestServerMessageId(messages) {
+  /** @type {number | null} */
   let oldest = null;
   for (const m of messages || []) {
     const match = typeof m?.id === 'string' ? /^m_(\d+)$/.exec(m.id) : null;

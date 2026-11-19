@@ -1,3 +1,4 @@
+// @ts-check
 // 控制台访问令牌鉴权管理 (Console Token Auth)
 // 令牌仅保存在当前浏览器的会话存储 (sessionStorage) 中，绝不写入 localStorage 或磁盘
 
@@ -46,7 +47,7 @@ export function promptConsoleToken(reason = '') {
   }
 
   const modal = document.getElementById('tokenModal');
-  const input = document.getElementById('consoleTokenInput');
+  const input = /** @type {HTMLInputElement | null} */ (document.getElementById('consoleTokenInput'));
   const saveBtn = document.getElementById('tokenModalSave');
 
   if (!modal || !input || !saveBtn) {
@@ -110,13 +111,13 @@ export function promptConsoleToken(reason = '') {
  * 初始化全局 fetch 拦截器：自动注入 Bearer Token，并在 401 时自动弹窗重试
  */
 export function initAuthInterceptor() {
-  if (window._galgame_auth_initialized) return;
-  window._galgame_auth_initialized = true;
+  if (/** @type {any} */ (window)._galgame_auth_initialized) return;
+  /** @type {any} */ (window)._galgame_auth_initialized = true;
 
   const nativeFetch = window.fetch.bind(window);
 
   window.fetch = async function (input, init = {}) {
-    const url = typeof input === 'string' ? input : input?.url || '';
+    const url = typeof input === 'string' ? input : /** @type {any} */ (input)?.url || '';
     let parsedUrl = null;
     try {
       parsedUrl = new URL(url, location.origin);
@@ -133,7 +134,7 @@ export function initAuthInterceptor() {
     }
 
     // 复制或构造 Headers 对象
-    const headers = new Headers(init.headers || (typeof input === 'object' && input?.headers ? input.headers : {}));
+    const headers = new Headers(init.headers || (typeof input === 'object' && /** @type {any} */ (input)?.headers ? /** @type {any} */ (input).headers : {}));
     const token = getConsoleToken();
 
     if (token && !headers.has('Authorization')) {

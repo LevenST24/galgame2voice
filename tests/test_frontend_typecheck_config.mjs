@@ -9,15 +9,26 @@ const JSCONFIG_PATH = path.join(FRONTEND_DIR, 'jsconfig.json');
 const PACKAGE_JSON_PATH = path.join(FRONTEND_DIR, 'package.json');
 
 const EXPECTED_CORE_FILES = [
+  'src/ai.js',
+  'src/api.js',
+  'src/audio_player.js',
   'src/audio_request.js',
-  'src/request.js',
-  'src/session_data.js',
-  'src/store.js',
+  'src/auth.js',
   'src/cache.js',
+  'src/chat_backup.js',
+  'src/conversation.js',
+  'src/request.js',
+  'src/session_api.js',
+  'src/session_data.js',
+  'src/settings.js',
+  'src/settings_ui.js',
+  'src/sprite_state.js',
+  'src/store.js',
+  'src/tar_pack.js',
   'src/controllers/turn_reply_identity.js',
 ];
 
-test('frontend/jsconfig.json enables checkJs + noEmit and covers all 6 core modules with // @ts-check', () => {
+test('frontend/jsconfig.json enables checkJs + noEmit and covers all 17 core modules with // @ts-check', () => {
   assert.equal(fs.existsSync(JSCONFIG_PATH), true, 'frontend/jsconfig.json must exist');
   const jsconfig = JSON.parse(fs.readFileSync(JSCONFIG_PATH, 'utf8'));
 

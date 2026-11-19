@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Pure sprite state selection and acting gates.
  * No DOM, no timers.
@@ -223,6 +224,7 @@ function faceForLabel(model, lookFaces, label, emotion) {
     const value = Number(entry.strength) || 0;
     if (!strengths.has(entry.id) || value > strengths.get(entry.id)) strengths.set(entry.id, value);
   }
+  /** @type {string | null} */
   let best = null;
   let score = -Infinity;
   for (const id of ids) {
@@ -332,7 +334,7 @@ export function resolveLookLayers(model, lookKey, faceId, isBlushing = false, fx
     fxLayers = look.fx[fx];
   }
   const collected = [...body, ...faceLayers, ...blushLayers, ...fxLayers];
-  return collected
+  return /** @type {Array<{ id: any, canvas: any, file: any, rect: any, z: number, opacity: number, _order: number }>} */ (collected
     .map((lid, idx) => {
       const def = model.layers?.[lid];
       if (!def) return null;
@@ -346,7 +348,7 @@ export function resolveLookLayers(model, lookKey, faceId, isBlushing = false, fx
         _order: idx,
       };
     })
-    .filter(Boolean)
+    .filter(Boolean))
     .sort((a, b) => (a.z - b.z) || (a._order - b._order))
     .map(({ _order, ...rest }) => rest);
 }
@@ -385,6 +387,7 @@ export function resolveSpriteState(model, prev, intent, ctx = {}) {
     const selectable = id => isExpressionFace(lookFaces, id);
     const defaultFace = selectable(look.defaultFace) ? look.defaultFace : Object.keys(lookFaces).find(selectable);
 
+    /** @type {string | null | undefined} */
     let baseFace = null;
     if (act.face) {
       if (selectable(act.face)) {
@@ -427,6 +430,7 @@ export function resolveSpriteState(model, prev, intent, ctx = {}) {
     }
 
     const faceEntry = lookFaces[baseFace];
+    /** @type {any[] | null} */
     let blushLayers = null;
     if (faceEntry && Array.isArray(faceEntry.blush)) {
       blushLayers = faceEntry.blush;
@@ -474,6 +478,7 @@ export function resolveSpriteState(model, prev, intent, ctx = {}) {
   // -------------------------------------------------------------
   // Version 1 / 2 Whole-Image Resolution
   // -------------------------------------------------------------
+  /** @type {string | null} */
   let baseFace = null;
 
   // 1. act.face explicitly specified
@@ -527,6 +532,7 @@ export function resolveSpriteState(model, prev, intent, ctx = {}) {
   const hasBlushVariant = Boolean(blushFaceId && faceUrl(model, costume, blushFaceId));
 
   let isBlushing = false;
+  /** @type {string} */
   let effectiveFaceId = baseFace;
 
   if (act.blush === true) {

@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * 会话逻辑不依赖 DOM；ADV 舞台订阅控制器事件。
  *
@@ -33,11 +34,13 @@ export function createConversation({
   isSessionDeleting, audioStore, putCachedAudioBlob, fetchAndCacheAudio,
   audioPlayer, getCurrentVoice, stopCurrentVoice,
   clearMicTimers, beforeSend, onBlocked,
-  fetch: fetchRequest = (...args) => globalThis.fetch(...args),
+  fetch: fetchRequest = (...args) => /** @type {any} */ (globalThis.fetch)(...args),
 }) {
   const listeners = new Map();
   let busy = false;
+  /** @type {(() => void) | null} */
   let cancelStream = null;
+  /** @type {Record<string, any> | null} */
   let turn = null;
   const emit = (type, event) => {
     for (const fn of [...(listeners.get(type) || [])]) {
@@ -58,6 +61,11 @@ export function createConversation({
     return busy || Boolean(session?.loadingOlder || (session && isSessionDeleting(session.id)));
   };
 
+  /**
+   * @param {string} [rawText]
+   * @param {any} [voiceMeta]
+   * @param {{ retryOf?: Record<string, any> | null }} [options]
+   */
   function send(rawText = '', voiceMeta, { retryOf = null } = {}) {
     clearMicTimers?.();
     const text = rawText.trim();
@@ -79,6 +87,7 @@ export function createConversation({
     }
     const originId = session.id;
     beforeSend?.();
+    /** @type {Record<string, any> | null} */
     let userMessage = retryOf;
     if (userMessage) {
       // 重试保留消息的位置和录音，只清除失败说明。
@@ -100,7 +109,9 @@ export function createConversation({
         }
       }
     }
+    /** @type {Record<string, any>} */
     const assistantMessage = { id: uid('m_stream'), role: 'assistant', content: '', ts: Date.now() };
+    /** @type {Record<string, any>} */
     const current = {
       originId,
       bufferedChunksByLine: new Map(),
@@ -221,6 +232,7 @@ export function createConversation({
       let { error = null, errorCode = null } = meta;
       cancelStream = null;
       const textToSave = (finalText || lastFull || '').trim();
+      /** @type {Record<string, any>} */
       const message = {
         id: uid('m'), role: 'assistant', content: textToSave,
         japanese: meta.japanese || '', audioUrls, audioChunks: meta.chunks || [],
@@ -232,7 +244,7 @@ export function createConversation({
       };
 
       if (Array.isArray(meta.lines)) {
-        message.lines = normalizeLines(meta.lines).sort((a, b) => a.index - b.index);
+        message.lines = /** @type {any[]} */ (normalizeLines(meta.lines)).sort((a, b) => a.index - b.index);
         assistantMessage.lines = message.lines;
       } else if (current.hasReceivedLineEvents && assistantMessage.lines && meta.replyFormat !== 'unknown') {
         message.lines = assistantMessage.lines;
@@ -263,10 +275,10 @@ export function createConversation({
       }
       let failedInline = Boolean(error && !stored && origin?.messages.includes(userMessage));
       if (failedInline) {
-        userMessage.failed = { error, code: errorCode };
+        /** @type {Record<string, any>} */ (userMessage).failed = { error, code: errorCode };
       } else if (cancelled && !stored && origin?.messages.includes(userMessage)) {
-        delete userMessage.serverMessageId;
-        userMessage.failed = { error: '对话已中断，未收到回复', code: 'cancelled' };
+        delete /** @type {Record<string, any>} */ (userMessage).serverMessageId;
+        /** @type {Record<string, any>} */ (userMessage).failed = { error: '对话已中断，未收到回复', code: 'cancelled' };
         failedInline = true;
       }
       if (!cancelled && !error && stored) {

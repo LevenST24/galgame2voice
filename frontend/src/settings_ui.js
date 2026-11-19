@@ -1,3 +1,4 @@
+// @ts-check
 // Shared keyboard and focus handling for settings and the nested access-token dialog.
 const dialogs = [];
 let installed = false;
@@ -14,6 +15,10 @@ const focusable = (el) => [...el.querySelectorAll('button, input, select, textar
 
 export const hasOpenModal = () => Boolean(top());
 
+/**
+ * @param {any} el
+ * @param {{ focus?: any }} [options]
+ */
 export function openModal(el, { focus = null } = {}) {
   if (!el || top()?.el === el) return;
   const previousFocus = document.activeElement;
@@ -56,7 +61,7 @@ export function initSettingsUi() {
   installed = true;
   // Associate existing form labels without changing the controller's stable element IDs.
   document.querySelectorAll('.field').forEach(field => {
-    const label = field.querySelector(':scope > label');
+    const label = /** @type {HTMLLabelElement | null} */ (field.querySelector(':scope > label'));
     // Hidden and file inputs are helpers: linking a heading to one makes clicking it open a file picker.
     const control = field.querySelector('input:not([type="hidden"]):not([type="file"]):not([hidden]), select, textarea');
     if (label && control?.id && !label.hasAttribute('for')) label.htmlFor = control.id;

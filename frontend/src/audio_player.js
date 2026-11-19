@@ -1,3 +1,5 @@
+// @ts-check
+/// <reference types="vite/client" />
 /**
  * StreamAudioController — 单句 Web Audio 播放。
  *
@@ -39,6 +41,7 @@ export class StreamAudioController {
 
     this.onError = options.onError || null;
 
+    /** @type {(() => void) | null} */
     this._onVisibilityChange = () => {
       if (typeof document !== 'undefined' && !document.hidden) {
         if (this.ctx && this.ctx.state === 'running') {
@@ -60,7 +63,7 @@ export class StreamAudioController {
    */
   ensureContext({ resumeIfSuspended = true } = {}) {
     if (!this.ctx) {
-      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      const AudioContextClass = window.AudioContext || /** @type {any} */ (window).webkitAudioContext;
       if (!AudioContextClass) {
         console.error('[StreamAudioController] 当前浏览器不支持 Web Audio API');
         return null;
@@ -110,7 +113,7 @@ export class StreamAudioController {
   lineProgress() {
     const line = this._linePlayState;
     if (!line || line.settled || line.queue.length || !line.timeline.length) return null;
-    const now = this.ctx.currentTime;
+    const now = /** @type {AudioContext} */ (this.ctx).currentTime;
     let total = 0, played = 0;
     for (const { startTime, duration } of line.timeline) {
       total += duration;
@@ -160,7 +163,7 @@ export class StreamAudioController {
   resume() {
     this.isPaused = false;
     if (this.ctx && this.ctx.state === 'suspended') {
-      withAudioDeadline(() => this.ctx.resume(), { timeoutMs: 1500 }).catch(() => {});
+      withAudioDeadline(() => /** @type {AudioContext} */ (this.ctx).resume(), { timeoutMs: 1500 }).catch(() => {});
     }
   }
 
@@ -169,8 +172,8 @@ export class StreamAudioController {
    * @param {number} lineIndex
    * @param {Array<string|Object>} chunks
    * @param {Object} [options]
-   * @param {string} [options.msgId]
-   * @param {() => void} [options.onStart] 首个切片进入排定播放时刻时触发一次
+   * @param {string | null} [options.msgId]
+   * @param {(() => void) | null} [options.onStart] 首个切片进入排定播放时刻时触发一次
    * @returns {Promise<'ended'|'interrupted'|'failed'|'timeout'|'network'|'blocked'>}
    * `'timeout'` 与 `'network'` 表示这次没有播出声音，且还不能确定文件已损坏或丢失。
    */
@@ -190,7 +193,7 @@ export class StreamAudioController {
     const abortController = new AbortController();
     const lineGain = ctx.createGain();
     lineGain.gain.setValueAtTime(1.0, ctx.currentTime);
-    lineGain.connect(this.masterGain);
+    lineGain.connect(/** @type {GainNode} */ (this.masterGain));
 
     let lineResolve;
     const linePromise = new Promise((resolve) => {
@@ -198,6 +201,7 @@ export class StreamAudioController {
     });
 
     const self = this;
+    /** @type {any} */
     const lineState = {
       lineIndex,
       msgId,
@@ -209,7 +213,7 @@ export class StreamAudioController {
       resolve(outcome, { fadeMs = 0 } = {}) {
         if (lineState.settled) return;
         lineState.settled = true;
-        clearTimeout(lineState.startTimer);
+        clearTimeout(/** @type {any} */ (lineState.startTimer));
         abortController.abort();
         const sources = lineState.activeSources.splice(0);
         lineState.queue = [];
@@ -252,9 +256,9 @@ export class StreamAudioController {
         await withAudioDeadline(() => ctx.resume(), { signal: abortController.signal, timeoutMs: 1500 });
       } catch (_) {}
       if (lineState.settled) return linePromise;
-      if (ctx.state !== 'running') {
-        lineState.resolve(ctx.state === 'suspended' ? 'blocked' : 'failed');
-        if (ctx.state === 'suspended') {
+      if (/** @type {AudioContextState} */ (ctx.state) !== 'running') {
+        lineState.resolve(/** @type {AudioContextState} */ (ctx.state) === 'suspended' ? 'blocked' : 'failed');
+        if (/** @type {AudioContextState} */ (ctx.state) === 'suspended') {
           this._reportError(new Error('浏览器尚未允许播放语音，请在 LOG 里再点一次「语音」。文字聊天可继续使用。'));
         }
         return linePromise;
@@ -292,7 +296,7 @@ export class StreamAudioController {
     function scheduleLineNext() {
       if (lineState.settled) return;
 
-      const now = ctx.currentTime;
+      const now = /** @type {AudioContext} */ (ctx).currentTime;
       if (self.nextStartTime <= now) {
         self.nextStartTime = now + self.currentBufferLeadSec;
       }
@@ -312,10 +316,10 @@ export class StreamAudioController {
         const duration = buffer.duration || 0;
         const fadeDur = Math.min(self.crossFadeMs, duration / 4);
 
-        const source = ctx.createBufferSource();
+        const source = /** @type {AudioContext} */ (ctx).createBufferSource();
         source.buffer = buffer;
 
-        const chunkGain = ctx.createGain();
+        const chunkGain = /** @type {AudioContext} */ (ctx).createGain();
         chunkGain.gain.setValueAtTime(0.0001, startTime);
         chunkGain.gain.linearRampToValueAtTime(1.0, startTime + fadeDur);
 
@@ -333,9 +337,9 @@ export class StreamAudioController {
             if (lineState.settled || self._linePlayState !== lineState) return;
             // Browser timers keep advancing while an interrupted/suspended
             // AudioContext does not. Only its running clock can release text.
-            const remainingMs = (startTime - ctx.currentTime) * 1000;
-            if (ctx.state !== 'running' || self.isPaused || remainingMs > 0) {
-              const delay = ctx.state === 'running' && !self.isPaused
+            const remainingMs = (startTime - /** @type {AudioContext} */ (ctx).currentTime) * 1000;
+            if (/** @type {AudioContext} */ (ctx).state !== 'running' || self.isPaused || remainingMs > 0) {
+              const delay = /** @type {AudioContext} */ (ctx).state === 'running' && !self.isPaused
                 ? Math.max(10, Math.min(50, remainingMs)) : 50;
               lineState.startTimer = setTimeout(notifyStart, delay);
               return;
@@ -343,7 +347,7 @@ export class StreamAudioController {
             lineState.started = true;
             try { onStart(); } catch (error) { console.error('Audio start notification failed:', error); }
           };
-          lineState.startTimer = setTimeout(notifyStart, Math.max(0, (startTime - ctx.currentTime) * 1000));
+          lineState.startTimer = setTimeout(notifyStart, Math.max(0, (startTime - /** @type {AudioContext} */ (ctx).currentTime) * 1000));
         }
         self.nextStartTime = startTime + duration - (fadeDur / 2);
 

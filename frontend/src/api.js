@@ -1,3 +1,4 @@
+// @ts-check
 // Settings operations have deadlines and never retry writes automatically.
 import { requestJson } from './request.js';
 export { getErrorMessage, requestJson } from './request.js';
