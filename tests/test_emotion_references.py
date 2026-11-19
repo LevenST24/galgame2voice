@@ -7,7 +7,6 @@ from pathlib import Path
 from galgame2voice.services.emotion_references import (
     resolve_emotion_reference,
     normalize_emotion,
-    NATSUME_EMOTION_REFERENCES,
 )
 from galgame2voice.services.tts_service import TtsService
 
