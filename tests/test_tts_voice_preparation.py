@@ -85,13 +85,14 @@ async def stack(tmp_path, monkeypatch):
     await client.aclose()
 
 
-async def render(stack, mode):
-    options = {'voice_profile_id': stack.profiles[1].id}
+async def render(stack, mode, options=None, use_cache=False):
+    if options is None:
+        options = {'voice_profile_id': stack.profiles[1].id}
     if mode == 'bytes':
-        return await stack.service.synthesize('こんにちは', options=options, use_cache=False)
+        return await stack.service.synthesize('こんにちは', options=options, use_cache=use_cache)
     if mode == 'file':
-        return (await stack.service.synthesize_to_file('こんにちは', options=options, use_cache=False))[1].read_bytes()
-    return b''.join([chunk async for chunk in stack.service.stream_tts('こんにちは', options=options, use_cache=False)])
+        return (await stack.service.synthesize_to_file('こんにちは', options=options, use_cache=use_cache))[1].read_bytes()
+    return b''.join([chunk async for chunk in stack.service.stream_tts('こんにちは', options=options, use_cache=use_cache)])
 
 
 async def test_deleted_selected_voice_reports_missing_instead_of_unavailable(stack):
@@ -120,22 +121,12 @@ async def test_unavailable_profile_database_never_reuses_engine_voice(stack, mon
     monkeypatch.setattr(resolver, '_fetch_raw_profile', unavailable)
     options = {} if implicit else {'voice_profile_id': target.id}
 
-    async def synthesize():
-        if mode == 'bytes':
-            return await stack.service.synthesize('こんにちは', options=options, use_cache=False)
-        if mode == 'file':
-            return await stack.service.synthesize_to_file('こんにちは', options=options, use_cache=False)
-        return b''.join([part async for part in stack.service.stream_tts('こんにちは', options=options, use_cache=False)])
-
     with pytest.raises(ValueError, match='音色.*暂时无法读取'):
-        await synthesize()
+        await render(stack, mode, options)
     assert stack.engine.calls == []
 
     monkeypatch.setattr(resolver, '_fetch_raw_profile', fetch)
-    result = await synthesize()
-    if mode == 'file':
-        result = result[1].read_bytes()
-    assert result == wav(600)
+    assert await render(stack, mode, options) == wav(600)
 
 
 @pytest.mark.parametrize('mode', ['bytes', 'file', 'stream'])
@@ -230,14 +221,19 @@ async def test_partial_stream_failure_does_not_replay_audio_and_next_request_res
 
 @pytest.mark.parametrize('mode', ['bytes', 'file', 'stream'])
 async def test_bound_voice_loads_before_its_first_inference(stack, mode):
+    from galgame2voice.services.voice_manager import VoiceManager
+
     assert await render(stack, mode) == wav(600)
     assert 'voice_b' in stack.engine.gpt
     assert 'voice_b' in stack.engine.sovits
     assert [path for _, path in stack.engine.calls][-1] == '/tts'
     # Inference chooses its own models; it does not change the user's saved
-    # global selection while another session/Telegram may also be speaking.
+    # global selection while another session may also be speaking.
     async with get_db(stack.db) as conn:
         assert (await crud.get_active_voice_profile(conn)).id == stack.profiles[0].id
+    # Choosing that voice again (POST /api/voice/switch) asks is_active_profile whether
+    # the engine already has it, to skip the switch and its memory guard.
+    assert VoiceManager(stack.client, db_path=str(stack.db)).is_active_profile(stack.profiles[1])
 
 
 @pytest.mark.parametrize('resource', ['memory', 'vram'])
@@ -273,14 +269,6 @@ async def test_plain_mapping_cannot_authorize_model_preparation(stack):
     assert stack.engine.calls == []
 
 
-async def test_partial_profile_cannot_borrow_another_voices_models_for_preparation(stack):
-    async with get_db(stack.db) as conn:
-        await crud.update_voice_profile(conn, stack.profiles[1].id, VoiceProfileUpdate(sovits_weights_path=''))
-    with pytest.raises(ValueError, match='模型.*缺少'):
-        await render(stack, 'bytes')
-    assert stack.engine.calls == []
-
-
 @pytest.mark.parametrize('mode', ['bytes', 'file', 'stream'])
 @pytest.mark.parametrize('implicit', [False, True])
 @pytest.mark.parametrize('missing', ['both', 'gpt', 'sovits', 'blank'])
@@ -302,12 +290,7 @@ async def test_incomplete_resolved_voice_never_uses_engine_models(stack, mode, i
 
     options = {} if implicit else {'voice_profile_id': target.id}
     with pytest.raises(ValueError, match='模型.*缺少'):
-        if mode == 'bytes':
-            await stack.service.synthesize('こんにちは', options=options)
-        elif mode == 'file':
-            await stack.service.synthesize_to_file('こんにちは', options=options)
-        else:
-            _ = [chunk async for chunk in stack.service.stream_tts('こんにちは', options=options)]
+        await render(stack, mode, options, use_cache=True)
     assert stack.engine.calls == []
 
 
@@ -373,17 +356,10 @@ async def test_endpoint_change_during_resource_probe_sends_no_model_load(stack, 
 
 @pytest.mark.parametrize('mode', ['bytes', 'file', 'stream'])
 async def test_cached_audio_does_not_load_models_again(stack, mode):
-    opts = {'voice_profile_id': stack.profiles[1].id}
-    async def cached_render():
-        if mode == 'bytes':
-            return await stack.service.synthesize('こんにちは', options=opts)
-        if mode == 'file':
-            return (await stack.service.synthesize_to_file('こんにちは', options=opts))[1].read_bytes()
-        return b''.join([chunk async for chunk in stack.service.stream_tts('こんにちは', options=opts)])
-    assert await cached_render() == wav(600)
+    assert await render(stack, mode, use_cache=True) == wav(600)
     assert await stack.client.switch_voice_profile(stack.profiles[0])
     stack.engine.calls.clear()
-    assert await cached_render() == wav(600)
+    assert await render(stack, mode, use_cache=True) == wav(600)
     assert stack.engine.calls == []
     assert 'voice_a' in stack.client.current_gpt_weights
 
@@ -462,15 +438,3 @@ async def test_failed_preparation_preserves_selection_and_does_not_cache_wrong_a
         assert (await crud.get_active_voice_profile(conn)).id == stack.profiles[0].id
     refuse = False
     assert await render(stack, 'bytes') == wav(600)
-
-
-@pytest.mark.parametrize('mode', ['bytes', 'file', 'stream'])
-async def test_voice_loaded_for_synthesis_counts_as_the_active_voice(stack, mode):
-    # Choosing that voice again (POST /api/voice/switch, the Telegram voice menu) asks
-    # is_active_profile whether the engine already has it, to skip the switch and its memory guard.
-    from galgame2voice.services.voice_manager import VoiceManager
-
-    await render(stack, mode)
-    assert 'voice_b' in stack.engine.gpt and 'voice_b' in stack.engine.sovits
-
-    assert VoiceManager(stack.client, db_path=str(stack.db)).is_active_profile(stack.profiles[1])

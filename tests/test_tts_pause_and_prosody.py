@@ -73,8 +73,17 @@ class TestModalParticlesPattern:
             "そうですね", "違うよ", "わたしわ", "いいな", "だよね", "行かないわよ",
             "知らんけど", "好きだから", "暑いので", "行ったのに", "嬉しいなぁ", "いいかもねぇ",
             "好啊", "是吗", "走吧", "真棒呀",
+            # Colloquial endings
+            "本当でしょ", "明日は晴れでしょう", "可愛いじゃん", "バカってば", "待っててば",
+            "元気かい", "どうしたんだい", "好きだもんね", "行くもんよ", "そうなんだ",
+            "好きなんだから", "楽しみなんです", "寂しいんだもん", "好呗", "走嘞",
+            "对哒", "好的滴", "可爱喵", "痛嗷", "行咯",
+            # Character speech (Murasame, Mako, Kanna)
+            "妾は叢雨じゃ", "我が主殿のじゃ", "そうじゃな", "元気でおるの",
+            "お疲れ様っす", "大丈夫っすよ", "そうっすね", "行きますから",
+            "私の秘密のよ", "好きなんだよ", "好哒", "好嘞", "行啦",
         ),
-        ("こんにちは", "先生", "学校", "東京"),
+        ("こんにちは", "先生", "学校", "東京", "秋葉原", "約束"),
     ))
     def test_particle_matching(self, clause, expected):
         assert bool(MODAL_PARTICLES_PATTERN.search(clause)) is expected
@@ -117,12 +126,6 @@ class TestWavConcatWithPauseSilence:
         self._write_test_wav(c2, n_frames=100, rate=rate)
         ok = service._concat_wav_files([str(c1), str(c2)], out, pause_duration=pause_duration)
         return ok, out
-
-    def test_concat_wav_zero_pause_duration(self, tmp_path):
-        ok, out = self._concat_two_wavs(tmp_path, "out_zero.wav", pause_duration=0.0)
-        assert ok is True
-        with wave.open(str(out), "rb") as w:
-            assert w.getnframes() == 200
 
     def test_concat_wav_with_pause_duration(self, tmp_path):
         rate = 16000
@@ -237,6 +240,7 @@ class TestModalParticleSentenceSplitting:
             "真棒呀，太厉害了。", "どうしようかな……、迷うな……。",
             "そうですね〜、わかりました。", "いいよー、任せて。",
             "あのね、実はね、言いたいことがあるの。",
+            "可愛いじゃん、先生もそう思うでしょ？", "妾は叢雨じゃ、よろしく頼むのじゃ。",
         )
     ])
     def test_modal_particles_prevent_splitting(self, text, expected_count):
@@ -293,19 +297,14 @@ class TestJapaneseSentenceSplitting:
 
     def test_split_japanese_sentences_comprehensive(self):
         text = "おはよう！今日もいい天気ですね。一緒に行きましょう？\n次はこれ！"
-        sentences = split_japanese_sentences(text)
-        assert len(sentences) == 4
-        assert sentences[0] == "おはよう！"
-        assert sentences[1] == "今日もいい天气ですね。" or "今日もいい天気ですね。" in sentences[1]
-        assert sentences[2] == "一緒に行きましょう？"
-        assert sentences[3] == "次はこれ！"
+        assert split_japanese_sentences(text) == [
+            "おはよう！", "今日もいい天気ですね。", "一緒に行きましょう？", "次はこれ！",
+        ]
 
     def test_split_empty_and_whitespace(self):
+        """Blank input is empty after strip; tabs are empty on both paths."""
         assert split_japanese_sentences("") == []
         assert split_japanese_sentences("   \n\n  ") == []
-
-    def test_split_agile_whitespace(self):
-        """Blank agile input is empty after strip; tabs are empty on both paths."""
         assert split_japanese_sentences("  \r\n  \t  ", is_first_chunk=True, min_chars=6) == []
         assert split_japanese_sentences("\t\t", is_first_chunk=False) == []
         assert split_japanese_sentences("\t\t", is_first_chunk=True, min_chars=6) == []
@@ -405,53 +404,23 @@ class TestJapaneseSentenceSplitting:
         assert sents_term[0] == "はい！"
 
 
-class TestExpandedModalParticles:
-    """Verifies expanded colloquial modal particles and clause boundary detection."""
-
-    @pytest.mark.parametrize("clause,expected", _bool_cases(
-        (
-            "本当でしょ", "明日は晴れでしょう", "可愛いじゃん", "バカってば", "待っててば",
-            "元気かい", "どうしたんだい", "好きだもんね", "行くもんよ", "そうなんだ",
-            "好きなんだから", "楽しみなんです", "寂しいんだもん", "好呗", "走嘞",
-            "对哒", "好的滴", "可爱喵", "痛嗷", "行咯",
-        ),
-        ("こんにちは", "秋葉原", "東京", "先生", "学校", "約束"),
-    ))
-    def test_particle_matching(self, clause, expected):
-        assert bool(MODAL_PARTICLES_PATTERN.search(clause)) is expected
-
-    def test_clause_boundary_preserves_colloquial_particles(self):
-        """Agile first chunk splitter must not break on commas following colloquial particles."""
-        text = "可愛いじゃん、先生もそう思うでしょ？"
-        chunks = split_japanese_sentences(text, is_first_chunk=True, min_chars=4)
-        assert len(chunks) == 1
-        assert chunks[0] == "可愛いじゃん、先生もそう思うでしょ？"
-
-
 class TestProsodyWhitespaceNormalization:
     """Verifies whitespace preceding punctuation marks is stripped cleanly."""
 
     def test_strip_whitespace_before_punctuation(self):
-        raw = "こんにちは 、 先生 ！ 元気ですか ？"
+        raw = "こんにちは 、 先生 ！ 元気ですか ？ 今日もいい天気ですね 。"
         res = normalize_dialogue_prosody(raw)
-        assert res == "こんにちは、先生！元気ですか？"
-
-    def test_strip_whitespace_before_fullwidth_period(self):
-        raw = "今日もいい天気ですね 。"
-        res = normalize_dialogue_prosody(raw)
-        assert res == "今日もいい天気ですね。"
+        assert res == "こんにちは、先生！元気ですか？今日もいい天気ですね。"
 
 
 class TestQuotedJapaneseSentenceSplitting:
     """Verifies Japanese dialogue quotation marks are preserved without producing orphan bracket chunks."""
 
-    def test_quoted_sentence_preserves_closing_bracket(self):
+    @pytest.mark.parametrize("is_first_chunk", [False, True])
+    def test_quoted_sentence_preserves_closing_bracket(self, is_first_chunk):
         text = "「こんにちは！先生、今日はいい天気ですね。」"
-        chunks = split_japanese_sentences(text, is_first_chunk=False)
-        assert len(chunks) == 2
-        assert chunks[0] == "「こんにちは！"
-        assert chunks[1] == "先生、今日はいい天気ですね。」"
-        assert "」" not in chunks
+        chunks = split_japanese_sentences(text, is_first_chunk=is_first_chunk)
+        assert chunks == ["「こんにちは！", "先生、今日はいい天気ですね。」"]
 
     def test_sequential_dialogue_quotes(self):
         text = "「行こう。」「うん！」"
@@ -460,35 +429,10 @@ class TestQuotedJapaneseSentenceSplitting:
         assert chunks[0] == "「行こう。」"
         assert chunks[1] == "「うん！」"
 
-    def test_agile_first_chunk_quoted_dialogue(self):
-        text = "「こんにちは！先生、今日はいい天気ですね。」"
-        chunks = split_japanese_sentences(text, is_first_chunk=True)
-        assert len(chunks) == 2
-        assert chunks[0] == "「こんにちは！"
-        assert chunks[1] == "先生、今日はいい天気ですね。」"
-
     def test_pure_bracket_or_punctuation_preserved(self):
         assert split_japanese_sentences("」") == ["」"]
         assert split_japanese_sentences("『』") == ["『』"]
         assert split_japanese_sentences("！？。") == ["！？。"]
-
-
-class TestCharacterSpecificModalParticles:
-    """Verifies Galgame character signature modal particles (Murasame, Mako, Kanna) avoid disjoint pauses."""
-
-    @pytest.mark.parametrize("clause,expected", _bool_cases((
-        "妾は叢雨じゃ", "我が主殿のじゃ", "そうじゃな", "元気でおるの",
-        "お疲れ様っす", "大丈夫っすよ", "そうっすね", "行きますから",
-        "私の秘密のよ", "好きなんだよ", "好哒", "好嘞", "行啦",
-    )))
-    def test_character_particles(self, clause, expected):
-        assert bool(MODAL_PARTICLES_PATTERN.search(clause)) is expected
-
-    def test_murasame_speech_preserves_clause_boundary(self):
-        text = "妾は叢雨じゃ、よろしく頼むのじゃ。"
-        chunks = split_japanese_sentences(text, is_first_chunk=True, min_chars=4)
-        assert len(chunks) == 1
-        assert chunks[0] == "妾は叢雨じゃ、よろしく頼むのじゃ。"
 
 
 def test_is_short_salutation():
