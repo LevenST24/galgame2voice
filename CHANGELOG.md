@@ -5,6 +5,8 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fixed
+- 修复每发一句话，后台都要先重新加载一遍 HTTPS 根证书，等零点几秒（开着系统代理时一秒左右）才开始请求模型、这段时间里也无法响应其他请求的问题；现在证书在第一次联网时加载一次后一直复用，对话、语音识别和连通性测试都不再重复等待。
 
 ## [3.2.8] - 2026-11-18
 ### Added
