@@ -24,7 +24,7 @@ export function isListening() {
  * 开始转写 + 并行录音（转写必需；录音不可用时仅转写）
  * @returns {{ok: boolean, reason?: string}}
  */
-export function startListening({ onInterim, onText, onRecorded, onError }) {
+export function startListening({ onInterim, onText, onRecorded, onError, onEnd }) {
   if (listening) return { ok: true };
   const hasRecorder = recorderSupported();
   const hasRecognition = voiceSupported();
@@ -40,6 +40,13 @@ export function startListening({ onInterim, onText, onRecorded, onError }) {
   const myGen = ++listenGen;
   let recogOk = false;
   let recorderActive = hasRecorder;
+  let ended = false;
+  const notifyEnd = () => {
+    if (ended || !listening || myGen !== listenGen) return;
+    ended = true;
+    listening = false;
+    if (typeof onEnd === 'function') onEnd();
+  };
 
   // 1) 录音（可选能力，失败不阻断转写）
   if (hasRecorder) {
@@ -81,8 +88,10 @@ export function startListening({ onInterim, onText, onRecorded, onError }) {
       .catch(() => {
         recorderActive = false;
         if (myGen !== listenGen) return;
-        if (!recogOk) listening = false;
-        if (!recogOk && typeof onError === 'function') onError('无法访问麦克风，请在浏览器中允许麦克风权限');
+        if (!recogOk) {
+          if (typeof onError === 'function') onError('无法访问麦克风，请在浏览器中允许麦克风权限');
+          notifyEnd();
+        }
       });
   }
 
@@ -113,18 +122,18 @@ export function startListening({ onInterim, onText, onRecorded, onError }) {
     myRecog.onerror = (e) => {
       if (myGen !== listenGen) return;
       recogOk = false;
-      if (!recorderActive) listening = false;
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
         if (typeof onError === 'function') onError('麦克风权限被拒绝，请在浏览器地址栏允许使用麦克风');
       } else if (e.error === 'no-speech') {
         if (typeof onError === 'function') onError('没有听到说话，请再试一次');
       }
       //其他错误静默：由停止流程兜底
+      if (!recorderActive) notifyEnd();
     };
     myRecog.onend = () => {
       if (myGen !== listenGen) return;
       recogOk = false;
-      if (!recorderActive) listening = false;
+      if (!recorderActive) notifyEnd();
     };
     try {
       myRecog.start();
