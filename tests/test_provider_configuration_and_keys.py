@@ -553,74 +553,49 @@ class TestProviderPresetSeedsAndFallback:
             assert updated_settings.active_provider_id == "siliconflow"
 
     @pytest.mark.asyncio
-    async def test_retired_anthropic_models_migrate_to_current_claude(self, tmp_path):
-        """Retired Anthropic models migrate to Claude 5.5 with reasoning_effort='none'."""
-        from galgame2voice.database.models import ProviderUpdate
-
-        cases = [
-            ("claude-sonnet-4-20250514", "claude-sonnet-5-5"),
-            ("claude-haiku-4-20250414", "claude-haiku-5-5"),
-            ("claude-opus-4-20250514", "claude-opus-5-5"),
-        ]
-        for idx, (old_model, expected_model) in enumerate(cases):
-            db_path = tmp_path / f"ant_migrate_{idx}.db"
-            await init_db(db_path)
-            async with get_db(db_path) as conn:
-                upd = ProviderUpdate(api_key="sk-ant-saved-1234", chat_model=old_model, reasoning_effort=None)
-                await crud.update_provider(conn, "anthropic", upd)
-            await init_db(db_path)
-            async with get_db(db_path) as conn:
-                raw = await crud.get_provider_raw(conn, "anthropic")
-                assert raw.api_key == "sk-ant-saved-1234"
-                assert (raw.chat_model, raw.reasoning_effort) == (expected_model, "none")
-
-    @pytest.mark.asyncio
-    async def test_retired_deepseek_models_migrate_preserving_keys_and_custom_models(self, tmp_path):
-        """Retired deepseek models migrate to deepseek-flash while preserving keys and custom names."""
-        from galgame2voice.database.models import ProviderUpdate
-
-        cases = [
-            ("deepseek-chat", None, "deepseek-flash", "none"),
-            ("deepseek-reasoner", "low", "deepseek-flash", "low"),
-            ("my-proxy-model", "high", "my-proxy-model", "high"),
-        ]
-        sql = "SELECT api_key FROM providers WHERE id = 'deepseek';"
-        for idx, (old_model, old_effort, expected_model, expected_effort) in enumerate(cases):
-            db_path = tmp_path / f"migrate_{idx}.db"
-            await init_db(db_path)
-            async with get_db(db_path) as conn:
-                upd = ProviderUpdate(api_key="sk-ds-saved-9876", chat_model=old_model, reasoning_effort=old_effort)
-                await crud.update_provider(conn, "deepseek", upd)
-                row_before = await (await conn.execute(sql)).fetchone()
-            await init_db(db_path)
-            async with get_db(db_path) as conn:
-                row_after = await (await conn.execute(sql)).fetchone()
-                raw = await crud.get_provider_raw(conn, "deepseek")
-                assert row_after[0] == row_before[0]
-                assert raw.api_key == "sk-ds-saved-9876" and raw.is_active is True
-                assert (raw.chat_model, raw.reasoning_effort) == (expected_model, expected_effort)
-
-    @pytest.mark.asyncio
-    async def test_retired_xai_and_gemini_models_migrate(self, tmp_path):
-        """Retired xAI and Gemini models migrate to current models with expected reasoning_effort."""
-        from galgame2voice.database.models import ProviderUpdate
-
-        cases = [
+    @pytest.mark.parametrize(
+        ("provider_id", "old_model", "old_effort", "expected_model", "expected_effort"),
+        [
+            ("anthropic", "claude-sonnet-4-20250514", None, "claude-sonnet-5-5", "none"),
+            ("anthropic", "claude-haiku-4-20250414", None, "claude-haiku-5-5", "none"),
+            ("anthropic", "claude-opus-4-20250514", None, "claude-opus-5-5", "none"),
+            ("deepseek", "deepseek-chat", None, "deepseek-flash", "none"),
+            ("deepseek", "deepseek-reasoner", "low", "deepseek-flash", "low"),
+            ("deepseek", "my-proxy-model", "high", "my-proxy-model", "high"),
             ("xai", "grok-3", None, "grok-4.7", "low"),
             ("xai", "grok-3-mini", "high", "grok-4.7", "high"),
             ("gemini", "gemini-2.5-flash", "high", "gemini-3.8-flash", "high"),
-        ]
-        for idx, (pid, old_model, old_effort, expected_model, expected_effort) in enumerate(cases):
-            db_path = tmp_path / f"migrate_xg_{idx}.db"
-            await init_db(db_path)
-            async with get_db(db_path) as conn:
-                upd = ProviderUpdate(api_key="sk-saved-1234", chat_model=old_model, reasoning_effort=old_effort)
-                await crud.update_provider(conn, pid, upd)
-            await init_db(db_path)
-            async with get_db(db_path) as conn:
-                raw = await crud.get_provider_raw(conn, pid)
-                assert raw.api_key == "sk-saved-1234"
-                assert (raw.chat_model, raw.reasoning_effort) == (expected_model, expected_effort)
+            ("openai", "gpt-4o", None, "gpt-6-luna", "none"),
+            ("openai", "gpt-4o-mini", None, "gpt-6-luna", "none"),
+            ("openai", "gpt-4-turbo", None, "gpt-6-luna", "none"),
+            ("openai", "gpt-3.5-turbo", None, "gpt-6-luna", "none"),
+            ("openai", "o3-mini", "high", "gpt-6.1-sol", "high"),
+            ("moonshot", "moonshot-v1-32k", None, "kimi-k3.1-pro", "low"),
+            ("glm", "glm-4-plus", None, "glm-4.7-flash", "none"),
+        ],
+    )
+    async def test_retired_models_migrate_keeping_key_and_custom_models(
+        self, tmp_path, provider_id, old_model, old_effort, expected_model, expected_effort
+    ):
+        """A saved retired model becomes its current model on the next start; the stored key and the active
+        flag stay as they were, a saved effort survives unless the migration sets one, and a model name that is
+        not retired is left alone."""
+        from galgame2voice.database.models import ProviderUpdate
+
+        db_path = tmp_path / "migrate.db"
+        sql = "SELECT api_key, is_active FROM providers WHERE id = ?;"
+        await init_db(db_path)
+        async with get_db(db_path) as conn:
+            upd = ProviderUpdate(api_key="sk-saved-1234", chat_model=old_model, reasoning_effort=old_effort)
+            await crud.update_provider(conn, provider_id, upd)
+            row_before = tuple(await (await conn.execute(sql, (provider_id,))).fetchone())
+        await init_db(db_path)
+        async with get_db(db_path) as conn:
+            row_after = tuple(await (await conn.execute(sql, (provider_id,))).fetchone())
+            raw = await crud.get_provider_raw(conn, provider_id)
+        assert row_after == row_before
+        assert raw.api_key == "sk-saved-1234"
+        assert (raw.chat_model, raw.reasoning_effort) == (expected_model, expected_effort)
 
     @pytest.mark.asyncio
     async def test_empty_chat_model_falls_back_to_preset_default_not_gpt4omini(self, tmp_path):
@@ -658,59 +633,3 @@ class TestProviderPresetSeedsAndFallback:
         adapter, model_name, provider_id = await service._get_active_llm_adapter()
         assert provider_id == "custom_unknown"
         assert model_name == "gpt-6-luna"
-
-    @pytest.mark.asyncio
-    async def test_retired_openai_models_migrate_to_gpt6(self, tmp_path):
-        """Retired OpenAI models migrate to gpt-6-luna/none or gpt-6.1-sol preserving effort."""
-        from galgame2voice.database.models import ProviderUpdate
-
-        cases = [
-            ("gpt-4o", None, "gpt-6-luna", "none"),
-            ("gpt-4o-mini", None, "gpt-6-luna", "none"),
-            ("gpt-4-turbo", None, "gpt-6-luna", "none"),
-            ("gpt-3.5-turbo", None, "gpt-6-luna", "none"),
-            ("o3-mini", "high", "gpt-6.1-sol", "high"),
-        ]
-        for idx, (old_model, old_effort, expected_model, expected_effort) in enumerate(cases):
-            db_path = tmp_path / f"oa_migrate_{idx}.db"
-            await init_db(db_path)
-            async with get_db(db_path) as conn:
-                upd = ProviderUpdate(api_key="sk-oa-saved-1234", chat_model=old_model, reasoning_effort=old_effort)
-                await crud.update_provider(conn, "openai", upd)
-            await init_db(db_path)
-            async with get_db(db_path) as conn:
-                raw = await crud.get_provider_raw(conn, "openai")
-                assert raw.api_key == "sk-oa-saved-1234"
-                assert (raw.chat_model, raw.reasoning_effort) == (expected_model, expected_effort)
-
-    @pytest.mark.asyncio
-    async def test_retired_moonshot_models_migrate_to_kimi_k3(self, tmp_path):
-        """Retired Moonshot/Kimi models migrate to kimi-k3.1-pro and reasoning_effort low."""
-        from galgame2voice.database.models import ProviderUpdate
-
-        db_path = tmp_path / "moonshot_migrate.db"
-        await init_db(db_path)
-        async with get_db(db_path) as conn:
-            upd = ProviderUpdate(api_key="sk-kimi-saved-1234", chat_model="moonshot-v1-32k", reasoning_effort=None)
-            await crud.update_provider(conn, "moonshot", upd)
-        await init_db(db_path)
-        async with get_db(db_path) as conn:
-            raw = await crud.get_provider_raw(conn, "moonshot")
-            assert raw.api_key == "sk-kimi-saved-1234"
-            assert (raw.chat_model, raw.reasoning_effort) == ("kimi-k3.1-pro", "low")
-
-    @pytest.mark.asyncio
-    async def test_retired_glm_models_migrate_to_glm_4_7_flash(self, tmp_path):
-        """Retired GLM models migrate to glm-4.7-flash and reasoning_effort none."""
-        from galgame2voice.database.models import ProviderUpdate
-
-        db_path = tmp_path / "glm_migrate.db"
-        await init_db(db_path)
-        async with get_db(db_path) as conn:
-            upd = ProviderUpdate(api_key="sk-glm-saved-1234", chat_model="glm-4-plus", reasoning_effort=None)
-            await crud.update_provider(conn, "glm", upd)
-        await init_db(db_path)
-        async with get_db(db_path) as conn:
-            raw = await crud.get_provider_raw(conn, "glm")
-            assert raw.api_key == "sk-glm-saved-1234"
-            assert (raw.chat_model, raw.reasoning_effort) == ("glm-4.7-flash", "none")
