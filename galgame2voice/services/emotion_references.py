@@ -6,7 +6,6 @@ Provides seamless backward compatibility for legacy callers.
 """
 
 from pathlib import Path
-from typing import Any
 import logging
 
 logger = logging.getLogger("galgame2voice.services.emotion_references")
@@ -76,87 +75,6 @@ EMOTION_SYNONYMS: dict[str, str] = {
     "優しい": "gentle",
     "やさしい": "gentle",
 }
-
-# Dynamic data-driven emotion references proxy
-def _load_manifest_emotion_references(
-    character_name: str | None = None,
-    char_mgr: Any | None = None,
-) -> dict[str, dict[str, str]]:
-    """
-    Dynamically loads emotion references from the character package manifest.json.
-    """
-    try:
-        from galgame2voice.services.character_manager import get_character_manager
-        mgr = char_mgr or get_character_manager()
-        pkg = mgr.get_character(character_name) if character_name else mgr.get_default_character()
-        if pkg and pkg.manifest and pkg.manifest.emotions:
-            res: dict[str, dict[str, str]] = {}
-            for k, emo in pkg.manifest.emotions.items():
-                res[k] = {
-                    "audio_name": Path(emo.audio).name,
-                    "prompt_text": emo.text,
-                    "prompt_lang": emo.lang,
-                    "description": emo.description or f"Dynamic {k} emotion",
-                }
-            return res
-    except Exception as exc:
-        logger.debug("Failed dynamically loading emotion references from manifest: %s", exc)
-    return {}
-
-
-class _DynamicEmotionReferences(dict):
-    """
-    Data-driven dictionary proxy that reflects the character package manifest dynamically
-    while maintaining 100% dictionary backward compatibility for legacy callers and tests.
-    """
-    def __init__(self) -> None:
-        super().__init__()
-        self._loaded: bool = False
-
-    def _ensure_loaded(self) -> None:
-        if not self._loaded:
-            data = _load_manifest_emotion_references()
-            if data:
-                self.update(data)
-                self._loaded = True
-
-    def __getitem__(self, item: str) -> dict[str, str]:
-        self._ensure_loaded()
-        if item not in self:
-            return super().get("gentle", {})
-        return super().__getitem__(item)
-
-    def get(self, item: str, default: Any = None) -> Any:
-        self._ensure_loaded()
-        return super().get(item, default)
-
-    def __contains__(self, item: object) -> bool:
-        self._ensure_loaded()
-        return super().__contains__(item)
-
-    def __iter__(self) -> Any:
-        self._ensure_loaded()
-        return super().__iter__()
-
-    def __len__(self) -> int:
-        self._ensure_loaded()
-        return super().__len__()
-
-    def items(self) -> Any:
-        self._ensure_loaded()
-        return super().items()
-
-    def keys(self) -> Any:
-        self._ensure_loaded()
-        return super().keys()
-
-    def values(self) -> Any:
-        self._ensure_loaded()
-        return super().values()
-
-
-NATSUME_EMOTION_REFERENCES: dict[str, dict[str, str]] = _DynamicEmotionReferences()
-
 
 def normalize_emotion(emotion: str | None) -> str:
     """Normalizes an emotion string to one of the canonical archetypes."""

@@ -16,7 +16,7 @@ import aiosqlite
 from galgame2voice.config import get_settings
 from galgame2voice.database import crud
 from galgame2voice.services.tts_service import TtsService
-from galgame2voice.services.emotion_references import resolve_emotion_reference, NATSUME_EMOTION_REFERENCES
+from galgame2voice.services.emotion_references import resolve_emotion_reference
 from scripts.run_server import (
     _check_sovits_dir,
     build_gpt_sovits_env,
