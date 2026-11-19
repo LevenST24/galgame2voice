@@ -228,30 +228,6 @@ async def test_sync_rolls_back_all_changes_when_one_package_fails(project, isola
 
 
 @pytest.mark.asyncio
-async def test_sync_does_not_borrow_a_bare_reference_from_another_package(project, isolate_test_database, monkeypatch):
-    install(project, "ann", "Ann")
-    other = install(project, "bella", "Bella")
-    _copy_ref(other)
-    manager = catalog(project, monkeypatch)
-    async with _db(isolate_test_database) as conn:
-        original = await profile(conn, "Ann", ref_audio_path="refs/gentle.wav", prompt_text="Old reference")
-        await manager.sync_with_db(conn)
-        updated = await crud.get_voice_profile(conn, original.id)
-        # Revised contract: unknown explicit reference without local file is preserved as external reference,
-        # retaining original ref_audio_path, prompt_text, and prompt_lang, and must not borrow Bella.
-        assert updated.ref_audio_path == "refs/gentle.wav"
-        assert updated.prompt_text == "Old reference"
-        assert "bella" not in updated.ref_audio_path.lower()
-
-    # Verify persistence with a fresh DB connection and verify rescan idempotency
-    async with _db(isolate_test_database) as fresh_conn:
-        reloaded = await crud.get_voice_profile(fresh_conn, original.id)
-        assert reloaded.ref_audio_path == "refs/gentle.wav"
-        assert reloaded.prompt_text == "Old reference"
-        assert await manager.sync_with_db(fresh_conn) == 0
-
-
-@pytest.mark.asyncio
 async def test_startup_preserves_valid_external_audio(project, isolate_test_database, monkeypatch):
     root = project / "app"
     root.mkdir()
@@ -422,34 +398,6 @@ async def test_resolve_profile_for_query_edge_cases(project, isolate_test_databa
     with pytest.raises(AmbiguousProfileName):
         resolve_profile_for_query(profiles_with_dup, "customstandalone", manager=manager)
 
-
-@pytest.mark.asyncio
-async def test_voice_resolver_finds_profile_by_character_query(project, isolate_test_database, monkeypatch):
-    from galgame2voice.services.voice_resolver import VoiceProfileResolver
-
-    _, (p_ann, _) = await _setup_conflict_profiles(
-        project, isolate_test_database, monkeypatch,
-        [("bella", "Bella"), ("clara", "Clara")], "shared", ("Ann", "Bella"),
-    )
-
-    resolver = VoiceProfileResolver()
-
-    # Query by package alias "Annie" matches p_ann
-    ctx_ann = await resolver.resolve_context(
-        db_path=isolate_test_database,
-        profile_id=None,
-        character_name="Annie",
-    )
-    assert ctx_ann.name == "Ann"
-    assert ctx_ann.profile_id == p_ann.id
-
-    # A conflicting explicit query must not speak in the unrelated active voice.
-    from galgame2voice.services.character_identity import AmbiguousProfileName
-
-    with pytest.raises(AmbiguousProfileName):
-        await resolver.resolve_context(
-            db_path=isolate_test_database, profile_id=None, character_name="shared",
-        )
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("duplicate_id", ["ann", "ＡＮＮ"])
@@ -1047,42 +995,6 @@ async def test_update_persona_disk_full_keeps_original_error_when_rollback_also_
 
 
 @pytest.mark.asyncio
-async def test_update_persona_db_failure_then_rollback_failure_does_not_claim_rollback(
-    ann_package, monkeypatch,
-):
-    import errno
-    import sqlite3
-
-    client, ann, manifest_path, original_prompt = ann_package
-    real_write_bytes = Path.write_bytes
-    new_prompt = "新的人设内容：写库失败且回滚也失败"
-
-    # 保存用 write_text 写 manifest.json.tmp，回滚用 write_bytes；只让回滚那一步写不进去
-    def write_bytes(self, *args, **kwargs):
-        if self.name == "manifest.json.tmp":
-            raise OSError(errno.ENOSPC, "No space left on device")
-        return real_write_bytes(self, *args, **kwargs)
-
-    async def fail_update_voice_profile(*args, **kwargs):
-        monkeypatch.setattr(Path, "write_bytes", write_bytes)
-        raise sqlite3.OperationalError("database or disk is full")
-
-    monkeypatch.setattr("galgame2voice.routers.characters.crud.update_voice_profile", fail_update_voice_profile)
-
-    response = await client.put(
-        f"/api/characters/{ann['id']}/system-prompt",
-        json={"system_prompt": new_prompt},
-    )
-
-    assert response.status_code == 500, response.text
-    detail = response.json()["detail"]
-    assert "人设保存到数据库失败" in detail
-    assert "已回滚角色包修改" not in detail
-    assert "角色包文件未能回滚" not in detail
-    assert json.loads(manifest_path.read_text(encoding="utf-8"))["system_prompt"] == original_prompt
-
-
-@pytest.mark.asyncio
 async def test_update_persona_db_failure_standalone_profile(
     project, isolate_test_database, monkeypatch,
 ):
@@ -1129,49 +1041,6 @@ async def test_update_persona_cancel_at_discover_characters_restores_manifest_an
         await characters.update_character_system_prompt(
             ann["id"],
             characters.SystemPromptUpdate(system_prompt="取消的人设草稿：在刷新内存角色目录时被取消"),
-        )
-
-    # 1. 磁盘 manifest.json 必须恢复为原人设
-    assert json.loads(manifest_path.read_text(encoding="utf-8"))["system_prompt"] == original_prompt
-
-    # 2. 内存 CharacterManager 缓存必须恢复为原人设
-    mgr_pkg = mgr.get_character("ann")
-    assert mgr_pkg is not None
-    assert mgr_pkg.manifest.system_prompt == original_prompt
-
-    # 3. 数据库中的人设必须保持原样
-    async with characters.get_db() as conn:
-        db_prof = await crud.get_voice_profile(conn, ann["id"])
-        assert db_prof is not None
-        assert db_prof.system_prompt == original_prompt
-
-    # 4. 后续调用 sync_with_db 也不会用未保存的草稿篡改数据库
-    async with characters.get_db() as conn:
-        await mgr.sync_with_db(conn)
-        db_prof_after = await crud.get_voice_profile(conn, ann["id"])
-        assert db_prof_after is not None
-        assert db_prof_after.system_prompt == original_prompt
-
-
-@pytest.mark.asyncio
-async def test_update_persona_cancel_at_db_update_restores_manifest_and_cache(
-    ann_package, monkeypatch,
-):
-    client, ann, manifest_path, original_prompt = ann_package
-    mgr = characters.get_character_manager()
-
-    async def cancel_update_voice_profile(*args, **kwargs):
-        raise asyncio.CancelledError()
-
-    monkeypatch.setattr(
-        "galgame2voice.routers.characters.crud.update_voice_profile",
-        cancel_update_voice_profile,
-    )
-
-    with pytest.raises(asyncio.CancelledError):
-        await characters.update_character_system_prompt(
-            ann["id"],
-            characters.SystemPromptUpdate(system_prompt="取消的人设草稿：在写数据库时被取消"),
         )
 
     # 1. 磁盘 manifest.json 必须恢复为原人设

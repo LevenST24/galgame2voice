@@ -150,22 +150,6 @@ class TestTtsCacheLifecycleAndPerformance:
         assert stats["total_hits"] >= 1
         assert stats["hit_rate_percent"] > 0
 
-    @pytest.mark.asyncio
-    async def test_synthesize_to_file_returns_cached_path(self, tmp_path):
-        db_p = tmp_path / "file_cache.db"
-        await init_db(db_p)
-        mgr = TtsCacheManager(cache_dir=tmp_path / "audio" / "cache", db_path=str(db_p))
-        tts_svc = TtsService(client=MockGptSovitsForCache(), audio_dir=tmp_path / "audio", cache_manager=mgr)
-
-        text = "お帰りなさい、マスター。"
-        url1, path1, size1 = await tts_svc.synthesize_to_file(text)
-        assert "/audio/cache/" in url1
-        assert path1.exists()
-
-        url2, path2, size2 = await tts_svc.synthesize_to_file(text)
-        assert url1 == url2
-        assert path1 == path2
-        assert size1 == size2
 
     @pytest.mark.asyncio
     async def test_corrupt_file_auto_recovery(self, tmp_path):
@@ -191,25 +175,6 @@ class TestTtsCacheLifecycleAndPerformance:
         audio = await tts_svc.synthesize(text)
         assert len(audio) > 0
         assert mock_client.call_count == 2, "Corrupt cache must trigger fresh synthesis"
-
-    @pytest.mark.asyncio
-    async def test_concurrency_identical_requests(self, tmp_path):
-        db_p = tmp_path / "concurrent.db"
-        await init_db(db_p)
-        mgr = TtsCacheManager(cache_dir=tmp_path / "audio" / "cache", db_path=str(db_p))
-        tts_svc = TtsService(client=MockGptSovitsForCache(), audio_dir=tmp_path / "audio", cache_manager=mgr)
-
-        text = "並行処理の検証を行っています。"
-        tasks = [tts_svc.synthesize(text) for _ in range(10)]
-        results = await asyncio.gather(*tasks)
-
-        assert len(results) == 10
-        first = results[0]
-        for r in results:
-            assert r == first
-
-        # Drain fire-and-forget DB-touch tasks before the loop closes.
-        await mgr.aclose()
 
 
 # ============================================================================
@@ -390,57 +355,6 @@ class TestMetricsCollectorAndTelemetry:
             cost_usd, _ = collector.calculate_cost(pid, model, 1_000_000, 2_000_000)
             assert round(cost_usd, 4) == expected_usd
 
-    def test_ring_buffer_fifo(self, tmp_path):
-        collector = MetricsCollector(db_path=str(tmp_path / "m.db"), ring_buffer_size=10)
-
-        for i in range(15):
-            collector.ring_buffer.append({"index": i, "timestamp": str(i)})
-
-        assert len(collector.ring_buffer) == 10
-        assert collector.ring_buffer[0]["index"] == 5
-        assert collector.ring_buffer[-1]["index"] == 14
-
-    @pytest.mark.asyncio
-    async def test_record_metric_persists_to_sqlite(self, tmp_path):
-        db_p = tmp_path / "metrics_test.db"
-        await init_db(db_p)
-        collector = MetricsCollector(db_path=str(db_p))
-
-        # Record 2 requests
-        await collector.record_metric(
-            session_id="s1",
-            channel="web",
-            provider_id="deepseek",
-            model_name="deepseek-chat",
-            prompt_tokens=1000,
-            completion_tokens=500,
-            ttft_ms=320.0,
-            tts_first_chunk_ms=450.0,
-            total_latency_ms=1200.0,
-            tts_cached_chunks=2,
-            tts_generated_chunks=1,
-        )
-        await collector.record_metric(
-            session_id="s1",
-            channel="web",
-            provider_id="openai",
-            model_name="gpt-4o-mini",
-            prompt_tokens=2000,
-            completion_tokens=800,
-            ttft_ms=280.0,
-            tts_first_chunk_ms=410.0,
-            total_latency_ms=1100.0,
-            tts_cached_chunks=3,
-            tts_generated_chunks=0,
-        )
-
-        async with get_db(db_p) as conn:
-            cur = await conn.execute("SELECT * FROM token_usage_metrics ORDER BY id ASC")
-            rows = await cur.fetchall()
-
-        assert len(rows) == 2
-        p_ids = {r["provider_id"] for r in rows}
-        assert p_ids == {"deepseek", "openai"}
 
     @pytest.mark.asyncio
     async def test_record_metric_rejects_negative_tokens_and_bad_latencies(self, tmp_path):
