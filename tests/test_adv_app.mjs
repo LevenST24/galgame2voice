@@ -138,6 +138,86 @@ test('a line too wide for one row turns its pages as the voice reaches them', t 
   assert.equal(h.app.player.currentIndex, 0, 'the last page still waits for the reader');
 });
 
+test('a multi-page voiced line turns to its final page when playback ends between progress polls or during reveal', async t => {
+  const h = setup(t, { settings: { advAutoMode: 'voice-priority', advAutoBaseMs: 0, advAutoPerCharMs: 0 } });
+  for (const name of ['.adv-text-measurer', '.adv-subtitle-measurer']) {
+    const el = h.app.stage.stage.querySelector(name);
+    el.getBoundingClientRect = () => ({ width: el.textContent.length * 100, height: 46 });
+  }
+  let heard = 0.2;
+  h.audio.lineProgress = () => heard;
+
+  h.start('turn_short_tail');
+  h.line(0, { zh: '今天天气很好，我们一起去散步吧。', ja: '今日はいい天気ですね。' });
+  h.line(1, { zh: '走吧。', ja: '行こう。' });
+  h.audioEvent(0);
+  h.clock.tick(1000);
+  assert.equal(h.app.player.page, 0);
+  assert.equal(h.app.player.state, 'waiting_advance');
+
+  h.app.action('auto');
+  heard = null;
+  h.endVoice('ended');
+  await microtasks();
+  assert.equal(h.app.player.currentIndex, 0);
+  assert.equal(h.app.player.page, 1, 'natural voice end turns from nonfinal page to final page');
+
+  h.clock.tick(300);
+  assert.match(h.app.stage.stage.querySelector('.adv-primary-text').textContent, /散步/);
+  assert.equal(h.app.player.currentIndex, 0, 'final page waits for post-voice AUTO delay');
+  h.clock.tick(1200);
+  assert.equal(h.app.player.currentIndex, 1);
+  h.app.action('auto');
+
+  h.start('turn_fast_voice');
+  heard = 0.2;
+  h.line(0, { zh: '今天天气很好，我们一起去散步吧。', ja: '今日はいい天気ですね。' });
+  h.audioEvent(0);
+  h.clock.tick(60);
+  assert.equal(h.app.player.state, 'revealing');
+  heard = null;
+  h.endVoice('ended');
+  await microtasks();
+  assert.equal(h.app.player.page, 0, 'does not cut off typewriter mid-page');
+  assert.equal(h.app.player.state, 'revealing');
+  h.clock.tick(300);
+  assert.equal(h.app.player.page, 1, 'turns to final page after Page 0 finishes revealing');
+  h.clock.tick(500);
+  assert.equal(h.app.player.state, 'waiting_advance');
+  assert.equal(h.clock.timers.size, 0);
+
+  h.start('turn_suspend_and_fail');
+  heard = 0.1;
+  h.line(0, { zh: '今天天气很好，我们一起去散步吧。', ja: '今日はいい天気ですね。' });
+  h.audioEvent(0);
+  h.clock.tick(1000);
+  assert.equal(h.clock.timers.size, 1, 'followVoice poll timer is active while voice plays on Page 0');
+  h.app.action('log');
+  assert.equal(h.clock.timers.size, 0, 'suspend clears followVoice poll timer');
+  h.app.action('log');
+
+  h.start('turn_hidden_voice_end');
+  h.line(0, { zh: '今天天气很好，我们一起去散步吧。', ja: '今日はいい天気ですね。' });
+  h.audioEvent(0);
+  h.clock.tick(1000);
+  h.app.action('hide');
+  heard = null;
+  h.endVoice('ended');
+  await microtasks();
+  assert.equal(h.app.player.page, 0, 'hidden window does not turn past unread Page 0');
+  h.app.action('unhide');
+  assert.equal(h.app.player.page, 0);
+
+  h.start('turn_voice_failed');
+  h.line(0, { zh: '今天天气很好，我们一起去散步吧。', ja: '今日はいい天気ですね。' });
+  h.audioEvent(0);
+  h.clock.tick(1000);
+  heard = null;
+  h.endVoice('failed');
+  await microtasks();
+  assert.equal(h.app.player.page, 0, 'failed voice does not turn past Page 0');
+});
+
 test('timeout accepts late audio only on the current line and rejects old turn events', async t => {
   const h = setup(t, { settings: { advTextIntervalMs: 0, advAutoMode: 'normal' } }); h.start(); h.line(); h.line(1);
   h.clock.tick(1500); assert.equal(h.app.player.state, 'waiting_advance');

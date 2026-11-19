@@ -55,6 +55,7 @@ export function createLinePlayer({
   let turnSettled = false;
   let isPlayerEditing = false;
   let voicePlaying = false;
+  let voiceEnded = false;
   let pendingAdvance = false;
   let suspendedFrom = null;
   const pauseReasons = new Set();
@@ -126,6 +127,10 @@ export function createLinePlayer({
       clock.clearTimeout(skipTimerId);
       skipTimerId = null;
     }
+    clearFollowTimer();
+  }
+
+  function clearFollowTimer() {
     if (followTimerId !== null) {
       clock.clearTimeout(followTimerId);
       followTimerId = null;
@@ -156,6 +161,7 @@ export function createLinePlayer({
     };
     currentVoiceToken = token;
     voicePlaying = true;
+    voiceEnded = false;
     followVoice();
 
     let playPromise;
@@ -179,23 +185,22 @@ export function createLinePlayer({
   // recording. While it plays, turn to the next page once the voice has played
   // that page's share of the text, so nobody has to click to keep up with it.
   function followVoice() {
-    if (followTimerId !== null) {
-      clock.clearTimeout(followTimerId);
-      followTimerId = null;
-    }
-    if (!voicePlaying || skip || page >= pages.length - 1 || typeof voice?.progress !== 'function') return;
+    clearFollowTimer();
+    if (skip || hidden || page >= pages.length - 1) return;
+    if (!voiceEnded && (!voicePlaying || typeof voice?.progress !== 'function')) return;
     followTimerId = clock.setTimeout(() => {
       followTimerId = null;
-      if (!voicePlaying || page >= pages.length - 1) return;
-      const heard = voice.progress();
+      if (skip || hidden || page >= pages.length - 1 || (!voicePlaying && !voiceEnded)) return;
+      const heard = voiceEnded ? 1 : voice.progress();
       const before = countGraphemes(pages.slice(0, page + 1).join(''));
-      if (state === 'waiting_advance' && !hidden && typeof heard === 'number'
+      if (state === 'waiting_advance' && typeof heard === 'number'
         && heard * countGraphemes(pages.join('')) >= before) advance();
+      if (page >= pages.length - 1) voiceEnded = false;
       followVoice();
     }, FOLLOW_POLL_MS);
   }
 
-  function onVoiceEnd(token, _result) {
+  function onVoiceEnd(token, result) {
     if (
       !currentVoiceToken ||
       currentVoiceToken.turnId !== token.turnId ||
@@ -207,10 +212,12 @@ export function createLinePlayer({
     }
     currentVoiceToken = null;
     voicePlaying = false;
+    clearFollowTimer();
 
     // Download/decode or AudioContext activation can fail before playback starts.
     // Text must remain accessible even when there was no start notification.
-    if (state === 'waiting_audio') revealPage(page);
+    const wasWaitingAudio = state === 'waiting_audio';
+    if (wasWaitingAudio) revealPage(page);
 
     if (pendingAdvance) {
       pendingAdvance = false;
@@ -218,7 +225,20 @@ export function createLinePlayer({
       return;
     }
 
-    if (auto && !hidden && state === 'waiting_advance' && settings.autoMode === 'voice-priority' && page === pages.length - 1) {
+    if (result === 'ended' && !hidden && !skip && settings.voiceEnabled && page < pages.length - 1) {
+      voiceEnded = true;
+      if (!wasWaitingAudio && state === 'waiting_advance') {
+        advance();
+      }
+      if (page < pages.length - 1) {
+        followVoice();
+      } else {
+        voiceEnded = false;
+      }
+    }
+
+    if (auto && !hidden && state === 'waiting_advance' && autoTimerId === null
+      && settings.autoMode === 'voice-priority' && page === pages.length - 1) {
       startAutoTimer();
     }
   }
@@ -240,7 +260,9 @@ export function createLinePlayer({
   function activateLine(index) {
     currentIndex = index;
     page = 0;
+    voiceEnded = false;
     pendingAdvance = false;
+    clearFollowTimer();
     const line = lines[index];
     pages = getPagesForLine(line);
 
@@ -289,6 +311,10 @@ export function createLinePlayer({
     page = pageIndex;
     const pageText = pages[pageIndex] ?? '';
     const pageCount = pages.length;
+    if (pageIndex >= pageCount - 1) {
+      voiceEnded = false;
+      clearFollowTimer();
+    }
 
     render?.glyph?.(false);
 
@@ -486,6 +512,8 @@ export function createLinePlayer({
       if (auto) {
         setAuto(false);
       }
+      voiceEnded = false;
+      clearFollowTimer();
       if (voicePlaying) {
         currentVoiceToken = null;
         voicePlaying = false;
@@ -525,6 +553,8 @@ export function createLinePlayer({
   function hide() {
     if (hidden) return;
     hidden = true;
+    voiceEnded = false;
+    clearFollowTimer();
     setSkip(false);
     if (autoTimerId !== null) {
       clock.clearTimeout(autoTimerId);
@@ -535,6 +565,9 @@ export function createLinePlayer({
   function unhide() {
     if (!hidden) return;
     hidden = false;
+    if (voicePlaying && !skip && page < pages.length - 1) {
+      followVoice();
+    }
     if (state === 'waiting_line' && !hidden) {
       const nextIndex = currentIndex === null ? 0 : currentIndex + 1;
       if (lines[nextIndex]) {
@@ -557,6 +590,8 @@ export function createLinePlayer({
     suspendedFrom = state;
     // Clearing pendingAdvance explicitly on suspend: after resume the user advances again
     pendingAdvance = false;
+    voiceEnded = false;
+    clearFollowTimer();
     if (skip) {
       setSkip(false);
     }
@@ -643,6 +678,7 @@ export function createLinePlayer({
 
     auto = false;
     skip = false;
+    voiceEnded = false;
     pendingAdvance = false;
     clearAllTimers();
 
@@ -692,6 +728,7 @@ export function createLinePlayer({
     hidden = false;
     isPlayerEditing = false;
     turnSettled = false;
+    voiceEnded = false;
     pendingAdvance = false;
     suspendedFrom = null;
     currentIndex = null;
@@ -721,6 +758,7 @@ export function createLinePlayer({
     lineAudio.clear();
     turnSettled = false;
     isPlayerEditing = false;
+    voiceEnded = false;
     pendingAdvance = false;
     suspendedFrom = null;
 
@@ -830,6 +868,7 @@ export function createLinePlayer({
       if (state === 'waiting_advance' && auto && autoTimerId === null) startAutoTimer();
     } else {
       turnSettled = true;
+      voiceEnded = false;
       pendingAdvance = false;
       clearAllTimers();
       if (voicePlaying) {
@@ -871,6 +910,10 @@ export function createLinePlayer({
       audioWaitTimerId = null;
       waitForAudio();
     }
+    if (!settings.voiceEnabled) {
+      voiceEnded = false;
+      clearFollowTimer();
+    }
     if (!settings.voiceEnabled && voicePlaying) {
       currentVoiceToken = null;
       voicePlaying = false;
@@ -905,8 +948,13 @@ export function createLinePlayer({
     let start = 0;
     page = pages.findIndex(text => { start += text.length; return start > offset; });
     if (page < 0) page = Math.max(0, pages.length - 1);
-    // A wider window can leave one page, a narrower one can need more.
-    if (voicePlaying) followVoice();
+    if (page >= pages.length - 1) {
+      voiceEnded = false;
+      clearFollowTimer();
+    } else if (voicePlaying || voiceEnded) {
+      // A wider window can leave one page, a narrower one can need more.
+      followVoice();
+    }
   }
 
   function isPresenting() {
