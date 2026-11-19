@@ -1,3 +1,4 @@
+// @ts-check
 import { requestJson } from '../api.js';
 
 let pendingMutations = 0;
@@ -19,6 +20,7 @@ export function runSettingsMutation(operation) {
   // Reserve the tail before invoking the operation, including an idle write.
   if (idle) start();
   else previous.then(start, cause => {
+    /** @type {Error & { code?: string, cause?: any }} */
     const error = new Error('此前的设置保存尚未完成，当前操作没有发送。输入已保留，请检查服务并核对配置后重新保存或重启。');
     error.code = 'CONFIG_WRITE_SKIPPED';
     error.cause = cause;

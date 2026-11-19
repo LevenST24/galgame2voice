@@ -1,3 +1,4 @@
+// @ts-check
 // Voice Settings & Session Profile Controller
 import { state, saveState, storageChangedByAnotherPage, getActive, DEFAULT_SESSION_SETTINGS } from '../store.js';
 import { showToast } from '../ui.js';
@@ -645,7 +646,7 @@ export async function createCustomVoice() {
       }
     }
     invalidateScannedModels();
-    if (getActive() === origin && state.sessions.includes(origin)) {
+    if (getActive() === origin && state.sessions.includes(/** @type {any} */ (origin))) {
       await loadSessionVoiceSelect(origin);
       if (getActive() === origin) {
         _dom.sVoice.value = String(profileId);
@@ -653,7 +654,7 @@ export async function createCustomVoice() {
         ensureSessionVoice(origin);
       }
     }
-    const binding = state.sessions.includes(origin) ? `，已绑定到「${origin.title}」` : '，可在“角色与会话”中选择';
+    const binding = state.sessions.includes(/** @type {any} */ (origin)) ? `，已绑定到「${/** @type {any} */ (origin).title}」` : '，可在“角色与会话”中选择';
     showToast(`音色「${data.name}」已创建${binding}${note}`, note ? 'info' : 'success');
   } catch (e) {
     console.error('音色创建失败:', e);

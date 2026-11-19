@@ -1,3 +1,4 @@
+// @ts-check
 // One dialog owns navigation, focus, and exit; existing editors retain their
 // validation and persistence. Switching pages discards experience previews only.
 import { openModal, closeModal, onModalChange } from '../settings_ui.js';

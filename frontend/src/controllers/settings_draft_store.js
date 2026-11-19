@@ -1,3 +1,4 @@
+// @ts-check
 // One commit for the engine directory and global config on the voice service page.
 
 export function createSettingsDraftStore({

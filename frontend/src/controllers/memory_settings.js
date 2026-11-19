@@ -1,3 +1,4 @@
+// @ts-check
 // Memory Settings Controller: lists and deletes the long-term memories of the current session's character.
 import { requestJson } from '../request.js';
 

@@ -1,3 +1,4 @@
+// @ts-check
 // Provider Settings Controller: LLM Providers, Model & Key Rendering, Connection Tests, Save/Activate
 import {
   fetchProviders,

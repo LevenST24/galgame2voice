@@ -1,3 +1,4 @@
+// @ts-check
 import { requestJson } from '../api.js';
 import { showToast } from '../ui.js';
 import { exportCompleteChatBackup } from '../chat_backup.js';
@@ -14,6 +15,9 @@ function download(content, name) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/**
+ * @param {{ onImport?: () => void, onOpenBackupTab?: () => void, isBusy?: () => boolean }} [options]
+ */
 export function initSessionBackup({ onImport, onOpenBackupTab, isBusy = () => false } = {}) {
   const $ = id => document.getElementById(id);
   const status = $('gChatStorageStatus');
@@ -29,7 +33,7 @@ export function initSessionBackup({ onImport, onOpenBackupTab, isBusy = () => fa
   };
   onStorageStatus(updateStatus);
   updateStatus(getStorageStatus());
-  const exportButton = $('gExportChats');
+  const exportButton = /** @type {HTMLButtonElement | null} */ ($('gExportChats'));
   exportButton?.addEventListener('click', async () => {
     if (exportButton.disabled) return;
     exportButton.disabled = true;
@@ -61,8 +65,8 @@ export function initSessionBackup({ onImport, onOpenBackupTab, isBusy = () => fa
     try { if (resumeLocalSaving()) showToast('本地保存已恢复', 'success'); }
     catch (error) { showToast(error.message, 'error'); }
   });
-  const input = $('gImportChatFile');
-  const button = $('gImportChats');
+  const input = /** @type {HTMLInputElement | null} */ ($('gImportChatFile'));
+  const button = /** @type {HTMLButtonElement} */ ($('gImportChats'));
   button?.addEventListener('click', () => {
     if (isBusy()) { showToast('请等待当前回复完成，或停止回复后再导入。', 'info'); return; }
     input?.click();

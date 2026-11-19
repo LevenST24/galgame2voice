@@ -1,3 +1,4 @@
+// @ts-check
 import { requestJson } from '../api.js';
 import { normalizeLines } from '../session_data.js';
 import { resolveTurnReplyIdentity } from './turn_reply_identity.js';
@@ -5,7 +6,17 @@ import { resolveTurnReplyIdentity } from './turn_reply_identity.js';
 // Match the chat TTS job budget: model preparation, inference and queue/IO allowance.
 const REPAIR_TIMEOUT_MS = 600000;
 
-/** One explicit click sends one synthesis request; never replay a lost POST. */
+/**
+ * One explicit click sends one synthesis request; never replay a lost POST.
+ * @param {object} deps
+ * @param {() => any} deps.getSession
+ * @param {() => any[]} deps.getVoiceProfiles
+ * @param {() => any} deps.saveState
+ * @param {(id: any) => boolean} [deps.isSessionDeleting]
+ * @param {typeof requestJson} [deps.request]
+ * @param {typeof resolveTurnReplyIdentity} [deps.resolveIdentity]
+ * @param {(sessionId: any, opts?: any) => Promise<any>} [deps.fetchHistory]
+ */
 export function createLineAudioRecovery({
   getSession,
   getVoiceProfiles,

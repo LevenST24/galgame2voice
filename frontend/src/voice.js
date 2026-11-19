@@ -1,3 +1,4 @@
+// @ts-check
 // 语音能力：麦克风录音（MediaRecorder）+ 语音转写（SpeechRecognition）+ 音频内存缓存（BoundedAudioStore）
 let recog = null;
 let listening = false;
@@ -7,12 +8,12 @@ let recStream = null;
 
 /** 语音转写是否可用 */
 export function voiceSupported() {
-  return Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
+  return Boolean(/** @type {any} */ (window).SpeechRecognition || /** @type {any} */ (window).webkitSpeechRecognition);
 }
 
 /** 录音是否可用 */
 export function recorderSupported() {
-  return Boolean(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+  return Boolean(navigator.mediaDevices && /** @type {any} */ (navigator.mediaDevices).getUserMedia && window.MediaRecorder);
 }
 
 /** 当前是否正在聆听 */
@@ -22,7 +23,7 @@ export function isListening() {
 
 /**
  * 开始转写 + 并行录音（转写必需；录音不可用时仅转写）
- * @returns {{ok: boolean, reason?: string}}
+ * @returns {{ok: true} | {ok: false, reason: string}}
  */
 export function startListening({ onInterim, onText, onRecorded, onError }) {
   if (listening) return { ok: true };
@@ -88,7 +89,7 @@ export function startListening({ onInterim, onText, onRecorded, onError }) {
 
   // 2) 转写（可选能力）
   if (hasRecognition) {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const SR = /** @type {any} */ (window).SpeechRecognition || /** @type {any} */ (window).webkitSpeechRecognition;
     const myRecog = new SR();
     recog = myRecog;
     myRecog.lang = 'zh-CN';

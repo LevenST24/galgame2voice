@@ -1,3 +1,4 @@
+// @ts-check
 // Audio Player & STT UI Controller
 import {
   state,
@@ -29,6 +30,7 @@ const loadingOwners = new WeakMap();
 let micTimer = null;
 let micSecs = 0;
 let micBase = '';
+/** @type {{ text: string | null, audio: string | null, dur: number, blob: Blob | null }} */
 let pendingVoice = { text: null, audio: null, dur: 0, blob: null };
 let micFinalizeTimers = [];
 let micRevision = 0;

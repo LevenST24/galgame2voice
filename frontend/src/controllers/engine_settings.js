@@ -1,3 +1,4 @@
+// @ts-check
 // Engine Settings Controller: Restart, precision toggle/auto-save, audio cache actions
 import { requestJson } from '../api.js';
 import { waitForEngine } from './engine_recovery.js';
