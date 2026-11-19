@@ -224,7 +224,6 @@ class LineScanner:
         self._in_line_elem: bool = False
         self._elem_chars: list[str] = []
         self._elem_obj_depth: int = 0
-        self._elem_arr_depth: int = 0
 
         # non-object element in lines buffering
         self._in_non_obj_elem: bool = False
@@ -387,10 +386,6 @@ class LineScanner:
                             emitted_lines.append(line)
                         if line_issues:
                             self.issues.extend(line_issues)
-                elif c == "[":
-                    self._elem_arr_depth += 1
-                elif c == "]":
-                    self._elem_arr_depth -= 1
         elif self._in_non_obj_elem:
             if self._in_string:
                 self._non_obj_chars.append(c)
@@ -441,7 +436,6 @@ class LineScanner:
             if c == "{":
                 self._in_line_elem = True
                 self._elem_obj_depth = 1
-                self._elem_arr_depth = 0
                 self._elem_chars = ["{"]
             elif c == "]":
                 self._in_lines = False
