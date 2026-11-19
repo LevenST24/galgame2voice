@@ -46,7 +46,6 @@ class SynthesisSpeedTracker:
     """
 
     def __init__(self, max_history: int = 15) -> None:
-        self._max_history = max_history
         self._history: collections.deque[SynthesisSpeedRecord] = collections.deque(maxlen=max_history)
         self._lock = threading.Lock()
 
