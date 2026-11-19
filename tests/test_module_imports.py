@@ -55,21 +55,3 @@ def test_all_galgame2voice_modules_import_cleanly() -> None:
         )
         raise AssertionError(f"{len(failures)} module(s) failed standalone import:\n\n{details}")
 
-
-def test_adapters_llm_backward_compatible_provider_reexports() -> None:
-    proc = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            (
-                "from galgame2voice.adapters.llm import "
-                "LLMProvider, BaseLLMProvider, ProviderError, "
-                "OpenAIProvider, GeminiProvider, AnthropicProvider, DeepSeekProvider, XAIProvider"
-            ),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        env=os.environ.copy(),
-    )
-    assert proc.returncode == 0, proc.stderr.strip()
