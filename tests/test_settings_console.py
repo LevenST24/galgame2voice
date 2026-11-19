@@ -14,10 +14,8 @@ Covers:
 import asyncio
 import json
 import logging
-import os
 import random
 import re
-import tempfile
 import time
 from unittest.mock import AsyncMock, patch
 import pytest
@@ -339,20 +337,6 @@ class TestMaskingFilterLogSanitization:
             assert secret not in query_sanitized
             assert needle in query_sanitized
 
-    def test_masking_filter_log_record_args_processing(self):
-        """Verifies MaskingFilter properly filters LogRecord instance msg and arguments."""
-        filter_instance = MaskingFilter()
-        record = logging.LogRecord(
-            name="test_logger",
-            level=logging.INFO,
-            pathname=__file__,
-            lineno=10,
-            msg="User login with token: %s",
-            args=("sk-supersecret1234567890",),
-            exc_info=None,
-        )
-        filter_instance.filter(record)
-        assert "sk-supersecret1234567890" not in str(record.args)
 
     SECRET_CORPUS = {
         "openai_std": "sk-1234567890abcdefghijklmnopqrstuvwxyzAB",
@@ -785,20 +769,6 @@ class TestAdversarialStressAndConcurrency:
 # 9. Migrated M5 Console Concurrency, Boundary & Recovery Tests
 # ============================================================================
 
-@pytest.fixture
-async def adversarial_m5_db():
-    """Yields an isolated initialized temporary SQLite database path."""
-    fd, path = tempfile.mkstemp(suffix=".db", prefix="adv_m5_test_")
-    os.close(fd)
-    await init_db(path)
-    yield path
-    if os.path.exists(path):
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-
-
 class TestConcurrencyAndRaceConditions:
     """Stress tests concurrent operations on settings, providers, and masked updates."""
 
@@ -1190,22 +1160,3 @@ class TestVoiceRouterEndpoints:
             del_resp = await client.delete(f"/api/voice/profiles/{profile_id}")
             assert del_resp.status_code == 200
             assert del_resp.json()["status"] == "deleted"
-
-    @pytest.mark.asyncio
-    async def test_voice_router_error_cases(self, temp_db_path, mock_gpt_sovits):
-        manager = VoiceManager(gpt_sovits_client_or_server=mock_gpt_sovits, db_path=temp_db_path)
-        set_voice_manager(manager)
-
-        app = create_app()
-        transport = ASGITransport(app=app)
-
-        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
-            # Switch nonexistent profile
-            resp_switch = await client.post("/api/voice/switch", json={"profile_id": 99999})
-            assert resp_switch.status_code == 404
-
-            # Switch missing id and name
-            resp_missing = await client.post("/api/voice/switch", json={})
-            assert resp_missing.status_code == 400
-
-

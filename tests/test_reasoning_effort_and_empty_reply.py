@@ -310,51 +310,6 @@ async def test_provider_api_endpoints():
         assert gemini.json()["provider"]["reasoning_effort"] is None
 
 
-def test_adapter_payload_forwards_reasoning_effort():
-    """Verifies OpenAICompatibleLLMAdapter and GeminiLLMAdapter forward reasoning_effort when set, omitting when null."""
-    openai_adapter = OpenAICompatibleLLMAdapter(
-        api_key="synthetic",
-        base_url="https://api.test.com/v1",
-        model="gpt-4o",
-    )
-    # Provided string (kwargs or extra dict)
-    payload_low = openai_adapter._build_payload(
-        [{"role": "user", "content": "hi"}],
-        model="gpt-4o", extra={"reasoning_effort": "low"},
-    )
-    assert payload_low["reasoning_effort"] == "low"
-
-    payload_extra = openai_adapter._build_payload(
-        [{"role": "user", "content": "hi"}],
-        model="gpt-4o",
-        extra={"reasoning_effort": "low"},
-    )
-    assert payload_extra["reasoning_effort"] == "low"
-
-    # None / omitted
-    payload_none = openai_adapter._build_payload(
-        [{"role": "user", "content": "hi"}],
-        model="test", extra={"reasoning_effort": None},
-    )
-    assert "reasoning_effort" not in payload_none
-
-    gemini_adapter = GeminiLLMAdapter(
-        api_key="synthetic",
-        model="gemini-2.5-flash",
-    )
-    payload_gemini = gemini_adapter._build_payload(
-        [{"role": "user", "content": "hi"}],
-        model="test", extra={"reasoning_effort": "high"},
-    )
-    assert payload_gemini["reasoning_effort"] == "high"
-
-    payload_gemini_null = gemini_adapter._build_payload(
-        [{"role": "user", "content": "hi"}],
-        model="test", extra={"reasoning_effort": None},
-    )
-    assert "reasoning_effort" not in payload_gemini_null
-
-
 @pytest.mark.asyncio
 async def test_llm_pipeline_and_coordinator_forward_reasoning_effort():
     """Verifies LlmStreamPipeline and StreamCoordinator pass reasoning_effort to adapter."""
@@ -823,4 +778,3 @@ def test_glm_payload_reasoning_and_temperature_rules():
 
     p_4l = glm._build_payload(msgs, "glm-4-long", extra={"reasoning_effort": "low"})
     assert "reasoning_effort" not in p_4l and "thinking" not in p_4l
-

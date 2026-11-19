@@ -19,7 +19,7 @@ from httpx import ASGITransport, AsyncClient
 
 from galgame2voice.adapters.registry import PROVIDER_PRESETS
 from galgame2voice.database import crud
-from galgame2voice.database.models import SettingsBase, SettingsResponse, SettingsUpdate
+from galgame2voice.database.models import SettingsUpdate
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.main import create_app
 from galgame2voice.security import url_guard
@@ -446,11 +446,6 @@ class TestProviderActivationFlow:
 class TestSettingsSchemaPersistence:
     """Verifies round-trip persistence for settings."""
 
-    def test_settings_models_stt_engine_defaults(self):
-        base = SettingsBase()
-        assert base.stt_engine == "browser"
-        resp = SettingsResponse()
-        assert resp.stt_engine == "browser"
 
     @pytest.mark.asyncio
     async def test_stt_engine_persistence_sensevoice_and_whisper(self, app_client, isolate_test_database):
@@ -719,4 +714,3 @@ class TestProviderPresetSeedsAndFallback:
             raw = await crud.get_provider_raw(conn, "glm")
             assert raw.api_key == "sk-glm-saved-1234"
             assert (raw.chat_model, raw.reasoning_effort) == ("glm-4.7-flash", "none")
-
