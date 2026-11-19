@@ -41,50 +41,30 @@ from galgame2voice.utils.logger import MaskingFilter, MaskingFormatter, sanitize
 class TestConsoleRoutesAndRedirects:
     """Verifies clean routing and redirection for /settings.html, /console, and /settings."""
 
+    ADVERSARIAL_QUERY = (
+        "token=%27%20OR%201=1--&script=%3Cscript%3Ealert(1)%3C/script%3E"
+        "&name=%E5%A5%88%E9%A1%BB%E3%81%8D%E3%81%AE%E3%81%93"
+    )
+
     @pytest.mark.asyncio
-    async def test_console_redirect_to_settings_html(self):
-        """Verifies GET /console returns a 307 redirect to /?settings=1."""
+    @pytest.mark.parametrize(
+        ("path", "location"),
+        [
+            ("/console", "/?settings=1"),
+            ("/settings", "/?settings=1"),
+            ("/console?token=sec123&lang=zh", "/?settings=1&token=sec123&lang=zh"),
+            (f"/console?{ADVERSARIAL_QUERY}", f"/?settings=1&{ADVERSARIAL_QUERY}"),
+            (f"/settings?{ADVERSARIAL_QUERY}", f"/?settings=1&{ADVERSARIAL_QUERY}"),
+        ],
+    )
+    async def test_console_and_settings_redirect_keeping_query(self, path, location):
+        """GET /console and /settings answer 307 to /?settings=1 and carry the query string over unchanged."""
         app = create_app()
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=False) as client:
-            resp = await client.get("/console")
-            assert resp.status_code == 307
-            assert resp.headers["location"] == "/?settings=1"
-
-    @pytest.mark.asyncio
-    async def test_console_redirect_preserves_query_parameters(self):
-        """Verifies GET /console?token=sec123&lang=zh preserves query string in redirect."""
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=False) as client:
-            resp = await client.get("/console?token=sec123&lang=zh")
-            assert resp.status_code == 307
-            assert resp.headers["location"] == "/?settings=1&token=sec123&lang=zh"
-
-    @pytest.mark.asyncio
-    async def test_settings_alias_redirect(self):
-        """Verifies GET /settings alias redirect to /?settings=1."""
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=False) as client:
-            resp = await client.get("/settings")
-            assert resp.status_code == 307
-            assert resp.headers["location"] == "/?settings=1"
-
-    @pytest.mark.asyncio
-    async def test_redirect_with_adversarial_query_strings(self):
-        """Redirect from /console and /settings should preserve special/adversarial query parameters."""
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=False) as client:
-            query = "token=%27%20OR%201=1--&script=%3Cscript%3Ealert(1)%3C/script%3E&name=%E5%A5%88%E9%A1%BB%E3%81%8D%E3%81%AE%E3%81%93"
-            resp = await client.get(f"/console?{query}")
-            assert resp.status_code == 307
-            assert resp.headers["location"] == f"/?settings=1&{query}"
-
-            resp2 = await client.get(f"/settings?{query}")
-            assert resp2.status_code == 307
-            assert resp2.headers["location"] == f"/?settings=1&{query}"
+            resp = await client.get(path)
+        assert resp.status_code == 307
+        assert resp.headers["location"] == location
 
     @pytest.mark.asyncio
     async def test_follow_redirect_delivers_200_html(self):

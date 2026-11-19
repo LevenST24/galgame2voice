@@ -16,18 +16,34 @@ def test_get_system_memory_status_returns_floats_or_none():
 
 
 @pytest.mark.real_hardware_probe
-def test_linux_proc_meminfo_parsing(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("meminfo", "expected_avail"),
+    [
+        pytest.param(
+            "MemTotal:       16384000 kB\n"
+            "MemFree:         4096000 kB\n"
+            "MemAvailable:    8192000 kB\n"
+            "Buffers:          500000 kB\n"
+            "Cached:          3000000 kB\n",
+            7.81,
+            id="mem_available",
+        ),
+        # Kernel without MemAvailable: (2000000 + 1000000 + 3000000) / (1024 * 1024) = 5.72
+        pytest.param(
+            "MemTotal:       16384000 kB\n"
+            "MemFree:         2000000 kB\n"
+            "Buffers:         1000000 kB\n"
+            "Cached:          3000000 kB\n",
+            5.72,
+            id="fallback_buffers_cached",
+        ),
+    ],
+)
+def test_linux_proc_meminfo_parsing(monkeypatch, tmp_path, meminfo, expected_avail):
     import galgame2voice.utils.hardware as hw
 
     meminfo_file = tmp_path / "meminfo"
-    meminfo_file.write_text(
-        "MemTotal:       16384000 kB\n"
-        "MemFree:         4096000 kB\n"
-        "MemAvailable:    8192000 kB\n"
-        "Buffers:          500000 kB\n"
-        "Cached:          3000000 kB\n",
-        encoding="utf-8",
-    )
+    meminfo_file.write_text(meminfo, encoding="utf-8")
     monkeypatch.setattr(hw.sys, "platform", "linux")
     monkeypatch.setattr(hw.os.path, "exists", lambda p: p == "/proc/meminfo" or str(p) == "/proc/meminfo")
     real_open = open
@@ -41,37 +57,7 @@ def test_linux_proc_meminfo_parsing(monkeypatch, tmp_path):
 
     total, avail = hw.get_system_memory_status()
     assert total == 15.62
-    assert avail == 7.81
-
-
-@pytest.mark.real_hardware_probe
-def test_linux_proc_meminfo_fallback_buffers_cached(monkeypatch, tmp_path):
-    import galgame2voice.utils.hardware as hw
-
-    meminfo_file = tmp_path / "meminfo_old"
-    # Kernel without MemAvailable
-    meminfo_file.write_text(
-        "MemTotal:       16384000 kB\n"
-        "MemFree:         2000000 kB\n"
-        "Buffers:         1000000 kB\n"
-        "Cached:          3000000 kB\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(hw.sys, "platform", "linux")
-    monkeypatch.setattr(hw.os.path, "exists", lambda p: p == "/proc/meminfo" or str(p) == "/proc/meminfo")
-    real_open = open
-
-    def fake_open(p, *args, **kwargs):
-        if str(p) == "/proc/meminfo":
-            return real_open(meminfo_file, *args, **kwargs)
-        return real_open(p, *args, **kwargs)
-
-    monkeypatch.setattr("builtins.open", fake_open)
-
-    total, avail = hw.get_system_memory_status()
-    assert total == 15.62
-    # (2000000 + 1000000 + 3000000) / (1024 * 1024) = 5.72
-    assert avail == 5.72
+    assert avail == expected_avail
 
 
 @pytest.mark.real_hardware_probe
