@@ -263,9 +263,31 @@ def test_disconnect_snapshot_persistence_rules():
     assert disc_already_persisted["should_persist"] is False
     assert disc_already_persisted["snapshot_lines"] is None
 
-    disc_empty = compute_disconnect_snapshot(
+    disc_lines_only = compute_disconnect_snapshot(
         announced_lines=announced_lines,
         line_audio_states=line_audio_states,
+        partial_chinese="  ",
+        partial_japanese="",
+        message_persisted=False,
+    )
+    assert disc_lines_only["should_persist"] is True
+    assert disc_lines_only["snapshot_lines"] is not None and len(disc_lines_only["snapshot_lines"]) == 1
+    assert disc_lines_only["snapshot_lines"][0]["audio"]["status"] == "failed"
+
+    disc_reused_lines_only = compute_disconnect_snapshot(
+        announced_lines=[],
+        line_audio_states={},
+        partial_chinese="",
+        partial_japanese=None,
+        message_persisted=False,
+        persisted_lines=precomputed,
+    )
+    assert disc_reused_lines_only["should_persist"] is True
+    assert disc_reused_lines_only["snapshot_lines"] is precomputed
+
+    disc_empty = compute_disconnect_snapshot(
+        announced_lines=[],
+        line_audio_states={},
         partial_chinese="  ",
         partial_japanese="",
         message_persisted=False,

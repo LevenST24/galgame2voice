@@ -206,7 +206,7 @@ def compute_disconnect_snapshot(
     """Computes teardown persistence snapshot when the stream exits without having persisted."""
     partial_ch = partial_chinese or ""
     partial_ja = partial_japanese or ""
-    if message_persisted or not has_meaningful_text(partial_ch, partial_ja):
+    if message_persisted:
         return {
             "should_persist": False,
             "partial_chinese": partial_ch,
@@ -221,6 +221,14 @@ def compute_disconnect_snapshot(
             line_audio_states,
             mark_unfinished_failed=True,
         )
+    has_partial = has_meaningful_text(partial_ch, partial_ja) or bool(lines_to_save)
+    if not has_partial:
+        return {
+            "should_persist": False,
+            "partial_chinese": partial_ch,
+            "partial_japanese": partial_ja,
+            "snapshot_lines": None,
+        }
     return {
         "should_persist": True,
         "partial_chinese": partial_ch,

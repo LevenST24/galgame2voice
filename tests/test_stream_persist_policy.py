@@ -289,7 +289,29 @@ def test_client_disconnect_teardown_policy_rules():
     assert disc_partial["settle_affection"] is False
     assert disc_partial["lines"] is not None
 
-    # No meaningful text -> prune_user
+    # Announced lines with blank partial text -> persist_partial (aligned with early exit)
+    disc_lines_only = _teardown(announced_lines, states, "  ", None)
+    assert disc_lines_only["db_action"] == "persist_partial"
+    assert disc_lines_only["content_chinese"] == "  "
+    assert disc_lines_only["content_japanese"] == ""
+    assert disc_lines_only["audio_url"] == ""
+    assert disc_lines_only["settle_affection"] is False
+    assert disc_lines_only["lines"] is not None and len(disc_lines_only["lines"]) == 2
+    assert disc_lines_only["lines"][0]["audio"]["status"] == "ready"
+    assert disc_lines_only["lines"][1]["audio"]["status"] == "failed"
+
+    # Non-truncation stream error with announced lines only -> teardown reuses persisted_lines
+    err_lines_only_main = _early_exit(announced_lines, states, "", None)
+    assert err_lines_only_main["db_action"] == "none"
+    assert err_lines_only_main["persisted_lines"] is not None
+    err_lines_only_teardown = _teardown(
+        announced_lines, states, "", None, persisted_lines=err_lines_only_main["persisted_lines"],
+    )
+    assert err_lines_only_teardown["db_action"] == "persist_partial"
+    assert err_lines_only_teardown["lines"] is err_lines_only_main["persisted_lines"]
+    assert err_lines_only_teardown["settle_affection"] is False
+
+    # No meaningful text and no lines -> prune_user
     disc_empty = _teardown([], {}, "  ", "")
     assert disc_empty["db_action"] == "prune_user"
     assert disc_empty["lines"] is None
