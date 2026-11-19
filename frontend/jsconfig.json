@@ -3,7 +3,11 @@
     "target": "ES2022",
     "module": "ES2022",
     "moduleResolution": "bundler",
-    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2023",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "allowJs": true,
     "checkJs": true,
     "noEmit": true,
@@ -14,11 +18,22 @@
     "skipLibCheck": true
   },
   "include": [
+    "src/ai.js",
+    "src/api.js",
+    "src/audio_player.js",
     "src/audio_request.js",
-    "src/request.js",
-    "src/session_data.js",
-    "src/store.js",
+    "src/auth.js",
     "src/cache.js",
+    "src/chat_backup.js",
+    "src/conversation.js",
+    "src/request.js",
+    "src/session_api.js",
+    "src/session_data.js",
+    "src/settings.js",
+    "src/settings_ui.js",
+    "src/sprite_state.js",
+    "src/store.js",
+    "src/tar_pack.js",
     "src/controllers/turn_reply_identity.js"
   ]
 }

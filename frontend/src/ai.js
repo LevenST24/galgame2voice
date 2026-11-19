@@ -1,3 +1,4 @@
+// @ts-check
 // 对接 Galgame2Voice 本地后端的流式聊天客户端
 // SSE 事件：text（增量中文）→ audio_chunk（逐句 GPT-SoVITS 音频 URL）→ done / error
 import { getErrorMessage, connectionMessage } from './request.js';
@@ -56,11 +57,15 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
   const audioChunks = [];
   const jaSentences = [];
   let fullJapanese = '';
+  /** @type {Record<string, any> | null} */
   let doneMeta = null;
   let settled = false;
+  /** @type {ReadableStreamDefaultReader<Uint8Array> | null} */
   let reader = null;
   let timedOut = false;
+  /** @type {string | null} */
   let audioError = null;
+  /** @type {string | null} */
   let errorCode = null;
   let receivedReply = false;
   // Old servers cannot announce slow voice work. Keep a finite compatibility
@@ -96,6 +101,7 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
       throw error;
     }
     let timer;
+    /** @type {any} */
     let abort;
     const cancelled = new Promise((_, reject) => {
       abort = () => reject(new DOMException('操作已取消', 'AbortError'));
@@ -133,9 +139,9 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
       emotion: (doneMeta && doneMeta.emotion) || null,
       affection: (doneMeta && doneMeta.affection) || null,
       ttsParams: (doneMeta && doneMeta.tts_params) || null,
-      ...(Number.isSafeInteger(doneMeta?.message_id) && doneMeta.message_id > 0 ? { messageId: doneMeta.message_id } : {}),
+      ...(Number.isSafeInteger(doneMeta?.message_id) && /** @type {Record<string, any>} */ (doneMeta).message_id > 0 ? { messageId: /** @type {Record<string, any>} */ (doneMeta).message_id } : {}),
       ...(doneMeta?.telemetry ? { telemetry: doneMeta.telemetry } : {}),
-      ...(Number.isFinite(doneMeta?.latency_ms) ? { latencyMs: doneMeta.latency_ms } : {}),
+      ...(Number.isFinite(doneMeta?.latency_ms) ? { latencyMs: /** @type {Record<string, any>} */ (doneMeta).latency_ms } : {}),
       lines: (doneMeta && Array.isArray(doneMeta.lines)) ? doneMeta.lines : null,
       ...(typeof doneMeta?.reply_format === 'string' ? { replyFormat: doneMeta.reply_format } : {}),
     });
@@ -213,7 +219,7 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
       let buffer = '';
       let eventName = 'text';
       while (!settled) {
-        const { done, value } = await withDeadline(() => reader.read());
+        const { done, value } = await withDeadline(() => /** @type {ReadableStreamDefaultReader<Uint8Array>} */ (reader).read());
         if (done) {
           buffer += decoder.decode();
         } else {

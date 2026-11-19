@@ -1,3 +1,4 @@
+// @ts-check
 import { requestJson } from './api.js';
 import { normalizeSnapshot, portableSnapshot } from './session_data.js';
 import { exportSessionData, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL, GREETING, LEGACY_GREETINGS, uid } from './store.js';

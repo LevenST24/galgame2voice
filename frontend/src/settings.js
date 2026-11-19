@@ -1,9 +1,10 @@
+// @ts-check
 // 设置模块辅助函数：提供商诊断展示归一化、预设回退与表单辅助
 
 /**
  * 归一化后端连通性测试返回的结构化诊断字段，缺少结构化字段时提供安全兜底文案
  *
- * @param {object} [data] 后端结构化响应对象
+ * @param {Record<string, any>} [data] 后端结构化响应对象
  * @returns {{ title: string, guidance: string }}
  */
 export function formatProviderDiagnostic(data = {}) {
@@ -74,6 +75,13 @@ function firstList(...values) {
 /**
  * 合并服务端预设能力、旧 presets 与本地回退。
  * 密钥是否必填和默认思考强度优先用服务端；描述、地址和模型列表仍先用旧 presets。
+ *
+ * @param {{
+ *   legacyPreset?: Record<string, any> | null,
+ *   builtinPreset?: Record<string, any> | null,
+ *   fallbackPreset?: Record<string, any> | null,
+ *   providerId?: string,
+ * }} [options]
  */
 export function resolvePresetCapabilities({
   legacyPreset = null,

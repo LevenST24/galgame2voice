@@ -1,3 +1,4 @@
+// @ts-check
 // POSIX.1-1988 ustar tar packer for streaming folder uploads as a Blob without reading file contents into RAM.
 
 const UTF8 = new TextEncoder();
