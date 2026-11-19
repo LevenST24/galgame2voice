@@ -241,9 +241,12 @@ def decide_teardown_policy(
     )
     if disconnect_snap["should_persist"]:
         return {
-            "db_action": "persist_partial", "content_chinese": partial_chinese,
-            "content_japanese": partial_japanese, "audio_url": "",
-            "lines": disconnect_snap["snapshot_lines"], "settle_affection": False,
+            "db_action": "persist_partial",
+            "content_chinese": disconnect_snap["partial_chinese"],
+            "content_japanese": disconnect_snap["partial_japanese"],
+            "audio_url": "",
+            "lines": disconnect_snap["snapshot_lines"],
+            "settle_affection": False,
         }
     return {
         "db_action": "prune_user", "content_chinese": partial_chinese, "content_japanese": partial_japanese,
