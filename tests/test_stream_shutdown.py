@@ -116,8 +116,8 @@ async def test_stop_waits_for_upstream_finally_without_cancelling_it_twice(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_sse_close_closes_source_and_disconnect_watcher():
-    source_closed, watcher_closed = asyncio.Event(), asyncio.Event()
+async def test_sse_close_sets_cancel_and_closes_source():
+    source_closed = asyncio.Event()
 
     async def source():
         try:
@@ -126,27 +126,16 @@ async def test_sse_close_closes_source_and_disconnect_watcher():
         finally:
             source_closed.set()
 
-    async def watcher():
-        try:
-            await asyncio.Event().wait()
-        finally:
-            watcher_closed.set()
-
     iterator = source()
-    watch_task = asyncio.create_task(watcher())
-    await asyncio.sleep(0)
     cancel = asyncio.Event()
-    formatted = sse_event_formatter(iterator, cancel, watch_task)
+    formatted = sse_event_formatter(iterator, cancel)
     try:
         await formatted.__anext__()
         await formatted.aclose()
         assert cancel.is_set()
         assert source_closed.is_set()
-        assert watcher_closed.is_set()
     finally:
         await iterator.aclose()
-        watch_task.cancel()
-        await asyncio.gather(watch_task, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -268,33 +257,17 @@ async def test_llm_pipeline_owns_upstream_close_after_cancel():
 
 
 @pytest.mark.asyncio
-async def test_sse_close_cancellation_still_reaps_disconnect_watcher():
-    watcher_done = asyncio.Event()
-
+async def test_sse_close_propagates_source_cancellation():
     async def source():
         try:
             yield {"event": "text", "data": {}}
         finally:
             raise asyncio.CancelledError()
 
-    async def watcher():
-        try:
-            await asyncio.Event().wait()
-        finally:
-            watcher_done.set()
-
-    task = asyncio.create_task(watcher())
-    await asyncio.sleep(0)
-    formatted = sse_event_formatter(source(), asyncio.Event(), task)
-    try:
-        await formatted.__anext__()
-        with pytest.raises(asyncio.CancelledError):
-            await formatted.aclose()
-        assert task.done()
-        assert watcher_done.is_set()
-    finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+    formatted = sse_event_formatter(source(), asyncio.Event())
+    await formatted.__anext__()
+    with pytest.raises(asyncio.CancelledError):
+        await formatted.aclose()
 
 
 @pytest.mark.asyncio
