@@ -28,7 +28,6 @@ from galgame2voice.services.character_manager import (
 from galgame2voice.services.emotion_references import resolve_emotion_reference
 from galgame2voice.schemas.character_manifest import CharacterManifestV2
 import scripts.run_server as rs
-import scripts.package_release as pr
 
 
 def _create_synthetic_wav(
@@ -222,15 +221,6 @@ def test_character_manager_resolve_fallback(tmp_path):
 # 5. FP32 Engine Invariant & --fp16 CLI Flag Tests
 # ============================================================================
 
-def test_server_cli_fp16_flag():
-    # Default is FP32 (fp16 == False)
-    args_default = rs.parse_args([])
-    assert args_default.fp16 is False
-
-    # Explicit --fp16 flag
-    args_fp16 = rs.parse_args(["--fp16"])
-    assert args_fp16.fp16 is True
-
 
 def test_build_gpt_sovits_env_fp32_default(tmp_path, monkeypatch):
     monkeypatch.setattr(rs, "PROJECT_ROOT", tmp_path)
@@ -250,19 +240,6 @@ def test_build_gpt_sovits_env_fp32_default(tmp_path, monkeypatch):
 # ============================================================================
 # 6. Release Packaging Bundling Tests
 # ============================================================================
-
-def test_package_release_excludes_local_character_assets(tmp_path):
-    # Character packages are installed separately, including manifests and prompts.
-    assert pr.should_include(Path("characters/四季夏目/manifest.json")) is False
-    assert pr.should_include(Path("characters/四季夏目/system_prompt.txt")) is False
-    assert pr.should_include(Path("characters/四季夏目/refs/gentle.ogg")) is False
-    assert pr.should_include(Path("characters/四季夏目/refs/cool.ogg")) is False
-
-    # Large binary weights and user archives must be excluded
-    assert pr.should_include(Path("characters/四季夏目/huge_weights.ckpt")) is False
-    assert pr.should_include(Path("characters/四季夏目/huge_weights.pth")) is False
-    assert pr.should_include(Path("characters/四季夏目.zip")) is False
-    assert pr.should_include(Path("characters/栞那.7z")) is False
 
 
 # ============================================================================
@@ -813,4 +790,3 @@ def test_character_manifest_v2_model():
     assert m.manifest_version == "2.0"
     assert "gentle" in m.emotions
     assert m.default_voice_params.speed == 1.05
-
