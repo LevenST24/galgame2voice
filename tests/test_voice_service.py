@@ -228,3 +228,17 @@ class TestVoiceManagerPersistence:
         assert success is True
         assert mock_gpt_sovits.current_gpt_weights == sample_voice_profile["gpt_weights_path"]
 
+
+    @pytest.mark.asyncio
+    async def test_failed_switch_skips_redundant_health_probe(self, temp_db_path, sample_voice_profile):
+        client = AsyncMock(spec=GptSovitsClient)
+        client.active_profile = None
+        client.switch_voice_profile = AsyncMock(return_value=False)
+        client.check_health = AsyncMock(return_value={"connected": False})
+
+        manager = VoiceManager(gpt_sovits_client_or_server=client, db_path=temp_db_path)
+        success = await manager.switch_profile(sample_voice_profile, persist=False)
+
+        assert success is False
+        client.switch_voice_profile.assert_awaited_once()
+        client.check_health.assert_not_awaited()

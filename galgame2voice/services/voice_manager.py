@@ -81,7 +81,6 @@ class VoiceManager:
         self._switching_profile_id: int | None = None
         self._bg_tasks: set[asyncio.Task] = set()
         self._warmup_tasks: dict[int, set[asyncio.Task[Any]]] = {}
-        self.last_switch_error: str | None = None
 
     def _register_warmup_task(self, profile_id: int | None, task: Any) -> None:
         """Associates an in-flight warm-up Task with profile_id for targeted cancellation."""
@@ -438,7 +437,6 @@ class VoiceManager:
         persist: bool = True,
         force: bool = False,
     ) -> bool:
-        self.last_switch_error = None
         # 1. Resolve Profile from DB if ID or Name provided
         profile_obj = await self._resolve_switch_target(target)
         if profile_obj is None:
@@ -476,14 +474,6 @@ class VoiceManager:
                 self._switching_profile_id = None
         if not success:
             logger.error("Failed to switch GPT-SoVITS model weights for target: %s", target)
-            try:
-                health = await asyncio.wait_for(self.client.check_health(), timeout=2.0)
-                if not health.get("connected"):
-                    self.last_switch_error = "engine_offline"
-                else:
-                    self.last_switch_error = "weights_load_failed"
-            except Exception:
-                self.last_switch_error = "engine_offline"
             return False
 
         # Trigger non-blocking background warm-up of newly activated voice profile
