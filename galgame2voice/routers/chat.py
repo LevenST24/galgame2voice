@@ -146,7 +146,6 @@ class ChatStreamingResponse(StreamingResponse):
 async def sse_event_formatter(
     event_generator: AsyncGenerator[dict[str, Any] | str, None],
     cancel_event: asyncio.Event | None = None,
-    cleanup_task: asyncio.Task | None = None,
 ) -> AsyncGenerator[str, None]:
     """Formats event dictionaries into standard Server-Sent Events SSE text stream."""
     try:
@@ -174,13 +173,6 @@ async def sse_event_formatter(
                 await close()
         except Exception as exc:
             logger.warning("Failed to close SSE source: %s", sanitize_error_detail(exc))
-        finally:
-            if cleanup_task and not cleanup_task.done():
-                cleanup_task.cancel()
-                try:
-                    await cleanup_task
-                except (asyncio.CancelledError, Exception):
-                    pass
 
 
 def _validate_chat_request(req: ChatRequest) -> None:
