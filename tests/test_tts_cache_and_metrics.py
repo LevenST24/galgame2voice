@@ -297,7 +297,7 @@ class TestTtsCacheLruPruningAndIsolation:
 # ============================================================================
 
 class TestMetricsCollectorAndTelemetry:
-    """Validates model pricing formulas, token estimation, and ring buffer operations."""
+    """Validates model pricing formulas, token estimation, and metric persistence."""
 
     def test_pricing_calculation_accuracy(self, tmp_path):
         collector = MetricsCollector(db_path=str(tmp_path / "m.db"))
@@ -379,7 +379,7 @@ class TestMetricsCollectorAndTelemetry:
     async def test_concurrent_telemetry_recording_exact_sums(self, tmp_path):
         db_p = tmp_path / "concurrent_telemetry.db"
         await init_db(db_p)
-        collector = MetricsCollector(db_path=str(db_p), ring_buffer_size=100)
+        collector = MetricsCollector(db_path=str(db_p))
         num_tasks = 50
         prompt_per_task = 1000
         comp_per_task = 400
@@ -403,7 +403,6 @@ class TestMetricsCollectorAndTelemetry:
 
         results = await asyncio.gather(*[record_task(i) for i in range(num_tasks)])
         assert len(results) == num_tasks
-        assert len(collector.ring_buffer) == 50
 
         async with get_db(db_p) as conn:
             cur = await conn.execute(
