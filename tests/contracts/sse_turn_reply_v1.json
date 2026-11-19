@@ -392,6 +392,27 @@
           "stored_assistant_message": false,
           "failed_inline": true
         }
+      },
+      "line_audio_missing_line": {
+        "event": "line_audio",
+        "data": {
+          "status": "ready",
+          "chunks": []
+        },
+        "expected": {
+          "ignored": true
+        }
+      },
+      "line_audio_invalid_status": {
+        "event": "line_audio",
+        "data": {
+          "line": 0,
+          "status": "bogus",
+          "chunks": []
+        },
+        "expected": {
+          "ignored": true
+        }
       }
     },
     "id_conflict": {
@@ -498,9 +519,10 @@
           }
         },
         "expected": {
-          "line_arrival_status": "pending",
+          "line_arrival_status": "ready",
           "final_persisted_status": "ready",
-          "total_line_audio_emissions": 1
+          "total_line_audio_emissions": 1,
+          "line_arrival_audio_url": "/audio/cache/contract_0.wav"
         }
       }
     },

@@ -336,12 +336,20 @@ test('edge_cases contract: missing_fields, id_conflict, out_of_order, duplicate,
 
   // 1. missing_fields
   {
-    const { turn_started_missing_id, line_missing_index, done_empty } = edges.missing_fields;
-    // 1a & 1b: turn_started missing user_message_id + line missing index, followed by valid line & done
+    const {
+      turn_started_missing_id,
+      line_missing_index,
+      line_audio_missing_line,
+      line_audio_invalid_status,
+      done_empty,
+    } = edges.missing_fields;
+    // 1a & 1b: turn_started missing user_message_id + line missing index + malformed line_audio, followed by valid line & done
     const harness = setupConversationHarness(
       [
         { event: turn_started_missing_id.event, data: turn_started_missing_id.data },
         { event: line_missing_index.event, data: line_missing_index.data },
+        { event: line_audio_missing_line.event, data: line_audio_missing_line.data },
+        { event: line_audio_invalid_status.event, data: line_audio_invalid_status.data },
         contract.sse_events.line_0,
         contract.sse_events.line_audio_ready,
         edges.out_of_order.line_audio_before_line.authoritative_done,
@@ -354,6 +362,9 @@ test('edge_cases contract: missing_fields, id_conflict, out_of_order, duplicate,
     assert.equal(lineEvents.length, 1, 'line without integer index must be ignored');
     assert.equal(lineEvents.some((e) => e.payload.line.zh === line_missing_index.data.zh), false);
     assert.equal(lineEvents[0].payload.line.index, 0);
+    const lineAudioEvents = harness.events.filter((e) => e.type === 'line_audio');
+    assert.equal(lineAudioEvents.length, 1, 'malformed line_audio events must be ignored');
+    assert.equal(lineAudioEvents[0].payload.status, 'ready');
     const assistantMsg = harness.session.messages.find((m) => m.role === 'assistant');
     assert.equal(assistantMsg.serverUserMessageId, undefined);
     assert.equal(assistantMsg.turnConflict, undefined);
@@ -447,6 +458,7 @@ test('edge_cases contract: missing_fields, id_conflict, out_of_order, duplicate,
     harnessAudio.conversation.send('测试乱序line_audio');
     await harnessAudio.settledPromise;
     assert.equal(lineArrivalSnapshots[0].audio.status, expAudioFirst.line_arrival_status);
+    assert.equal(lineArrivalSnapshots[0].audio.chunks[0]?.audio_url, expAudioFirst.line_arrival_audio_url);
     const assistantMsg = harnessAudio.session.messages.find((m) => m.role === 'assistant');
     assert.equal(assistantMsg.lines[0].audio.status, expAudioFirst.final_persisted_status);
     const lineAudioEmissions = harnessAudio.events.filter((e) => e.type === 'line_audio');

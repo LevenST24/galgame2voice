@@ -15,6 +15,8 @@ import { streamChat } from './ai.js';
 import { normalizeLines } from './session_data.js';
 import { storageChangedByAnotherPage } from './store.js';
 
+const VALID_LINE_AUDIO_STATUSES = new Set(['ready', 'failed', 'skipped']);
+
 // A whole-reply response has no server-side line identity. Expose one line to
 // the live presenter without adding synthetic lines to persisted history.
 function wholeReplyLine(message, meta) {
@@ -104,6 +106,7 @@ export function createConversation({
     const current = {
       originId,
       bufferedChunksByLine: new Map(),
+      bufferedLineAudioByLine: new Map(),
       linesByLineIndex: new Map(),
       announcedLineAudio: new Set(),
       hasReceivedLineEvents: false,
@@ -145,16 +148,23 @@ export function createConversation({
           current.hasReceivedLineEvents = true;
           if (!assistantMessage.lines) assistantMessage.lines = [];
           const earlyChunks = current.bufferedChunksByLine.get(payload.index) || [];
+          const earlyAudio = current.bufferedLineAudioByLine.get(payload.index);
+          if (earlyAudio) current.bufferedLineAudioByLine.delete(payload.index);
           const lineRecord = {
             index: payload.index,
             zh: typeof payload.zh === 'string' ? payload.zh : '',
             ja: typeof payload.ja === 'string' ? payload.ja : '',
             emotion: typeof payload.emotion === 'string' ? payload.emotion : '',
             act: (payload.act && typeof payload.act === 'object' && !Array.isArray(payload.act)) ? { ...payload.act } : {},
-            audio: {
-              status: 'pending',
-              chunks: [...earlyChunks],
-            },
+            audio: earlyAudio
+              ? {
+                status: earlyAudio.status,
+                chunks: earlyAudio.chunks.length ? [...earlyAudio.chunks] : [...earlyChunks],
+              }
+              : {
+                status: 'pending',
+                chunks: [...earlyChunks],
+              },
           };
           current.linesByLineIndex.set(payload.index, lineRecord);
           const existingIdx = assistantMessage.lines.findIndex((l) => l.index === payload.index);
@@ -166,11 +176,18 @@ export function createConversation({
           }
           emit('line', { messageId: assistantMessage.id, line: lineRecord });
         } else if (type === 'line_audio') {
+          if (!payload || typeof payload !== 'object' || Array.isArray(payload)
+              || !Number.isInteger(payload.line) || payload.line < 0
+              || !VALID_LINE_AUDIO_STATUSES.has(payload.status)) {
+            return;
+          }
           current.announcedLineAudio.add(payload.line);
           const lineRecord = current.linesByLineIndex.get(payload.line);
           const chunks = Array.isArray(payload.chunks) ? payload.chunks : (lineRecord?.audio?.chunks || []);
           if (lineRecord) {
             lineRecord.audio = { status: payload.status, chunks };
+          } else {
+            current.bufferedLineAudioByLine.set(payload.line, { status: payload.status, chunks });
           }
           emit('line_audio', {
             messageId: assistantMessage.id,
