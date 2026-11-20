@@ -1,3 +1,4 @@
+// @ts-check
 // Telemetry Settings Controller: System status polling, engine diagnostic card, hardware/cache telemetry
 import { requestJson } from '../api.js';
 import { onModalChange } from '../settings_ui.js';
@@ -8,6 +9,7 @@ export class TelemetrySettingsController {
   constructor(dom = {}, coordinator = {}) {
     this.dom = dom || {};
     this.coordinator = coordinator || {};
+    /** @type {any} */
     this.telemetryTimer = null;
     this.telemetryGeneration = 0;
     this.telemetryActive = false;
@@ -157,7 +159,8 @@ export class TelemetrySettingsController {
     const current = () => !this.disposed && this.telemetryController === controller && !controller.signal.aborted && revision === this.engineStatusRevision;
 
     try {
-      let statusRes = null, engineRes = null;
+      /** @type {any} */ let statusRes = null;
+      /** @type {any} */ let engineRes = null;
       const renderStatus = (data) => {
         if (!current() || !data) return;
         const isRestarting = this.coordinator.isRestarting ? this.coordinator.isRestarting() : false;

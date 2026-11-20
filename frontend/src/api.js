@@ -31,6 +31,10 @@ export function providerTestResultFromError(error) {
   };
 }
 
+/**
+ * @param {any} payload
+ * @param {{ signal?: AbortSignal | null }} [options]
+ */
 export async function testProviderConnection(payload, { signal = null } = {}) {
   try {
     const options = post(payload);

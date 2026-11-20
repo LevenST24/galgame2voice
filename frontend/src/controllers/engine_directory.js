@@ -1,3 +1,4 @@
+// @ts-check
 import { requestJson } from '../api.js';
 
 // Saving the installation directory is separate from starting the engine.

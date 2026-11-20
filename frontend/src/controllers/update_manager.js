@@ -1,3 +1,4 @@
+// @ts-check
 // Update Manager Controller: shows the running version, checks GitHub Releases for a newer one,
 // and links to the release download page. It never updates anything from inside the page.
 import { fetchSystemVersion } from '../api.js';

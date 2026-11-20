@@ -1,3 +1,4 @@
+// @ts-check
 // Global Settings Controller: Coordinator & compatibility facade for Providers, Telemetry, Engine
 import {
   requestJson,

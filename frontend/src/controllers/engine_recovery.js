@@ -1,3 +1,4 @@
+// @ts-check
 import { requestJson } from '../api.js';
 
 function checkAbort(signal) {
@@ -8,6 +9,9 @@ function checkAbort(signal) {
   }
 }
 
+/**
+ * @param {{ timeoutMs?: number, intervalMs?: number, onProgress?: (status: any) => void, signal?: AbortSignal | null }} [options]
+ */
 export async function waitForEngine({ timeoutMs = 180000, intervalMs = 1000, onProgress = () => {}, signal } = {}) {
   const deadline = performance.now() + timeoutMs;
   let lastState;
@@ -36,6 +40,7 @@ export async function waitForEngine({ timeoutMs = 180000, intervalMs = 1000, onP
     checkAbort(signal);
     if (data.ready === true && data.state === 'ready') return data;
     if (data.state === 'failed' || data.state === 'unavailable') {
+      /** @type {Error & { code?: string, engineState?: string }} */
       const error = new Error(data.message);
       error.code = 'ENGINE_NOT_READY';
       error.engineState = data.state;
@@ -44,7 +49,7 @@ export async function waitForEngine({ timeoutMs = 180000, intervalMs = 1000, onP
     const remaining = deadline - performance.now();
     if (remaining > 0) {
       const sleepMs = Math.min(intervalMs, remaining);
-      await new Promise((resolve, reject) => {
+      await /** @type {Promise<void>} */ (new Promise((resolve, reject) => {
         if (signal?.aborted) {
           const abortErr = new Error('Engine wait aborted');
           abortErr.name = 'AbortError';
@@ -68,7 +73,7 @@ export async function waitForEngine({ timeoutMs = 180000, intervalMs = 1000, onP
           }
           resolve();
         }, sleepMs);
-      });
+      }));
       checkAbort(signal);
     }
   }
