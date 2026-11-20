@@ -1,12 +1,12 @@
 """
 Provider Registry and Adapter Factory for galgame2voice.
-Maintains default configurations and model presets for 10+ major LLM and STT providers.
+Maintains default configurations and model presets for 10+ major LLM providers.
 """
 
 from typing import Any
 from urllib.parse import urlparse
 
-from galgame2voice.adapters.base import BaseLLMAdapter, BaseSTTAdapter
+from galgame2voice.adapters.base import BaseLLMAdapter
 from galgame2voice.adapters.llm import (
     OpenAICompatibleLLMAdapter,
     OpenAILLMAdapter,
@@ -20,11 +20,6 @@ from galgame2voice.adapters.llm import (
     AnthropicAdapter,
     CustomLLMAdapter,
 )
-from galgame2voice.adapters.stt import (
-    OpenAICompatibleSTTAdapter,
-    SiliconFlowSTTAdapter,
-    QwenSTTAdapter,
-)
 
 
 PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
@@ -36,7 +31,6 @@ PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
         "default_stt_model": "",
         "default_reasoning_effort": "low",
         "adapter_class": GeminiLLMAdapter,
-        "stt_adapter_class": None,
         "preset_models": [
             "gemini-3.8-flash",
             "gemini-3.5-flash-lite",
@@ -51,7 +45,6 @@ PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
         "default_stt_model": "whisper-1",
         "default_reasoning_effort": "none",
         "adapter_class": OpenAILLMAdapter,
-        "stt_adapter_class": OpenAICompatibleSTTAdapter,
         "preset_models": ["gpt-6-luna", "gpt-6.1-sol"],
         "description": "OpenAI 官方 API（GPT-6 Luna / GPT-6.1 Sol，Whisper 语音识别）",
     },
@@ -63,7 +56,6 @@ PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
         "default_stt_model": "",
         "default_reasoning_effort": "none",
         "adapter_class": DeepSeekLLMAdapter,
-        "stt_adapter_class": None,
         "preset_models": [
             "deepseek-flash",
             "deepseek-v4-pro",
@@ -78,7 +70,6 @@ PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
         "default_stt_model": "",
         "default_reasoning_effort": "none",
         "adapter_class": AnthropicAdapter,
-        "stt_adapter_class": None,
         "preset_models": [
             "claude-sonnet-5-5",
             "claude-haiku-5-5",
@@ -94,7 +85,6 @@ PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
         "default_stt_model": "",
         "default_reasoning_effort": "low",
         "adapter_class": XAILLMAdapter,
-        "stt_adapter_class": None,
         "preset_models": [
             "grok-4.7",
             "grok-4.20-0309-non-reasoning",
@@ -109,7 +99,6 @@ PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
         "default_stt_model": "",
         "default_reasoning_effort": "none",
         "adapter_class": GLMLLMAdapter,
-        "stt_adapter_class": None,
         "preset_models": [
             "glm-4.7-flash",
             "glm-4.7-flashx",
@@ -125,7 +114,6 @@ PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
         "default_chat_model": "qwen-max-latest",
         "default_stt_model": "qwen-audio-asr",
         "adapter_class": QwenLLMAdapter,
-        "stt_adapter_class": QwenSTTAdapter,
         "preset_models": [
             "qwen-max-latest",
             "qwen-plus-latest",
@@ -141,7 +129,6 @@ PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
         "default_chat_model": "deepseek-r1:latest",
         "default_stt_model": "",
         "adapter_class": CustomLLMAdapter,
-        "stt_adapter_class": OpenAICompatibleSTTAdapter,
         "preset_models": [
             "deepseek-r1:latest",
             "qwen3:latest",
@@ -157,7 +144,6 @@ PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
         "default_chat_model": "deepseek-ai/DeepSeek-V3",
         "default_stt_model": "FunAudioLLM/SenseVoiceSmall",
         "adapter_class": SiliconFlowLLMAdapter,
-        "stt_adapter_class": SiliconFlowSTTAdapter,
         "preset_models": [
             "deepseek-ai/DeepSeek-V3",
             "Qwen/Qwen2.5-72B-Instruct",
@@ -173,7 +159,6 @@ PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
         "default_stt_model": "",
         "default_reasoning_effort": "low",
         "adapter_class": MoonshotLLMAdapter,
-        "stt_adapter_class": None,
         "preset_models": ["kimi-k3.1-pro", "kimi-k3.1-pro-highspeed", "kimi-k3"],
         "description": "月之暗面 Kimi 官方 API（Kimi K3.1 Pro / 高速版 / K3）",
     },
@@ -249,7 +234,6 @@ def list_builtin_provider_presets() -> list[dict[str, Any]]:
             "default_stt_model": p["default_stt_model"],
             "default_reasoning_effort": p.get("default_reasoning_effort"),
             "requires_api_key": p["id"] != "custom",
-            "supports_stt": p["stt_adapter_class"] is not None,
             "preset_models": list(p["preset_models"]),
             "description": p["description"],
         }
@@ -371,39 +355,3 @@ def get_llm_adapter(
     target_url = url or "https://api.openai.com/v1"
     return OpenAICompatibleLLMAdapter(api_key=key, base_url=target_url, **kwargs)
 
-
-class SpeechRecognitionUnsupportedError(Exception):
-    """Raised when a provider has no speech recognition endpoint to call."""
-
-
-def get_stt_adapter(
-    provider_id_or_config: str | dict[str, Any] | Any,
-    api_key: str | None = None,
-    base_url: str | None = None,
-    **kwargs: Any,
-) -> BaseSTTAdapter:
-    """
-    Factory function instantiating appropriate STT adapter based on provider ID or config.
-
-    A provider config's stt_model becomes the adapter's default model. Built-in presets
-    without speech recognition raise SpeechRecognitionUnsupportedError unless an STT
-    model is configured for them: an OpenAI-style whisper-1 request against their chat
-    endpoint can only fail.
-    """
-    provider_id, key, url = _resolve_provider_request(provider_id_or_config, api_key, base_url, kwargs)
-    if not isinstance(provider_id_or_config, str):
-        stt_model = str(_get_config_attr(provider_id_or_config, "stt_model", "") or "").strip()
-        if stt_model:
-            kwargs.setdefault("default_model", stt_model)
-
-    preset = PROVIDER_PRESETS.get(provider_id)
-    if preset and preset.get("stt_adapter_class"):
-        adapter_cls = preset["stt_adapter_class"]
-        target_url = url or preset["default_base_url"]
-        return adapter_cls(api_key=key, base_url=target_url, **kwargs)
-
-    if preset and not kwargs.get("default_model"):
-        raise SpeechRecognitionUnsupportedError(f"Provider '{provider_id}' does not offer speech recognition")
-
-    target_url = url or "https://api.openai.com/v1"
-    return OpenAICompatibleSTTAdapter(api_key=key, base_url=target_url, **kwargs)

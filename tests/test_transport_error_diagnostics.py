@@ -330,26 +330,9 @@ class TestAdapterRegistryAndFactory:
         assert isinstance(adapter2, MoonshotLLMAdapter)
         assert adapter2.api_key == "sk-moonshot-key"
 
-    def test_get_stt_adapter_factory(self):
-        from galgame2voice.adapters.registry import get_stt_adapter
-        from galgame2voice.adapters.stt import (
-            OpenAICompatibleSTTAdapter,
-            QwenSTTAdapter,
-            SiliconFlowSTTAdapter,
-        )
-
-        silicon = get_stt_adapter("siliconflow", api_key="sk-sf-key")
-        assert isinstance(silicon, SiliconFlowSTTAdapter)
-
-        qwen = get_stt_adapter("qwen", api_key="sk-qw-key")
-        assert isinstance(qwen, QwenSTTAdapter)
-
-        default_stt = get_stt_adapter("openai", api_key="sk-openai")
-        assert isinstance(default_stt, OpenAICompatibleSTTAdapter)
-
 
 class TestAdaptersExecutionWithMockServer:
-    """Tests LLM and STT adapter execution, streaming, and error handling with MockLLMServer."""
+    """Tests LLM adapter execution, streaming, and error handling with MockLLMServer."""
 
     @pytest.mark.asyncio
     async def test_llm_list_models_mock(self, mock_llm_server):
@@ -359,17 +342,6 @@ class TestAdaptersExecutionWithMockServer:
         models = await adapter.list_models()
         assert "deepseek-chat" in models
         assert "gpt-4o" in models
-
-    @pytest.mark.asyncio
-    async def test_stt_transcription_and_test(self, mock_llm_server):
-        from galgame2voice.adapters.stt import SiliconFlowSTTAdapter
-
-        adapter = SiliconFlowSTTAdapter(api_key="sk-valid-key", client_override=mock_llm_server)
-        text = await adapter.transcribe(b"RIFF" + b"\x00" * 200, filename="audio.wav", language="ja")
-        assert "おはよう" in text
-
-        res = await adapter.test_connection()
-        assert res.success is True
 
 
 class TestErrorDiagnosticsEngine:
