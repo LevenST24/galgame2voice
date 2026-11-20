@@ -128,11 +128,6 @@ def verify_port_released(port: int, deadline: float) -> dict[str, Any]:
             time.sleep(min(0.2, rem))
 
 
-def assert_port_released(port: int, deadline: float | None = None) -> dict[str, Any]:
-    effective_deadline = deadline if deadline is not None else (time.monotonic() + 1.0)
-    return verify_port_released(port, deadline=effective_deadline)
-
-
 def verify_sha256(archive: Path, expected: str) -> str:
     digest = hashlib.sha256()
     with archive.open("rb") as f:

@@ -6,6 +6,7 @@ All notable changes to galgame2voice are documented here. The format follows
 
 ## [Unreleased]
 ### Changed
+- 精简并汉化后端返回给前端直接展示的错误提示文案（去除连接、鉴权、限流与网关诊断中的英文状态说明，并将音频重试与显存预警中的英文术语统一为中文）。
 - 统一界面中残留的英文文案为简洁中文（包括对话栏语音指示、对话记录与自动播放提示、运行状态进程号与时长、参数面板标签、访问令牌弹窗及接口地址提示）。
 
 ### Fixed

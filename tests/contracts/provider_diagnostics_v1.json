@@ -13,8 +13,8 @@
         "diagnostic_code": "AUTH_INVALID_KEY",
         "legacy_error_code": "OPENAI_AUTH_FAILED",
         "retryable": false,
-        "summary_zh": "OpenAI API Key 身份验证失败 (401 Unauthorized)",
-        "action_zh": "身份验证失败。请检查输入的 sk- 密钥是否完整无误，或在 OpenAI 控制台 (https://platform.openai.com/api-keys) 重新创建 Secret Key。"
+        "summary_zh": "OpenAI API Key 身份验证失败（401）",
+        "action_zh": "身份验证失败。请检查输入的 sk- 密钥是否完整无误，或在 OpenAI 控制台 (https://platform.openai.com/api-keys) 重新创建密钥。"
       }
     },
     {
@@ -29,7 +29,7 @@
         "diagnostic_code": "AUTH_FORBIDDEN",
         "legacy_error_code": "FORBIDDEN",
         "retryable": false,
-        "summary_zh": "访问权限受限 (403 Forbidden)",
+        "summary_zh": "访问权限受限（403）",
         "action_zh": "当前账户无权访问该资源或受到网络地区策略限制。请检查网络代理环境及提供商控制台权限设置。"
       }
     },
@@ -45,7 +45,7 @@
         "diagnostic_code": "ENDPOINT_NOT_FOUND",
         "legacy_error_code": "ENDPOINT_NOT_FOUND",
         "retryable": false,
-        "summary_zh": "接口地址未找到 (404 Not Found)",
+        "summary_zh": "接口地址未找到（404）",
         "action_zh": "提供商未找到请求的接口路径。请检查 Base URL 地址配置（特别是路径部分，例如是否缺少或多写了 /v1 等后缀）。"
       }
     },
@@ -61,7 +61,7 @@
         "diagnostic_code": "MODEL_NOT_FOUND",
         "legacy_error_code": "MODEL_NOT_FOUND",
         "retryable": false,
-        "summary_zh": "指定的模型名称不存在 (404 Model Not Found)",
+        "summary_zh": "指定的模型名称不存在（404）",
         "action_zh": "提供商无法识别填写的模型名称。请从官方推荐预设列表下拉选择，或核对自定义模型拼写无误。"
       }
     },
@@ -77,8 +77,8 @@
         "diagnostic_code": "RATE_LIMIT",
         "legacy_error_code": "RATE_LIMIT",
         "retryable": true,
-        "summary_zh": "请求频率超限 (429 Rate Limit)",
-        "action_zh": "请求速率超出了当前账户的频率限制。请稍候片刻重试，或调小每次对话的 max_tokens。"
+        "summary_zh": "请求频率超限（429）",
+        "action_zh": "请求速率超出了当前账户的频率限制。请稍候片刻重试，或调小每次对话的最大生成长度。"
       }
     },
     {
@@ -93,7 +93,7 @@
         "diagnostic_code": "QUOTA_EXCEEDED",
         "legacy_error_code": "QUOTA_EXCEEDED",
         "retryable": false,
-        "summary_zh": "账户额度已耗尽 (429 Insufficient Quota)",
+        "summary_zh": "账户额度已耗尽（429）",
         "action_zh": "当前账户可用额度已用尽或免费额度已过期。请登录提供商开发者控制台检查账单与充值余额。"
       }
     },
@@ -109,8 +109,8 @@
         "diagnostic_code": "BAD_GATEWAY",
         "legacy_error_code": "BAD_GATEWAY",
         "retryable": true,
-        "summary_zh": "网关连接异常 (502 Bad Gateway)",
-        "action_zh": "上游网关或反向代理暂时无法连接源站服务器（502 Bad Gateway）。服务可能暂时不可用或正在维护，建议稍后重试或检查反向代理服务状态。"
+        "summary_zh": "网关连接异常（502）",
+        "action_zh": "上游网关或反向代理暂时无法连接源站服务器（502 网关异常）。服务可能暂时不可用或正在维护，建议稍后重试或检查反向代理服务状态。"
       }
     },
     {
@@ -125,7 +125,7 @@
         "diagnostic_code": "SERVER_OVERLOADED",
         "legacy_error_code": "SERVER_OVERLOADED",
         "retryable": true,
-        "summary_zh": "服务暂时繁忙 (503 Service Unavailable)",
+        "summary_zh": "服务暂时繁忙（503）",
         "action_zh": "模型服务当前过载或暂时繁忙，请稍后重试。通常无需修改配置。"
       }
     },
@@ -140,7 +140,7 @@
         "diagnostic_code": "NETWORK_TIMEOUT",
         "legacy_error_code": "NETWORK_TIMEOUT",
         "retryable": true,
-        "summary_zh": "网络连接超时 (Request Timeout)",
+        "summary_zh": "网络连接超时",
         "action_zh": "连接提供商服务器超时。海外模型服务（如 Google / OpenAI / xAI）在国内网络直连通常受阻，请确保本地代理客户端（如 Clash / v2rayN）正在运行，或配置支持该服务的中转反向代理 Base URL。"
       }
     },

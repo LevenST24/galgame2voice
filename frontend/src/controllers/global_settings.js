@@ -286,6 +286,7 @@ export function initGlobalSettings(dom, callbacks = {}) {
   }
 }
 
+/** @param {string | null} [tabName] */
 export function openGlobalSettings(tabName = null) {
   providerController?.invalidateActiveProviderTest();
   providerController?.resetTestResultBox();

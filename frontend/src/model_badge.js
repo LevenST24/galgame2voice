@@ -1,3 +1,12 @@
+// @ts-check
+/**
+ * @param {object} deps
+ * @param {() => any} deps.getCurrentActiveProvider
+ * @param {() => any} deps.getActive
+ * @param {() => any[]} deps.getVoiceProfiles
+ * @param {() => boolean} deps.haveProvidersLoaded
+ * @param {() => boolean} [deps.hasProviderReadError]
+ */
 export function getModelStatus({ getCurrentActiveProvider, getActive, getVoiceProfiles, haveProvidersLoaded,
   hasProviderReadError = () => false }) {
   if (hasProviderReadError()) {

@@ -59,7 +59,7 @@ class VoiceResourceGuard:
             if free_gb is not None and free_gb < threshold:
                 raise InsufficientMemoryError(
                     f'显卡可用显存不足（{free_gb:.2f} GB < {threshold:.2f} GB 安全阈值），'
-                    '加载新模型权重存在 CUDA OOM 崩溃风险。请关闭占用显存的应用或清理后重试。'
+                    '加载新模型权重可能导致显存溢出崩溃。请关闭占用显存的应用或清理后重试。'
                 )
 
     def check(self, force: bool = False) -> None:

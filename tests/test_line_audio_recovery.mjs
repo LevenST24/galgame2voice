@@ -14,7 +14,7 @@ const deferred = () => { let resolve; const promise = new Promise(done => { reso
 
 function trackConflictRequest(calls, {
   onHistory,
-  conflictMessage = '这句已有其他音频修复结果，未覆盖现有音频，请重新打开 LOG 检查。',
+  conflictMessage = '这句已有其他音频修复结果，未覆盖现有音频，请重新打开「对话记录」检查。',
   unexpected = url => `Unexpected request: ${url}`,
 } = {}) {
   return async (url, options = {}) => {
