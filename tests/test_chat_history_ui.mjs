@@ -48,3 +48,51 @@ test('failed history loading recovers without losing the session or draft', asyn
   fail = false; await h.app.loadOlderSessionHistory(h.getActive());
   assert.equal(h.getActive().messages.length, 2);
 });
+
+test('failed history loads after switching away do not show stale error toasts', async t => {
+  let rejectOlder;
+  let rejectInitial;
+  const toasts = [];
+  const h = setup(t, {
+    fetchPage: (_sid, opts = {}) => new Promise((_resolve, reject) => {
+      if (opts.beforeId != null) rejectOlder = reject;
+      else rejectInitial = reject;
+    }),
+    callbacks: { showToast: text => toasts.push(text) },
+  });
+  const first = h.getActive();
+  Object.assign(first, { messages: [{ id: 'm_20', role: 'user', content: '已有消息' }], oldestMessageId: 20, hasMoreHistory: true });
+  const second = {
+    id: 's_other',
+    title: '另一个会话',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    settings: { ...first.settings },
+    messages: [{ id: 'm_99', role: 'assistant', content: '另一段对话' }],
+  };
+  const third = {
+    id: 's_unloaded',
+    title: '未加载会话',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    settings: { ...first.settings },
+    messages: [],
+  };
+  h.state.sessions.push(second, third);
+
+  // 1. loadOlderSessionHistory fails after user switched away to another session.
+  const olderPending = h.app.loadOlderSessionHistory(first);
+  await tick();
+  await h.app.switchSession('s_other');
+  rejectOlder(new Error('offline'));
+  await olderPending;
+  assert.deepEqual(toasts, [], '切走会话后，旧会话的加载更早消息失败不应弹出错误提示');
+
+  // 2. loadSessionHistory fails after user switched away to another session.
+  const initialPending = h.app.switchSession('s_unloaded');
+  await tick();
+  await h.app.switchSession('s_other');
+  rejectInitial(new Error('offline'));
+  await initialPending;
+  assert.deepEqual(toasts, [], '切走会话后，旧会话的历史读取失败不应弹出错误提示');
+});
