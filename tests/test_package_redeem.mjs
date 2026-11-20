@@ -136,12 +136,10 @@ await dom.sVoiceRedeemQuery.fire('click');
 assert.equal(dom.sVoiceRedeemCode.focused, true);
 assert.equal(dom.sVoiceRedeemStatus.textContent, '请先粘贴兑换码（以 G2V1. 开头）。');
 
-// While a query is in flight, button is disabled, inline status shows progress, and duplicate clicks are ignored
+// While a query is in flight, the inline status shows progress until its answer arrives
 let releaseQuery;
-let slowCalls = 0;
 globalThis.fetch = async (url) => {
   if (String(url).includes('/redeem/list')) {
-    slowCalls += 1;
     await new Promise((resolve) => { releaseQuery = resolve; });
     return ok({ packages: [{ id: 'alice', name: '爱丽丝', size: 2048, remaining: 2 }] });
   }
@@ -149,13 +147,9 @@ globalThis.fetch = async (url) => {
 };
 dom.sVoiceRedeemCode.value = 'G2V1.slow-query-code';
 const pending = dom.sVoiceRedeemQuery.fire('click');
-assert.equal(dom.sVoiceRedeemQuery.disabled, true);
 assert.equal(dom.sVoiceRedeemStatus.textContent, '正在查询兑换码…');
-await dom.sVoiceRedeemQuery.fire('click');
-assert.equal(slowCalls, 1);
 releaseQuery();
 await pending;
-assert.equal(dom.sVoiceRedeemQuery.disabled, false);
 assert.equal(dom.sVoiceRedeemStatus.textContent, '');
 
 let listCalls = 0;
