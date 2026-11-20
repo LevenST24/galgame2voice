@@ -2030,3 +2030,90 @@ test('startup sync reconciles multiple unpersisted failed prompts correctly when
   assert.ok(tailMsg.failed, '未落库的第二条提问应保留在末尾且保持 failed 状态');
   assert.equal(app.conversation.canRetry(tailMsg), true, '末尾未落库失败提问必须支持重试');
 });
+
+test('deleting the active session loads history for the newly active fallback session', async t => {
+  const { root, toasts } = mountAdvDocument();
+  installChatStorage();
+  globalThis.location = { origin: 'http://home.test', search: '', hash: '' };
+  const fetchedHistoryIds = [];
+  let deleteSessionCb = null;
+
+  const fetchImpl = async (url, options = {}) => {
+    const target = String(url);
+    const method = (options.method || 'GET').toUpperCase();
+    if (target.includes('/api/chat/sessions/s_first') && method === 'DELETE') {
+      return Response.json({ status: 'deleted' });
+    }
+    if (target.startsWith('/api/chat/history')) {
+      const sid = new URL(target, 'http://local').searchParams.get('session_id');
+      fetchedHistoryIds.push(sid);
+      if (sid === 's_first') {
+        return Response.json({
+          session_id: 's_first',
+          messages: [{ id: 1, role: 'user', content_chinese: '第一个会话的消息', created_at: '2024-01-01 00:00:01' }],
+          has_more: false,
+          oldest_id: 1,
+        });
+      }
+      if (sid === 's_second') {
+        return Response.json({
+          session_id: 's_second',
+          messages: [
+            { id: 10, role: 'user', content_chinese: '第二个会话的问题', created_at: '2024-01-01 00:00:02' },
+            { id: 11, role: 'assistant', content_chinese: '第二个会话的历史回复', created_at: '2024-01-01 00:00:03' },
+          ],
+          has_more: false,
+          oldest_id: 10,
+        });
+      }
+    }
+    if (target.includes('/api/chat/sessions')) {
+      return Response.json({
+        sessions: [
+          { id: 's_first', title: '会话一', updated_at: '2024-01-01 00:00:03', message_count: 1, last_message: '第一个会话的消息', settings: {} },
+          { id: 's_second', title: '会话二', updated_at: '2024-01-01 00:00:02', message_count: 2, last_message: '第二个会话的历史回复', settings: {} },
+        ],
+        has_more: false,
+        count: 2,
+      });
+    }
+    return startupApiFallback(target, { providers: 'empty' });
+  };
+  globalThis.window = {
+    innerWidth: 1280,
+    location: globalThis.location,
+    sessionStorage: { getItem: () => '', setItem() {} },
+    fetch: fetchImpl,
+  };
+  globalThis.fetch = (...args) => window.fetch(...args);
+
+  const sessionListEl = document.createElement('div');
+  const app = initApp({
+    dom: { advRoot: root, sessionList: sessionListEl },
+    renderSessionList(_el, { onDelete }) { deleteSessionCb = onDelete; },
+    showTitle() {},
+  });
+  t.after(() => {
+    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
+    for (const toast of toasts.children) clearTimeout(toast._timer);
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.localStorage;
+    delete globalThis.fetch;
+    delete globalThis.location;
+  });
+
+  await app.ready;
+  assert.equal(storedActive().id, 's_first');
+  assert.deepEqual(fetchedHistoryIds, ['s_first']);
+  assert.equal(typeof deleteSessionCb, 'function');
+
+  await deleteSessionCb('s_first');
+  await tick();
+
+  const nextActive = storedActive();
+  assert.equal(nextActive.id, 's_second');
+  assert.deepEqual(fetchedHistoryIds, ['s_first', 's_second'], '删除当前会话后必须为自动切到的会话拉取服务端历史记录');
+  assert.equal(nextActive.messages.length, 2, '自动切到的会话不应保持空白');
+  assert.equal(nextActive.messages[1].content, '第二个会话的历史回复');
+});
