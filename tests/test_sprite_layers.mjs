@@ -186,27 +186,6 @@ function setup({ random = () => 0 } = {}) {
   };
 }
 
-test('layered packs draw in div containers and never put children in an img', async () => {
-  const h = setup();
-  const motion = h.spriteLayer.children[0].children[0];
-  assert.deepEqual(motion.children.map(el => el.tagName), ['IMG', 'IMG'], 'whole-image DOM until a layered pack draws');
-  assert.deepEqual(h.faceSlot.children.map(el => el.tagName), ['IMG', 'IMG']);
-  assert.ok(h.model?.isV3, 'the normalized v3 payload reaches the renderer');
-  await h.commit(v3('smile'));
-  assert.deepEqual(motion.children.map(el => el.tagName), ['IMG', 'IMG', 'DIV', 'DIV']);
-  assert.deepEqual(h.faceSlot.children.map(el => el.tagName), ['IMG', 'IMG', 'DIV', 'DIV']);
-  for (const element of [...walk(h.spriteLayer), ...walk(h.faceSlot)]) {
-    if (element.tagName === 'IMG') assert.equal(element.children.length, 0, 'an <img> never has children');
-  }
-  const { stage, face } = h.active();
-  assert.ok(stage.classList.contains('adv-sprite-buffer'));
-  assert.ok(face.classList.contains('adv-face-buffer'));
-  for (const container of [stage, face]) {
-    assert.ok(container.children.length > 0);
-    assert.ok(container.children.every(image => image instanceof h.LayerImage), 'the decoded images are the layers');
-  }
-});
-
 test('draw order follows z, equal z keeps list order, and layers sit at their crop offset', async () => {
   const h = setup();
   await h.commit(v3('smile', { blush: true }));

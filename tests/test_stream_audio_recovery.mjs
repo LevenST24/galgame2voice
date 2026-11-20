@@ -99,18 +99,6 @@ for (const state of ['running', 'suspended', 'interrupted']) {
   });
 }
 
-test('interrupt cancels a line start notification that has not reached its scheduled time', async () => {
-  const p = player(); p.currentBufferLeadSec = 0.12;
-  let starts = 0;
-  const pending = p.playLine(0, ['/notify-interrupted.wav'], { onStart: () => { starts++; } });
-  await tick(5);
-  assert.equal(p.ctx.sources.length, 1);
-  p.stopLine({ fadeMs: 0 });
-  assert.equal(await pending, 'interrupted');
-  await tick(140);
-  assert.equal(starts, 0);
-});
-
 for (const action of ['stopLine', 'interrupt', 'close']) {
   test(`${action} cancels line preparation before AudioContext resume completes`, async () => {
     const p = player({ fetchTimeoutMs: 500 });

@@ -115,7 +115,7 @@ export class EngineSettingsController {
       if (this.disposed || revision !== this.precisionRevision) return;
       this.coordinator.onPrecisionSaved?.(val);
       const labelMap = {
-        auto: '自动判定 (Auto)',
+        auto: '自动判定',
         fp16: 'FP16 半精度',
         fp32: 'FP32 单精度',
         cpu: 'CPU 稳定模式 (免显存)',

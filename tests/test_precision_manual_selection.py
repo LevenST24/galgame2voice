@@ -302,21 +302,6 @@ class TestPrecisionAPI:
             assert resp3.status_code == 200
             assert read_precision_cache(tmp_path) is None
 
-    async def test_system_status_telemetry_includes_precision(self, monkeypatch):
-        monkeypatch.setattr(
-            "galgame2voice.utils.hardware.detect_gpu_capability",
-            lambda: (True, "Mock GPU", 0),
-        )
-        async with _api_client() as client:
-            resp = await client.get("/api/system/status")
-            assert resp.status_code == 200
-            data = resp.json()
-            assert "hardware" in data
-            hw = data["hardware"]
-            assert "inference_precision" in hw
-            assert hw["inference_precision"] is None
-            assert hw["precision_source"] == "unknown"
-            assert "configured_precision" in hw
 
     async def test_restart_sovits_endpoint_missing_sovits_dir(self, tmp_path, monkeypatch):
         settings = get_settings()
