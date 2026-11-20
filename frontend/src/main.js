@@ -336,6 +336,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           if (!session) throw new Error('当前没有可保存的会话。');
           ++_syncSessionsGen;
           session.settings = pickSettings({ ...session.settings, ...patch }, DEFAULT_SESSION_SETTINGS);
+          session.updatedAt = Math.max(Date.now(), (session.updatedAt || 0) + 1);
           const version = (session.unconfirmedSettingsVersion || 0) + 1;
           session.unconfirmedSettingsVersion = version;
           saveState();
@@ -854,7 +855,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     const isStale = () => gen !== _syncSessionsGen;
     try {
       const backendSessions = await fetchAllSessions();
-      if (isStale()) return;
+      if (isStale()) return false;
       // 保存设置尚未确认时本机已记录标记。刷新后保留本机设置并补发，不要用服务端旧设置盖掉它。
       const unconfirmedLocalSessions = [];
       const markInterruptedPrompt = (session, serverCount = 0) => {
@@ -948,7 +949,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       if (curActive && (!curActive.messages || curActive.messages.length === 0 || sessionsBehindServer.has(curActive.id))) {
         await loadSessionHistory(curActive);
       }
-      if (isStale()) return;
+      if (isStale()) return false;
       saveState();
       for (const session of storageChangedByAnotherPage() ? [] : unconfirmedLocalSessions) {
         const version = session.unconfirmedSettingsVersion;
@@ -963,6 +964,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       ensureSessionVoice(getActive(), { silent: true });
       if (window.innerWidth > 820) advApp?.textbox.inputElement?.focus();
       loadProviders().catch(() => {});
+      return true;
     } catch (err) {
       console.debug('Failed to sync sessions from backend:', err);
       throw err;
@@ -970,7 +972,9 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   }
 
   // The first protected request completes token authentication before title UI.
-  app.ready = syncSessionsFromBackend().then(() => showTitleScreen(actions)).catch(error => {
+  app.ready = syncSessionsFromBackend().then(synced => (
+    synced ? showTitleScreen(actions) : null
+  )).catch(error => {
     console.debug('Title startup deferred:', error);
   }).finally(() => { homeStarting = false; });
 

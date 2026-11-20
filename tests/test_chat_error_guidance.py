@@ -245,3 +245,21 @@ async def test_cross_module_provider_failover_and_error_recovery(
         done_event = next(e for e in events if e["event"] == "done")
         assert done_event["data"]["chinese"] == "已成功恢复！"
 
+
+def test_credit_balance_and_arrearage_400_report_chinese_quota_guidance():
+    anthropic_raw = (
+        'API returned status 400: {"type":"error","error":{"type":"invalid_request_error",'
+        '"message":"Your credit balance is too low to access the Anthropic API."}}'
+    )
+    anthropic = format_provider_error("anthropic", 400, anthropic_raw)
+    assert anthropic["error_code"] == "QUOTA_EXCEEDED"
+    assert "余额不足" in anthropic["summary_zh"]
+    assert "充值或检查账单" in anthropic["action_zh"]
+    assert "（402）" not in anthropic["action_zh"]
+    assert "credit balance" not in anthropic["error"].lower()
+
+    qwen_raw = '{"code":"Arrearage","message":"Access denied, please make sure your account is in good standing."}'
+    qwen = format_provider_error("qwen", 400, qwen_raw)
+    assert qwen["error_code"] == "QUOTA_EXCEEDED"
+    assert "余额不足" in qwen["summary_zh"]
+    assert "充值或检查账单" in qwen["action_zh"]

@@ -21,7 +21,13 @@ from galgame2voice.config import get_settings
 from galgame2voice.database.session import init_db
 from galgame2voice.main import create_app
 from galgame2voice.services.character_manager import CharacterManager
-from galgame2voice.services.package_redeem import RedeemCodeError, parse_redeem_code
+from galgame2voice.services.package_redeem import (
+    ParsedCode,
+    RedeemCodeError,
+    _dist_error,
+    _net_error,
+    parse_redeem_code,
+)
 from scripts.g2v_dist.g2v_dist import DistRequestHandler, create_server, encode_code, parse_code
 
 
@@ -260,3 +266,42 @@ async def test_bad_redeem_code_returns_plain_message(api: AsyncClient, caplog: p
     assert dl.status_code == 400 and dl.json()["detail"] == expected
     assert "兑换码地址段编码无效" in caplog.text
     assert bad_code not in caplog.text and "my-secret-segment" not in caplog.text
+
+
+def test_redeem_network_errors_return_chinese_guidance_without_raw_exception(caplog: pytest.LogCaptureFixture) -> None:
+    parsed = ParsedCode("https://dist.example.com/_g2v", "top-secret-token")
+    caplog.set_level(logging.WARNING, logger="galgame2voice.services.package_redeem")
+
+    conn_err = _net_error(
+        httpx.ConnectError("[Errno -2] Name or service not known (top-secret-token)"),
+        parsed,
+        "dist.example.com",
+    )
+    assert conn_err.status_code == 502
+    assert conn_err.detail == "无法连接分发服务器，请检查网络连接或确认兑换码无误后重试。"
+    assert "Name or service not known" not in conn_err.detail
+    assert "top-secret-token" not in conn_err.detail
+    assert "top-secret-token" not in caplog.text
+
+    timeout_err = _net_error(httpx.ReadTimeout("timed out"), parsed, "dist.example.com")
+    assert timeout_err.status_code == 502
+    assert timeout_err.detail == "连接分发服务器超时，请检查网络或代理设置后重试。"
+
+    proto_err = _net_error(httpx.RemoteProtocolError("Server disconnected"), parsed, "dist.example.com")
+    assert proto_err.status_code == 502
+    assert proto_err.detail == "与分发服务器的连接中断，请检查网络后重试。"
+    assert "Server disconnected" not in proto_err.detail
+
+
+def test_redeem_dist_error_replaces_english_upstream_errors_with_chinese() -> None:
+    denied = _dist_error(403, json.dumps({"error": "invalid or expired code"}).encode("utf-8"))
+    assert denied.status_code == 400
+    assert denied.detail == "兑换码无效或已过期"
+
+    upstream = _dist_error(503, json.dumps({"error": "Service Unavailable"}).encode("utf-8"))
+    assert upstream.status_code == 502
+    assert upstream.detail == "分发服务器暂时不可用（HTTP 503），请稍后重试。"
+
+    chinese = _dist_error(403, json.dumps({"error": "该兑换码已达到下载上限"}).encode("utf-8"))
+    assert chinese.status_code == 400
+    assert chinese.detail == "该兑换码已达到下载上限"

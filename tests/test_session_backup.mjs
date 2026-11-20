@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { state, loadState, saveState, getStorageStatus, getDamagedSessionData, resumeLocalSaving,
+import { state, loadState, saveState, getStorageStatus, onStorageStatus, getDamagedSessionData, resumeLocalSaving,
   exportSessionData, prepareSessionImport, applySessionImport, deleteSession, getSession,
   DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL } from '../frontend/src/store.js';
 import { deletePersistedSession, persistSession } from '../frontend/src/session_api.js';
@@ -73,6 +73,46 @@ globalThis.document = { getElementById: () => null };
   assert.throws(resumeLocalSaving, /无法另存/);
   assert.equal(localStorage.getItem(KEY), '{broken');
   assert.equal(getStorageStatus().damaged, true); passed++;
+}
+{
+  // When .damaged.<ts> fits in localStorage but rewriting the primary key hits QuotaExceededError,
+  // resumeLocalSaving must roll back the stray .damaged.<ts> copy and keep damaged state intact so
+  // the user can still export the raw damaged record.
+  storage('{broken'); loadState();
+  const seen = [];
+  const off = onStorageStatus((status) => seen.push(status));
+  const payloadLen = JSON.stringify({ sessions: state.sessions, activeId: state.activeId, global: state.global }).length;
+  // Enough space for existing '{broken' + one .damaged.<ts> copy, but not enough to rewrite the primary record.
+  localStorage.limit = '{broken'.length * 2 + 10;
+  assert.ok(localStorage.limit < payloadLen);
+  assert.equal(resumeLocalSaving(), false);
+  off();
+  assert.equal(localStorage.getItem(KEY), '{broken');
+  assert.equal(getDamagedSessionData(), '{broken');
+  assert.equal(getStorageStatus().damaged, true);
+  assert.equal(seen.some((status) => status.damaged === false), false);
+  assert.equal([...localStorage.values.keys()].filter((key) => key.includes('.damaged.')).length, 0);
+  // Once quota is available again, saveState still stays paused until resumeLocalSaving succeeds.
+  localStorage.limit = Infinity;
+  assert.equal(saveState(), false);
+  assert.equal(resumeLocalSaving(), true);
+  assert.equal(getStorageStatus().damaged, false);
+  assert.equal([...localStorage.values.keys()].filter((key) => key.includes('.damaged.')).length, 1);
+  passed++;
+}
+{
+  // When another tab updates the primary key before the user clicks resume, resumeLocalSaving must
+  // detect the conflict without leaving a stray .damaged.<ts> copy or dropping damagedRaw.
+  storage('{broken'); loadState();
+  const otherTabRaw = JSON.stringify(saved());
+  localStorage.setItem(KEY, otherTabRaw);
+  assert.equal(resumeLocalSaving(), false);
+  assert.equal(localStorage.getItem(KEY), otherTabRaw);
+  assert.equal(getDamagedSessionData(), '{broken');
+  assert.equal(getStorageStatus().damaged, true);
+  assert.match(getStorageStatus().message, /另一网页/);
+  assert.equal([...localStorage.values.keys()].filter((key) => key.includes('.damaged.')).length, 0);
+  passed++;
 }
 for (const malformed of [{ sessions: [null] }, { sessions: [{ ...saved().sessions[0], messages: [null] }] },
   { sessions: [saved().sessions[0], saved().sessions[0]] }, null]) {

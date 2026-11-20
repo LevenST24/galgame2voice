@@ -3,7 +3,7 @@ import test from 'node:test';
 // Import before installing a document: don't auto-boot authentication or devices.
 import { setup } from './helpers/adv_main.mjs';
 import { tick, fakeChatStream } from './helpers/chat_stream.mjs';
-import { state as storedState, getActive as storedActive, getSession as storedSession, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL, GREETING } from '../frontend/src/store.js';
+import { state as storedState, getActive as storedActive, getSession as storedSession, exportSessionData, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL, GREETING } from '../frontend/src/store.js';
 import { mergeChatBackup } from '../frontend/src/chat_backup.js';
 import { serverTimestamp } from '../frontend/src/session_data.js';
 import { initVoiceSettings, ensureSessionVoice, getVoiceProfiles, fetchVoiceProfiles, getActiveProfileId, openSessionSettings } from '../frontend/src/controllers/voice_settings.js';
@@ -2116,4 +2116,108 @@ test('deleting the active session loads history for the newly active fallback se
   assert.deepEqual(fetchedHistoryIds, ['s_first', 's_second'], '删除当前会话后必须为自动切到的会话拉取服务端历史记录');
   assert.equal(nextActive.messages.length, 2, '自动切到的会话不应保持空白');
   assert.equal(nextActive.messages[1].content, '第二个会话的历史回复');
+});
+
+test('stale startup sync does not open the title screen over a session started by the user', async t => {
+  const { root, toasts } = mountAdvDocument();
+  installChatStorage();
+  globalThis.location = { origin: 'http://home.test', search: '', hash: '' };
+
+  let resolveSessions;
+  const sessionsPending = new Promise(resolve => { resolveSessions = resolve; });
+  let titleShown = 0;
+
+  const fetchImpl = async (url, options = {}) => {
+    const target = String(url);
+    const method = (options.method || 'GET').toUpperCase();
+    if (target.includes('/api/chat/sessions') && method === 'GET' && !target.includes('/messages')) {
+      return await sessionsPending;
+    }
+    return startupApiFallback(target, { providers: 'empty' });
+  };
+  globalThis.window = {
+    innerWidth: 1280,
+    location: globalThis.location,
+    sessionStorage: { getItem: () => '', setItem() {} },
+    fetch: fetchImpl,
+  };
+  globalThis.fetch = (...args) => window.fetch(...args);
+
+  const newChatBtn = document.createElement('button');
+  const app = initApp({
+    dom: { advRoot: root, newChatBtn },
+    renderSessionList() {},
+    showTitle() { titleShown += 1; },
+  });
+  t.after(() => {
+    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
+    for (const toast of toasts.children) clearTimeout(toast._timer);
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.localStorage;
+    delete globalThis.fetch;
+    delete globalThis.location;
+  });
+
+  await tick();
+  // User starts a new conversation before startup sync finishes.
+  newChatBtn.click();
+  const createdId = storedActive().id;
+
+  resolveSessions(Response.json({
+    sessions: [
+      { id: 's_server_old', title: '旧会话', updated_at: '2024-01-01 00:00:01', message_count: 1, last_message: '旧消息', settings: {} },
+    ],
+    has_more: false,
+    count: 1,
+  }));
+  await app.ready;
+  await tick();
+
+  assert.equal(storedActive().id, createdId, '过期的启动同步不能覆盖用户新建的会话');
+  assert.equal(titleShown, 0, '过期的启动同步不应再弹出首页遮罩盖住用户当前对话');
+});
+
+test('complete chat backup preserves unconfirmed reading settings when backend save fails', async t => {
+  const serverUpdated = '2024-06-01 00:00:03';
+  const serverUpdatedAt = serverTimestamp(serverUpdated);
+  const session = twoTurnSession({
+    id: 's_backup_settings', title: '设置备份测试', updatedAt: serverUpdatedAt,
+    user: { id: 'm_1', serverMessageId: 1, content: '你好', ts: serverUpdatedAt - 2000 },
+    assistant: { id: 'm_2', serverMessageId: 2, content: '欢迎回来', ts: serverUpdatedAt - 1000 },
+  });
+  const serverSessions = [
+    chatServer(session, { updated_at: serverUpdated, message_count: 2, last_message: '欢迎回来' }),
+  ];
+  const { app } = await bootSyncedChat(t, {
+    sessions: [session],
+    activeId: session.id,
+    serverSessions,
+    mode: 'window',
+    fallback: { providers: 'empty' },
+    routes: (url, options = {}) => {
+      if (url.includes('/api/chat/sessions') && (options.method || 'GET') === 'POST') {
+        return Response.json({ detail: '数据库暂时繁忙' }, { status: 500 });
+      }
+    },
+  });
+
+  app.adv.configPanel.open();
+  app.adv.configPanel.controls.advPlayerName.value = '旅人';
+  assert.equal(await app.adv.configPanel.save(), false, '后端返回 500 时保存应保持未确认');
+
+  const merged = mergeChatBackup({
+    format: 'galgame2voice.chat',
+    version: 1,
+    sessions: [{
+      id: session.id,
+      title: session.title,
+      createdAt: session.createdAt,
+      updatedAt: serverUpdatedAt,
+      settings: { ...DEFAULT_SESSION_SETTINGS },
+      messages: session.messages,
+    }],
+  }, JSON.parse(exportSessionData()));
+  const exported = JSON.parse(merged.content).sessions.find(s => s.id === session.id);
+  assert.equal(exported.settings.advPlayerName, '旅人', '完整备份应保留尚未同步到后端的较新本地设置');
 });

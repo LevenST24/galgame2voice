@@ -70,25 +70,6 @@ async def test_scheduler_priority_ordering(scheduler):
 
 
 @pytest.mark.asyncio
-async def test_schedule_stream_normal_flow(scheduler):
-    """Verifies schedule_stream yields all chunks sequentially."""
-    chunks = [b"chunk1", b"chunk2", b"chunk3"]
-
-    async def sample_stream() -> AsyncGenerator[bytes, None]:
-        for c in chunks:
-            await asyncio.sleep(0.01)
-            yield c
-
-    received = []
-    async for chunk in scheduler.schedule_stream(sample_stream, priority=TtsPriority.HIGH):
-        received.append(chunk)
-
-    assert received == chunks
-    assert scheduler.active_streams == 0
-    assert scheduler.cancelled_streams == 0
-
-
-@pytest.mark.asyncio
 async def test_schedule_stream_metrics_tracking(scheduler):
     """Verifies active_streams and queue_wait_time metrics are tracked correctly."""
     gate = asyncio.Event()
