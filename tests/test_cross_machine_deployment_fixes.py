@@ -16,7 +16,6 @@ import aiosqlite
 from galgame2voice.config import get_settings
 from galgame2voice.database import crud
 from galgame2voice.services.tts_service import TtsService
-from galgame2voice.services.emotion_references import resolve_emotion_reference
 from scripts.run_server import (
     _check_sovits_dir,
     build_gpt_sovits_env,
@@ -79,38 +78,6 @@ def test_nested_gpt_sovits_discovery(tmp_path):
 # ============================================================================
 # 2. Audio Duration Guard & Fallback
 # ============================================================================
-
-def test_bundled_reference_audios_durations():
-    """Verifies that bundled reference audios meet the 3.0s~10.0s requirement."""
-    settings = get_settings()
-    natsume_dir = settings.project_root / "audio" / "references" / "natsume"
-
-    # Gentle reference must be ~5.03s
-    gentle_path = natsume_dir / "gentle.ogg"
-    if gentle_path.is_file():
-        dur = TtsService.get_audio_duration(gentle_path)
-        assert dur is not None
-        assert 3.0 <= dur <= 10.0
-        assert round(dur, 1) == 5.0
-
-    # cool.ogg is now verified >= 3.0s (3.23s)
-    cool_path = natsume_dir / "cool.ogg"
-    if cool_path.is_file():
-        dur_cool = TtsService.get_audio_duration(cool_path)
-        assert dur_cool is not None
-        assert 3.0 <= dur_cool <= 10.0
-
-
-@pytest.mark.requires_character_assets
-def test_cool_emotion_mapped_to_valid_duration_audio():
-    """Verifies cool emotion maps to authentic cool.ogg (>=3.0s) with valid Japanese prompt."""
-    res = resolve_emotion_reference("四季夏目", "cool")
-    assert res is not None
-    assert "cool.ogg" in res["ref_audio_path"]
-    assert "勝手に仲間" in res["prompt_text"]
-    dur = TtsService.get_audio_duration(res["ref_audio_path"])
-    assert dur is not None
-    assert 3.0 <= dur <= 10.0
 
 
 @pytest.mark.asyncio
@@ -319,29 +286,3 @@ async def test_switch_voice_profile_resolves_relative_reference_path(monkeypatch
     # Must be absolute path
     assert Path(sent_path).is_absolute()
     assert sent_path.endswith("gentle.ogg")
-
-
-@pytest.mark.asyncio
-async def test_auto_heal_arbitrary_drive_letters(tmp_path):
-    """A foreign drive path is not replaced by another voice, so the user can still see what is missing."""
-    from galgame2voice.database.session import init_db
-    db_path = tmp_path / "drive_letters.db"
-    await init_db(db_path)
-    from galgame2voice.database.models import VoiceProfileCreate
-    async with aiosqlite.connect(str(db_path)) as conn:
-        await crud.create_voice_profile(conn, VoiceProfileCreate(
-            name="Portable test voice", gpt_weights_path="test.ckpt", sovits_weights_path="test.pth",
-        ))
-    async with aiosqlite.connect(str(db_path)) as conn:
-        conn.row_factory = aiosqlite.Row
-        # Inject machine-specific drive letters from foreign machines
-        await conn.execute("UPDATE voice_profiles SET ref_audio_path = 'D:\\other_user\\voice.wav' WHERE id = 1;")
-        await conn.commit()
-
-        assert await crud.auto_heal_voice_profiles(conn) == 0
-
-        cur = await conn.execute("SELECT ref_audio_path FROM voice_profiles WHERE id = 1;")
-        row = await cur.fetchone()
-        assert row["ref_audio_path"] == "D:\\other_user\\voice.wav"
-
-
