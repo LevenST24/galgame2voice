@@ -39,6 +39,7 @@ const VOICE_LIST_UNAVAILABLE = '__unavailable__';
 let profilesRevision = 0;
 let lastShownCatalogWarning = '';
 let isImporting = false;
+let isQueryingRedeem = false;
 let isDeletingVoice = false;
 let redeemCode = '';
 let dragEnterDepth = 0;
@@ -54,6 +55,7 @@ export function initVoiceSettings(dom, callbacks = {}) {
   cleanupDragListeners?.();
   cleanupDragListeners = null;
   isImporting = false;
+  isQueryingRedeem = false;
   isDeletingVoice = false;
   redeemCode = '';
   dragEnterDepth = 0;
@@ -697,7 +699,7 @@ function setImportBusy(busy) {
   }
   if (_dom.sVoiceImportFolder) _dom.sVoiceImportFolder.disabled = busy;
   if (_dom.sVoiceRedeem) _dom.sVoiceRedeem.disabled = busy;
-  if (_dom.sVoiceRedeemQuery) _dom.sVoiceRedeemQuery.disabled = busy;
+  if (_dom.sVoiceRedeemQuery) _dom.sVoiceRedeemQuery.disabled = busy || isQueryingRedeem;
   if (_dom.sVoiceRescan) _dom.sVoiceRescan.disabled = busy;
 }
 
@@ -851,19 +853,33 @@ function showRedeemPackages(packages) {
 }
 
 async function queryRedeemCode() {
+  if (isImporting || isQueryingRedeem) return;
   const input = _dom.sVoiceRedeemCode;
   const code = String(input?.value || '').trim();
-  if (!code) return showToast('请先粘贴兑换码', 'error');
-  if (isImporting) return;
+  if (!code) {
+    if (_dom.sVoiceRedeemStatus) {
+      _dom.sVoiceRedeemStatus.textContent = '请先粘贴兑换码（以 G2V1. 开头）。';
+    }
+    input?.focus?.();
+    return showToast('请先粘贴兑换码', 'error');
+  }
+  isQueryingRedeem = true;
+  if (_dom.sVoiceRedeemQuery) _dom.sVoiceRedeemQuery.disabled = true;
+  if (_dom.sVoiceRedeemStatus) _dom.sVoiceRedeemStatus.textContent = '正在查询兑换码…';
   try {
     const packages = await fetchRedeemPackages(code);
     redeemCode = code;
     showRedeemPackages(packages);
     if (input) input.value = '';
   } catch (err) {
+    const message = err?.message || '查询兑换码失败，请重试。';
     redeemCode = '';
     renderRedeemList([]);
-    showToast(err?.message || '查询兑换码失败', 'error');
+    if (_dom.sVoiceRedeemStatus) _dom.sVoiceRedeemStatus.textContent = message;
+    showToast(message, 'error');
+  } finally {
+    isQueryingRedeem = false;
+    if (_dom.sVoiceRedeemQuery) _dom.sVoiceRedeemQuery.disabled = isImporting;
   }
 }
 
