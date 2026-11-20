@@ -65,6 +65,8 @@
     "src/controllers/update_manager.js",
     "src/controllers/voice_settings.js",
     "src/conversation.js",
+    "src/main.js",
+    "src/model_badge.js",
     "src/request.js",
     "src/session_api.js",
     "src/session_data.js",

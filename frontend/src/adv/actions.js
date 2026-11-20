@@ -35,7 +35,7 @@ export function homeExcerpt(messages = []) {
  * @param {(session?: any) => Promise<any>} [deps.getAvatar]
  * @param {(session?: any, line?: any) => Promise<any>} [deps.playExcerpt]
  * @param {() => any} [deps.stopExcerpt]
- * @param {(fn?: (open: boolean) => void) => () => void} [deps.subscribeSettings]
+ * @param {(fn: (open: boolean) => void) => () => void} [deps.subscribeSettings]
  * @param {() => boolean} [deps.voiceEnabled]
  * @param {(id?: any) => boolean} [deps.isBehindServer]
  */

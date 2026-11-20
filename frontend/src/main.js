@@ -1,3 +1,4 @@
+// @ts-check
 // 应用入口：事件绑定、渲染调度、设置协调、流式回复
 import {
   state,
@@ -81,7 +82,9 @@ const appDependencies = {
   showTitle,
 };
 
+/** @param {Record<string, any>} bm */
 export function mapBackendMessage(bm) {
+  /** @type {Record<string, any>} */
   const msg = {
     id: `m_${bm.id}`,
     ...(Number.isSafeInteger(bm.id) && bm.id > 0 ? { serverMessageId: bm.id } : {}),
@@ -97,6 +100,7 @@ export function mapBackendMessage(bm) {
   return msg;
 }
 
+/** @param {Record<string, any> | null | undefined} msg @returns {number | null} */
 export function extractServerId(msg) {
   if (!msg) return null;
   if (Number.isSafeInteger(msg.serverMessageId) && msg.serverMessageId > 0) {
@@ -130,6 +134,7 @@ function retainLocalOnlyMessages(messages = []) {
 }
 
 // 可注入存储、流和渲染器，测试无需启动鉴权或麦克风。
+/** @param {Record<string, any>} [options] */
 export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = {}) {
   const {
     state, getActive, getSession, addMessage, uid,
@@ -281,6 +286,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
 
   let _syncSessionsGen = 0;
   const sessionsBehindServer = new Set();
+  /** @type {ReturnType<typeof mountAdv> | null} */
   let advApp = null;
   let syncingAdv = false;
   // Home opens after the startup sync; a voice result that arrives earlier belongs to it too.
@@ -292,7 +298,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     audioPlayer: streamAudioController, getCurrentVoice, stopCurrentVoice,
     clearMicTimers, beforeSend: () => { ++_syncSessionsGen; },
     onBlocked: (message) => showToast(message, 'info'),
-    fetch: callbacks.fetch || ((...args) => globalThis.fetch(...args)),
+    fetch: callbacks.fetch || (/** @type {typeof fetch} */ ((...args) => globalThis.fetch(...args))),
   });
 
   const closeDrawer = () => advApp?.closeDrawer();
@@ -371,7 +377,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         regenerateLineAudio,
         getRecoveryVoice: () => getVoiceProfiles().find(profile => profile.id === getActive()?.settings?.voiceProfileId) || null,
         subscribeOverlay: onModalChange,
-        closeOverlay: () => document.querySelector('.overlay.active [data-close]')?.click(),
+        closeOverlay: () => /** @type {HTMLElement | null} */ (document.querySelector('.overlay.active [data-close]'))?.click(),
       });
       if (hasOpenModal()) root.inert = true;
     } finally { syncingAdv = false; }
@@ -499,7 +505,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
               for (let j = incoming.length - 1; j >= 0; j--) {
                 if (usedIndices.has(j)) continue;
                 const serverMsg = incoming[j];
-                if (localMsg.failed && !(extractServerId(serverMsg) > lastKnownId)) continue;
+                if (localMsg.failed && !(/** @type {number} */ (extractServerId(serverMsg)) > lastKnownId)) continue;
                 if (serverMsg.role === 'user' && serverMsg.content === localMsg.content) {
                   usedIndices.add(j);
                   pairedLocal.add(localMsg);
@@ -672,7 +678,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     fullRender();
     const active = getActive();
     ensureSessionVoice(active);
-    showToast(switched ? `对话已删除，现在是「${active.title}」。` : '对话已删除');
+    showToast(switched ? `对话已删除，现在是「${/** @type {NonNullable<typeof active>} */ (active).title}」。` : '对话已删除');
   }
 
   function newChat(selection, { enterFromHome = false } = {}) {
@@ -717,6 +723,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     return s;
   }
 
+  /** @type {((next: any) => void) | null} */
   let onModelStatus = null;
   const sampleModel = () => ({
     model: getModelStatus({ getCurrentActiveProvider, getActive,
@@ -765,6 +772,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   }
   const app = { sendMessage, loadOlderSessionHistory, fullRender, updateControls, conversation,
     switchSession, syncAdv, actions, returnHome, get adv() { return advApp; } };
+  /** @type {ReturnType<typeof createSettingsCenter> | null} */
   let settingsCenter = null;
   if (!initialize) return app;
 
@@ -836,7 +844,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   fullRender();
   updateControls();
   ensureSessionVoice(getActive());
-  if (window.innerWidth > 820) advApp?.textbox.inputElement?.focus();
+  if (window.innerWidth > 820) /** @type {ReturnType<typeof mountAdv> | null} */ (advApp)?.textbox.inputElement?.focus();
 
   // 同步后端 SQLite 会话列表及历史消息（generation counter 防止过期结果覆盖用户新建会话）
   async function syncSessionsFromBackend() {

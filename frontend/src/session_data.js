@@ -38,7 +38,8 @@
 
 /**
  * @typedef {object} SessionSettings
- * @property {string} systemPrompt
+ * @property {string} [systemPrompt]
+ * @property {number | null} [promptProfileId]
  * @property {number | null} voiceProfileId
  * @property {number} temperature
  * @property {number} topP
@@ -83,6 +84,9 @@
  * @property {SessionSettings} settings
  * @property {string} [lastLine]
  * @property {number} [unconfirmedSettingsVersion]
+ * @property {boolean} [hasMoreHistory]
+ * @property {number | null} [oldestMessageId]
+ * @property {boolean} [loadingOlder]
  */
 
 /**
