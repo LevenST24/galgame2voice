@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import webbrowser
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -99,6 +100,37 @@ def test_existing_instance_opens_browser_when_requested(tmp_path, monkeypatch):
     monkeypatch.setattr(desktop_instance.webbrowser, "open", browser)
     desktop_instance.open_existing_instance(tmp_path, no_browser=False)
     browser.assert_called_once_with("http://[::1]:18080/")
+
+
+@pytest.mark.parametrize("browser_behavior", [
+    OSError("[WinError 1155] No application is associated"),
+    webbrowser.Error("could not locate runnable browser"),
+    False,
+])
+def test_existing_instance_handles_missing_default_browser(tmp_path, monkeypatch, capsys, browser_behavior):
+    desktop_instance.write_instance_address(tmp_path, "127.0.0.1", 18080)
+    opener = MagicMock()
+    opener.open.return_value.__enter__.return_value.read.return_value = b'{"app":"galgame2voice","status":"ok"}'
+    monkeypatch.setattr(desktop_instance.urllib.request, "build_opener", lambda *args: opener)
+    browser = MagicMock(
+        side_effect=browser_behavior if isinstance(browser_behavior, BaseException) else None,
+        return_value=browser_behavior if not isinstance(browser_behavior, BaseException) else True,
+    )
+    monkeypatch.setattr(desktop_instance.webbrowser, "open", browser)
+    sleep_mock = MagicMock()
+    monkeypatch.setattr(desktop_instance, "sleep", sleep_mock)
+    ticks = iter([0.0, 0.0, 0.2, 2.0])
+    monkeypatch.setattr(desktop_instance, "monotonic", lambda: next(ticks))
+
+    desktop_instance.open_existing_instance(tmp_path, no_browser=False, timeout=1.0)
+
+    opener.open.assert_called_once_with("http://127.0.0.1:18080/api/health", timeout=0.5)
+    browser.assert_called_once_with("http://127.0.0.1:18080/")
+    sleep_mock.assert_not_called()
+    out = capsys.readouterr().out
+    assert out.count("[提示] Galgame2Voice 已在运行，访问地址：http://127.0.0.1:18080/") == 1
+    assert "[提示] 未能自动打开浏览器，请手动访问：http://127.0.0.1:18080/" in out
+    assert "正在准备网页" not in out
 
 
 @pytest.mark.parametrize("metadata", [
