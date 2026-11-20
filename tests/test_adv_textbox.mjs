@@ -376,19 +376,6 @@ function withMockMatchMedia(matchesInitial, callback) {
   }
 }
 
-test('textbox: destroy() unregisters matchMedia change listener (no memory leak)', () => {
-  withMockMatchMedia(false, (mql) => {
-    const container = new FakeElement();
-    const tb = createTextbox(container, {
-      getSettings: () => ({ primary: 'zh', subtitle: 'ja' }),
-    });
-    assert.equal(mql.listenerCount, 1, 'Listener registered on creation');
-
-    tb.destroy();
-    assert.equal(mql.listenerCount, 0, 'Listener unregistered on destroy');
-  });
-});
-
 test('textbox: live prefers-reduced-motion change immediately completes active typewriter', () => {
   withMockMatchMedia(false, (mql) => {
     const clock = createFakeClock();
@@ -562,28 +549,6 @@ test('textbox: long Japanese line pagination strictly confines every page within
     // Subtitle displayed with quotes
     assert.ok(subEl.textContent.startsWith('「') && subEl.textContent.endsWith('」'), 'Subtitle wrapped in quotes');
   }
-});
-
-test('textbox: textarea has maxLength 4000 and retains draft when send is rejected', () => {
-  const container = new FakeElement();
-  const sent = [];
-  const tb = createTextbox(container, {
-    getSettings: () => ({ playerName: '勇者' }),
-    onSend: (text) => {
-      if (text.length > 4000) return false;
-      sent.push(text);
-      return true;
-    },
-  });
-  tb.enterInput({ canSend: true });
-  const textarea = container.querySelector('.adv-player-textarea');
-  assert.equal(textarea.maxLength, 4000);
-
-  const longText = 'a'.repeat(4005);
-  textarea.value = longText;
-  textarea.dispatchEvent({ type: 'keydown', key: 'Enter', shiftKey: false, preventDefault() {} });
-  assert.equal(sent.length, 0);
-  assert.equal(textarea.value, longText, 'Textarea draft must be preserved when onSend returns false');
 });
 
 

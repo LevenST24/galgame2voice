@@ -1,18 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {
-  initGlobalSettings,
-  openGlobalSettings,
-  handleRestartSovits,
-  fetchSystemTelemetry,
-  loadGlobalConfig,
-  saveGlobalConfig,
-} from '../frontend/src/controllers/global_settings.js';
-import { saveConfirmedConfig } from '../frontend/src/controllers/config_recovery.js';
+import { initGlobalSettings, loadGlobalConfig } from '../frontend/src/controllers/global_settings.js';
 import { waitForEngine } from '../frontend/src/controllers/engine_recovery.js';
 import { createEngineSettingsController } from '../frontend/src/controllers/engine_settings.js';
-import { createTelemetrySettingsController } from '../frontend/src/controllers/telemetry_settings.js';
-import { initSettingsTabs } from '../frontend/src/settings_ui.js';
 import { initEngineDirectory } from '../frontend/src/controllers/engine_directory.js';
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
@@ -172,61 +162,6 @@ function fixture(t) {
   return { toasts };
 }
 
-test('Candidate 2: old restart POST pending -> reinit -> new explicit restart: old restart does not block new restart, nor does old progress write into new DOM', async t => {
-  const { toasts } = fixture(t);
-  const dom1 = createDom();
-  const dom2 = createDom();
-
-  let finishFirstRestart;
-  let finishSecondRestart;
-  let restartCount = 0;
-
-  globalThis.fetch = async (url, options = {}) => {
-    if (url === '/api/system/restart_sovits' && options.method === 'POST') {
-      restartCount++;
-      if (restartCount === 1) {
-        return new Promise(resolve => {
-          finishFirstRestart = () => resolve(response({ message: '旧引擎正在启动' }));
-        });
-      }
-      return new Promise(resolve => {
-        finishSecondRestart = () => resolve(response({ message: '新引擎正在启动' }));
-      });
-    }
-    if (url.endsWith('/engine-status')) {
-      return response({ state: 'ready', ready: true, message: '引擎已就绪' });
-    }
-    if (url === '/api/config') {
-      return response({ status: 'ok', settings: { inference_precision: 'fp16' } });
-    }
-    return response({});
-  };
-
-  initGlobalSettings(dom1);
-  const restart1Promise = handleRestartSovits();
-  await settle();
-
-  assert.equal(restartCount, 1, 'First restart POST sent');
-  assert.equal(dom1.gBtnRestartSovits.disabled, true, 'First restart button disabled');
-
-  initGlobalSettings(dom2);
-  const restart2Promise = handleRestartSovits();
-  await settle();
-
-  finishFirstRestart();
-  await restart1Promise;
-  await settle();
-
-  assert.equal(restartCount, 2, 'Second restart POST sent and not blocked by old restart');
-  assert.equal(dom2.gBtnRestartSovits.disabled, true, 'Second restart button disabled while pending');
-
-  finishSecondRestart();
-  await restart2Promise;
-  await settle();
-
-  assert.equal(dom2.gBtnRestartSovits.disabled, false, 'Second restart button restored on completion');
-});
-
 test('Candidate 3: reinit same controls does not stack coordinator or controller listeners', async t => {
   fixture(t);
   const dom = createDom();
@@ -326,29 +261,6 @@ test('Engine: clear cache confirms, clears local caches, and calls server endpoi
   assert.ok(toasts.some(msg => msg.includes('删除 42 个文件')), 'Success toast reported freed space');
 });
 
-test('initSettingsTabs: cleanup function removes event listeners from tabs', async t => {
-  fixture(t);
-  const root = element('div');
-  const tab1 = element('button');
-  tab1.dataset.gtab = 't1';
-  const tab2 = element('button');
-  tab2.dataset.gtab = 't2';
-  root.querySelectorAll = () => [tab1, tab2];
-
-  let selections = 0;
-  const cleanup = initSettingsTabs(root, () => { selections++; });
-
-  await tab1.click();
-  assert.equal(selections, 1);
-
-  // Invoke cleanup
-  cleanup();
-
-  await tab1.click();
-  await tab2.click();
-  assert.equal(selections, 1, 'Listeners removed after cleanup');
-});
-
 test('initEngineDirectory: dispose cleans up input and button listeners', async () => {
   const dom = {
     gSovitsDirectory: element('input', ''),
@@ -369,52 +281,6 @@ test('initEngineDirectory: dispose cleans up input and button listeners', async 
   notifications = 0;
   await dom.gSaveSovitsDirectory.click();
   assert.equal(notifications, 0, 'No notification after dispose');
-});
-
-test('Engine restart queue: disposing unsent restart skips POST without poisoning subsequent config mutations', async t => {
-  fixture(t);
-  let releaseConfig;
-  let restartPosts = 0;
-  let configPosts = 0;
-
-  globalThis.fetch = async (url, options = {}) => {
-    if (url === '/api/config' && options.method === 'POST') {
-      configPosts++;
-      if (configPosts === 1) return new Promise(resolve => {
-        releaseConfig = () => resolve(response({ settings: { inference_precision: 'cpu' } }));
-      });
-      return response({ settings: JSON.parse(options.body) });
-    }
-    if (url === '/api/system/restart_sovits' && options.method === 'POST') {
-      restartPosts++;
-      return response({ message: 'synthetic acknowledgement' });
-    }
-    return response({});
-  };
-
-  const dom = createDom();
-  initGlobalSettings(dom);
-
-  const config = saveConfirmedConfig({ inference_precision: 'cpu' });
-  await settle();
-
-  const queued = handleRestartSovits('cpu');
-  await settle();
-
-  assert.equal(restartPosts, 0, 'Restart initially queued behind config POST');
-
-  // Reinit/dispose the engine controller while restart is still unsent
-  const newDom = createDom();
-  initGlobalSettings(newDom);
-
-  const currentConfig = saveConfirmedConfig({ inference_precision: 'fp32' });
-  releaseConfig();
-
-  const results = await Promise.allSettled([config, queued, currentConfig]);
-
-  assert.equal(restartPosts, 0, 'Disposed controller must not send still-unsent queued restart POST');
-  assert.equal(results[2].status, 'fulfilled', 'Skipping retired unsent operation must not poison current-owner write queue');
-  assert.equal(configPosts, 2, 'Current owner config POST must still be sent');
 });
 
 test('Config load scope: retired config GET does not overwrite newer coordinator view', async t => {

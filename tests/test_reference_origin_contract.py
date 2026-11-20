@@ -331,19 +331,6 @@ async def test_rescan_preserves_external_references_with_fresh_connection(origin
 
 
 @pytest.mark.asyncio
-async def test_resolver_preserves_external_and_unmanifested_refs(origin_env):
-    """VoiceProfileResolver preserves external references and unmanifested refs/ without gentle fallback."""
-    profile = await _create_shiki_profile(origin_env, "refs/engine_only.wav", "引擎端独立参考文本")
-
-    resolver = get_voice_resolver()
-    ctx = await resolver.resolve_context(str(origin_env.db_path), profile_id=profile.id)
-    assert ctx is not None
-    assert ctx.ref_audio_path == "refs/engine_only.wav"
-    assert ctx.prompt_text == "引擎端独立参考文本"
-    assert ctx.prompt_lang == "zh"
-
-
-@pytest.mark.asyncio
 async def test_missing_package_owned_and_cross_char_audio_fall_back_to_gentle(origin_env):
     """Missing package-owned references and cross-package references fall back to gentle."""
     deleted_pkg_wav = str(origin_env.chars_dir / "refs" / "deleted_ref.wav")

@@ -951,7 +951,7 @@ for (const failure of ['idle_timeout', 'dropped_stream']) {
     assert.deepEqual({
       labels,
       promisesResend: /重新发送/.test(message),
-      keepsLog: /已收到的台词保留在 LOG/.test(message),
+      keepsLog: /已收到的台词保留在「对话记录」/.test(message),
     }, {
       labels: ['继续', '去设置'],
       promisesResend: false,
