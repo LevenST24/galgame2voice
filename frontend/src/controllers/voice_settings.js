@@ -41,6 +41,7 @@ let lastShownCatalogWarning = '';
 let isImporting = false;
 let isDeletingVoice = false;
 let redeemCode = '';
+let redeemQueryRevision = 0;
 let dragEnterDepth = 0;
 let cleanupDragListeners = null;
 
@@ -56,6 +57,7 @@ export function initVoiceSettings(dom, callbacks = {}) {
   isImporting = false;
   isDeletingVoice = false;
   redeemCode = '';
+  redeemQueryRevision += 1;
   dragEnterDepth = 0;
 
   _dom = dom;
@@ -855,12 +857,15 @@ async function queryRedeemCode() {
   const code = String(input?.value || '').trim();
   if (!code) return showToast('请先粘贴兑换码', 'error');
   if (isImporting) return;
+  const revision = ++redeemQueryRevision;
   try {
     const packages = await fetchRedeemPackages(code);
+    if (revision !== redeemQueryRevision || isImporting) return;
     redeemCode = code;
     showRedeemPackages(packages);
     if (input) input.value = '';
   } catch (err) {
+    if (revision !== redeemQueryRevision || isImporting) return;
     redeemCode = '';
     renderRedeemList([]);
     showToast(err?.message || '查询兑换码失败', 'error');
@@ -881,6 +886,7 @@ async function pollRedeemStatus() {
 async function downloadRedeemPackage(pkg) {
   if (isImporting || !redeemCode || !pkg.id) return;
   const code = redeemCode;
+  const revision = ++redeemQueryRevision;
   setImportBusy(true);
   if (_dom.sVoiceRedeemStatus) {
     _dom.sVoiceRedeemStatus.textContent = formatRedeemProgress({
@@ -919,7 +925,7 @@ async function downloadRedeemPackage(pkg) {
   // The server counts the download even when the import fails or the overwrite is declined, so ask it again.
   try {
     const packages = await fetchRedeemPackages(code);
-    if (redeemCode === code) showRedeemPackages(packages);
+    if (!isImporting && revision === redeemQueryRevision && redeemCode === code) showRedeemPackages(packages);
   } catch {
     // Keep the shown list; querying the code again shows the current numbers.
   }
