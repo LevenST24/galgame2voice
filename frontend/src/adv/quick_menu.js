@@ -147,13 +147,14 @@ export function createQuickMenu(container, { onAction } = {}) {
 
   /** @param {{ label?: string, title?: string, state?: string }} [status] */
   function setModelStatus({ label, title, state: modelState = 'ok' } = {}) {
-    const displayLabel = label ?? 'Model';
+    const displayLabel = label ?? '模型';
+    const stateLabels = { ok: '就绪', busy: '回复中', error: '未就绪' };
     statusLabel.textContent = displayLabel;
 
     statusDot.classList.remove('state-ok', 'state-busy', 'state-error');
     statusDot.classList.add(`state-${modelState}`);
 
-    statusBtn.setAttribute('aria-label', `模型状态: ${displayLabel} (${modelState})`);
+    statusBtn.setAttribute('aria-label', `模型状态：${displayLabel}（${stateLabels[modelState] || modelState}）`);
     statusBtn.title = title || displayLabel;
   }
 

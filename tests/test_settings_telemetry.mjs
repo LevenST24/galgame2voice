@@ -109,10 +109,10 @@ test('old cache and uptime responses cannot overwrite a reopened settings page',
   closeModal(dom.globalModal); old = false;
   openGlobalSettings(); await settle();
   assert.match(dom.gDashCacheVal.textContent, /^2 个文件/);
-  assert.match(dom.gDashUptimeVal.textContent, /PID: 222/);
+  assert.match(dom.gDashUptimeVal.textContent, /进程号：222/);
   finish.forEach(resolve => resolve()); await settle();
   assert.match(dom.gDashCacheVal.textContent, /^2 个文件/);
-  assert.match(dom.gDashUptimeVal.textContent, /PID: 222/);
+  assert.match(dom.gDashUptimeVal.textContent, /进程号：222/);
 });
 
 test('engine readiness renders before a slow storage diagnostics response', async t => {

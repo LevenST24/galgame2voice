@@ -56,7 +56,7 @@ export function initAudioPlayerUi(dom, callbacks = {}) {
     const isBrowserBlock = Boolean(error.message?.includes('浏览器'));
     const isDecodeFailure = error.code === 'AUDIO_DECODE_FAILED';
     showToast(isDecodeFailure || isBrowserBlock ? error.message
-      : '部分语音暂时无法播放，已跳过并保留文字。可稍后在 LOG 里再点「语音」重试；若反复失败，请打开「运行状态」检查服务。', 'info', (!isBrowserBlock && _callbacks.onOpenEngineStatus) ? {
+      : '部分语音暂时无法播放，已跳过并保留文字。可稍后在「对话记录」里再点「语音」重试；若反复失败，请打开「运行状态」检查服务。', 'info', (!isBrowserBlock && _callbacks.onOpenEngineStatus) ? {
         actionLabel: '检查运行状态',
         onAction: () => _callbacks.onOpenEngineStatus(),
       } : null);
@@ -373,7 +373,7 @@ export function toggleMic() {
   micTimer = setInterval(() => {
     micSecs += 1;
     if (inputDom()) {
-      inputDom().placeholder = `正在聆听… ${micSecs}s（再次点击麦克风结束）`;
+      inputDom().placeholder = `正在聆听… ${micSecs} 秒（再次点击麦克风结束）`;
     }
   }, 1000);
   if (inputDom()) inputDom().placeholder = '正在聆听…（再次点击麦克风结束）';

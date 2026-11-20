@@ -335,7 +335,7 @@ export class ProviderSettingsController {
           this.dom.gBaseUrl.value = defaultUrl;
           this.markProviderDirty('gBaseUrl');
         }
-        showToast(`已恢复官方默认 Base URL: ${defaultUrl}`, 'info');
+        showToast(`已恢复官方默认接口地址：${defaultUrl}`, 'info');
       };
     }
 
@@ -660,7 +660,7 @@ export class ProviderSettingsController {
       const customName = this.dom.gCustomName ? this.dom.gCustomName.value.trim() : '';
 
       if (!baseUrl) {
-        throw new Error('请填写 API Base URL');
+        throw new Error('请填写接口地址');
       }
       if (!chatModel) {
         throw new Error('请填写或选择模型名称');
