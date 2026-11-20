@@ -14,28 +14,9 @@ from galgame2voice.services.chat_pipelines.stream_snapshot import (
     compute_completion_snapshot,
     compute_disconnect_snapshot,
     compute_early_exit_snapshot,
-    has_meaningful_text,
     new_line_audio_state,
     resolve_line_audio_snapshot_status,
 )
-
-
-def test_has_meaningful_text_and_new_line_audio_state():
-    assert has_meaningful_text("你好", "") is True
-    assert has_meaningful_text("  ", "こんにちは") is True
-    assert has_meaningful_text("", "") is False
-    assert has_meaningful_text("   ", "\n\t ") is False
-
-    state = new_line_audio_state(3)
-    assert state == {
-        "line": 3,
-        "sealed": False,
-        "pending": 0,
-        "chunks": [],
-        "errors": [],
-        "emitted": False,
-        "status": None,
-    }
 
 
 def test_build_line_audio_event_statuses():

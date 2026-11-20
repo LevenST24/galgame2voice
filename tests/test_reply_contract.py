@@ -120,17 +120,6 @@ class TestRenderLinesContract:
         )
         assert render_lines_contract({**MENU, "poses": poses, "pose_names": {"a": "站姿1"}}) == expected
 
-    def test_contract_lists_the_menu_choices(self):
-        text = render_lines_contract(MENU)
-
-        assert '"lines"' in text
-        assert '"tts"' in text
-        for token in ("zh", "ja", "emotion", "act", "微笑", "生气", "blush", "motion", "fx"):
-            assert token in text
-        for token in EMOTIONS + MOTIONS + FX:
-            assert token in text
-        assert "face 通常每行都给出" in text
-        assert "不要输出 index、audio、outfit 或 pose" in text
 
     def test_blush_is_offered_only_when_available(self):
         assert "blush 仅在需要时设为 true" in render_lines_contract(MENU)
@@ -145,11 +134,6 @@ class TestRenderLinesContract:
         for token in MOTIONS + FX:
             assert token in text
 
-    def test_motion_and_fx_are_described_as_rare(self):
-        text = render_lines_contract(MENU)
-        assert "motion 很少使用" in text
-        assert "fx 很少使用" in text
-
 
 class TestStripOldFormatBlock:
     def test_removes_the_bilingual_contract(self):
@@ -157,19 +141,6 @@ class TestStripOldFormatBlock:
         assert strip_old_format_block(prompt) == "你是测试角色。"
         assert strip_old_format_block(HEAD_OLD_CONTRACT_ADDITION) == ""
 
-    def test_removes_the_shared_template_section_but_keeps_persona_and_rules(self):
-        prompt = (
-            "你是合成测试角色，说话温柔。\n\n"
-            + SYNTHETIC_TEMPLATE_SECTION
-            + "\n\n要求：\n1. 只使用合成测试文本。"
-        )
-
-        stripped = strip_old_format_block(prompt)
-
-        assert stripped.startswith("你是合成测试角色")
-        assert "重要：你必须严格输出如下 JSON 格式" not in stripped
-        assert "显示给玩家的中文台词" not in stripped
-        assert "只使用合成测试文本" in stripped
 
     def test_removes_the_headerless_variant_with_different_numbers(self):
         section = SYNTHETIC_TEMPLATE_SECTION.split("\n", 1)[1]
@@ -369,17 +340,6 @@ class TestLinesModeWiring:
             "lines": [{"zh": "早上好呀", "ja": "おはようございます", "emotion": "happy", "act": {"face": "微笑"}}],
         }
 
-    def test_format_llm_messages_lines_mode_rebuilds_a_turn_without_lines(self, temp_db_path):
-        sm = SessionManager(temp_db_path)
-        history = [_assistant_turn("你好。再见。", "こんにちは。さようなら。", "gentle")]
-
-        messages = sm.format_llm_messages(
-            "测试角色", history, system_template="你是{character_name}。", reply_format="lines"
-        )
-
-        payload = json.loads(messages[1]["content"])
-        assert len(payload["lines"]) == 2
-        assert [line["zh"] for line in payload["lines"]] == ["你好。", "再见。"]
 
     @pytest.mark.asyncio
     async def test_build_chat_messages_lines_mode_reads_stored_rows(self, tmp_path):

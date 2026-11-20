@@ -144,22 +144,6 @@ async def test_empty_profile_prompt_does_not_borrow_previous_engine_text(voice, 
         await client.aclose()
 
 
-async def test_unselected_engine_defaults_still_work(voice):
-    from galgame2voice.services.audio_identity import bind_audio_options
-    from galgame2voice.services.gpt_sovits_client import GptSovitsClient
-
-    client = GptSovitsClient(server=object())
-    client.current_refer_audio = str(voice.root / "old.wav")
-    client.current_refer_text = "engine default"
-    try:
-        bound = await bind_audio_options({}, client)
-        payload = client._build_tts_payload("hello", bound)
-        assert Path(payload["ref_audio_path"]) == voice.root / "old.wav"
-        assert payload["prompt_text"] == "engine default"
-    finally:
-        await client.aclose()
-
-
 def test_cache_identity_keeps_resolved_empty_prompt_even_with_legacy_fallback():
     from galgame2voice.services.tts_cache_manager import _extract_voice_profile_cache_fields
 

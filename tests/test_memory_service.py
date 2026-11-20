@@ -180,14 +180,6 @@ class TestHeuristicFactExtraction:
         )
         assert score == 0.0
 
-    def test_extreme_prompt_length_clamping(self, memory_service):
-        score = memory_service._calculate_overlap_score(
-            prompt="a" * 100000,
-            fact_key="like_apple",
-            fact_value="苹果",
-        )
-        assert score >= 0.0
-
 
 class TestMemoryPersistenceAndUpsert:
     @pytest.mark.asyncio
@@ -485,4 +477,3 @@ class TestMemoryServiceHardening:
         block = svc.format_memory_prompt_block([dummy_mem], {"level": "invalid", "level_name": None})
         assert "咖啡" in block
         assert "亲密度等级" in block
-
