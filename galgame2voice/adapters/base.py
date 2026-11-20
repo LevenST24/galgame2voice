@@ -53,8 +53,6 @@ def parse_retry_after(headers: Any | None) -> float | None:
     val = None
     if hasattr(headers, "get"):
         val = headers.get("retry-after") or headers.get("Retry-After")
-    elif isinstance(headers, dict):
-        val = headers.get("retry-after") or headers.get("Retry-After")
     if not val:
         return None
     try:
