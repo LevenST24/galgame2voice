@@ -291,3 +291,25 @@ async def test_import_exceeding_size_limit_returns_413(tmp_path, monkeypatch):
         res = await client.post("/api/characters/import", params={"filename": "alice.zip"}, content=payload)
     assert res.status_code == 413
     _assert_temp_empty()
+
+
+@pytest.mark.asyncio
+async def test_import_corrupt_deflate_zip_returns_400_chinese(tmp_path, monkeypatch):
+    """A .zip with a valid central directory but corrupted DEFLATE stream must return 400 in Chinese."""
+    _root, app = _setup_app(tmp_path, monkeypatch)
+    await init_db()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", b"{\"id\": \"alice\", \"name\": \"Alice\"}" * 20)
+    corrupted = bytearray(buf.getvalue())
+    # Corrupt compressed payload right after the 30-byte local header + filename
+    corrupted[43:53] = b"\xff" * 10
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
+        res = await client.post("/api/characters/import", params={"filename": "corrupt.zip"}, content=bytes(corrupted))
+
+    assert res.status_code == 400, res.text
+    detail = res.json()["detail"]
+    assert "压缩包已损坏" in detail
+    assert "decompressing" not in detail.lower()
+    _assert_temp_empty()
