@@ -554,6 +554,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       }
     } catch (e) {
       console.debug('Failed to load session history:', e);
+      if (historyGen !== _syncSessionsGen || getSession(session.id) !== session || getActive() !== session) return;
       showToast(`历史记录暂时无法读取：${e.message} 恢复连接后点击当前对话可重试。`, 'error');
     }
   }
@@ -591,6 +592,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       autoTitle(session);
       saveState();
     } catch (e) {
+      if (getSession(session.id) !== session || getActive() !== session) return;
       showToast('加载更早消息失败：请恢复连接后向上滚动重试。', 'error');
     } finally {
       session.loadingOlder = false;

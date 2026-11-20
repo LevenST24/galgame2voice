@@ -392,7 +392,7 @@ export function createConfigPanel(container, {
     autoModeSelect.appendChild(opt);
   }
   controls.advAutoMode = autoModeSelect;
-  const rowAutoMode = makeRow('advAutoMode', '文字与语音', '语音同步从声音开始时出字，AUTO 等说完再翻句；点击仍可先看文字', autoModeSelect, { valSuffix: undefined });
+  const rowAutoMode = makeRow('advAutoMode', '文字与语音', '语音同步从声音开始时出字，自动播放等说完再翻句；点击仍可先看文字', autoModeSelect, { valSuffix: undefined });
   groupPlay.appendChild(rowAutoMode);
 
   // advAutoBaseMs
@@ -404,7 +404,7 @@ export function createConfigPanel(container, {
   autoBaseInput.max = '6000';
   autoBaseInput.step = '50';
   controls.advAutoBaseMs = autoBaseInput;
-  const rowAutoBase = makeRow('advAutoBaseMs', 'AUTO 基础等待', '每页基础停留时间 (0–6000 ms)', autoBaseInput, { valSuffix: ' ms' });
+  const rowAutoBase = makeRow('advAutoBaseMs', '自动播放基础等待', '每页基础停留时间（0–6000 毫秒）', autoBaseInput, { valSuffix: ' ms' });
   groupPlay.appendChild(rowAutoBase);
 
   // advAutoPerCharMs
@@ -416,7 +416,7 @@ export function createConfigPanel(container, {
   autoPerCharInput.max = '200';
   autoPerCharInput.step = '5';
   controls.advAutoPerCharMs = autoPerCharInput;
-  const rowAutoPerChar = makeRow('advAutoPerCharMs', 'AUTO 每字等待', '依主要语言字数累加 (0–200 ms)', autoPerCharInput, { valSuffix: ' ms' });
+  const rowAutoPerChar = makeRow('advAutoPerCharMs', '自动播放每字等待', '依主要语言字数累加（0–200 毫秒）', autoPerCharInput, { valSuffix: ' ms' });
   groupPlay.appendChild(rowAutoPerChar);
 
   // advInterruptVoice

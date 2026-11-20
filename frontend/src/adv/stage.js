@@ -28,7 +28,7 @@ export function createStage(root, { onLetterboxClick } = {}) {
   const stage = document.createElement('div');
   stage.className = 'adv-stage';
   stage.setAttribute('role', 'region');
-  stage.setAttribute('aria-label', 'ADV 舞台');
+  stage.setAttribute('aria-label', '对话舞台');
 
   const background = document.createElement('div');
   background.className = 'adv-layer adv-layer-bg';

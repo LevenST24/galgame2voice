@@ -126,5 +126,5 @@ def test_slow_diagnostics_do_not_hold_engine_readiness_or_survive_close(tmp_path
     assert result["readyBeforeStorage"] and result["signalsAborted"]
     assert result["nativeAborts"] == ["AbortError", "AbortError"]
     assert result["counts"] == {"status": 2, "cache": 2, "engine": 2}
-    assert result["badge"] == "在线" and result["cache"].startswith("2 个文件") and "PID: 222" in result["uptime"]
+    assert result["badge"] == "在线" and result["cache"].startswith("2 个文件") and "进程号：222" in result["uptime"]
     assert result["viewport"] == width and result["overflow"] <= 1 and result["left"] >= 0 and result["right"] <= width

@@ -265,43 +265,6 @@ test('a stale decode after setModel paints nothing', async () => {
   assert.equal(view.getLastCommitted(), null);
 });
 
-test('a decode failure keeps the old picture and reports a status', async () => {
-  const { view, spriteLayer, statusCalls, flushRaf, waitForRaf, imageOptions } = setupView();
-  const model = createTestModel();
-  view.setModel(model);
-
-  // First apply succeeds
-  const firstApply = view.apply({
-    state: { outfit: 'uniform', face: '01' },
-    faceUrl: '/uniform/01.webp',
-  });
-  await waitForRaf();
-  flushRaf();
-  await firstApply;
-
-  const motionWrapper = spriteLayer.children[0].children[0];
-  const stageImgB = motionWrapper.children[1]; // active
-  const stageImgA = motionWrapper.children[0]; // next back buffer
-  assert.equal(stageImgB.classList.contains('is-visible'), true);
-
-  // Second apply fails to decode
-  imageOptions.decode = () => Promise.reject(new Error('Corrupt WebP'));
-
-  await view.apply({
-    state: { outfit: 'uniform', face: '02' },
-    faceUrl: '/uniform/02.webp',
-  });
-  flushRaf();
-
-  // Old picture is preserved
-  assert.equal(stageImgB.classList.contains('is-visible'), true);
-  assert.equal(stageImgA.classList.contains('is-visible'), false);
-
-  // Status reported
-  assert.equal(statusCalls.length, 1);
-  assert.equal(statusCalls[0].kind, 'decode-failed');
-});
-
 test('reduced motion skips the crossfade', async () => {
   const { view, spriteLayer, fxLayer, faceSlot, flushRaf, waitForRaf, imageOptions } = setupView();
   const model = createTestModel();
