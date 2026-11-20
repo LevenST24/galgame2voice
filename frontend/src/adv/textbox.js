@@ -263,9 +263,7 @@ export function createTextbox(container, opts = {}) {
   let currentPrimaryText = '';
   let currentSubText = '';
   let currentFullPageText = '';
-  let currentPageText = '';
   let currentPageIndex = 0;
-  let currentPageCount = 1;
   let pageRevealed = false;
   let currentSubPages = [];
   let typewriterTimerId = null;
@@ -450,8 +448,6 @@ export function createTextbox(container, opts = {}) {
     currentLine = line;
     pageRevealed = false;
     currentPageIndex = 0;
-    currentPageCount = 1;
-    currentPageText = '';
     currentFullPageText = '';
     clearTypewriter();
     // The player may hold this line's text until its voice starts; meanwhile the
@@ -487,9 +483,7 @@ export function createTextbox(container, opts = {}) {
   function reveal(pageText, { durationMs = 0, pageIndex = 0, pageCount = 1 } = {}) {
     pageRevealed = true;
     clearTypewriter();
-    currentPageText = pageText;
     currentPageIndex = pageIndex;
-    currentPageCount = pageCount;
 
     speechViewEl.classList.remove('is-hidden');
     inputWrapEl.classList.add('is-hidden');
