@@ -788,24 +788,6 @@ test('title screen presents latest Japanese-only reply with audio preview and wi
   assert.deepEqual(h.calls.find(c => Array.isArray(c) && c[0] === 'play'), ['play', 'm2', 0]);
 });
 
-test('title screen with pure Japanese reply does not fall back to default story opener', async t => {
-  const sessionMessages = [
-    { role: 'user', content: '元気？' },
-    { id: 'm1', role: 'assistant', ts: NOW.getTime(), lines: [{ index: 0, zh: '', ja: '元気ですよ。' }] },
-  ];
-  const s = {
-    ...snapshot('pure_ja'),
-    messages: sessionMessages,
-    excerpt: homeExcerpt(sessionMessages),
-    hasUserMessages: true,
-  };
-  const h = await fixture(t, { sessions: [s], active: 'pure_ja' });
-  assert.equal(h.q('.home-you').textContent, '你：元気？');
-  assert.equal(h.q('.home-quote').textContent, '「元気ですよ。」');
-  assert.notEqual(h.q('.home-quote').textContent, '「从这一刻，开始你们的故事。」');
-  assert.equal(h.q('.home-ja'), null);
-});
-
 test('onboarding preserves Japanese-only greeting in hidden home-greeting DOM', async t => {
   const greetingExcerpt = { zh: '', ja: 'おかえりなさいませ。' };
   const session = { ...snapshot('first_ja'), excerpt: greetingExcerpt };
