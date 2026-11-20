@@ -7,7 +7,7 @@
   <title>Gal2Voice · AI 多会话聊天</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%236c7ce0'/%3E%3Cpath d='M16 5l6 8.2c.9 1.2.7 2.6-.3 3.6L16 27l-5.7-10.2c-1-1-1.2-2.4-.3-3.6L16 5z' fill='%23ffffff'/%3E%3C/svg%3E" />
 
-  <script type="module" crossorigin src="/static/assets/index-DPqxq9Jo.js"></script>
+  <script type="module" crossorigin src="/static/assets/index-NSuTjAEu.js"></script>
   <link rel="stylesheet" crossorigin href="/static/assets/index-I2Z_mEJ1.css">
 </head>
 <body>
@@ -103,7 +103,7 @@
         <span class="brand-mark"><svg class="icon"><use href="#i-nib"></use></svg></span>
         <span class="brand-text">
           <strong>Gal2Voice</strong>
-          <em>Voice · AI Chat</em>
+          <em>语音 · AI 对话</em>
         </span>
         <button class="icon-btn sidebar-close" id="sidebarClose" aria-label="关闭侧边栏">
           <svg class="icon"><use href="#i-x"></use></svg>
@@ -236,7 +236,7 @@
               </div>
               <div class="status-card-body">
                 <div class="status-card-main" id="gDashHardwareVal">服务内存: 统计中...</div>
-                <div class="status-card-sub" id="gDashUptimeVal">PID: - · 运行: -</div>
+                <div class="status-card-sub" id="gDashUptimeVal">进程号：- · 运行：-</div>
               </div>
               <div class="status-card-act">
                 <span class="status-card-meta-tag" id="gDashHostRam">系统可用: -</span>
@@ -632,7 +632,7 @@
         <details class="settings-advanced"><summary>对话高级参数</summary><div class="settings-fields">
         <div class="field-group-title">采样参数</div>
         <div class="field field-row">
-          <label>温度 Temperature <b id="sTempVal">0.7</b></label>
+          <label>温度 <b id="sTempVal">0.7</b></label>
           <input type="range" id="sTemp" min="0" max="2" step="0.05" value="0.7" />
         </div>
         <div class="field field-row">
@@ -640,17 +640,17 @@
           <input type="range" id="sTopP" min="0" max="1" step="0.05" value="1" />
         </div>
         <div class="field field-row">
-          <label>频率惩罚 Frequency Penalty <b id="sFreqVal">0</b></label>
+          <label>频率惩罚 <b id="sFreqVal">0</b></label>
           <input type="range" id="sFreq" min="-2" max="2" step="0.1" value="0" />
         </div>
         <div class="field field-row">
-          <label>存在惩罚 Presence Penalty <b id="sPresVal">0</b></label>
+          <label>存在惩罚 <b id="sPresVal">0</b></label>
           <input type="range" id="sPres" min="-2" max="2" step="0.1" value="0" />
         </div>
         <div class="field-group-title">生成控制</div>
         <div class="field-row-2">
           <div class="field">
-            <label>最大生成长度 (tokens)</label>
+            <label>最大生成长度</label>
             <input id="sMaxTokens" type="number" min="16" max="32768" step="16" value="1024" />
           </div>
           <div class="field">
@@ -670,7 +670,7 @@
           <small class="hint" style="display:block;margin-top:4px;color:var(--text-muted,#888);font-size:12px;">自动模式跟随对话内容调整语速与语气；固定模式使用下方参数。</small>
         </div>
         <div class="field field-row">
-          <label>语速 Speed <b id="sTtsSpeedVal">1.0</b></label>
+          <label>语速 <b id="sTtsSpeedVal">1.0</b></label>
           <input type="range" id="sTtsSpeed" min="0.5" max="2" step="0.05" value="1" />
         </div>
         <div class="field field-row">
@@ -711,8 +711,8 @@
           当前服务已启用访问验证。请输入启动时生成的访问令牌。
         </p>
         <div class="field">
-          <label for="consoleTokenInput">访问令牌 (Token)</label>
-          <input id="consoleTokenInput" type="password" placeholder="请输入控制台 Token..." autocomplete="off" />
+          <label for="consoleTokenInput">访问令牌</label>
+          <input id="consoleTokenInput" type="password" placeholder="请输入控制台访问令牌…" autocomplete="off" />
         </div>
         <p class="modal-note" style="margin-top: 8px; font-size: 12px;">
           令牌仅在当前打开期间有效，关闭页面后自动失效。
