@@ -853,11 +853,19 @@ function showRedeemPackages(packages) {
 }
 
 async function queryRedeemCode() {
+  if (isImporting) return;
   const input = _dom.sVoiceRedeemCode;
   const code = String(input?.value || '').trim();
-  if (!code) return showToast('请先粘贴兑换码', 'error');
-  if (isImporting) return;
+  if (!code) {
+    if (_dom.sVoiceRedeemStatus) {
+      _dom.sVoiceRedeemStatus.textContent = '请先粘贴兑换码（以 G2V1. 开头）。';
+    }
+    input?.focus?.();
+    return showToast('请先粘贴兑换码', 'error');
+  }
+  // A newer query or a download makes this one stale; querying again stays possible, so a wrong code can be fixed at once.
   const revision = ++redeemQueryRevision;
+  if (_dom.sVoiceRedeemStatus) _dom.sVoiceRedeemStatus.textContent = '正在查询兑换码…';
   try {
     const packages = await fetchRedeemPackages(code);
     if (revision !== redeemQueryRevision || isImporting) return;
@@ -866,9 +874,11 @@ async function queryRedeemCode() {
     if (input) input.value = '';
   } catch (err) {
     if (revision !== redeemQueryRevision || isImporting) return;
+    const message = err?.message || '查询兑换码失败，请重试。';
     redeemCode = '';
     renderRedeemList([]);
-    showToast(err?.message || '查询兑换码失败', 'error');
+    if (_dom.sVoiceRedeemStatus) _dom.sVoiceRedeemStatus.textContent = message;
+    showToast(message, 'error');
   }
 }
 

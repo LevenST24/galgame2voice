@@ -35,6 +35,8 @@ const mkEl = (val = '') => {
       }
     },
     appendChild(c) { this.children.push(c); },
+    focused: false,
+    focus() { this.focused = true; },
     querySelectorAll: () => [],
     remove() {},
   };
@@ -124,7 +126,31 @@ globalThis.fetch = async (url) => (
 dom.sVoiceRedeemCode.value = bad;
 await dom.sVoiceRedeemQuery.fire('click');
 assert.equal(dom.sVoiceRedeemCode.value, bad);
+assert.equal(dom.sVoiceRedeemStatus.textContent, '兑换码格式无效，应为 G2V1.<地址>.<密钥>');
 assert.equal([...store.values()].some((v) => String(v).includes(bad)), false);
+
+// Empty input shows inline guidance and focuses the input box
+dom.sVoiceRedeemCode.value = '   ';
+dom.sVoiceRedeemCode.focused = false;
+await dom.sVoiceRedeemQuery.fire('click');
+assert.equal(dom.sVoiceRedeemCode.focused, true);
+assert.equal(dom.sVoiceRedeemStatus.textContent, '请先粘贴兑换码（以 G2V1. 开头）。');
+
+// While a query is in flight, the inline status shows progress until its answer arrives
+let releaseQuery;
+globalThis.fetch = async (url) => {
+  if (String(url).includes('/redeem/list')) {
+    await new Promise((resolve) => { releaseQuery = resolve; });
+    return ok({ packages: [{ id: 'alice', name: '爱丽丝', size: 2048, remaining: 2 }] });
+  }
+  return ok({});
+};
+dom.sVoiceRedeemCode.value = 'G2V1.slow-query-code';
+const pending = dom.sVoiceRedeemQuery.fire('click');
+assert.equal(dom.sVoiceRedeemStatus.textContent, '正在查询兑换码…');
+releaseQuery();
+await pending;
+assert.equal(dom.sVoiceRedeemStatus.textContent, '');
 
 let listCalls = 0;
 let prevented = false;
