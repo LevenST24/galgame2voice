@@ -1102,89 +1102,95 @@ async function bootHomeVoiceApp(t, { sessions, activeId, fetchImpl, assignHome, 
   return { doc, root, toasts, storage, app };
 }
 
-test('startup sync keeps newer local session settings and posts them', async t => {
-  const { session, server } = settingsSyncFixture({
-    id: 's_settings_local', updatedAt: 1_800_000_000_000, unconfirmedSettingsVersion: 1,
-    localName: '小明', localOpacity: 40, localTemp: 0.2,
-    serverUpdatedAt: '2024-01-01 00:00:01', serverName: '我', serverOpacity: 75, serverTemp: 0.7,
+for (const c of [
+  {
+    name: 'startup sync keeps newer local session settings and posts them',
+    id: 's_settings_local',
+    expectedUnconfirmed: undefined,
+    liveUnconfirmedMsg: '补发成功后内存中的未确认标记必须清除',
+    storedUnconfirmedMsg: '补发成功后 localStorage 中的未确认标记必须清除',
+  },
+  {
+    name: 'startup sync retains unconfirmed settings flag in storage when follow-up post fails',
+    id: 's_settings_fail',
+    postHandler: () => Response.json({ message: '服务不可用' }, { status: 503 }),
+    expectedUnconfirmed: 1,
+    liveNameMsg: '补发失败时仍保留本地设置',
+    liveUnconfirmedMsg: '补发失败后内存中保留未确认标记',
+    storedNameMsg: '补发失败时 localStorage 仍保留本地设置',
+    storedUnconfirmedMsg: '补发失败后 localStorage 中保留未确认标记，以便下次启动重试',
+  },
+]) {
+  test(c.name, async t => {
+    const { session, server } = settingsSyncFixture({
+      id: c.id, updatedAt: 1_800_000_000_000, unconfirmedSettingsVersion: 1,
+      localName: '小明', localOpacity: 40, localTemp: 0.2,
+      serverUpdatedAt: '2024-01-01 00:00:01', serverName: '我', serverOpacity: 75, serverTemp: 0.7,
+    });
+    const { live, stored, saves } = await bootSessionSync(t, {
+      session,
+      server,
+      ...(c.postHandler ? { postHandler: c.postHandler } : {}),
+    });
+    assert.equal(live.settings.advPlayerName, '小明', c.liveNameMsg);
+    assert.equal(live.settings.advWindowOpacity, 40);
+    assert.equal(live.settings.temperature, 0.2);
+    assert.equal(live.updatedAt, 1_800_000_000_000);
+    assert.equal(live.unconfirmedSettingsVersion, c.expectedUnconfirmed, c.liveUnconfirmedMsg);
+    assert.equal(stored.settings.advPlayerName, '小明', c.storedNameMsg);
+    assert.equal(stored.settings.advWindowOpacity, 40);
+    assert.equal(stored.settings.temperature, 0.2);
+    assert.equal(stored.updatedAt, 1_800_000_000_000);
+    assert.equal(stored.unconfirmedSettingsVersion, c.expectedUnconfirmed, c.storedUnconfirmedMsg);
+    assert.equal(saves.length, 1);
+    assert.equal(saves[0].id, session.id);
+    assert.equal(saves[0].settings.advPlayerName, '小明');
+    assert.equal(saves[0].settings.advWindowOpacity, 40);
+    assert.equal(saves[0].settings.temperature, 0.2);
   });
-  const { live, stored, saves } = await bootSessionSync(t, { session, server });
-  assert.equal(live.settings.advPlayerName, '小明');
-  assert.equal(live.settings.advWindowOpacity, 40);
-  assert.equal(live.settings.temperature, 0.2);
-  assert.equal(live.updatedAt, 1_800_000_000_000);
-  assert.equal(live.unconfirmedSettingsVersion, undefined, '补发成功后内存中的未确认标记必须清除');
-  assert.equal(stored.settings.advPlayerName, '小明');
-  assert.equal(stored.settings.advWindowOpacity, 40);
-  assert.equal(stored.settings.temperature, 0.2);
-  assert.equal(stored.updatedAt, 1_800_000_000_000);
-  assert.equal(stored.unconfirmedSettingsVersion, undefined, '补发成功后 localStorage 中的未确认标记必须清除');
-  assert.equal(saves.length, 1);
-  assert.equal(saves[0].id, session.id);
-  assert.equal(saves[0].settings.advPlayerName, '小明');
-  assert.equal(saves[0].settings.advWindowOpacity, 40);
-  assert.equal(saves[0].settings.temperature, 0.2);
-});
+}
 
-test('startup sync applies newer server session settings', async t => {
-  const { session, server } = settingsSyncFixture({
-    id: 's_settings_server', updatedAt: 1_700_000_000_000,
-    localName: '我', localOpacity: 75, localTemp: 0.7,
-    serverUpdatedAt: '2024-06-01 00:00:02', serverName: '小明', serverOpacity: 40, serverTemp: 0.2,
-  });
-  const { live, stored, saves } = await bootSessionSync(t, { session, server });
-  const serverUpdatedAt = serverTimestamp(server.updated_at);
-  assert.equal(live.settings.advPlayerName, '小明');
-  assert.equal(live.settings.advWindowOpacity, 40);
-  assert.equal(live.settings.temperature, 0.2);
-  assert.equal(live.updatedAt, serverUpdatedAt);
-  assert.equal(stored.settings.advPlayerName, '小明');
-  assert.equal(stored.settings.advWindowOpacity, 40);
-  assert.equal(stored.settings.temperature, 0.2);
-  assert.equal(stored.updatedAt, serverUpdatedAt);
-  assert.equal(saves.length, 0);
-});
-
-test('startup sync applies server session settings when local session has newer reply timestamp but no unconfirmed settings', async t => {
-  const { session, server } = settingsSyncFixture({
-    id: 's_reply_newer_than_server', updatedAt: 1_800_000_000_000,
-    localName: '我', localOpacity: 75, localTemp: 0.7,
-    serverUpdatedAt: '2024-01-01 00:00:01', serverName: '小明', serverOpacity: 40, serverTemp: 0.2,
+for (const c of [
+  {
+    name: 'startup sync applies newer server session settings',
+    id: 's_settings_server',
+    updatedAt: 1_700_000_000_000,
+    serverUpdatedAt: '2024-06-01 00:00:02',
+  },
+  {
+    name: 'startup sync applies server session settings when local session has newer reply timestamp but no unconfirmed settings',
+    id: 's_reply_newer_than_server',
+    updatedAt: 1_800_000_000_000,
+    serverUpdatedAt: '2024-01-01 00:00:01',
     messages: [
       { id: 'm_user', role: 'user', content: '你好', ts: 1_700_000_000_000 },
       { id: 'm_assistant', role: 'assistant', content: '你好！', ts: 1_800_000_000_000 },
     ],
+    liveNameMsg: '服务端新设置必须胜出',
+    storedNameMsg: 'localStorage 必须更新为服务端新设置',
+    savesMsg: '严禁把本机旧设置补发覆盖到服务端',
+  },
+]) {
+  test(c.name, async t => {
+    const { session, server } = settingsSyncFixture({
+      id: c.id, updatedAt: c.updatedAt,
+      localName: '我', localOpacity: 75, localTemp: 0.7,
+      serverUpdatedAt: c.serverUpdatedAt, serverName: '小明', serverOpacity: 40, serverTemp: 0.2,
+      ...(c.messages ? { messages: c.messages } : {}),
+    });
+    const { live, stored, saves } = await bootSessionSync(t, { session, server });
+    const serverUpdatedAt = serverTimestamp(server.updated_at);
+    assert.equal(live.settings.advPlayerName, '小明', c.liveNameMsg);
+    assert.equal(live.settings.advWindowOpacity, 40);
+    assert.equal(live.settings.temperature, 0.2);
+    assert.equal(live.updatedAt, serverUpdatedAt);
+    assert.equal(stored.settings.advPlayerName, '小明', c.storedNameMsg);
+    assert.equal(stored.settings.advWindowOpacity, 40);
+    assert.equal(stored.settings.temperature, 0.2);
+    assert.equal(stored.updatedAt, serverUpdatedAt);
+    assert.equal(saves.length, 0, c.savesMsg);
   });
-  const { live, stored, saves } = await bootSessionSync(t, { session, server });
-  const serverUpdatedAt = serverTimestamp(server.updated_at);
-  assert.equal(live.settings.advPlayerName, '小明', '服务端新设置必须胜出');
-  assert.equal(live.settings.advWindowOpacity, 40);
-  assert.equal(live.settings.temperature, 0.2);
-  assert.equal(live.updatedAt, serverUpdatedAt);
-  assert.equal(stored.settings.advPlayerName, '小明', 'localStorage 必须更新为服务端新设置');
-  assert.equal(stored.settings.advWindowOpacity, 40);
-  assert.equal(stored.settings.temperature, 0.2);
-  assert.equal(stored.updatedAt, serverUpdatedAt);
-  assert.equal(saves.length, 0, '严禁把本机旧设置补发覆盖到服务端');
-});
-
-test('startup sync retains unconfirmed settings flag in storage when follow-up post fails', async t => {
-  const { session, server } = settingsSyncFixture({
-    id: 's_settings_fail', updatedAt: 1_800_000_000_000, unconfirmedSettingsVersion: 1,
-    localName: '小明', localOpacity: 40, localTemp: 0.2,
-    serverUpdatedAt: '2024-01-01 00:00:01', serverName: '我', serverOpacity: 75, serverTemp: 0.7,
-  });
-  const { live, stored, saves } = await bootSessionSync(t, {
-    session,
-    server,
-    postHandler: () => Response.json({ message: '服务不可用' }, { status: 503 }),
-  });
-  assert.equal(live.settings.advPlayerName, '小明', '补发失败时仍保留本地设置');
-  assert.equal(live.unconfirmedSettingsVersion, 1, '补发失败后内存中保留未确认标记');
-  assert.equal(stored.settings.advPlayerName, '小明', '补发失败时 localStorage 仍保留本地设置');
-  assert.equal(stored.unconfirmedSettingsVersion, 1, '补发失败后 localStorage 中保留未确认标记，以便下次启动重试');
-  assert.equal(saves.length, 1);
-});
+}
 
 test('startup sync unconfirmed version is preserved and newer settings kept if edited while in-flight boot post resolves', async t => {
   const { doc, root, toasts } = mountAdvDocument();

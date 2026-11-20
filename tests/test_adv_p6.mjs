@@ -480,22 +480,31 @@ test('bg panel: filters to the active work and 显示其他作品 reveals every 
   assert.equal(h.saves.length, 0, 'revealing other works never saves');
 });
 
-test('bg panel: a character with no work lists every background grouped under its work', t => {
-  const h = setupPanel(t);
-  h.panel.open();
-  assert.deepEqual(h.keys(), ['', 'none', 'cafe/stella', 'cafe/beach', 'onsen/hot']);
-  assert.deepEqual(h.groups(), ['喫茶ステラ', '温泉街']);
-  assert.equal(h.toggle().hidden, true, 'nothing else to reveal');
-  assert.equal(h.tiles()[0].querySelector('.adv-bg-swatch').classList.contains('has-image'), false,
-    '自动 without a character work is the sky');
-});
-
-test('bg panel: a work with no pack yet lists every work instead of an empty grid', t => {
-  const h = setupPanel(t, { characterWork: 'riddle' });
-  h.panel.open();
-  assert.deepEqual(h.keys(), ['', 'none', 'cafe/stella', 'cafe/beach', 'onsen/hot']);
-  assert.equal(h.toggle().hidden, true);
-});
+for (const c of [
+  {
+    name: 'bg panel: a character with no work lists every background grouped under its work',
+    opts: undefined,
+    expectedGroups: ['喫茶ステラ', '温泉街'],
+    toggleMsg: 'nothing else to reveal',
+    expectAutoWithoutImage: true,
+  },
+  {
+    name: 'bg panel: a work with no pack yet lists every work instead of an empty grid',
+    opts: { characterWork: 'riddle' },
+  },
+]) {
+  test(c.name, t => {
+    const h = setupPanel(t, c.opts);
+    h.panel.open();
+    assert.deepEqual(h.keys(), ['', 'none', 'cafe/stella', 'cafe/beach', 'onsen/hot']);
+    if (c.expectedGroups) assert.deepEqual(h.groups(), c.expectedGroups);
+    assert.equal(h.toggle().hidden, true, c.toggleMsg);
+    if (c.expectAutoWithoutImage) {
+      assert.equal(h.tiles()[0].querySelector('.adv-bg-swatch').classList.contains('has-image'), false,
+        '自动 without a character work is the sky');
+    }
+  });
+}
 
 test('bg panel: a stored background of another work opens with every work shown', t => {
   const h = setupPanel(t, { characterWork: 'cafe', selection: { id: 'onsen/hot', time: 'auto' } });

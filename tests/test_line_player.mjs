@@ -335,31 +335,40 @@ test('interruptVoice: false waits for voice and collapses multiple advances', as
   assert.equal(player.currentIndex, 1);
 });
 
-test('disabling voice completes a pending advance exactly once', async () => {
-  const { player, voice } = setup({ settings: { interruptVoice: false, revealMsPerGrapheme: 0 } });
-  player.startTurn('turn-1');
-  player.setLineAudio('turn-1', 0, { status: 'ready', chunks: [{ audio_url: '/a.wav' }] });
-  player.pushLine('turn-1', sampleLine0);
-  player.pushLine('turn-1', sampleLine1);
-  player.advance();
-  assert.equal(player.currentIndex, 0);
+for (const c of [
+  {
+    name: 'disabling voice completes a pending advance exactly once',
+    advanceBeforeDisable: true,
+    expectedIndex: 1,
+    expectStopCount: 1,
+  },
+  {
+    name: 'disabling voice without a pending advance keeps the current line',
+    advanceBeforeDisable: false,
+    expectedIndex: 0,
+  },
+]) {
+  test(c.name, async () => {
+    const { player, voice } = setup({ settings: { interruptVoice: false, revealMsPerGrapheme: 0 } });
+    player.startTurn('turn-1');
+    player.setLineAudio('turn-1', 0, { status: 'ready', chunks: [{ audio_url: '/a.wav' }] });
+    player.pushLine('turn-1', sampleLine0);
+    player.pushLine('turn-1', sampleLine1);
+    if (c.advanceBeforeDisable) {
+      player.advance();
+      assert.equal(player.currentIndex, 0);
+    }
 
-  player.setSettings({ voiceEnabled: false });
-  assert.equal(player.currentIndex, 1, 'the queued next action must not be lost');
-  assert.equal(voice.calls.filter(call => call.type === 'stop').length, 1);
-  await flushMicrotasks();
-  assert.equal(player.currentIndex, 1, 'the old playback completion must not advance again');
-});
-
-test('disabling voice without a pending advance keeps the current line', () => {
-  const { player } = setup({ settings: { interruptVoice: false, revealMsPerGrapheme: 0 } });
-  player.startTurn('turn-1');
-  player.setLineAudio('turn-1', 0, { status: 'ready', chunks: [{ audio_url: '/a.wav' }] });
-  player.pushLine('turn-1', sampleLine0);
-  player.pushLine('turn-1', sampleLine1);
-  player.setSettings({ voiceEnabled: false });
-  assert.equal(player.currentIndex, 0);
-});
+    player.setSettings({ voiceEnabled: false });
+    assert.equal(player.currentIndex, c.expectedIndex,
+      c.advanceBeforeDisable ? 'the queued next action must not be lost' : undefined);
+    if (c.expectStopCount !== undefined) {
+      assert.equal(voice.calls.filter(call => call.type === 'stop').length, c.expectStopCount);
+      await flushMicrotasks();
+      assert.equal(player.currentIndex, c.expectedIndex, 'the old playback completion must not advance again');
+    }
+  });
+}
 
 // -------------------------------------------------------------
 // 5. AUTO timing, formula, clamps, modes, and voice-off
