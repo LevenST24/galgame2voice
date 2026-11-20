@@ -21,15 +21,9 @@ from galgame2voice.errors import (
 )
 from galgame2voice.utils import audio_converter
 from galgame2voice.utils.audio_converter import (
-    convert_ogg_to_wav,
     convert_wav_to_ogg,
     run_ffmpeg_command,
 )
-
-# Passes the payload sanity checks and is not already target-format PCM, so the
-# converter proceeds to the ffmpeg step.
-VALID_LOOKING_OGG = b"OggS" + b"\x00" * 64
-
 
 class _FakeProcess:
     """Minimal stand-in for an asyncio subprocess with a failing exit code."""
@@ -74,26 +68,6 @@ def test_error_codes_are_stable_and_distinct():
     assert len(codes) == 4, "consumers must be able to tell these apart"
 
 
-async def test_missing_ffmpeg_raises_typed_dependency_error(monkeypatch):
-    monkeypatch.setattr(audio_converter, "find_ffmpeg", lambda *args, **kwargs: None)
-
-    with pytest.raises(FFmpegUnavailable) as excinfo:
-        await audio_converter.convert_ogg_to_wav(VALID_LOOKING_OGG)
-
-    assert excinfo.value.code == "FFMPEG_UNAVAILABLE"
-    assert "ffmpeg executable not found" in str(excinfo.value)
-
-
-async def test_missing_ffmpeg_is_not_reported_as_a_transcode_failure(monkeypatch):
-    monkeypatch.setattr(audio_converter, "find_ffmpeg", lambda *args, **kwargs: None)
-
-    with pytest.raises(Galgame2VoiceError) as excinfo:
-        await audio_converter.convert_ogg_to_wav(VALID_LOOKING_OGG)
-
-    assert not isinstance(excinfo.value, AudioTranscodeFailed)
-    assert not isinstance(excinfo.value, ValueError)
-
-
 async def test_nonzero_ffmpeg_exit_raises_transcode_error(monkeypatch):
     async def _fake_exec(*args, **kwargs):
         return _FakeProcess()
@@ -108,30 +82,6 @@ async def test_nonzero_ffmpeg_exit_raises_transcode_error(monkeypatch):
 
     assert excinfo.value.code == "AUDIO_TRANSCODE_FAILED"
     assert "Invalid data found" in str(excinfo.value)
-
-
-async def test_wrapped_transcode_failure_is_still_catchable_as_value_error(monkeypatch):
-    """The wrapped path must keep the historical ValueError contract."""
-
-    async def _boom(*args, **kwargs):
-        raise RuntimeError("ffmpeg conversion failed (code 1): Invalid data")
-
-    monkeypatch.setattr(audio_converter, "find_ffmpeg", lambda *args, **kwargs: "/usr/bin/ffmpeg")
-    monkeypatch.setattr(audio_converter, "run_ffmpeg_command", _boom)
-
-    with pytest.raises(ValueError, match="Audio conversion failed") as excinfo:
-        await audio_converter.convert_ogg_to_wav(VALID_LOOKING_OGG)
-
-    assert isinstance(excinfo.value, AudioTranscodeFailed)
-    assert excinfo.value.code == "AUDIO_TRANSCODE_FAILED"
-
-
-async def test_corrupt_payload_is_still_a_plain_value_error(monkeypatch):
-    """Input validation is a caller mistake, not an external failure."""
-    monkeypatch.setattr(audio_converter, "find_ffmpeg", lambda *args, **kwargs: "/usr/bin/ffmpeg")
-
-    with pytest.raises(ValueError):
-        await audio_converter.convert_ogg_to_wav(b"")
 
 
 async def test_missing_ffmpeg_on_wav_to_ogg_raises_typed_dependency_error(monkeypatch):
@@ -151,13 +101,6 @@ async def test_missing_ffmpeg_on_wav_to_ogg_raises_typed_dependency_error(monkey
 
 @pytest.mark.asyncio
 class TestAudioConverterHardening:
-    async def test_convert_ogg_to_wav_empty_and_too_short(self):
-        with pytest.raises(ValueError, match="Audio payload is empty or too short"):
-            await convert_ogg_to_wav(b"")
-
-        with pytest.raises(ValueError, match="Audio payload is empty or too short"):
-            await convert_ogg_to_wav(b"OggS123")
-
     async def test_convert_wav_to_ogg_empty_and_too_short(self):
         with pytest.raises(ValueError, match="WAV bytes cannot be empty"):
             await convert_wav_to_ogg(b"")
@@ -236,8 +179,6 @@ class TestAudioConverterHardening:
                 b"\x7fELF" + b"\x00" * 30,
                 b"%PDF-1.4" + b"\x00" * 30,
             ):
-                with pytest.raises(ValueError, match="Corrupted or unsupported audio format"):
-                    await convert_ogg_to_wav(non_audio)
                 with pytest.raises(ValueError, match="Corrupted or unsupported audio format"):
                     await convert_wav_to_ogg(non_audio)
             mock_run.assert_not_called()

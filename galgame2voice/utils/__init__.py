@@ -48,9 +48,7 @@ from galgame2voice.utils.audio_converter import (
     find_ffmpeg,
     reset_ffmpeg_cache,
     is_ffmpeg_available,
-    is_target_wav_pcm,
     run_ffmpeg_command,
-    convert_ogg_to_wav,
     convert_wav_to_ogg,
 )
 from galgame2voice.utils.japanese_phonetics import (
@@ -107,9 +105,7 @@ __all__ = [
     "find_ffmpeg",
     "reset_ffmpeg_cache",
     "is_ffmpeg_available",
-    "is_target_wav_pcm",
     "run_ffmpeg_command",
-    "convert_ogg_to_wav",
     "convert_wav_to_ogg",
     "normalize_japanese_furigana",
     "normalize_galgame_names_and_readings",
