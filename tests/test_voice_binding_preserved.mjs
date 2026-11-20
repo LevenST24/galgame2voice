@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { state, loadState, DEFAULT_SESSION_SETTINGS } from '../frontend/src/store.js';
+import { state, loadState, exportSessionData, DEFAULT_SESSION_SETTINGS } from '../frontend/src/store.js';
+import { mergeChatBackup } from '../frontend/src/chat_backup.js';
 import { initVoiceSettings, loadSessionVoiceSelect } from '../frontend/src/controllers/voice_settings.js';
 
 function element(value = '') {
@@ -91,4 +92,70 @@ test('delete button follows real voice selection and recomputes after failed del
     await attempt;
     assert.equal(dom.sVoiceDelete.disabled, next !== '2');
   }
+});
+
+test('creating or deleting a voice profile bumps session updatedAt for complete chat backup', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  globalThis.document = { getElementById: () => null, createElement: () => element() };
+  globalThis.window = { confirm: () => true };
+  globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} };
+  const serverUpdatedAt = Date.now() - 10_000;
+  const s = {
+    id: 's_voice_backup', title: '音色备份', createdAt: 1, updatedAt: serverUpdatedAt,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: 2 }, messages: [],
+  };
+  Object.assign(state, { sessions: [s], activeId: s.id });
+  const dom = {
+    sVoice: select(), sVoiceDelete: element(), sSystem: element(), sCustomVoiceBox: element(),
+    sCvCreate: element(), sCvName: element(), sCvGpt: element(), sCvSovits: element(),
+    sCvRef: element(), sCvPromptText: element(), sCvLang: element(),
+  };
+  let profiles = [{ id: 1, name: 'A' }, { id: 2, name: 'B' }];
+  globalThis.fetch = async (url, opts = {}) => {
+    const method = opts.method || 'GET';
+    if (url === '/api/chat/sessions' && method === 'POST') {
+      return { ok: false, status: 500, json: async () => ({ detail: '保存失败' }) };
+    }
+    if (url === '/api/voice/profiles/2' && method === 'DELETE') {
+      profiles = profiles.filter((p) => p.id !== 2);
+      return { ok: true, status: 200, json: async () => ({ status: 'ok' }) };
+    }
+    if (url === '/api/voice/profiles' && method === 'POST') {
+      profiles.push({ id: 7, name: '新音色' });
+      return { ok: true, status: 200, json: async () => ({ id: 7 }) };
+    }
+    if (url === '/api/voice/profiles') {
+      return { ok: true, status: 200, json: async () => ({ profiles, active_profile_id: profiles[0]?.id ?? null }) };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  initVoiceSettings(dom, {});
+  await loadSessionVoiceSelect(s);
+
+  // 1. Delete bound voice while /api/chat/sessions fails -> backup must preserve unbound null.
+  await dom.sVoiceDelete.click();
+  assert.equal(s.settings.voiceProfileId, null);
+  let merged = mergeChatBackup({
+    format: 'galgame2voice.chat', version: 1,
+    sessions: [{ id: s.id, title: s.title, createdAt: 1, updatedAt: serverUpdatedAt,
+      settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: 2 }, messages: [] }],
+  }, JSON.parse(exportSessionData()));
+  assert.equal(JSON.parse(merged.content).sessions[0].settings.voiceProfileId, null);
+
+  // 2. Create and bind a custom voice while /api/chat/sessions fails -> backup must preserve id 7.
+  const serverAfterDelete = s.updatedAt;
+  dom.sCvName.value = '新音色';
+  dom.sCvGpt.value = 'gpt.ckpt';
+  dom.sCvSovits.value = 'sovits.pth';
+  dom.sCvRef.value = 'ref.wav';
+  dom.sCvPromptText.value = '你好世界';
+  dom.sCvLang.value = 'zh';
+  await dom.sCvCreate.click();
+  assert.equal(s.settings.voiceProfileId, 7);
+  merged = mergeChatBackup({
+    format: 'galgame2voice.chat', version: 1,
+    sessions: [{ id: s.id, title: s.title, createdAt: 1, updatedAt: serverAfterDelete,
+      settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null }, messages: [] }],
+  }, JSON.parse(exportSessionData()));
+  assert.equal(JSON.parse(merged.content).sessions[0].settings.voiceProfileId, 7);
 });

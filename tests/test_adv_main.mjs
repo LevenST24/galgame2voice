@@ -3,7 +3,7 @@ import test from 'node:test';
 // Import before installing a document: don't auto-boot authentication or devices.
 import { setup } from './helpers/adv_main.mjs';
 import { tick, fakeChatStream } from './helpers/chat_stream.mjs';
-import { state as storedState, getActive as storedActive, getSession as storedSession, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL, GREETING } from '../frontend/src/store.js';
+import { state as storedState, getActive as storedActive, getSession as storedSession, exportSessionData, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL, GREETING } from '../frontend/src/store.js';
 import { mergeChatBackup } from '../frontend/src/chat_backup.js';
 import { serverTimestamp } from '../frontend/src/session_data.js';
 import { initVoiceSettings, ensureSessionVoice, getVoiceProfiles, fetchVoiceProfiles, getActiveProfileId, openSessionSettings } from '../frontend/src/controllers/voice_settings.js';
@@ -2029,4 +2029,48 @@ test('startup sync reconciles multiple unpersisted failed prompts correctly when
   assert.equal(tailMsg.content, '第二条提问未落库');
   assert.ok(tailMsg.failed, '未落库的第二条提问应保留在末尾且保持 failed 状态');
   assert.equal(app.conversation.canRetry(tailMsg), true, '末尾未落库失败提问必须支持重试');
+});
+
+test('complete chat backup preserves unconfirmed reading settings when backend save fails', async t => {
+  const serverUpdated = '2024-06-01 00:00:03';
+  const serverUpdatedAt = serverTimestamp(serverUpdated);
+  const session = twoTurnSession({
+    id: 's_backup_settings', title: '设置备份测试', updatedAt: serverUpdatedAt,
+    user: { id: 'm_1', serverMessageId: 1, content: '你好', ts: serverUpdatedAt - 2000 },
+    assistant: { id: 'm_2', serverMessageId: 2, content: '欢迎回来', ts: serverUpdatedAt - 1000 },
+  });
+  const serverSessions = [
+    chatServer(session, { updated_at: serverUpdated, message_count: 2, last_message: '欢迎回来' }),
+  ];
+  const { app } = await bootSyncedChat(t, {
+    sessions: [session],
+    activeId: session.id,
+    serverSessions,
+    mode: 'window',
+    fallback: { providers: 'empty' },
+    routes: (url, options = {}) => {
+      if (url.includes('/api/chat/sessions') && (options.method || 'GET') === 'POST') {
+        return Response.json({ detail: '数据库暂时繁忙' }, { status: 500 });
+      }
+    },
+  });
+
+  app.adv.configPanel.open();
+  app.adv.configPanel.controls.advPlayerName.value = '旅人';
+  assert.equal(await app.adv.configPanel.save(), false, '后端返回 500 时保存应保持未确认');
+
+  const merged = mergeChatBackup({
+    format: 'galgame2voice.chat',
+    version: 1,
+    sessions: [{
+      id: session.id,
+      title: session.title,
+      createdAt: session.createdAt,
+      updatedAt: serverUpdatedAt,
+      settings: { ...DEFAULT_SESSION_SETTINGS },
+      messages: session.messages,
+    }],
+  }, JSON.parse(exportSessionData()));
+  const exported = JSON.parse(merged.content).sessions.find(s => s.id === session.id);
+  assert.equal(exported.settings.advPlayerName, '旅人', '完整备份应保留尚未同步到后端的较新本地设置');
 });

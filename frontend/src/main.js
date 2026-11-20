@@ -336,6 +336,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           if (!session) throw new Error('当前没有可保存的会话。');
           ++_syncSessionsGen;
           session.settings = pickSettings({ ...session.settings, ...patch }, DEFAULT_SESSION_SETTINGS);
+          session.updatedAt = Math.max(Date.now(), (session.updatedAt || 0) + 1);
           const version = (session.unconfirmedSettingsVersion || 0) + 1;
           session.unconfirmedSettingsVersion = version;
           saveState();

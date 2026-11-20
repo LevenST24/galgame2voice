@@ -629,6 +629,7 @@ export async function createCustomVoice() {
     if (origin && state.sessions.includes(origin)) {
       _callbacks.invalidateSessionSync?.();
       origin.settings.voiceProfileId = profileId;
+      origin.updatedAt = Math.max(Date.now(), (origin.updatedAt || 0) + 1);
       const version = (origin.unconfirmedSettingsVersion || 0) + 1;
       origin.unconfirmedSettingsVersion = version;
       saveState();
@@ -1038,6 +1039,7 @@ export async function deleteVoiceProfile() {
     const sessionVersions = new Map();
     for (const sess of cleared) {
       sess.settings.voiceProfileId = null;
+      sess.updatedAt = Math.max(Date.now(), (sess.updatedAt || 0) + 1);
       const version = (sess.unconfirmedSettingsVersion || 0) + 1;
       sess.unconfirmedSettingsVersion = version;
       sessionVersions.set(sess, version);
@@ -1133,7 +1135,7 @@ async function handleSaveSessionSettings() {
       ttsTopP: Number(_dom.sTtsTopP.value),
       ttsTemperature: Number(_dom.sTtsTemp.value),
     };
-    s.updatedAt = Date.now();
+    s.updatedAt = Math.max(Date.now(), (s.updatedAt || 0) + 1);
     const version = (s.unconfirmedSettingsVersion || 0) + 1;
     s.unconfirmedSettingsVersion = version;
     saveState();
