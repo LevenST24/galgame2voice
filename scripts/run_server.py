@@ -201,25 +201,6 @@ def cleanup_subprocesses():
         pass
 
 
-def get_sovits_host_port() -> tuple[str, int]:
-    """
-    Single source of truth for the engine address: parses GPT_SOVITS_BASE_URL
-    (env or config) so launcher, backend client and Docker all agree.
-
-    Thin wrapper over the unified resolver
-    (galgame2voice.services.sovits_endpoint); kept for backward compatibility.
-    """
-    try:
-        from galgame2voice.services.sovits_endpoint import (
-            resolve_effective_sovits_endpoint_sync,
-        )
-
-        endpoint = resolve_effective_sovits_endpoint_sync()
-        return endpoint.host, endpoint.port
-    except Exception:
-        return "127.0.0.1", 9880
-
-
 def _check_sovits_dir(p: Path) -> Path | None:
     """Checks if p or a nested directory inside p contains api_v2.py."""
     if not p.exists() or not p.is_dir():
@@ -535,15 +516,6 @@ def run_hardware_diagnostics() -> dict[str, Any]:
 
     print("      [巡检通过] 运行环境诊断完毕。\n")
     return diag
-
-
-def check_system_memory():
-    """Checks free physical memory and prints advisory if system RAM is constrained."""
-    if sys.platform != "win32":
-        return
-    _, free_gb = get_system_ram_gb()
-    if 0 < free_gb < 1.8:
-        print(f"      [内存提示] 当前系统空闲物理内存约 {free_gb:.1f} GB。建议关闭高内存占用的后台应用以确保语音合成流畅。")
 
 
 def _spawn_sovits_process(
