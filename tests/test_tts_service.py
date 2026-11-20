@@ -24,7 +24,6 @@ from galgame2voice.services.chat_pipelines.tts_pipeline import TtsStreamPipeline
 from galgame2voice.services.tts_cache_manager import TtsCacheManager
 from galgame2voice.services.tts_service import (
     TtsService,
-    _AUDIO_STAT_DURATION_CACHE,
     async_get_audio_duration,
 )
 from galgame2voice.utils.audio_spec import AudioSpecCache, _AUDIO_SPEC_CACHE
@@ -64,7 +63,6 @@ def test_get_audio_duration_stat_cache(tmp_path):
     st = wav_path.stat()
     stat_key = (str(wav_path.resolve()), st.st_mtime_ns, st.st_size)
     assert stat_key in _AUDIO_SPEC_CACHE._cache
-    assert stat_key in _AUDIO_STAT_DURATION_CACHE
 
     # Second probe: should hit stat cache directly without calling AudioSpecCache._probe
     with patch.object(AudioSpecCache, "_probe") as mock_probe:
