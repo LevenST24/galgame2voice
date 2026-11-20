@@ -162,6 +162,8 @@ const TRANSIENT_DIAGNOSTIC_CODES = new Set([
   'BAD_GATEWAY',
   'SERVER_OVERLOADED',
   'REQUEST_TIMEOUT',
+  'STREAM_INCOMPLETE',
+  'STREAM_IDLE_TIMEOUT',
 ]);
 
 /** 失败是否需要去「对话模型」处理。只看错误码，不根据错误原文猜测。 */
