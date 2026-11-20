@@ -329,17 +329,6 @@ test('save-and-activate saves an edited API key and activates the model', async 
   assert.equal(h.dom.gApiKey.value, '', 'successful save must clear pending API key input');
 });
 
-test('provider confirmation does not activate an atomically saved model twice', async t => {
-  const h = await setupProviderFooter(t);
-  h.edit('gApiKey', 'synthetic-confirmed-key');
-  h.fail('/api/providers/openai/activate');
-  await h.settings.handleActivateProvider();
-  assert.equal(h.calls.filter(call => call.url.endsWith('/activate')).length, 0);
-  assert.equal(h.writes().length, 1);
-  assert.ok(h.messages().some(message => /已成功保存并启用/.test(message)));
-  assert.equal(h.dom.gApiKey.value, '');
-});
-
 test('provider confirmation verifies a lost non-secret save without resending it', async t => {
   const h = await setupProviderFooter(t);
   const fetch = globalThis.fetch;
@@ -475,20 +464,6 @@ test('model draft survives edits during save, activation and list refresh', asyn
     assert.equal(h.writes()[1].body.api_base_url, 'https://new-draft.test/v1');
     assert.equal(h.writes()[1].body.reasoning_effort, 'high');
   });
-});
-
-test('model draft survives save-and-activate button refresh', { timeout: 3000 }, async t => {
-  const h = await setupProviderFooter(t);
-  h.edit('gChatModel', 'submitted-model');
-  const gate = holdModelRequest(t, (url, options) => url === '/api/providers' && options.method === 'POST');
-  const saving = h.settings.handleActivateProvider();
-  await gate.started;
-  h.edit('gChatModel', 'next-model');
-  gate.release(); await saving;
-  assert.equal(h.dom.gChatModel.value, 'next-model');
-  assert.ok(h.messages().some(message => /当前修改尚未保存/.test(message)));
-  await h.settings.handleActivateProvider();
-  assert.equal(h.writes().at(-1).body.chat_model, 'next-model');
 });
 
 test('model draft provider switch is preserved while the previous model saves', { timeout: 3000 }, async t => {

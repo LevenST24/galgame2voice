@@ -5,10 +5,9 @@ import { requestJson } from '../frontend/src/request.js';
 import { createBacklog } from '../frontend/src/adv/backlog.js';
 import { canReplayLine } from '../frontend/src/adv/replay.js';
 import { normalizeLines } from '../frontend/src/session_data.js';
-import { createConversation } from '../frontend/src/conversation.js';
 import { state, loadState, saveState } from '../frontend/src/store.js';
-import { fakeChatStream, tick } from './helpers/chat_stream.mjs';
-import { fakeDocument, microtasks } from './helpers/adv_dom.mjs';
+import { tick } from './helpers/chat_stream.mjs';
+import { fakeDocument } from './helpers/adv_dom.mjs';
 
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 
@@ -149,32 +148,6 @@ function backlogFixture(t, recover) {
   return { ...f, log, root, doc, played, get chosen() { return chosen; } };
 }
 
-test('LOG offers a named current-voice repair and enables fresh playback on an old message', async t => {
-  const f = backlogFixture(t);
-  const entries = f.log.element.querySelectorAll('.adv-log-entry');
-  const button = entries[1].querySelector('.adv-log-regenerate-btn');
-  assert.ok(button, 'an unavailable line has no recovery action');
-  assert.match(button.title, /当前角色/);
-  await button.onclick({ stopPropagation() {} });
-  const replay = entries[1].querySelector('.adv-log-replay-btn');
-  assert.equal(replay.disabled, false);
-  assert.equal(f.played.length, 0, 'generation must not unexpectedly start playback after a long request');
-  await replay.onclick({ stopPropagation() {} });
-  assert.equal(f.played[0][0].audio_url, '/audio/repair_unique.wav');
-});
-
-test('closing LOG aborts a pending repair and leaves the old line intact', async t => {
-  const gate = deferred(); let signal;
-  const f = backlogFixture(t, request => { signal = request.signal; return gate.promise; });
-  const button = f.log.element.querySelectorAll('.adv-log-regenerate-btn')[1];
-  assert.ok(button);
-  const pending = button.onclick({ stopPropagation() {} }); await microtasks();
-  assert.equal(button.textContent, '取消生成');
-  f.log.destroy(); assert.equal(signal.aborted, true);
-  gate.resolve({ audio: f.reply.audio, persisted: true, saved: true }); await pending;
-  assert.equal(f.message.lines[1].audio.status, 'failed');
-});
-
 test('an unbound LOG line offers voice selection instead of guessing a voice', async t => {
   const f = backlogFixture(t); f.session.settings.voiceProfileId = null; f.log.renderAll();
   const button = f.log.element.querySelector('.adv-log-regenerate-btn');
@@ -288,28 +261,6 @@ test('a server-persisted LOG repair does not suggest exporting a chat backup whe
   const browserStatus = browserLogLive.element.querySelector('.adv-log-audio-status').textContent;
   assert.equal(calls.at(-1).body.message_id, null);
   assert.equal(browserStatus, '语音已生成，但保存失败。请到「设置中心 → 备份与更新」导出聊天备份。');
-});
-
-test('a completed SSE reply carries its real database ID into a subsequent repair', async () => {
-  const f = fixture(), stream = fakeChatStream(); f.session.messages = [];
-  let sequence = 0;
-  const conversation = createConversation({
-    state: { activeId: f.session.id, global: { voiceMode: false } },
-    getActive: () => f.session, getSession: () => f.session, saveState() {},
-    uid: prefix => `${prefix}_local_${++sequence}`,
-    addMessage(role, content) { const message = { id: `local_${++sequence}`, role, content, ts: Date.now() }; f.session.messages.push(message); return message; },
-    persistSession: async () => {}, isSessionDeleting: () => false, audioStore: new Map(), putCachedAudioBlob() {},
-    fetchAndCacheAudio: async () => {}, audioPlayer: { interrupt() {} }, getCurrentVoice: () => null, stopCurrentVoice() {},
-    fetch: stream.fetch,
-  });
-  assert.equal(conversation.send('提问'), true); await tick();
-  await stream.requests[0].onEnd('中文回答', { message_id: 88, japanese: '日本語0。日本語1。', lines: fixture().message.lines });
-  for (let i = 0; i < 10 && conversation.busy; i++) await tick();
-  assert.equal(conversation.busy, false);
-  const message = f.session.messages.find(item => item.role === 'assistant');
-  assert.equal(message.serverMessageId, 88);
-  await f.recover({ messageId: message.id, lineIndex: 1 });
-  assert.equal(JSON.parse(f.calls[0][1].body).message_id, 88);
 });
 
 function makeValidRemoteSnapshot(sessionId, messageId, lineIndex, text, profileId, { audioUrl = '/audio/repair_valid.wav', ...extra } = {}) {

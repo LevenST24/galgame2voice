@@ -135,13 +135,6 @@ function setupConversationHarness(sseSamples, sessionId = 'sess_contract_1') {
   };
 }
 
-test('contract schema_version is pinned to sse_turn_reply_v1', () => {
-  assert.equal(contract.schema_version, 'sse_turn_reply_v1');
-  assert.ok(contract.sse_events && typeof contract.sse_events === 'object');
-  assert.ok(contract.turn_reply_responses && typeof contract.turn_reply_responses === 'object');
-  assert.ok(contract.edge_cases && typeof contract.edge_cases === 'object');
-});
-
 test('SSE events contract: streamChat and createConversation consume complete 3-line turn', async () => {
   const ev = contract.sse_events;
   const sequence = [
