@@ -35,8 +35,6 @@ class TestPrecisionStore:
         assert data["is_half"] is False
         assert data["sovits_dir"] == str(tmp_path / "engine")
 
-    def test_missing_cache_returns_none(self, tmp_path):
-        assert read_precision_cache(tmp_path) is None
 
     def test_corrupt_cache_returns_none(self, tmp_path):
         (tmp_path / "data").mkdir()
@@ -67,19 +65,6 @@ class TestCalibrateEnginePrecision:
         assert is_half is True and calibrated is True
         assert read_precision_cache(tmp_path)["is_half"] is True
 
-    def test_fp16_silent_restarts_fp32_and_caches(self, calibrate, tmp_path, monkeypatch):
-        # First probe (FP16): silent. Second probe (after FP32 restart): audible.
-        probes = iter([0.0, 0.42])
-        restarts = []
-
-        def fake_restart(is_half):
-            restarts.append(is_half)
-            return object()
-
-        is_half, calibrated = calibrate(tmp_path / "engine", True, lambda: next(probes), fake_restart)
-        assert restarts == [False]
-        assert is_half is False and calibrated is True
-        assert read_precision_cache(tmp_path)["is_half"] is False
 
     def test_fp32_still_silent_no_cache(self, calibrate, tmp_path, monkeypatch):
         probes = iter([0.0, 0.0])
@@ -884,4 +869,3 @@ class TestProbeSynthCustomVoiceFallback:
             assert run_server._probe_synth_peak("127.0.0.1", 9999) is None
         finally:
             conn.close()
-

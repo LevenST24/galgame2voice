@@ -294,7 +294,7 @@ test('LOG: entries for lines, legacy and user messages, and subtitle settings', 
   assert.ok(overlay, 'LOG overlay should be rendered');
   assert.equal(overlay.getAttribute('role'), 'dialog');
   assert.equal(overlay.getAttribute('aria-modal'), 'true');
-  assert.equal(overlay.getAttribute('aria-label'), 'LOG 历史记录');
+  assert.equal(overlay.getAttribute('aria-label'), '对话记录');
 
   const entries = overlay.querySelectorAll('.adv-log-entry');
   assert.equal(entries.length, 6, 'Should render 1 user + 2 lines + 1 legacy + 1 user rec + 1 failed user = 6 entries');
@@ -1357,11 +1357,11 @@ test('a fresh LOG line stays replayable when loading fails and disables only con
   const networkStatus = network.querySelector('.adv-log-audio-status');
   assert.equal(networkButton.disabled, false, `label="${networkButton.getAttribute('aria-label')}" status="${networkStatus.textContent}"`);
   assert.equal(networkStatus.hidden, false);
-  assert.equal(networkStatus.textContent, '音频加载失败，请稍后在 LOG 里再点「语音」重试。');
+  assert.equal(networkStatus.textContent, '音频加载失败，请稍后在「对话记录」里再点「语音」重试。');
   assert.equal(network.querySelector('.adv-log-regenerate-btn').hidden, true);
   h.app.backlog.renderAll();
   assert.equal(entry('网络').querySelector('.adv-log-replay-btn').disabled, false);
-  assert.equal(entry('网络').querySelector('.adv-log-audio-status').textContent, '音频加载失败，请稍后在 LOG 里再点「语音」重试。');
+  assert.equal(entry('网络').querySelector('.adv-log-audio-status').textContent, '音频加载失败，请稍后在「对话记录」里再点「语音」重试。');
 
   const retried = await replayUntilSound('网络');
   assert.equal(networkAttempts, 2);
@@ -1372,12 +1372,12 @@ test('a fresh LOG line stays replayable when loading fails and disables only con
   const timedOut = await replay('超时');
   const timeoutButton = timedOut.querySelector('.adv-log-replay-btn');
   assert.equal(timeoutButton.disabled, false, `label="${timeoutButton.getAttribute('aria-label')}" status="${timedOut.querySelector('.adv-log-audio-status').textContent}"`);
-  assert.equal(timedOut.querySelector('.adv-log-audio-status').textContent, '音频加载超时，请稍后在 LOG 里再点「语音」重试。');
+  assert.equal(timedOut.querySelector('.adv-log-audio-status').textContent, '音频加载超时，请稍后在「对话记录」里再点「语音」重试。');
   assert.equal(timedOut.querySelector('.adv-log-regenerate-btn').hidden, true);
 
   const unavailable = await replay('服务');
   assert.equal(unavailable.querySelector('.adv-log-replay-btn').disabled, false);
-  assert.equal(unavailable.querySelector('.adv-log-audio-status').textContent, '音频加载失败，请稍后在 LOG 里再点「语音」重试。');
+  assert.equal(unavailable.querySelector('.adv-log-audio-status').textContent, '音频加载失败，请稍后在「对话记录」里再点「语音」重试。');
 
   for (const label of ['丢失', '撤销', '损坏']) {
     const gone = await replay(label);
@@ -1452,9 +1452,9 @@ test('LOG legacy repaired line playback outcomes: retryable network and timeout 
     assert.equal(replay.disabled, outcome === 'failed', `${outcome} must preserve retryable playback unless confirmed unusable`);
     const statusSpan = log.element.querySelector('.adv-log-audio-status');
     if (outcome === 'network') {
-      assert.equal(statusSpan.textContent, '音频加载失败，请稍后在 LOG 里再点「语音」重试。');
+      assert.equal(statusSpan.textContent, '音频加载失败，请稍后在「对话记录」里再点「语音」重试。');
     } else if (outcome === 'timeout') {
-      assert.equal(statusSpan.textContent, '音频加载超时，请稍后在 LOG 里再点「语音」重试。');
+      assert.equal(statusSpan.textContent, '音频加载超时，请稍后在「对话记录」里再点「语音」重试。');
     } else if (outcome === 'failed') {
       assert.equal(statusSpan.textContent, '语音已过期或不可用');
     }

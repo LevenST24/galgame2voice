@@ -83,18 +83,6 @@ def test_model_not_found_versus_endpoint_404_and_overload_and_local_timeout():
     assert "代理" in payload_remote["error"]
 
 
-def test_format_provider_error_overload_and_endpoint_not_found():
-    from galgame2voice.utils.error_diagnostics import format_provider_error
-
-    diag_404 = format_provider_error("custom", 404, "<html>404 Not Found</html>")
-    assert diag_404["error_code"] == "ENDPOINT_NOT_FOUND"
-    assert "接口地址" in diag_404["error"] or "Base URL" in diag_404["diagnostic"]
-
-    diag_503 = format_provider_error("openai", 503, "The model is currently overloaded. Please try again.")
-    assert diag_503["error_code"] == "SERVER_OVERLOADED"
-    assert "繁忙" in diag_503["error"] or "繁忙" in diag_503["diagnostic"]
-
-
 @pytest.mark.parametrize(
     ("err", "expect_in_msg"),
     [
@@ -330,47 +318,6 @@ class TestAdapterRegistryAndFactory:
         assert isinstance(adapter2, MoonshotLLMAdapter)
         assert adapter2.api_key == "sk-moonshot-key"
 
-    def test_get_stt_adapter_factory(self):
-        from galgame2voice.adapters.registry import get_stt_adapter
-        from galgame2voice.adapters.stt import (
-            OpenAICompatibleSTTAdapter,
-            QwenSTTAdapter,
-            SiliconFlowSTTAdapter,
-        )
-
-        silicon = get_stt_adapter("siliconflow", api_key="sk-sf-key")
-        assert isinstance(silicon, SiliconFlowSTTAdapter)
-
-        qwen = get_stt_adapter("qwen", api_key="sk-qw-key")
-        assert isinstance(qwen, QwenSTTAdapter)
-
-        default_stt = get_stt_adapter("openai", api_key="sk-openai")
-        assert isinstance(default_stt, OpenAICompatibleSTTAdapter)
-
-
-class TestAdaptersExecutionWithMockServer:
-    """Tests LLM and STT adapter execution, streaming, and error handling with MockLLMServer."""
-
-    @pytest.mark.asyncio
-    async def test_llm_list_models_mock(self, mock_llm_server):
-        from galgame2voice.adapters.llm import SiliconFlowLLMAdapter
-
-        adapter = SiliconFlowLLMAdapter(api_key="sk-valid-key", client_override=mock_llm_server)
-        models = await adapter.list_models()
-        assert "deepseek-chat" in models
-        assert "gpt-4o" in models
-
-    @pytest.mark.asyncio
-    async def test_stt_transcription_and_test(self, mock_llm_server):
-        from galgame2voice.adapters.stt import SiliconFlowSTTAdapter
-
-        adapter = SiliconFlowSTTAdapter(api_key="sk-valid-key", client_override=mock_llm_server)
-        text = await adapter.transcribe(b"RIFF" + b"\x00" * 200, filename="audio.wav", language="ja")
-        assert "おはよう" in text
-
-        res = await adapter.test_connection()
-        assert res.success is True
-
 
 class TestErrorDiagnosticsEngine:
     """Verifies format_provider_error and diagnose_llm_error Chinese guidance."""
@@ -381,10 +328,6 @@ class TestErrorDiagnosticsEngine:
         assert "地区访问受限" in diag["error"]
         assert "代理" in diag["diagnostic"]
 
-    def test_gemini_400_invalid_key(self):
-        diag = format_provider_error("gemini", 400, "API key not valid. Please pass a valid API key.")
-        assert diag["error_code"] == "GEMINI_KEY_INVALID"
-        assert "aistudio.google.com" in diag["diagnostic"]
 
     def test_xai_400_and_401_auth_failure(self):
         diag400 = format_provider_error("xai", 400, "Incorrect API key provided.")

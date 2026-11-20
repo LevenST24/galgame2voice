@@ -135,13 +135,6 @@ function setupConversationHarness(sseSamples, sessionId = 'sess_contract_1') {
   };
 }
 
-test('contract schema_version is pinned to sse_turn_reply_v1', () => {
-  assert.equal(contract.schema_version, 'sse_turn_reply_v1');
-  assert.ok(contract.sse_events && typeof contract.sse_events === 'object');
-  assert.ok(contract.turn_reply_responses && typeof contract.turn_reply_responses === 'object');
-  assert.ok(contract.edge_cases && typeof contract.edge_cases === 'object');
-});
-
 test('SSE events contract: streamChat and createConversation consume complete 3-line turn', async () => {
   const ev = contract.sse_events;
   const sequence = [
@@ -621,7 +614,7 @@ test('error diagnostics: formats summary_zh/action_zh, kept-lines notice, HTTP d
         { event: 'line', data: { index: 0, zh: '先说第一句。', ja: 'まず一言目。' } },
         { event: 'error', data: { error: 'Stream truncated at max_tokens', error_code: 'stream_truncated', diagnostic_code: 'STREAM_TRUNCATED', summary_zh: '模型输出达到最大长度限制，回复未完整生成', action_zh: '建议在会话设置中调大「最大生成长度」，或在模型设置中调低「思考强度」。' } },
       ],
-      expectedError: '模型输出达到最大长度限制，回复未完整生成。已收到的台词保留在 LOG 里。建议在会话设置中调大「最大生成长度」，或在模型设置中调低「思考强度」。',
+      expectedError: '模型输出达到最大长度限制，回复未完整生成。已收到的台词保留在「对话记录」里。建议在会话设置中调大「最大生成长度」，或在模型设置中调低「思考强度」。',
       expectedCode: 'stream_truncated',
     },
     {

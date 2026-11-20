@@ -32,6 +32,7 @@ logger = logging.getLogger("galgame2voice.services.package_redeem")
 _B64_RE, _PKG_RE = re.compile(r"^[A-Za-z0-9_-]+$"), re.compile(r"^[a-z0-9_-]{1,64}$")
 _SHA_RE, _RANGE_RE = re.compile(r"^[0-9a-fA-F]{64}$"), re.compile(r"^bytes (\d+)-(\d+)/(\d+|\*)$")
 _STRIP_RE = re.compile(r"[\s\u200b\u200c\u200d\u2060\ufeff]+")
+_CJK_RE = re.compile(r"[\u3400-\u9fff]")
 _BAD_CODE_DETAIL = "兑换码不完整或有误。请把收到的整段兑换码原样粘贴进来（以 G2V1. 开头）。"
 ParsedCode = namedtuple("ParsedCode", ("server_url", "code_secret"))
 _PROGRESS: dict[str, Any] = {"phase": "idle", "done": 0, "total": 0, "name": ""}
@@ -114,17 +115,23 @@ def _dist_error(status: int, raw: bytes) -> HTTPException:
     with suppress(Exception):
         data = json.loads(raw.decode("utf-8"))
         message = data["error"].strip() if isinstance(data, dict) and isinstance(data.get("error"), str) else ""
+    localized = message if _CJK_RE.search(message) else ""
     if status in (401, 403, 429):
-        return HTTPException(400, message or "兑换码无效或已过期")
+        return HTTPException(400, localized or "兑换码无效或已过期")
     if status == 413:
-        return HTTPException(413, message or SIZE_LIMIT_EXCEEDED_DETAIL)
-    return HTTPException(502, message or f"分发服务器返回异常（HTTP {status}）")
+        return HTTPException(413, localized or SIZE_LIMIT_EXCEEDED_DETAIL)
+    return HTTPException(502, localized or f"分发服务器暂时不可用（HTTP {status}），请稍后重试。")
 
 
 def _net_error(exc: BaseException, parsed: ParsedCode, host: str) -> HTTPException:
-    text = "连接超时" if isinstance(exc, httpx.TimeoutException) else (sanitize_error_detail(exc) or type(exc).__name__)
-    safe = text.replace(parsed.code_secret, "***").replace(parsed.server_url, host)
-    return HTTPException(502, f"连接分发服务器失败：{safe}")
+    raw = sanitize_error_detail(exc) or type(exc).__name__
+    safe = raw.replace(parsed.code_secret, "***").replace(parsed.server_url, host)
+    logger.warning("Redeem distribution request failed (%s): %s", host, safe)
+    if isinstance(exc, httpx.TimeoutException):
+        return HTTPException(502, "连接分发服务器超时，请检查网络或代理设置后重试。")
+    if isinstance(exc, httpx.ConnectError):
+        return HTTPException(502, "无法连接分发服务器，请检查网络连接或确认兑换码无误后重试。")
+    return HTTPException(502, "与分发服务器的连接中断，请检查网络后重试。")
 
 
 async def _packages(parsed: ParsedCode) -> list[dict[str, Any]]:

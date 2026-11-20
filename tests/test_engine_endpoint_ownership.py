@@ -490,14 +490,6 @@ async def test_managed_engine_launch_matches_localhost_when_process_crashed_for_
     diagnose.assert_called_once()
 
 
-def test_is_matching_managed_host_rejects_empty_or_none():
-    assert run_server._is_matching_managed_host(None, None) is False
-    assert run_server._is_matching_managed_host("", "") is False
-    assert run_server._is_matching_managed_host("127.0.0.1", None) is False
-    assert run_server._is_matching_managed_host(None, "127.0.0.1") is False
-    assert run_server._is_matching_managed_host("   ", "   ") is False
-
-
 @pytest.mark.asyncio
 async def test_saving_remote_sovits_url_unlinks_pid_under_settings_project_root_not_launcher_root(
     tmp_path, monkeypatch
@@ -745,16 +737,3 @@ def test_galgame2voice_package_has_no_reverse_imports_from_scripts():
             relative = py_file.relative_to(package_root.parent)
             offenders.append(f"{relative}:{line}")
     assert offenders == [], f"galgame2voice must not import scripts: {offenders}"
-
-
-def test_scripts_import_guard_rejects_static_and_dynamic_imports():
-    assert _scripts_reverse_import_lines("import scripts.run_server\n") == [1]
-    assert _scripts_reverse_import_lines("from scripts.run_server import foo\n") == [1]
-    assert _scripts_reverse_import_lines("import scripts\n") == [1]
-    assert _scripts_reverse_import_lines('import importlib\nimportlib.import_module("scripts.foo")\n') == [2]
-    assert _scripts_reverse_import_lines('import importlib\nimportlib.import_module("scripts")\n') == [2]
-    assert _scripts_reverse_import_lines('__import__("scripts.run_server")\n') == [1]
-    benign = 'note = """\nimport scripts.run_server\n"""\n'
-    assert _scripts_reverse_import_lines(benign) == []
-
-

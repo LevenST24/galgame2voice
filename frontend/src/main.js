@@ -677,6 +677,10 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     const active = getActive();
     ensureSessionVoice(active);
     showToast(switched ? `对话已删除，现在是「${/** @type {NonNullable<typeof active>} */ (active).title}」。` : '对话已删除');
+    if (switched && active && (!active.messages || active.messages.length === 0 || sessionsBehindServer.has(active.id))) {
+      await loadSessionHistory(active);
+      if (getActive() === active) fullRender();
+    }
   }
 
   function newChat(selection, { enterFromHome = false } = {}) {
@@ -850,7 +854,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     const isStale = () => gen !== _syncSessionsGen;
     try {
       const backendSessions = await fetchAllSessions();
-      if (isStale()) return;
+      if (isStale()) return false;
       // 保存设置尚未确认时本机已记录标记。刷新后保留本机设置并补发，不要用服务端旧设置盖掉它。
       const unconfirmedLocalSessions = [];
       const markInterruptedPrompt = (session, serverCount = 0) => {
@@ -944,7 +948,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       if (curActive && (!curActive.messages || curActive.messages.length === 0 || sessionsBehindServer.has(curActive.id))) {
         await loadSessionHistory(curActive);
       }
-      if (isStale()) return;
+      if (isStale()) return false;
       saveState();
       for (const session of storageChangedByAnotherPage() ? [] : unconfirmedLocalSessions) {
         const version = session.unconfirmedSettingsVersion;
@@ -959,6 +963,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       ensureSessionVoice(getActive(), { silent: true });
       if (window.innerWidth > 820) advApp?.textbox.inputElement?.focus();
       loadProviders().catch(() => {});
+      return true;
     } catch (err) {
       console.debug('Failed to sync sessions from backend:', err);
       throw err;
@@ -966,7 +971,9 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   }
 
   // The first protected request completes token authentication before title UI.
-  app.ready = syncSessionsFromBackend().then(() => showTitleScreen(actions)).catch(error => {
+  app.ready = syncSessionsFromBackend().then(synced => (
+    synced ? showTitleScreen(actions) : null
+  )).catch(error => {
     console.debug('Title startup deferred:', error);
   }).finally(() => { homeStarting = false; });
 

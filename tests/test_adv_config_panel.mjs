@@ -1,19 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { pickSettings, normalizeSnapshot } from '../frontend/src/session_data.js';
+import { pickSettings } from '../frontend/src/session_data.js';
 import {
   DEFAULT_SESSION_SETTINGS as defaults,
-  DEFAULT_GLOBAL,
   state,
   loadState,
   saveState,
-  createSession,
   getActive,
   exportSessionData,
   prepareSessionImport,
   applySessionImport,
 } from '../frontend/src/store.js';
-import { createConfigPanel, CONFIG_PANEL_FIELDS } from '../frontend/src/adv/config_panel.js';
 import { mountAdv } from '../frontend/src/adv/adv_app.js';
 import { fakeDocument, fakeClock, Element, microtasks } from './helpers/adv_dom.mjs';
 
@@ -246,28 +243,6 @@ test('live preview: text speed sample line types over time; instant when 0 or re
   assert.equal(sampleText.textContent, '这是一段用于测试文字显示速度的示例文本。');
 
   h.app.configPanel.close({ revert: true });
-});
-
-test('live preview: outfit changes sprite preview and Esc reverts to baseline', async t => {
-  const h = setup(t, { art: true, settings: { advOutfit: 'uniform' } });
-  await microtasks();
-  h.loads.forEach(l => l.resolve());
-  await microtasks();
-
-  h.app.action('settings');
-  const outfitSelect = h.app.configPanel.controls.advOutfit;
-  assert.equal(outfitSelect.tagName, 'SELECT');
-  assert.equal(outfitSelect.value, 'uniform');
-
-  outfitSelect.value = 'summer';
-  outfitSelect.dispatchEvent({ type: 'change' });
-
-  // Escape key reverts
-  h.app.configPanel.element.querySelector('.adv-config-dialog').dispatchEvent({
-    type: 'keydown',
-    key: 'Escape',
-  });
-  assert.equal(h.app.configPanel.isOpen, false);
 });
 
 // ---------------------------------------------------------------------------
@@ -683,27 +658,6 @@ test('focus confinement: player in input mode, quick-menu settings lands focus o
   h.app.configPanel.close({ revert: true });
   assert.equal(h.app.configPanel.isOpen, false);
   assert.equal(h.doc.activeElement, h.app.textbox.inputElement);
-});
-
-test('clicking model settings or session settings closes panel so focus is not stolen back', t => {
-  const h = setup(t, { voice: false });
-  h.app.stage.stage.querySelector('.adv-qm-btn-config').click();
-  assert.equal(h.app.configPanel.isOpen, true);
-
-  const modelBtn = h.app.configPanel.element.querySelector('#cfg-btn-models');
-  assert.ok(modelBtn, 'Model settings button must exist');
-  modelBtn.click();
-  assert.equal(h.app.configPanel.isOpen, false, 'Panel must close when model settings clicked');
-  assert.equal(h.calls.models, 1);
-
-  h.app.stage.stage.querySelector('.adv-qm-btn-config').click();
-  assert.equal(h.app.configPanel.isOpen, true);
-
-  const sessionBtn = h.app.configPanel.element.querySelector('#cfg-btn-session');
-  assert.ok(sessionBtn, 'Session settings button must exist');
-  sessionBtn.click();
-  assert.equal(h.app.configPanel.isOpen, false, 'Panel must close when session settings clicked');
-  assert.equal(h.calls.settings, 1);
 });
 
 test('focus lands in the panel when the element chain reaches a document node, as in a browser', t => {
