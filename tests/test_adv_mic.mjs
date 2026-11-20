@@ -93,3 +93,36 @@ test('starting a new listening round fences off late onresult from the previous 
   assert.deepEqual(round1Texts, []);
   assert.deepEqual(round2Texts, ['本轮新句']);
 });
+
+test('spontaneous SpeechRecognition end clears micTimer and avoids leaking intervals across retries', t => {
+  const h = setup(t);
+  const origSetInterval = globalThis.setInterval;
+  const origClearInterval = globalThis.clearInterval;
+  const active = new Set();
+  globalThis.setInterval = (...args) => {
+    const id = origSetInterval(...args);
+    active.add(id);
+    return id;
+  };
+  globalThis.clearInterval = (id) => {
+    active.delete(id);
+    return origClearInterval(id);
+  };
+  t.after(() => {
+    for (const id of [...active]) origClearInterval(id);
+    globalThis.setInterval = origSetInterval;
+    globalThis.clearInterval = origClearInterval;
+  });
+
+  for (let i = 0; i < 3; i++) {
+    toggleMic();
+    assert.equal(h.mic.getAttribute('aria-pressed'), 'true');
+    assert.equal(active.size, 1, `round ${i + 1}: expected 1 active interval while listening`);
+    h.recognizers[i].onend?.();
+    assert.equal(h.mic.getAttribute('aria-pressed'), 'false', `round ${i + 1}: mic UI should reset on spontaneous end`);
+    assert.equal(active.size, 0, `round ${i + 1}: micTimer interval should be cleared on spontaneous end`);
+  }
+
+  cancelMic();
+  assert.equal(active.size, 0);
+});

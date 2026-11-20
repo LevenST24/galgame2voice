@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * shortcuts.js - ADV shortcut keys and gestures handler.
  *
@@ -36,6 +37,7 @@ function isInteractive(el) {
  * @param {boolean} [context.stageFocused]
  * @param {boolean} [context.hidden]
  * @param {boolean} [context.subtitleNone]
+ * @param {boolean} [context.playerInput]
  * @returns {string | null} Action name, or null if unhandled
  */
 export function decide(event, context = {}) {
@@ -222,10 +224,11 @@ export function decide(event, context = {}) {
 /**
  * Creates shortcut and gesture event listeners on a target element (e.g. window or stage).
  *
- * @param {EventTarget} target
- * @param {object} options
- * @param {() => object} options.getContext
- * @param {(action: string, event: Event) => void} options.onAction
+ * @param {EventTarget & { querySelector?: (selector: string) => Element | null }} target
+ * @param {object} [options]
+ * @param {() => any} [options.getContext]
+ * @param {(action: string, event: Event) => void} [options.onAction]
+ * @param {{ setTimeout: (fn: () => void, ms: number) => any, clearTimeout: (id: any) => void }} [options.clock]
  * @returns {object} { destroy }
  */
 export function createShortcuts(target, { getContext, onAction,

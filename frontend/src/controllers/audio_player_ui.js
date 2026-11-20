@@ -348,6 +348,13 @@ export function toggleMic() {
       if (revision !== micRevision) return;
       showToast(msg, 'error');
     },
+    onEnd: () => {
+      if (revision !== micRevision) return;
+      clearInterval(micTimer);
+      micTimer = null;
+      updateMicUI(false);
+      if (inputDom()) inputDom().placeholder = '说点什么，或点麦克风用语音输入…';
+    },
   });
   if (!handle.ok) {
     showToast(handle.reason, 'error');
@@ -362,6 +369,7 @@ export function toggleMic() {
   pendingVoice = { text: null, audio: null, dur: 0, blob: null };
   micSecs = 0;
   updateMicUI(true);
+  clearInterval(micTimer);
   micTimer = setInterval(() => {
     micSecs += 1;
     if (inputDom()) {

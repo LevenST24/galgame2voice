@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * quick_menu.js - ADV quick menu component with model status indicator.
  */
@@ -6,8 +7,8 @@
  * Creates the quick menu component inside container.
  *
  * @param {HTMLElement} container
- * @param {object} options
- * @param {(action: string, data?: any) => void} options.onAction
+ * @param {object} [options]
+ * @param {(action: string, data?: any) => void} [options.onAction]
  * @returns {object} { element, setToggle, setEnabled, setModelStatus, destroy }
  */
 export function createQuickMenu(container, { onAction } = {}) {
@@ -144,6 +145,7 @@ export function createQuickMenu(container, { onAction } = {}) {
     btn.disabled = !bool;
   }
 
+  /** @param {{ label?: string, title?: string, state?: string }} [status] */
   function setModelStatus({ label, title, state: modelState = 'ok' } = {}) {
     const displayLabel = label ?? 'Model';
     statusLabel.textContent = displayLabel;

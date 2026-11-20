@@ -75,33 +75,34 @@ async def test_observed_connection_loss_reloads_same_voice_at_same_address(loade
     assert len(engine.loads()) == 3
 
 
-@pytest.mark.asyncio
-async def test_connection_refused_then_healthy_fallback_still_requires_model_reload(loaded_engine):
-    client, engine, profile = loaded_engine
-    original = engine.request
-
-    async def recovering(request):
-        if request.url.path == "/control":
-            raise httpx.ConnectError("Engine restarting", request=request)
-        return await original(request)
-
-    # Keep ownership of both test-only pools explicit.
-    old_pool = client._client
-    client._client = httpx.AsyncClient(transport=httpx.MockTransport(recovering))
-    try:
-        assert (await client.check_health())["connected"]
-        assert not client.models_unchanged()
-        assert await client.switch_voice_profile(profile)
-        assert len(engine.loads()) == 3
-    finally:
-        await old_pool.aclose()
-
-
 def _install_health_transport(client, handler):
     """Point health probes at a one-off transport. Caller closes the previous pool."""
     old_pool = client._client
     client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     return old_pool
+
+
+@pytest.mark.asyncio
+async def test_refused_control_is_not_retried_on_another_path(loaded_engine):
+    """A refused connection is about the address, so "/" is not probed after it."""
+    client, engine, profile = loaded_engine
+    original = engine.request
+    paths = []
+
+    async def refused_control(request):
+        if request.method == "GET":
+            paths.append(request.url.path)
+        if request.url.path == "/control":
+            raise httpx.ConnectError("Engine not listening", request=request)
+        return await original(request)
+
+    old_pool = _install_health_transport(client, refused_control)
+    try:
+        assert not (await client.check_health())["connected"]
+        assert paths == ["/control", "/control"]
+        assert not client.models_unchanged()
+    finally:
+        await old_pool.aclose()
 
 
 @pytest.mark.asyncio

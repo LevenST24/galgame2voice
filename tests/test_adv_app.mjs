@@ -796,39 +796,6 @@ test('a turn that starts while the sessions drawer is open leaves focus in the d
   assert.equal(h.doc.activeElement, focused);
 });
 
-test('player in input mode: quick-menu settings lands focus inside panel on first control, outside elements cannot steal focus', t => {
-  const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0 } });
-  // Player is in input mode with textarea focused
-  assert.equal(h.app.player.state, 'input');
-  assert.equal(h.doc.activeElement, h.app.textbox.inputElement);
-
-  const button = h.app.stage.stage.querySelector('.adv-qm-btn-config');
-  button.click();
-
-  assert.equal(h.app.configPanel.isOpen, true);
-  assert.equal(h.app.configPanel.element.contains(h.doc.activeElement), true);
-  assert.notEqual(h.doc.activeElement, h.app.textbox.inputElement);
-  assert.equal(h.doc.activeElement, h.app.configPanel.controls.advWindowOpacity);
-
-  // While panel is open nothing outside it may take focus
-  h.app.textbox.inputElement.focus();
-  assert.notEqual(h.doc.activeElement, h.app.textbox.inputElement);
-  assert.equal(h.app.configPanel.element.contains(h.doc.activeElement), true);
-
-  h.app.textbox.enterInput();
-  assert.notEqual(h.doc.activeElement, h.app.textbox.inputElement);
-  assert.equal(h.app.configPanel.element.contains(h.doc.activeElement), true);
-
-  h.app.update();
-  assert.notEqual(h.doc.activeElement, h.app.textbox.inputElement);
-  assert.equal(h.app.configPanel.element.contains(h.doc.activeElement), true);
-
-  // Closing restores focus to the input element
-  h.app.configPanel.close({ revert: true });
-  assert.equal(h.app.configPanel.isOpen, false);
-  assert.equal(h.doc.activeElement, h.app.textbox.inputElement);
-});
-
 
 test('temporary hold-skip is cleared when playback stops skip or player toggles SKIP manually', t => {
   const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0 } });

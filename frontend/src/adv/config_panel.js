@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * config_panel.js - ADV settings overlay component.
  *
@@ -11,7 +12,7 @@
  * - Focus preservation, focus trapping, and keyboard navigation
  */
 
-import { ADV_FIELDS, ADV_LABELS, validateAdvField, validateAdvLanguages } from './settings.js';
+import { ADV_LABELS, validateAdvField, validateAdvLanguages } from './settings.js';
 import { pickSettings, validAdvSetting } from '../session_data.js';
 import { DEFAULT_SESSION_SETTINGS } from '../store.js';
 import { splitGraphemes } from './graphemes.js';

@@ -81,9 +81,6 @@ def _require_voice_models(opts: dict[str, Any]) -> None:
             )
 
 
-# Backward compatibility alias pointing to the thread-safe AudioSpecCache singleton.
-_AUDIO_STAT_DURATION_CACHE = _AUDIO_SPEC_CACHE._cache
-
 
 async def async_get_audio_duration(path: str | Path | None) -> float | None:
     """

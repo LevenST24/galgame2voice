@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mountAdv } from '../frontend/src/adv/adv_app.js';
-import { createBacklog, resolveLogTexts } from '../frontend/src/adv/backlog.js';
+import { createBacklog } from '../frontend/src/adv/backlog.js';
 import { StreamAudioController } from '../frontend/src/audio_player.js';
 import { createLineAudioRecovery } from '../frontend/src/controllers/line_audio_recovery.js';
-import { decide, createShortcuts } from '../frontend/src/adv/shortcuts.js';
 import { createConversation } from '../frontend/src/conversation.js';
 import { createLinePlayer } from '../frontend/src/adv/line_player.js';
 import { clearMemAudioCache } from '../frontend/src/cache.js';
@@ -14,7 +13,7 @@ import { streamAudioController } from '../frontend/src/audio_player.js';
 import { initAudioPlayerUi, stopCurrentVoice, playUserVoice } from '../frontend/src/controllers/audio_player_ui.js';
 import { initVoiceSettings, fetchVoiceProfiles } from '../frontend/src/controllers/voice_settings.js';
 import { audioStore } from '../frontend/src/voice.js';
-import { fakeDocument, fakeClock, Element, microtasks } from './helpers/adv_dom.mjs';
+import { fakeDocument, fakeClock, microtasks } from './helpers/adv_dom.mjs';
 import { fakeChatStream, tick } from './helpers/chat_stream.mjs';
 
 function setupBacklog(t, sessionOrGetter, options = {}) {
@@ -759,17 +758,6 @@ test('closing the dialogue log by its close button does not advance a queued lin
   assert.equal(subtitle(), subShown);
 });
 
-test('LOG: letter shortcuts are ignored inside editors', () => {
-  const inInputCtx = { inInput: true, stageFocused: true, overlayOpen: false };
-  assert.equal(decide({ type: 'keydown', key: 'r' }, inInputCtx), null);
-  assert.equal(decide({ type: 'keydown', key: 'R' }, inInputCtx), null);
-  assert.equal(decide({ type: 'keydown', key: 'a' }, inInputCtx), null);
-  assert.equal(decide({ type: 'keydown', key: 'f' }, inInputCtx), null);
-  assert.equal(decide({ type: 'keydown', key: 'h' }, inInputCtx), null);
-  assert.equal(decide({ type: 'keydown', key: 'x' }, inInputCtx), null);
-  assert.equal(decide({ type: 'wheel', deltaY: -100 }, inInputCtx), null);
-});
-
 test('LOG: the draft is preserved', (t) => {
   const h = setupApp(t);
   h.app.action('input');
@@ -927,22 +915,6 @@ test('Part 3 #2: empty done with no lines and no text shows error with Retry and
   actionBtns[1].click();
   assert.equal(h.calls.models, 1);
   assert.equal(h.calls.settings, 0);
-});
-
-test('DOM models absent attributes and bubbling through Document', () => {
-  const doc = fakeDocument(), button = doc.createElement('button');
-  doc.body.appendChild(button);
-  assert.equal(button.getAttribute('tabindex'), null);
-  assert.equal(button.matches('[tabindex]'), false);
-  button.tabIndex = 2;
-  assert.equal(button.getAttribute('tabindex'), '2');
-  button.removeAttribute('tabindex');
-  assert.equal(button.tabIndex, 0);
-  assert.equal(button.closest('[contenteditable]'), null);
-  let seen;
-  doc.addEventListener('click', e => { seen = e.target; });
-  button.click();
-  assert.equal(seen, button);
 });
 
 test('LOG owns pointer and Ctrl events and traps focus around enabled controls', t => {

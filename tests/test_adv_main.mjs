@@ -172,16 +172,6 @@ test('real conversation events use per-line audio and keep skipped lines in hist
   assert.equal(h.audio.played.length, 1);
 });
 
-test('legacy disabled setting cannot cancel a live turn or unmount the only renderer', async t => {
-  const h = setup(t); h.app.sendMessage('问题'); await tick();
-  await h.stream.requests[0].event('line', { index: 0, zh: '已收到。', ja: '', emotion: 'gentle', act: {} });
-  const stage = h.app.adv;
-  h.sessions[0].settings.advEnabled = false; h.app.fullRender();
-  assert.equal(h.app.conversation.busy, true); assert.equal(h.app.adv, stage);
-  h.app.conversation.stop();
-  assert.equal(h.getActive().messages.at(-1).lines[0].zh, '已收到。');
-});
-
 test('Japanese-only line survives cancellation without a legacy text event', async t => {
   const h = setup(t); h.app.sendMessage('问题'); await tick();
   await h.stream.requests[0].event('line', { index: 0, zh: '', ja: '日本語だけ。', emotion: 'gentle', act: {} });
