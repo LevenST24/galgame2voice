@@ -356,6 +356,45 @@ test('background view: a failed decode keeps the previous artwork', async t => {
   assert.equal(h.shown().length, 0);
 });
 
+test('background view: reverting to the shown background or time variant cancels a slow decode', async t => {
+  const h = setupView(t);
+  h.view.setList(LIST);
+  h.view.setSelection({ id: 'cafe/stella', time: 'day' });
+  await flush(h.loads);
+  const first = h.shown()[0];
+  assert.equal(first.src, '/bg/cafe/day.png');
+
+  // Switch to another background, then revert before the slow decode settles.
+  h.view.setSelection({ id: 'cafe/beach', time: 'day' });
+  assert.equal(h.loads.length, 2);
+  assert.equal(h.loads[1].url, '/bg/beach/day.png');
+  h.view.setSelection({ id: 'cafe/stella', time: 'day' });
+  await flush(h.loads);
+  assert.deepEqual(h.shown(), [first], 'late decode from an abandoned background must not overwrite the reverted choice');
+  assert.equal(h.shown()[0].src, '/bg/cafe/day.png');
+
+  // Same race when toggling a time-of-day variant (day -> slow night -> day).
+  h.view.setSelection({ id: 'cafe/stella', time: 'night' });
+  assert.equal(h.loads.length, 3);
+  assert.equal(h.loads[2].url, '/bg/cafe/night.png');
+  h.view.setSelection({ id: 'cafe/stella', time: 'day' });
+  await flush(h.loads);
+  assert.deepEqual(h.shown(), [first], 'late decode from an abandoned time variant must not overwrite day');
+  assert.equal(h.shown()[0].src, '/bg/cafe/day.png');
+});
+
+test('background view: reverting to sky cancels a slow decode', async t => {
+  const h = setupView(t);
+  h.view.setList(LIST);
+  assert.equal(h.shown().length, 0);
+
+  h.view.setSelection({ id: 'cafe/stella', time: 'day' });
+  assert.equal(h.loads.length, 1);
+  h.view.setSelection({ id: '', time: 'day' });
+  await flush(h.loads);
+  assert.equal(h.shown().length, 0, 'late decode must not overwrite an explicit switch back to sky');
+});
+
 test('background view: prefers-reduced-motion shows artwork without a crossfade', async t => {
   const h = setupView(t, { reducedMotion: true });
   h.view.setList(LIST);
