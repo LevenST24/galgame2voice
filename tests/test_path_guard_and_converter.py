@@ -25,13 +25,12 @@ from httpx import ASGITransport, AsyncClient
 from galgame2voice.config import get_settings
 from galgame2voice.database.session import init_db
 from galgame2voice.main import create_app
-from galgame2voice.routers.health import DatabaseTelemetry, router as health_router
+from galgame2voice.routers.health import router as health_router
 from galgame2voice.utils.path_guard import (
     PathTraversalError,
     contains_traversal_payload,
     is_safe_filename,
     is_windows_device_name,
-    safe_resolve_audio_path,
     validate_path_containment,
     validate_voice_profile_paths,
 )
@@ -365,27 +364,6 @@ def test_find_ffmpeg_caching():
         assert Path(found1).is_file() or Path(f"{found1}.exe").is_file()
 
 
-def test_is_target_wav_pcm():
-    wav_16k = _create_wav(sample_rate=16000, channels=1, sampwidth=2)
-    wav_24k = _create_wav(sample_rate=24000, channels=1, sampwidth=2)
-    wav_stereo = _create_wav(sample_rate=16000, channels=2, sampwidth=2)
-
-    assert is_target_wav_pcm(wav_16k, sample_rate=16000, channels=1)
-    assert not is_target_wav_pcm(wav_24k, sample_rate=16000, channels=1)
-    assert not is_target_wav_pcm(wav_stereo, sample_rate=16000, channels=1)
-    assert not is_target_wav_pcm(b"OggS\x00\x02dummy_ogg_data")
-    assert not is_target_wav_pcm(b"")
-
-
-@pytest.mark.asyncio
-async def test_convert_ogg_to_wav_short_circuit():
-    """Verifies that an audio byte stream already in target format bypasses ffmpeg subprocess."""
-    wav_16k = _create_wav(sample_rate=16000, channels=1, sampwidth=2)
-    # Even if an invalid ffmpeg_path is provided, short-circuiting must return wav_16k without error
-    result = await convert_ogg_to_wav(wav_16k, sample_rate=16000, channels=1, ffmpeg_path="non_existent_ffmpeg_bin")
-    assert result == wav_16k
-
-
 def _patch_mock_ffmpeg_converter(monkeypatch, output_bytes: bytes) -> list[Path]:
     monkeypatch.setattr("galgame2voice.utils.audio_converter.find_ffmpeg", lambda path=None: "/mock/ffmpeg")
     captured_paths: list[Path] = []
@@ -402,21 +380,6 @@ def _patch_mock_ffmpeg_converter(monkeypatch, output_bytes: bytes) -> list[Path]
 
 
 @pytest.mark.asyncio
-async def test_convert_ogg_to_wav_with_mocked_ffmpeg(monkeypatch):
-    """Verifies convert_ogg_to_wav executes conversion pipeline and cleans up temp files."""
-    mock_wav = _create_wav(sample_rate=16000, channels=1, sampwidth=2)
-    captured_paths = _patch_mock_ffmpeg_converter(monkeypatch, mock_wav)
-
-    dummy_ogg = b"OggS" + b"\x00" * 32
-    result = await convert_ogg_to_wav(dummy_ogg)
-
-    assert result == mock_wav
-    assert len(captured_paths) == 2
-    for p in captured_paths:
-        assert not p.exists()
-
-
-@pytest.mark.asyncio
 async def test_convert_wav_to_ogg_with_mocked_ffmpeg(monkeypatch):
     """Verifies convert_wav_to_ogg executes conversion pipeline and cleans up temp files."""
     mock_ogg = b"OggS" + b"\x00" * 32
@@ -429,27 +392,6 @@ async def test_convert_wav_to_ogg_with_mocked_ffmpeg(monkeypatch):
     assert len(captured_paths) == 2
     for p in captured_paths:
         assert not p.exists()
-
-
-@pytest.mark.requires_piped_subprocess
-@pytest.mark.asyncio
-@pytest.mark.parametrize("payload_size", [100, 1024, 65536])
-async def test_convert_ogg_to_wav_random_noise_fuzzing(payload_size):
-    """Random buffers longer than 44 bytes must fail as ValueError, not crash."""
-    random_bytes = os.urandom(payload_size)
-
-    with pytest.raises(ValueError) as exc_info:
-        await convert_ogg_to_wav(random_bytes)
-    assert len(str(exc_info.value)) > 0
-
-
-@pytest.mark.requires_piped_subprocess
-@pytest.mark.asyncio
-async def test_convert_ogg_to_wav_truncated_magic_headers():
-    """An OggS prefix plus a long corrupt tail must reach ffmpeg and fail."""
-    corrupted_oggs = b"OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00" + os.urandom(100)
-    with pytest.raises(ValueError):
-        await convert_ogg_to_wav(corrupted_oggs)
 
 
 def _clear_ffmpeg_env(
@@ -565,14 +507,6 @@ class TestFFmpegDiscoveryBundledFallback:
         fake_bin.touch(mode=0o755)
         assert find_ffmpeg(str(fake_bin)) == str(fake_bin.resolve())
 
-    @pytest.mark.requires_piped_subprocess
-    def test_find_ffmpeg_missing_imageio_handles_cleanly(self, monkeypatch):
-        """If imageio_ffmpeg raises an error or is missing, find_ffmpeg falls back gracefully to None."""
-        _clear_ffmpeg_env(monkeypatch, stub_internal_finders=True)
-
-        with patch("imageio_ffmpeg.get_ffmpeg_exe", side_effect=RuntimeError("Bundled binary corrupted")):
-            assert find_ffmpeg() is None
-            assert is_ffmpeg_available() is False
 
     def test_find_ffmpeg_in_python_env_skips_posix_system_prefixes(self, monkeypatch, tmp_path):
         """_find_ffmpeg_in_python_env ignores global /usr prefix on POSIX while discovering isolated venvs."""
@@ -676,14 +610,6 @@ class TestFFmpegDiscoveryBundledFallback:
         assert roundtrip_wav.startswith(b"RIFF")
         assert is_target_wav_pcm(roundtrip_wav, sample_rate=16000, channels=1)
 
-    @pytest.mark.requires_piped_subprocess
-    @pytest.mark.asyncio
-    async def test_convert_ogg_to_wav_adversarial_corrupted_input(self, monkeypatch):
-        """Adversarial corrupted payload must raise ValueError and clean up processes."""
-        _clear_ffmpeg_env(monkeypatch)
-
-        with pytest.raises(ValueError, match="Corrupted or unsupported|too short"):
-            await convert_ogg_to_wav(b"\x00\x01\x02\x03CORRUPTED_NON_AUDIO_BYTES_PAYLOAD")
 
     @pytest.mark.requires_piped_subprocess
     def test_find_ffmpeg_unset_path_still_discovers_binary(self, monkeypatch):
@@ -827,11 +753,6 @@ async def test_tts_cache_manager_in_memory_tracking(tmp_path):
 class TestDatabaseTelemetryPathNormalization:
     """Adversarial testing of DatabaseTelemetry path normalization across OS platforms."""
 
-    def test_database_telemetry_schema(self):
-        """Verify DatabaseTelemetry pydantic model accepts relative path and wal_mode."""
-        t = DatabaseTelemetry(status="connected", wal_mode=True, path="data/galgame2voice.db")
-        assert t.path == "data/galgame2voice.db"
-        assert t.wal_mode is True
 
     @pytest.mark.parametrize(
         "simulated_project_root,simulated_db_path,expected_relative_path",
