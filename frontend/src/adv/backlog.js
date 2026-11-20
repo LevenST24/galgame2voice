@@ -49,7 +49,7 @@ export function createBacklog(container, deps = {}) {
   overlayEl.className = 'adv-log-overlay';
   overlayEl.setAttribute('role', 'dialog');
   overlayEl.setAttribute('aria-modal', 'true');
-  overlayEl.setAttribute('aria-label', 'LOG 历史记录');
+  overlayEl.setAttribute('aria-label', '对话记录');
 
   // Header
   const headerEl = doc.createElement('div');
@@ -63,7 +63,7 @@ export function createBacklog(container, deps = {}) {
   closeBtn.type = 'button';
   closeBtn.className = 'adv-log-close-btn';
   closeBtn.textContent = '关闭';
-  closeBtn.setAttribute('aria-label', '关闭 LOG');
+  closeBtn.setAttribute('aria-label', '关闭对话记录');
 
   headerEl.appendChild(titleEl);
   headerEl.appendChild(closeBtn);
@@ -128,8 +128,8 @@ export function createBacklog(container, deps = {}) {
     return [];
   }
   const loadRetryText = {
-    timeout: '音频加载超时，请稍后在 LOG 里再点「语音」重试。',
-    network: '音频加载失败，请稍后在 LOG 里再点「语音」重试。',
+    timeout: '音频加载超时，请稍后在「对话记录」里再点「语音」重试。',
+    network: '音频加载失败，请稍后在「对话记录」里再点「语音」重试。',
   };
 
   /** @param {{ feedback?: any }} [opts] */

@@ -390,7 +390,7 @@ test('provider activation reports validation errors without saving', async t => 
   h.edit('gBaseUrl', '');
   await h.settings.handleActivateProvider();
   assert.equal(h.writes().length, 0);
-  assert.ok(h.messages().some(msg => /模型.*未保存.*API Base URL/.test(msg)));
+  assert.ok(h.messages().some(msg => /模型.*未保存.*接口地址/.test(msg)));
   assert.equal(h.dom.gTgSave.disabled, false);
   assert.equal(h.dom.gProviderActivate.disabled, false);
 });

@@ -245,7 +245,7 @@ export class TelemetrySettingsController {
           const h = Math.floor(sec / 3600);
           const m = Math.floor((sec % 3600) / 60);
           const s = sec % 60;
-          this.dom.gDashUptimeVal.textContent = `PID: ${data.app.pid || '-'} · 运行: ${h}h ${m}m ${s}s`;
+          this.dom.gDashUptimeVal.textContent = `进程号：${data.app.pid || '-'} · 运行：${h}小时 ${m}分 ${s}秒`;
         }
       };
 

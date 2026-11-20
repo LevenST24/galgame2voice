@@ -230,7 +230,7 @@ export function createTextbox(container, opts = {}) {
 
   const voiceLabelEl = document.createElement('span');
   voiceLabelEl.className = 'adv-voice-label';
-  voiceLabelEl.textContent = 'VOICE';
+  voiceLabelEl.textContent = '语音';
 
   const voiceMeterEl = document.createElement('div');
   voiceMeterEl.className = 'adv-voice-meter';
