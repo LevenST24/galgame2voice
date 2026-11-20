@@ -424,8 +424,8 @@ def _diagnose_unsupported_parameter(
     if is_reasoning_parameter and is_rejected:
         return DiagnosticResult(
             error_code="PARAMETER_NOT_SUPPORTED",
-            message="模型参数不受支持 (400 Bad Request)",
-            guidance=f"提供商或所选模型不支持当前参数（如思考强度 reasoning_effort）。请尝试将「思考强度」设为默认或调整模型配置。原始信息: {sanitized_raw[:160]}",
+            message="模型参数不受支持（400）",
+            guidance=f"提供商或所选模型不支持当前参数（如思考强度）。请尝试将「思考强度」设为默认或调整模型配置。原始信息: {sanitized_raw[:160]}",
             status_code=400,
             raw_error=sanitized_raw,
         )
@@ -496,7 +496,7 @@ def _diagnose_transport_fault(
         if is_local and is_read_timeout:
             return DiagnosticResult(
                 error_code="NETWORK_TIMEOUT",
-                message="本机模型响应超时 (Read Timeout)",
+                message="本机模型响应超时",
                 guidance="本机模型响应太慢或仍在加载。本地服务（如 Ollama / LM Studio）在首次加载模型权重到显存或生成长文本时耗时较长，请检查本地推理服务运行状态，或调大超时时间后重试。",
                 status_code=status_code or 408,
                 raw_error=sanitized_raw,
@@ -513,15 +513,15 @@ def _diagnose_transport_fault(
         ):
             return DiagnosticResult(
                 error_code="NETWORK_TIMEOUT",
-                message="网关连接超时 (524 Timeout)",
-                guidance="Cloudflare 或反向代理网关等待上游源站响应超时（524 A Timeout Occurred）。若正在使用推理模型（如 DeepSeek-R1 / QwQ），长思考可能超出了网关超时时限；建议降低思考强度、简化提示词或在反代中调大超时后重试。",
+                message="网关连接超时（524）",
+                guidance="Cloudflare 或反向代理网关等待上游源站响应超时（524 响应超时）。若正在使用推理模型（如 DeepSeek-R1 / QwQ），长思考可能超出了网关超时时限；建议降低思考强度、简化提示词或在反代中调大超时后重试。",
                 status_code=524,
                 raw_error=sanitized_raw,
             )
 
         return DiagnosticResult(
             error_code="NETWORK_TIMEOUT",
-            message="网络连接超时 (Request Timeout)",
+            message="网络连接超时",
             guidance="连接提供商服务器超时。海外模型服务（如 Google / OpenAI / xAI）在国内网络直连通常受阻，请确保本地代理客户端（如 Clash / v2rayN）正在运行，或配置支持该服务的中转反向代理 Base URL。",
             status_code=status_code or 408,
             raw_error=sanitized_raw,
@@ -534,7 +534,7 @@ def _diagnose_transport_fault(
     ):
         return DiagnosticResult(
             error_code="CONNECTION_REFUSED",
-            message="网络连接被拒绝 (Connection Refused)",
+            message="网络连接被拒绝",
             guidance="目标地址或本地反向代理端口未开放。请检查 Base URL 拼写及端口配置，若使用本地反向代理请确认代理软件已启动且监听相应端口。",
             status_code=status_code or 502,
             raw_error=sanitized_raw,
@@ -549,7 +549,7 @@ def _diagnose_transport_fault(
     ):
         return DiagnosticResult(
             error_code="DNS_ERROR",
-            message="服务器域名解析失败 (DNS Error)",
+            message="服务器域名解析失败",
             guidance="无法解析 Base URL 的服务器域名，请检查网址拼写、主机名或本地网络 DNS 设置。",
             status_code=status_code or 502,
             raw_error=sanitized_raw,
@@ -567,7 +567,7 @@ def _diagnose_transport_fault(
     if is_reset_exc or is_reset_text:
         return DiagnosticResult(
             error_code="CONNECTION_RESET",
-            message="网络连接被中途断开或重置 (Connection Reset)",
+            message="网络连接被中途断开或重置",
             guidance="与模型服务的连接在传输中途中断（常见于网络波动、本地代理切换节点/重启或睡眠唤醒）。请检查网络与代理稳定性后直接重新发送重试，无需修改 API Key 或模型名称。",
             status_code=status_code or 502,
             raw_error=sanitized_raw,
@@ -582,7 +582,7 @@ def _diagnose_transport_fault(
     ):
         return DiagnosticResult(
             error_code="NETWORK_CONNECTION_FAILED",
-            message="网络连接失败 (Connection Failed)",
+            message="网络连接失败",
             guidance="无法与模型服务建立连接。请检查网络、代理和服务地址；若使用本机代理，请确认程序启动时已配置相应代理。",
             status_code=status_code or 502,
             raw_error=sanitized_raw,
@@ -591,8 +591,8 @@ def _diagnose_transport_fault(
     if status_code == 502 or "bad gateway" in raw_lower:
         return DiagnosticResult(
             error_code="BAD_GATEWAY",
-            message="网关连接异常 (502 Bad Gateway)",
-            guidance="上游网关或反向代理暂时无法连接源站服务器（502 Bad Gateway）。服务可能暂时不可用或正在维护，建议稍后重试或检查反向代理服务状态。",
+            message="网关连接异常（502）",
+            guidance="上游网关或反向代理暂时无法连接源站服务器（502 网关异常）。服务可能暂时不可用或正在维护，建议稍后重试或检查反向代理服务状态。",
             status_code=502,
             raw_error=sanitized_raw,
         )
@@ -621,10 +621,9 @@ def _diagnose_overload(
         return None
 
     code = status_code or 503
-    name = "Overloaded" if code == 529 else "Service Unavailable"
     return DiagnosticResult(
         error_code="SERVER_OVERLOADED",
-        message=f"服务暂时繁忙 ({code} {name})",
+        message=f"服务暂时繁忙（{code}）",
         guidance="模型服务当前过载或暂时繁忙，请稍后重试。通常无需修改配置。",
         status_code=code,
         raw_error=sanitized_raw,
@@ -668,7 +667,7 @@ def _diagnose_model_not_found(
 
     return DiagnosticResult(
         error_code="MODEL_NOT_FOUND",
-        message=f"指定的模型名称不存在 ({status_code or 404} Model Not Found)",
+        message=f"指定的模型名称不存在（{status_code or 404}）",
         guidance="提供商无法识别填写的模型名称。请从官方推荐预设列表下拉选择，或核对自定义模型拼写无误。",
         status_code=status_code or 404,
         raw_error=sanitized_raw,
@@ -685,7 +684,7 @@ def _diagnose_endpoint_not_found(
 
     return DiagnosticResult(
         error_code="ENDPOINT_NOT_FOUND",
-        message="接口地址未找到 (404 Not Found)",
+        message="接口地址未找到（404）",
         guidance="提供商未找到请求的接口路径。请检查 Base URL 地址配置（特别是路径部分，例如是否缺少或多写了 /v1 等后缀）。",
         status_code=404,
         raw_error=sanitized_raw,
@@ -718,7 +717,7 @@ def _diagnose_context_length_exceeded(
     if is_context_exceeded:
         return DiagnosticResult(
             error_code="CONTEXT_LENGTH_EXCEEDED",
-            message="对话上下文超出模型最大限制 (Context Length Exceeded)",
+            message="对话上下文超出模型最大限制",
             guidance="对话上下文超出模型最大长度限制。建议在会话设置中调小「最大上下文轮数」，或清理历史记录、开启新会话。",
             status_code=status_code or 400,
             raw_error=sanitized_raw,
@@ -744,8 +743,8 @@ def _diagnose_insufficient_balance(
     if is_insufficient_balance:
         return DiagnosticResult(
             error_code="QUOTA_EXCEEDED",
-            message=f"账户可用余额不足 ({status_code or 402} Payment Required)",
-            guidance="当前提供商账户可用余额或额度已耗尽（402 Payment Required）。请前往对应模型服务商控制台充值或检查账单。",
+            message=f"账户可用余额不足（{status_code or 402}）",
+            guidance="当前提供商账户可用余额或额度已耗尽（402）。请前往对应模型服务商控制台充值或检查账单。",
             status_code=status_code or 402,
             raw_error=sanitized_raw,
         )
@@ -765,7 +764,7 @@ def _diagnose_gemini(
     ):
         return DiagnosticResult(
             error_code="GEMINI_REGION_RESTRICTED",
-            message="Google Gemini 地区访问受限 (403 Region Restricted)",
+            message="Google Gemini 地区访问受限（403）",
             guidance="当前网络环境所在地区暂不受 Google Gemini 官方支持。请开启支持地区的海外网络代理（如美区、日区、新加坡节点），或配置第三方中转代理 Base URL。",
             status_code=403,
             raw_error=sanitized_raw,
@@ -797,7 +796,7 @@ def _diagnose_gemini(
     if status_code == 403 or "permission_denied" in raw_lower:
         return DiagnosticResult(
             error_code="GEMINI_PERMISSION_DENIED",
-            message="Google Cloud API 权限未开通 (403 Permission Denied)",
+            message="Google Cloud API 权限未开通（403）",
             guidance="当前 Google 账户未启用 Generative Language API 权限，请登录 Google Cloud 控制台开通相应服务权限并绑定结算账号。",
             status_code=403,
             raw_error=sanitized_raw,
@@ -826,7 +825,7 @@ def _diagnose_xai(
     if is_xai_auth_failure:
         return DiagnosticResult(
             error_code="XAI_AUTH_FAILED",
-            message="xAI (Grok) 身份验证失败 (400/401 Unauthorized)",
+            message="xAI (Grok) 身份验证失败（400/401）",
             guidance="xAI API Key 鉴权失败，请检查密钥或在 console.x.ai 确认账户状态与额度，并确认已开通 Grok 模型使用权限。",
             status_code=401,
             raw_error=sanitized_raw,
@@ -835,7 +834,7 @@ def _diagnose_xai(
     if status_code == 403 or "forbidden" in raw_lower:
         return DiagnosticResult(
             error_code="XAI_FORBIDDEN",
-            message="xAI (Grok) 访问受限 (403 Forbidden)",
+            message="xAI (Grok) 访问受限（403）",
             guidance="当前 IP 节点或账户无权调用 xAI API。请检查代理节点是否位于受支持地区，并确认账户已完成实名验证并绑定有效信用卡或积分。",
             status_code=403,
             raw_error=sanitized_raw,
@@ -844,8 +843,8 @@ def _diagnose_xai(
     if status_code == 429:
         return DiagnosticResult(
             error_code="XAI_QUOTA_EXCEEDED",
-            message="xAI 积分不足或频次超限 (429 Rate Limit)",
-            guidance="xAI 账户积分 (Credits) 已耗尽或请求并发超限。请前往 xAI 开发者控制台 (https://console.x.ai/) 充值积分或等待频次窗口重置后重试。",
+            message="xAI 积分不足或频次超限（429）",
+            guidance="xAI 账户积分已耗尽或请求并发超限。请前往 xAI 开发者控制台 (https://console.x.ai/) 充值积分或等待频次窗口重置后重试。",
             status_code=429,
             raw_error=sanitized_raw,
         )
@@ -872,8 +871,8 @@ def _diagnose_openai(
     if is_openai_auth_failure:
         return DiagnosticResult(
             error_code="OPENAI_AUTH_FAILED",
-            message="OpenAI API Key 身份验证失败 (401 Unauthorized)",
-            guidance="身份验证失败。请检查输入的 sk- 密钥是否完整无误，或在 OpenAI 控制台 (https://platform.openai.com/api-keys) 重新创建 Secret Key。",
+            message="OpenAI API Key 身份验证失败（401）",
+            guidance="身份验证失败。请检查输入的 sk- 密钥是否完整无误，或在 OpenAI 控制台 (https://platform.openai.com/api-keys) 重新创建密钥。",
             status_code=401,
             raw_error=sanitized_raw,
         )
@@ -881,15 +880,15 @@ def _diagnose_openai(
         if "insufficient_quota" in raw_lower or "exceeded your current quota" in raw_lower or "quota" in raw_lower:
             return DiagnosticResult(
                 error_code="OPENAI_QUOTA_EXCEEDED",
-                message="OpenAI 账户额度已耗尽 (429 Insufficient Quota)",
+                message="OpenAI 账户额度已耗尽（429）",
                 guidance="当前 OpenAI 账户可用额度为 0 或已过期。请登录 OpenAI 开发者平台 (https://platform.openai.com/account/billing) 充值或绑定支付方式。",
                 status_code=429,
                 raw_error=sanitized_raw,
             )
         return DiagnosticResult(
             error_code="OPENAI_RATE_LIMIT",
-            message="OpenAI 请求频率超限 (429 Rate Limit)",
-            guidance="请求速率超出了当前账户层级的 RPM/TPM 限制。请稍候重试，或在会话设置中减小单次生成的 max_tokens。",
+            message="OpenAI 请求频率超限（429）",
+            guidance="请求速率超出了当前账户层级的 RPM/TPM 限制。请稍候重试，或在会话设置中减小单次最大生成长度。",
             status_code=429,
             raw_error=sanitized_raw,
         )
@@ -904,8 +903,8 @@ def _diagnose_anthropic(
     if status_code == 401 or "authentication_error" in raw_lower:
         return DiagnosticResult(
             error_code="ANTHROPIC_AUTH_FAILED",
-            message="Anthropic Claude 身份验证失败 (401 Unauthorized)",
-            guidance="Anthropic API Key 错误或未生效。请登录 Anthropic Console (https://console.anthropic.com/) 确认密钥并检查可用额度。",
+            message="Anthropic Claude 身份验证失败（401）",
+            guidance="Anthropic API Key 错误或未生效。请登录 Anthropic 控制台 (https://console.anthropic.com/) 确认密钥并检查可用额度。",
             status_code=401,
             raw_error=sanitized_raw,
         )
@@ -966,7 +965,7 @@ def _diagnose_generic_http(
     if status_code == 403 or "forbidden" in raw_lower:
         return DiagnosticResult(
             error_code="FORBIDDEN",
-            message="访问权限受限 (403 Forbidden)",
+            message="访问权限受限（403）",
             guidance="当前账户无权访问该资源或受到网络地区策略限制。请检查网络代理环境及提供商控制台权限设置。",
             status_code=403,
             raw_error=sanitized_raw,
@@ -976,15 +975,15 @@ def _diagnose_generic_http(
         if "quota" in raw_lower or "balance" in raw_lower:
             return DiagnosticResult(
                 error_code="QUOTA_EXCEEDED",
-                message="账户额度已耗尽 (429 Insufficient Quota)",
+                message="账户额度已耗尽（429）",
                 guidance="当前账户可用额度已用尽或免费额度已过期。请登录提供商开发者控制台检查账单与充值余额。",
                 status_code=429,
                 raw_error=sanitized_raw,
             )
         return DiagnosticResult(
             error_code="RATE_LIMIT",
-            message="请求频率超限 (429 Rate Limit)",
-            guidance="请求速率超出了当前账户的频率限制。请稍候片刻重试，或调小每次对话的 max_tokens。",
+            message="请求频率超限（429）",
+            guidance="请求速率超出了当前账户的频率限制。请稍候片刻重试，或调小每次对话的最大生成长度。",
             status_code=429,
             raw_error=sanitized_raw,
         )
@@ -996,7 +995,7 @@ def _diagnose_final_fallback(
     status_code: int | None,
     sanitized_raw: str,
 ) -> DiagnosticResult:
-    clean_err = sanitized_raw or f"HTTP {status_code or 'Error'}"
+    clean_err = sanitized_raw or (f"HTTP {status_code}" if status_code else "未知错误")
     return DiagnosticResult(
         error_code="PROVIDER_ERROR",
         message=f"提供商调用异常: {clean_err[:120]}",

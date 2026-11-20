@@ -484,7 +484,7 @@ class TwoTabRecoveryHandler(AudioRecoveryHandler):
                     # Second concurrent request encounters HTTP 409 Conflict
                     self.shared_state["post_responses"].append(409)
                     conflict_resp = json.dumps({
-                        "detail": "这句已有其他音频修复结果，未覆盖现有音频，请重新打开 LOG 检查。"
+                        "detail": "这句已有其他音频修复结果，未覆盖现有音频，请重新打开「对话记录」检查。"
                     }, ensure_ascii=False).encode("utf-8")
                     _send_body(self, 409, "application/json; charset=utf-8", conflict_resp)
         elif parsed.path == "/result":
