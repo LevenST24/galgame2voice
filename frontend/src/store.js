@@ -35,7 +35,7 @@ let damagedRaw = null;
 /** @type {string | null} */
 let lastStoredRaw = null;
 let skipBackupOnce = false;
-let storageStatus = { ok: true, message: '' };
+let storageStatus = { ok: true, message: '', damaged: false };
 
 /** @returns {StorageStatus} */
 export function getStorageStatus() { return { ...storageStatus, damaged: damagedRaw !== null }; }
@@ -49,8 +49,9 @@ export function onStorageStatus(listener) { listeners.add(listener); return () =
  * @param {string} [message]
  */
 function reportStorage(ok, message = '') {
-  if (storageStatus.ok === ok && storageStatus.message === message) return;
-  storageStatus = { ok, message };
+  const damaged = damagedRaw !== null;
+  if (storageStatus.ok === ok && storageStatus.message === message && storageStatus.damaged === damaged) return;
+  storageStatus = { ok, message, damaged };
   for (const listener of listeners) {
     try { listener(getStorageStatus()); } catch (error) { console.warn('更新保存状态提示失败', error); }
   }
@@ -156,9 +157,12 @@ export function storageChangedByAnotherPage() {
   }
 }
 
-/** @returns {boolean} */
-export function saveState() {
-  if (damagedRaw !== null) {
+/**
+ * @param {{ allowDamaged?: boolean }} [options]
+ * @returns {boolean}
+ */
+function writeState({ allowDamaged = false } = {}) {
+  if (!allowDamaged && damagedRaw !== null) {
     reportStorage(false, '原会话记录无法读取，已保留原内容。请在「设置中心 → 备份与更新」导出原始记录，再恢复本地保存。');
     return false;
   }
@@ -221,6 +225,7 @@ export function saveState() {
       try { localStorage.setItem(BACKUP_KEY, previous); } catch { /* keep the previous backup */ }
     }
     skipBackupOnce = false;
+    damagedRaw = null;
     reportStorage(true);
     return true;
   } catch (e) {
@@ -228,6 +233,11 @@ export function saveState() {
     reportStorage(false, '浏览器未能保存聊天记录。请先在「设置中心 → 备份与更新」导出聊天备份，再检查浏览器存储权限或清理不需要的会话；关闭网页前请完成备份。');
     return false;
   }
+}
+
+/** @returns {boolean} */
+export function saveState() {
+  return writeState();
 }
 
 /**
@@ -347,13 +357,23 @@ export function applySessionImport(incoming) {
 /** @returns {boolean} */
 export function resumeLocalSaving() {
   if (damagedRaw !== null) {
+    if (storageChangedByAnotherPage()) {
+      reportStorage(false, '另一网页已修改聊天记录。为避免覆盖，当前网页暂停保存；请先导出当前聊天备份，再刷新后导入需要保留的记录。');
+      return false;
+    }
+    const backupKey = `${STORAGE_KEY}.damaged.${Date.now()}`;
     try {
-      localStorage.setItem(`${STORAGE_KEY}.damaged.${Date.now()}`, damagedRaw);
+      localStorage.setItem(backupKey, damagedRaw);
     } catch {
       throw new Error('无法另存原始记录。请先导出原始记录，并检查浏览器存储权限和可用空间。');
     }
     skipBackupOnce = true;
-    damagedRaw = null;
+    const saved = writeState({ allowDamaged: true });
+    if (!saved) {
+      skipBackupOnce = false;
+      try { localStorage.removeItem(backupKey); } catch { /* ignore cleanup failure */ }
+    }
+    return saved;
   }
   return saveState();
 }
