@@ -208,7 +208,7 @@ async def update_config(payload: ConfigPayload | SettingsUpdate | dict[str, Any]
             if not ok:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Invalid gpt_sovits_url: {reason}",
+                    detail=f"语音引擎地址格式无效：{reason}。请填写以 http:// 或 https:// 开头的完整地址（例如 http://127.0.0.1:9880）。",
                 )
 
         previous_precision = (await crud.get_settings(conn, mask=True)).inference_precision
@@ -218,9 +218,10 @@ async def update_config(payload: ConfigPayload | SettingsUpdate | dict[str, Any]
                 update_model = SettingsUpdate(**sanitized_updates)
             except Exception as val_err:
                 safe_detail = sanitize_error_detail(val_err)
+                logger.warning("Invalid configuration parameters: %s", safe_detail)
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    detail=f"Invalid configuration parameters: {safe_detail}",
+                    detail="全局配置参数格式或范围无效，请检查语音引擎地址与缓存保留时长后重试。",
                 ) from val_err
             updated_settings = await crud.update_settings(conn, update_model)
         else:

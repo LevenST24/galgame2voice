@@ -431,38 +431,3 @@ class BaseLLMAdapter(ABC):
         Discovers supported or available model IDs from provider endpoint.
         """
 
-
-class BaseSTTAdapter(ABC):
-    """
-    Abstract Base Class for Speech-to-Text (ASR) Adapters.
-    Provides standard unified interface for transcribing audio bytes
-    and testing STT service connectivity.
-    """
-
-    def __init__(
-        self,
-        api_key: str,
-        base_url: str = "https://api.openai.com/v1",
-        **kwargs: Any,
-    ):
-        self.api_key = str(api_key).strip() if api_key else ""
-        self.base_url = str(base_url).rstrip("/") if base_url else ""
-        self.extra_config: dict[str, Any] = kwargs
-
-    @abstractmethod
-    async def transcribe(
-        self,
-        audio_bytes: bytes,
-        filename: str = "audio.wav",
-        language: str | None = None,
-        **kwargs: Any,
-    ) -> str:
-        """
-        Transcribes binary audio payload into plain text.
-        """
-
-    @abstractmethod
-    async def test_connection(self) -> TestResult:
-        """
-        Verifies STT credentials and measures endpoint latency.
-        """

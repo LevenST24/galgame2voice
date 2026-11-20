@@ -736,6 +736,9 @@ def _diagnose_insufficient_balance(
             "insufficient balance",
             "insufficient_balance",
             "insufficient_quota",
+            "credit balance is too low",
+            "out of credits",
+            "arrearage",
             "余额不足",
             "payment required",
         )))
@@ -744,7 +747,7 @@ def _diagnose_insufficient_balance(
         return DiagnosticResult(
             error_code="QUOTA_EXCEEDED",
             message=f"账户可用余额不足（{status_code or 402}）",
-            guidance="当前提供商账户可用余额或额度已耗尽（402）。请前往对应模型服务商控制台充值或检查账单。",
+            guidance="当前提供商账户可用余额或额度已耗尽。请前往对应模型服务商控制台充值或检查账单。",
             status_code=status_code or 402,
             raw_error=sanitized_raw,
         )

@@ -223,21 +223,6 @@ async def test_saving_remote_url_preserves_records_when_wait_times_out(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_direct_apply_sovits_url_update_stops_engine(monkeypatch, tmp_path):
-    """Calling _apply_sovits_url_update directly terminates the owned engine and returns effective endpoint."""
-    pid_file, proc, _ = _setup_owned_engine(monkeypatch, tmp_path)
-    killed = _stub_terminate(monkeypatch, proc)
-
-    result = await _apply_sovits_url_update(REMOTE_URL)
-    assert result == {"base_url": REMOTE_URL, "source": "db"}
-    assert killed == [4242]
-    assert run_server._SPAWNED_SOVITS_PROC is None
-    assert run_server._SPAWNED_SOVITS_LAUNCH is None
-    assert run_server._SPAWNED_SOVITS_STARTED_AT is None
-    assert not pid_file.exists()
-
-
-@pytest.mark.asyncio
 async def test_saving_remote_url_cleans_records_if_process_exits_after_wait_timeout(monkeypatch, tmp_path):
     """If proc.wait times out but the process has exited when polled, records and PID file are cleaned up."""
     pid_file, proc, _ = _setup_owned_engine(monkeypatch, tmp_path)

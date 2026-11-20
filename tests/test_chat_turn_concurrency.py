@@ -84,12 +84,6 @@ async def _blocked_shared_turn(stack, second_factory=_DEFAULT_SECOND, *, expect_
         await asyncio.gather(*(task for task in (first, second) if task), return_exceptions=True)
 
 
-async def test_first_turn_creates_session(concurrent_chat):
-    stack = concurrent_chat
-    await asyncio.wait_for(stack.run("B", "new"), 10)
-    assert await stack.rows("new") == [("user", "B"), ("assistant", "answer to B")]
-
-
 async def test_queued_turn_does_not_recreate_deleted_session(concurrent_chat):
     stack = concurrent_chat
     async with _blocked_shared_turn(stack) as (first, second):

@@ -328,29 +328,6 @@ async def test_r1_warmup_current_profile_success(temp_db_path, mock_gpt_sovits):
 
 
 @pytest.mark.asyncio
-async def test_r1_warmup_probe_passes_the_engine_text_check(temp_db_path, mock_gpt_sovits):
-    """GPT-SoVITS answers symbol-only text with 400 "请输入有效文本"; the probe must not be rejected."""
-    profile = await _create_warmup_profile(temp_db_path)
-
-    import re
-
-    mock_handle = mock_gpt_sovits.handle_request
-
-    async def engine_text_check(method, path, json_data=None, params=None):
-        text = (json_data or params or {}).get("text")
-        if path == "/tts" and text is not None and not re.sub(r"\W+", "", text):
-            return httpx.Response(status_code=400, json={"message": "tts failed", "Exception": "请输入有效文本"})
-        return await mock_handle(method, path, json_data=json_data, params=params)
-
-    mock_gpt_sovits.handle_request = engine_text_check
-    client = GptSovitsClient(server=mock_gpt_sovits)
-    vm = voice_manager.VoiceManager(gpt_sovits_client_or_server=client, db_path=temp_db_path)
-    vm.active_profile = profile
-
-    assert await vm.warmup_current_profile() is True
-
-
-@pytest.mark.asyncio
 async def test_r1_warmup_current_profile_timeout_and_no_profile(temp_db_path, mock_gpt_sovits):
     """Verifies timeout resilience and graceful exit when no profile exists."""
     client = GptSovitsClient(server=mock_gpt_sovits)

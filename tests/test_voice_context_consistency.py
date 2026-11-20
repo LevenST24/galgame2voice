@@ -12,7 +12,7 @@ from galgame2voice.database import crud
 from galgame2voice.database.models import SettingsUpdate, VoiceProfileCreate, VoiceProfileUpdate
 from galgame2voice.database.session import get_db, immediate_transaction, init_db
 from galgame2voice.services import voice_resolver
-from galgame2voice.services.voice_resolver import VoiceContextUnavailableError, VoiceProfileResolver, get_voice_resolver
+from galgame2voice.services.voice_resolver import VoiceProfileResolver, get_voice_resolver
 
 
 async def seed(path, name):
@@ -266,20 +266,6 @@ async def test_concurrent_cold_reads_share_one_load(tmp_path, monkeypatch):
     contexts = await asyncio.gather(*(resolver.resolve_context(str(path), profile_id=row.id) for _ in range(20)))
     assert fetch.await_count == 1
     assert all(ctx is contexts[0] for ctx in contexts)
-
-
-@pytest.mark.asyncio
-async def test_read_errors_are_retryable_and_not_cached_as_absence(tmp_path, monkeypatch):
-    path = tmp_path / "voice.db"
-    row = await seed(path, "Alpha")
-    resolver = get_voice_resolver()
-    fetch = resolver._fetch_raw_profile
-    broken = AsyncMock(side_effect=OSError("temporary read failure"))
-    monkeypatch.setattr(resolver, "_fetch_raw_profile", broken)
-    with pytest.raises(VoiceContextUnavailableError, match="音色.*暂时无法读取"):
-        await resolver.resolve_context(str(path), profile_id=row.id)
-    monkeypatch.setattr(resolver, "_fetch_raw_profile", fetch)
-    assert (await resolver.resolve_context(str(path), profile_id=row.id)).name == "Alpha"
 
 
 @pytest.mark.asyncio

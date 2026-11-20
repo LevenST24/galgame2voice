@@ -26,7 +26,7 @@ from galgame2voice.services.voice_manager import VoiceManager
 from galgame2voice.services.chat_service import ChatService
 from galgame2voice.services.gpt_sovits_client import GptSovitsClient
 from galgame2voice.services.tts_service import TtsService
-from galgame2voice.utils.audio_converter import convert_ogg_to_wav, convert_wav_to_ogg
+from galgame2voice.utils.audio_converter import convert_wav_to_ogg
 
 
 # ============================================================================

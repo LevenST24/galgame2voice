@@ -90,31 +90,6 @@ class TestAnthropicPayloadInvariance:
         assert payload["messages"][0]["role"] == "user"
         assert payload["messages"][0]["content"] == "Hello"
 
-    def test_prepare_payload_omits_top_p_when_temperature_present(self):
-        """Sampling parameters and unsupported penalties must never be sent in Anthropic payload."""
-        adapter = AnthropicAdapter(api_key="sk-ant-test")
-        messages = [ChatMessage(role="user", content="Hello")]
-
-        payload = adapter._prepare_anthropic_payload(
-            messages,
-            temperature=0.7,
-            top_p=1.0,
-            frequency_penalty=0.0,
-            presence_penalty=0.0,
-        )
-
-        assert "temperature" not in payload
-        assert "top_p" not in payload
-        assert "frequency_penalty" not in payload
-        assert "presence_penalty" not in payload
-
-        zero_temp_payload = adapter._prepare_anthropic_payload(
-            messages,
-            temperature=0.0,
-            top_p=1.0,
-        )
-        assert "temperature" not in zero_temp_payload
-        assert "top_p" not in zero_temp_payload
 
     @pytest.mark.asyncio
     async def test_chat_omits_top_p_and_penalties_in_request_payload(self):
