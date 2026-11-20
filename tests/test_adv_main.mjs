@@ -2117,3 +2117,63 @@ test('deleting the active session loads history for the newly active fallback se
   assert.equal(nextActive.messages.length, 2, '自动切到的会话不应保持空白');
   assert.equal(nextActive.messages[1].content, '第二个会话的历史回复');
 });
+
+test('stale startup sync does not open the title screen over a session started by the user', async t => {
+  const { root, toasts } = mountAdvDocument();
+  installChatStorage();
+  globalThis.location = { origin: 'http://home.test', search: '', hash: '' };
+
+  let resolveSessions;
+  const sessionsPending = new Promise(resolve => { resolveSessions = resolve; });
+  let titleShown = 0;
+
+  const fetchImpl = async (url, options = {}) => {
+    const target = String(url);
+    const method = (options.method || 'GET').toUpperCase();
+    if (target.includes('/api/chat/sessions') && method === 'GET' && !target.includes('/messages')) {
+      return await sessionsPending;
+    }
+    return startupApiFallback(target, { providers: 'empty' });
+  };
+  globalThis.window = {
+    innerWidth: 1280,
+    location: globalThis.location,
+    sessionStorage: { getItem: () => '', setItem() {} },
+    fetch: fetchImpl,
+  };
+  globalThis.fetch = (...args) => window.fetch(...args);
+
+  const newChatBtn = document.createElement('button');
+  const app = initApp({
+    dom: { advRoot: root, newChatBtn },
+    renderSessionList() {},
+    showTitle() { titleShown += 1; },
+  });
+  t.after(() => {
+    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
+    for (const toast of toasts.children) clearTimeout(toast._timer);
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.localStorage;
+    delete globalThis.fetch;
+    delete globalThis.location;
+  });
+
+  await tick();
+  // User starts a new conversation before startup sync finishes.
+  newChatBtn.click();
+  const createdId = storedActive().id;
+
+  resolveSessions(Response.json({
+    sessions: [
+      { id: 's_server_old', title: '旧会话', updated_at: '2024-01-01 00:00:01', message_count: 1, last_message: '旧消息', settings: {} },
+    ],
+    has_more: false,
+    count: 1,
+  }));
+  await app.ready;
+  await tick();
+
+  assert.equal(storedActive().id, createdId, '过期的启动同步不能覆盖用户新建的会话');
+  assert.equal(titleShown, 0, '过期的启动同步不应再弹出首页遮罩盖住用户当前对话');
+});
