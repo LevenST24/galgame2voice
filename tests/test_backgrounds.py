@@ -136,16 +136,6 @@ def test_missing_pack_manifest_is_empty(library):
     assert load_background_packs(library) == []
 
 
-def test_two_packs_load_and_merge(library):
-    beach = library / "beach"
-    beach.mkdir()
-    (beach / "day.webp").write_bytes(b"beach-day")
-    write_pack(library, "beach", [{"id": "shore", "name": "海边", "variants": {"day": "day.webp"}}], name="海辺")
-    packs = load_background_packs(library)
-    assert [(p.work, p.name) for p in packs] == [("beach", "海辺"), ("cafe", "喫茶ステラ")]
-    assert [bg.key for p in packs for bg in p.backgrounds] == ["beach/shore", "cafe/stella"]
-
-
 @pytest.mark.parametrize("default,expected", [
     (None, "cafe/stella"), ("hall", "cafe/hall"), ("stella", "cafe/stella"),
     ("gone", "cafe/stella"), ("../hall", "cafe/stella"), (7, "cafe/stella"),

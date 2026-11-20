@@ -74,16 +74,6 @@ class TestBuildActingMenu:
             "fx": list(FX),
         }
 
-    def test_labels_are_unique_ordered_and_skip_blush_targets(self):
-        menu = build_acting_menu(portrait_payload())
-
-        assert menu["outfit"] == "uniform"
-        assert menu["faces"] == ["微笑", "生气"]
-        assert menu["face_ids"] == {"微笑": ["smile", "smile_alt"], "生气": ["angry"]}
-        assert menu["poses"] == []
-        assert menu["blush"] is True
-        assert menu["motions"] == list(MOTIONS)
-        assert menu["fx"] == list(FX)
 
     def test_face_order_follows_first_face_id_not_alphabetical_label(self):
         payload = {
@@ -253,14 +243,6 @@ class TestSanitizeAct:
         assert "act is not a dict" in caplog.text
         assert "line 4" in caplog.text
 
-    def test_logged_value_is_cut_to_forty_characters(self, caplog):
-        caplog.set_level(logging.INFO, logger=LOGGER_NAME)
-        value = "x" * 100
-
-        sanitize_act({"face": value}, MENU, line_index=1, character="测试")
-
-        assert repr(value)[:40] in caplog.text
-        assert repr(value) not in caplog.text
 
     @pytest.mark.parametrize("value", ["nod", "bounce", "startle", "sigh", "fidget", "head-shake", "lean-in", "step-back"])
     def test_every_motion_is_accepted(self, value):

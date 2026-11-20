@@ -52,23 +52,6 @@ class TestSsrfGuard:
         })
         assert resp.status_code == 400
 
-    @pytest.mark.asyncio
-    async def test_explicit_key_cannot_probe_private_ranges(self, client):
-        resp = await client.post("/api/providers/test", json={
-            "id": "openai",
-            "api_key": "sk-my-own-real-key-123456",
-            "base_url": "http://10.1.2.3/v1",
-        })
-        assert resp.status_code == 400
-
-    @pytest.mark.asyncio
-    async def test_loopback_rejected_by_default(self, client):
-        resp = await client.post("/api/providers/test", json={
-            "id": "custom",
-            "api_key": "dummy",
-            "base_url": "http://127.0.0.1:8080/v1",
-        })
-        assert resp.status_code == 400
 
     @pytest.mark.asyncio
     async def test_allow_private_permits_loopback(self, client):

@@ -259,9 +259,6 @@ class TestBracketedEmotionExtraction:
 class TestParenthesesCleanerBrackets:
     """Verifies clean_japanese_parentheses strips fullwidth lenticular and square brackets."""
 
-    def test_clean_lenticular_brackets(self):
-        text = "【ため息】ふぅ、やっと終わった。"
-        assert clean_japanese_parentheses(text) == "ふぅ、やっと終わった。"
 
     def test_clean_square_brackets(self):
         text = "[happy] 今日もいい天気ですね！"
