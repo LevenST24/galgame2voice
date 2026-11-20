@@ -18,7 +18,7 @@ import {
 import {
   createMemorySettingsController,
 } from './memory_settings.js';
-import { initSettingsTabs } from '../settings_ui.js';
+import { initSettingsTabs, onModalChange } from '../settings_ui.js';
 import { createSettingsDraftStore } from './settings_draft_store.js';
 
 const $ = (id) => (typeof document !== 'undefined' ? document.getElementById?.(id) : null);
@@ -184,6 +184,9 @@ export function initGlobalSettings(dom, callbacks = {}) {
     getActiveSession: _callbacks.getActiveSession,
     showToast,
   });
+  coordinatorCleanups.push(onModalChange(() => {
+    if (!settingsVisible()) memoryController?.cancelLoad();
+  }));
 
   updateSaveButtons();
 
