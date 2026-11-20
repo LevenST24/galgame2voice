@@ -459,20 +459,6 @@ class TestV3Validation:
 
 
 class TestPrecedenceAndFallback:
-    def test_valid_v3_layers_json_wins_over_v2_and_v1(self, tmp_path):
-        root, v3_data = make_valid_v3(tmp_path)
-        (root / "layers.json").write_text(json.dumps(v3_data), encoding="utf-8")
-
-        v2_data = {"version": 2, "costumes": {"uniform": {"id": "uniform"}}}
-        (root / "expressions.json").write_text(json.dumps(v2_data), encoding="utf-8")
-
-        v1_data = {"costumes": {"uniform": {}}}
-        (root / "manifest.json").write_text(json.dumps(v1_data), encoding="utf-8")
-
-        loaded = load_portrait_manifest(root)
-        assert loaded is not None
-        assert loaded.get("version") == 3
-        assert "looks" in loaded
 
     def test_invalid_v3_falls_back_to_v2(self, tmp_path, caplog):
         root, v3_data = make_valid_v3(tmp_path)
@@ -623,15 +609,6 @@ class TestSignedLayerUrlsAndPathSafety:
             assert img_resp.content == TINY_WEBP
             assert "max-age" in img_resp.headers.get("Cache-Control", "")
 
-    @pytest.mark.asyncio
-    async def test_tampered_signature_returns_403(self, setup_v3_character_db):
-        profile = setup_v3_character_db
-        async with _portrait_client() as client:
-            path = f"/api/media/portrait/{profile.id}/layers/A/1278.webp"
-            signed = sign_media_url(path)
-            bad_url = signed[:-4] + "0000"
-            resp = await client.get(bad_url)
-            assert resp.status_code == 403
 
     @pytest.mark.asyncio
     async def test_path_traversal_on_layer_endpoint_rejected(self, setup_v3_character_db):

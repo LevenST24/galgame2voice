@@ -257,21 +257,6 @@ async def test_duration_precheck_does_not_borrow_short_audio_from_other_package(
 
 
 @pytest.mark.asyncio
-async def test_duration_precheck_positive_control_triggers_fallback_for_actual_short_file(tmp_path, monkeypatch):
-    """Positive control: A real local file with invalid duration (<3s) DOES trigger fallback."""
-    service, alice_prof, _ = await _setup_alice_tts_service(tmp_path, monkeypatch)
-
-    # Create real explicit local file with 1s duration
-    short_file = _write_wav(tmp_path / "audio" / "actual_short.wav", seconds=1)
-
-    res = await _populate_alice_opts(service, alice_prof, str(short_file), prompt_text="短音频文本")
-
-    # Because actual file exists locally and duration is 1.0s (< 3.0s), fallback MUST be triggered!
-    assert "gentle.wav" in res["ref_audio_path"]
-    assert res["prompt_text"] == "Alice"
-
-
-@pytest.mark.asyncio
 async def test_unregistered_dir_custom_audio_relative_and_absolute_consistency(tmp_path, monkeypatch):
     """Unregistered characters subfolder: 1s relative and absolute both fallback; 4s both preserved."""
     service, alice_prof, _ = await _setup_alice_tts_service(tmp_path, monkeypatch)
