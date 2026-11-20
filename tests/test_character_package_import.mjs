@@ -57,6 +57,7 @@ const mkEl = (val = '', classes = []) => {
     removeEventListener(n, fn) { ls[n] = (ls[n] || []).filter((h) => h !== fn); },
     async fire(n, ev = {}) { for (const fn of [...(ls[n] || [])]) await fn(ev); },
     appendChild(c) { this.children.push(c); },
+    append(...cs) { this.children.push(...cs); },
     querySelectorAll: () => [], remove() {},
   };
 };
@@ -73,8 +74,9 @@ function setupEnv() {
     sVoiceImport: mkEl('', ['btn', 'primary']), sVoiceImportFolder: mkEl('', ['btn', 'ghost']),
     sVoiceDropOverlay: mkEl('', ['hidden']), sCustomVoiceBox: mkEl('', ['hidden']), sCvLang: mkEl('ja'),
   });
-  initVoiceSettings(dom);
-  return { dom, session, toastRoot, cleanup: () => toastRoot.children.forEach((c) => clearTimeout(c._timer)) };
+  let openedSettings = 0;
+  initVoiceSettings(dom, { onOpenSessionSettings: () => { openedSettings += 1; } });
+  return { dom, session, toastRoot, getOpenedSettings: () => openedSettings, cleanup: () => toastRoot.children.forEach((c) => clearTimeout(c._timer)) };
 }
 
 // 2. First-use hint toggle + 409 confirm -> overwrite=1 & select new char; cancel -> no retry + failure toast
@@ -85,9 +87,10 @@ globalThis.XMLHttpRequest = class {
   open(m, u) { this.method = m; this.url = u; } setRequestHeader() {} send() {}
 };
 
-const { dom, session, toastRoot, cleanup } = setupEnv();
+const { dom, session, toastRoot, getOpenedSettings, cleanup } = setupEnv();
 let profiles = [], confirmResult = false;
-globalThis.window = { confirm: () => confirmResult };
+let confirmCalls = 0;
+globalThis.window = { confirm: () => { confirmCalls += 1; return confirmResult; } };
 globalThis.fetch = async (url) => ({
   ok: true, status: 200,
   json: async () => (String(url).endsWith('/profiles') ? { profiles, active_profile_id: profiles[0]?.id ?? null } : {}),
@@ -198,6 +201,39 @@ try {
     toastRoot.children.at(-1)?.dataset.msg,
     '已导入「爱丽丝」、「缺权重小灯」，其中「缺权重小灯」还不能出声，需要补上模型权重',
   );
+
+  // Closing Settings Center mid-import must not mutate hidden form fields, prompt confirm(),
+  // or tell the user to click a hidden「保存」button.
+  dom.sVoice.value = '11';
+  dom.sSystem.value = '用户手写的未保存人设';
+  confirmCalls = 0;
+  profiles = [
+    { id: 11, name: '爱丽丝', system_prompt: '你是爱丽丝' },
+    { id: 13, name: '闭窗导入角色', system_prompt: '你是闭窗导入角色' },
+  ];
+  dom.sVoiceImportZipInput.files = [z1];
+  const pClosed = dom.sVoiceImportZipInput.fire('change');
+  await tick();
+  dom.sessionModal.hidden = true;
+  dom.sessionModal.classList.add('hidden');
+  const closedXhr = xhrs.at(-1);
+  closedXhr.status = 200;
+  closedXhr.responseText = JSON.stringify({
+    status: 'ok',
+    imported: [{ name: '闭窗导入角色', profile_id: 13, missing_voice_weights: false }],
+  });
+  closedXhr.onload();
+  await pClosed;
+  assert.equal(confirmCalls, 0);
+  assert.equal(dom.sVoice.value, '11');
+  assert.equal(dom.sSystem.value, '用户手写的未保存人设');
+  const closedToast = toastRoot.children.at(-1);
+  assert.equal(closedToast?.dataset.msg, '已导入「闭窗导入角色」，可在「角色与会话」中选用');
+  assert.match(closedToast?.className || '', /toast-success/);
+  const actionBtn = closedToast?.children.find((c) => c.className === 'toast-action-btn');
+  assert.equal(actionBtn?.textContent, '去选用');
+  await actionBtn.fire('click', { stopPropagation() {} });
+  assert.equal(getOpenedSettings(), 1);
 } finally {
   globalThis.XMLHttpRequest = prevXHR; globalThis.window = prevWin;
   cleanup();
