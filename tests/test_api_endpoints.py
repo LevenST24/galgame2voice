@@ -164,6 +164,15 @@ class TestCoreMainAndHealthEndpoints:
             assert telemetry.latency_ms >= 0.0
 
     @pytest.mark.asyncio
+    async def test_refused_custom_address_is_not_retried_on_another_path(self):
+        """Settings can probe an address other than the client's; a refused one is not tried again on "/"."""
+        with patch("httpx.AsyncClient.get", side_effect=httpx.ConnectError("Connection refused")) as get:
+            telemetry = await _probe_gpt_sovits("http://other-engine.test:9880")
+        assert telemetry.status == "unreachable"
+        assert "ConnectError" in telemetry.error
+        assert [c.args[0] for c in get.call_args_list] == ["http://other-engine.test:9880/control"]
+
+    @pytest.mark.asyncio
     async def test_large_query_and_headers_fuzzing(self):
         """Verify endpoint robustness against massive headers and oversized query strings."""
         app = create_app()

@@ -170,10 +170,13 @@ async def _probe_custom_gpt_sovits_target(target: str, base_url: str, t0: float)
     some VPN/TUN stacks delay loopback refusals to ~2s, so a tight
     budget converts 'engine down' into a fast unreachable verdict.
     """
-    timeout = httpx.Timeout(connect=1.0, read=2.5, write=2.5, pool=2.5)
-    async with httpx.AsyncClient(trust_env=False, timeout=timeout) as one_shot:
+    from galgame2voice.services.gpt_sovits_client import HEALTH_CONNECTION_ERRORS, HEALTH_TIMEOUT
+
+    async with httpx.AsyncClient(trust_env=False, timeout=HEALTH_TIMEOUT) as one_shot:
         try:
             resp = await one_shot.get(f"{target}/control")
+        except HEALTH_CONNECTION_ERRORS:
+            raise
         except Exception:
             resp = await one_shot.get(f"{target}/")
         latency = round((time.perf_counter() - t0) * 1000, 2)
@@ -188,7 +191,8 @@ async def _probe_custom_gpt_sovits_target(target: str, base_url: str, t0: float)
 async def _probe_gpt_sovits(base_url: str) -> GptSovitsTelemetry:
     """
     Checks GPT-SoVITS reachability through the shared singleton client pool
-    (probing GET /control with fallback to /). Fast health probe budget:
+    (probing GET /control; GET / only when /control fails other than by a
+    connection error). Fast health probe budget:
     long enough for a busy GPU to answer, short enough for a 5s poll.
     HTTP 200/400 counts as reachable; other codes / network errors do not.
     """

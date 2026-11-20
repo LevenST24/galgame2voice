@@ -89,6 +89,9 @@ _GLOBAL_AUDIO_SPEC_CACHE = _AUDIO_SPEC_CACHE
 TTS_TIMEOUT = httpx.Timeout(connect=5.0, read=300.0, write=15.0, pool=15.0)
 SWITCH_TIMEOUT = httpx.Timeout(connect=5.0, read=120.0, write=15.0, pool=15.0)
 HEALTH_TIMEOUT = httpx.Timeout(connect=1.0, read=2.5, write=2.5, pool=2.5)
+# Failures of the connection itself. They depend on the address, not the path, so a
+# health probe that hits one does not try another path on the same address.
+HEALTH_CONNECTION_ERRORS = (httpx.NetworkError, httpx.ConnectTimeout, httpx.RemoteProtocolError)
 
 ENDPOINT_SET_GPT_WEIGHTS = "/set_gpt_weights"
 ENDPOINT_SET_SOVITS_WEIGHTS = "/set_sovits_weights"
@@ -311,7 +314,10 @@ class GptSovitsClient:
         Probes GPT-SoVITS reachability via GET /control (api_v2 control endpoint returns 400 when active).
         HTTP 200/400 proves the engine is alive and listening; other codes / network errors are unreachable.
         One connection error is retried on the same path; only a second consecutive connection
-        error forgets loaded models. Dispatches through the mock server when one is configured (tests).
+        error forgets loaded models. GET / is tried only when /control fails some other way:
+        on Windows a refused local connection runs into the 1 s connect budget, so probing /
+        after it doubled the wait for an engine that is not running.
+        Dispatches through the mock server when one is configured (tests).
         """
         base_url = self.base_url
         generation = self._endpoint_generation
@@ -319,7 +325,7 @@ class GptSovitsClient:
         try:
             mocked = self.server is not None and hasattr(self.server, "handle_request")
             client = None if mocked else self._get_http_client()
-            connection_errors = (httpx.NetworkError, httpx.ConnectTimeout, httpx.RemoteProtocolError)
+            connection_errors = HEALTH_CONNECTION_ERRORS
 
             async def probe(path: str) -> httpx.Response:
                 async def once() -> httpx.Response:
@@ -343,6 +349,8 @@ class GptSovitsClient:
 
             try:
                 resp = await probe(ENDPOINT_CONTROL)
+            except connection_errors:
+                raise
             except Exception:
                 resp = await probe("/")
 
