@@ -469,3 +469,72 @@ test('Same-controls Engine & Directory busy disposal/reinit: synchronous release
     newDir.dispose();
   }
 });
+
+
+test('Global config header shows missing API key state for unconfigured cloud provider', async t => {
+  const prevDoc = globalThis.document;
+  const prevWin = globalThis.window;
+  const prevFetch = globalThis.fetch;
+  const prevLS = globalThis.localStorage;
+  t.after(() => {
+    globalThis.document = prevDoc;
+    globalThis.window = prevWin;
+    globalThis.fetch = prevFetch;
+    globalThis.localStorage = prevLS;
+  });
+
+  const ids = {
+    gConfigError: element('div'),
+    gDiagBackend: element('span'),
+    gDiagBackendDot: element('span'),
+    gDiagModel: element('span'),
+    gDiagModelDot: element('span'),
+    gDiagVoice: element('span'),
+    gDiagVoiceDot: element('span'),
+  };
+  globalThis.document = {
+    getElementById: id => ids[id] || null,
+    createElement: tag => element(tag),
+  };
+  globalThis.window = { confirm: () => true, addEventListener() {}, removeEventListener() {} };
+  globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} };
+
+  const dom = {
+    gParamSovitsUrl: element('input'),
+    gPrecision: element('select'),
+    gAudioRetention: element('input'),
+    gDashRetentionVal: element('span'),
+  };
+  initGlobalSettings(dom, { getVoiceProfiles: () => [], getActiveProfileId: () => null });
+
+  globalThis.fetch = async url => {
+    if (String(url).includes('/api/config')) {
+      return response({
+        status: 'ok',
+        settings: { gpt_sovits_url: 'http://127.0.0.1:9880', inference_precision: 'auto', audio_retention_minutes: 30 },
+        active_provider: { id: 'gemini', name: 'Google Gemini', chat_model: 'gemini-3.8-flash', api_key: '' },
+      });
+    }
+    return response({});
+  };
+
+  await loadGlobalConfig();
+  assert.equal(ids.gDiagModel.textContent, 'Google Gemini · 未填写 API Key');
+  assert.equal(ids.gDiagModelDot.classList.contains('ok'), false);
+
+  // Local custom provider without API key should still show ready.
+  globalThis.fetch = async url => {
+    if (String(url).includes('/api/config')) {
+      return response({
+        status: 'ok',
+        settings: { gpt_sovits_url: 'http://127.0.0.1:9880', inference_precision: 'auto', audio_retention_minutes: 30 },
+        active_provider: { id: 'custom', name: '本地 Ollama', chat_model: 'qwen2.5', api_key: '' },
+      });
+    }
+    return response({});
+  };
+
+  await loadGlobalConfig();
+  assert.equal(ids.gDiagModel.textContent, '本地 Ollama · qwen2.5');
+  assert.equal(ids.gDiagModelDot.classList.contains('ok'), true);
+});
