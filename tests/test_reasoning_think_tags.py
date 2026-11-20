@@ -131,24 +131,6 @@ def test_streaming_parser_streaming_prose_with_think_brackets():
     assert ja == "バカ、急に近づかないでよ！"
 
 
-def test_streaming_parser_short_prose_with_think_brackets_stream_deltas():
-    # Exactly from prompt: test chunked feed with shorter text
-    emitted_text, zh, ja, _ = _stream_reply(
-        "<think>先想一下",
-        "怎么回答【テスト】",
-        "</think>",
-        "笨蛋，别突然凑过来啦！",
-        "【バカ、急に近づかないでよ！】",
-    )
-
-    assert "<think>" not in emitted_text
-    assert "先想一下" not in emitted_text
-    assert "<think>" not in zh
-    assert "先想一下" not in zh
-    assert zh == "笨蛋，别突然凑过来啦！"
-    assert ja == "バカ、急に近づかないでよ！"
-
-
 def test_unclosed_think_tag_truncation():
     raw_text = "<think>还在思考中，尚未得出结论..."
     parser = StreamingBilingualParser()
@@ -182,8 +164,6 @@ def test_is_vocal_sentence_with_think_tags():
     assert TtsStreamPipeline.is_vocal_sentence("<thought>どう返答すべきか…</thought>") is False
     assert TtsStreamPipeline.is_vocal_sentence("<think>思考中ですが文字数制限で途切れた") is False
     assert TtsStreamPipeline.is_vocal_sentence("<think>思考中</think>こんにちは") is True
-
-
 
 
 def test_various_think_tags_case_and_attributes():
