@@ -138,7 +138,7 @@ async def test_chat_service_upstream_llm_timeout_handling(tmp_path):
     # Expect error event
     error_events = [e for e in events if e["event"] == "error"]
     assert len(error_events) == 1
-    assert "timed out" in error_events[0]["data"]["error"].lower() or "timeout" in error_events[0]["data"]["error"].lower()
+    assert "超时" in error_events[0]["data"]["error"]
 
     if os.path.exists(db_path):
         try:

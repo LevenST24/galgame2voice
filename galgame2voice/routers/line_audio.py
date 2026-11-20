@@ -51,7 +51,7 @@ async def _stored_line(conn, req: LineAudioRequest):
             raise HTTPException(404, "这句历史台词已不存在，请刷新聊天记录后再试。")
         stored_ja = row["content_japanese"] or ""
         if stored_ja != req.text:
-            raise HTTPException(409, "这句台词内容已变化，原音频未修改，请重新打开 LOG 后再试。")
+            raise HTTPException(409, "这句台词内容已变化，原音频未修改，请重新打开「对话记录」后再试。")
         line = {
             "index": 0,
             "zh": row["content_chinese"] or "",
@@ -86,7 +86,7 @@ async def _stored_line(conn, req: LineAudioRequest):
     if line is None:
         raise HTTPException(404, "这句历史台词已不存在，请刷新聊天记录后再试。")
     if line["ja"] != req.text:
-        raise HTTPException(409, "这句台词内容已变化，原音频未修改，请重新打开 LOG 后再试。")
+        raise HTTPException(409, "这句台词内容已变化，原音频未修改，请重新打开「对话记录」后再试。")
     return lines, line, None
 
 
@@ -183,9 +183,9 @@ async def regenerate_line(req: LineAudioRequest, request: Request, manager: Anno
                         zh = row["content_chinese"] or ""
                         ja = row["content_japanese"] or ""
                         if ja != req.text or zh != legacy_snapshot["content_chinese"]:
-                            raise HTTPException(409, "这句台词内容已变化，原音频未修改，请重新打开 LOG 后再试。")
+                            raise HTTPException(409, "这句台词内容已变化，原音频未修改，请重新打开「对话记录」后再试。")
                         if row["lines_json"] is not None or (row["audio_url"] or "") != legacy_snapshot["audio_url"]:
-                            raise HTTPException(409, "这句已有其他音频修复结果，未覆盖现有音频，请重新打开 LOG 检查。")
+                            raise HTTPException(409, "这句已有其他音频修复结果，未覆盖现有音频，请重新打开「对话记录」检查。")
                         if await request.is_disconnected():
                             raise HTTPException(499, "语音生成已取消，原音频与文字已保留。")
                         line = {
@@ -206,7 +206,7 @@ async def regenerate_line(req: LineAudioRequest, request: Request, manager: Anno
                     else:
                         lines, line, _ = await _stored_line(conn, req)
                         if line["audio"] != previous_audio:
-                            raise HTTPException(409, "这句已有其他音频修复结果，未覆盖现有音频，请重新打开 LOG 检查。")
+                            raise HTTPException(409, "这句已有其他音频修复结果，未覆盖现有音频，请重新打开「对话记录」检查。")
                         if await request.is_disconnected():
                             raise HTTPException(499, "语音生成已取消，原音频与文字已保留。")
                         line["audio"] = audio

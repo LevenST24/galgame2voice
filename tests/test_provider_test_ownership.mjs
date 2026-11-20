@@ -360,7 +360,7 @@ test('normal current test failure renders error title, guidance, and error toast
     onTest: () => response({
       success: false,
       error_code: 'OPENAI_AUTH_FAILED',
-      error_title: 'OpenAI API Key 身份验证失败 (401 Unauthorized)',
+      error_title: 'OpenAI API Key 身份验证失败（401）',
       error: 'OpenAI API Key 身份验证失败 (401 Unauthorized)',
       diagnostic: '请前往控制台检查',
       status_code: 401,

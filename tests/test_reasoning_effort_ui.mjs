@@ -21,24 +21,24 @@ test('formatProviderDiagnostic passes through backend structured error_title and
   const structured = formatProviderDiagnostic({
     success: false,
     error_code: 'QUOTA_EXCEEDED',
-    error_title: '账户可用余额不足 (402 Payment Required)',
-    diagnostic: '当前提供商账户可用余额或额度已耗尽（402 Payment Required）。请前往对应模型服务商控制台充值或检查账单。',
+    error_title: '账户可用余额不足（402）',
+    diagnostic: '当前提供商账户可用余额或额度已耗尽（402）。请前往对应模型服务商控制台充值或检查账单。',
     status_code: 402,
-    error: '账户可用余额不足 (402 Payment Required)',
+    error: '账户可用余额不足（402）',
     message: 'Provider test returned HTTP 402 (req_28401)',
   });
   assert.deepEqual(structured, {
-    title: '账户可用余额不足 (402 Payment Required)',
-    guidance: '当前提供商账户可用余额或额度已耗尽（402 Payment Required）。请前往对应模型服务商控制台充值或检查账单。',
+    title: '账户可用余额不足（402）',
+    guidance: '当前提供商账户可用余额或额度已耗尽（402）。请前往对应模型服务商控制台充值或检查账单。',
   });
 
   const legacyFields = formatProviderDiagnostic({
     success: false,
-    error: 'OpenAI API Key 身份验证失败 (401 Unauthorized)',
+    error: 'OpenAI API Key 身份验证失败（401）',
     message: '身份验证失败。请检查输入的 sk- 密钥是否完整无误。',
   });
   assert.deepEqual(legacyFields, {
-    title: 'OpenAI API Key 身份验证失败 (401 Unauthorized)',
+    title: 'OpenAI API Key 身份验证失败（401）',
     guidance: '身份验证失败。请检查输入的 sk- 密钥是否完整无误。',
   });
 });

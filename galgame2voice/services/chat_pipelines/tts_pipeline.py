@@ -128,7 +128,7 @@ class TtsStreamPipeline:
             raise
         except asyncio.TimeoutError:
             logger.warning("Voice job exceeded its budget (chunk %d, generation %s).", chunk_index, self.generation_id)
-            return None, "本句等待语音超时，文字已保留；请检查语音引擎，稍后可在 LOG 重新生成。"
+            return None, "本句等待语音超时，文字已保留；请检查语音引擎，稍后可在「对话记录」里重新生成。"
         except Exception as exc:
             logger.warning(
                 "Failed to synthesize audio chunk %d for sentence '%s': %s",
