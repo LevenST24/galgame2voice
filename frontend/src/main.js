@@ -675,6 +675,10 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     const active = getActive();
     ensureSessionVoice(active);
     showToast(switched ? `对话已删除，现在是「${/** @type {NonNullable<typeof active>} */ (active).title}」。` : '对话已删除');
+    if (switched && active && (!active.messages || active.messages.length === 0 || sessionsBehindServer.has(active.id))) {
+      await loadSessionHistory(active);
+      if (getActive() === active) fullRender();
+    }
   }
 
   function newChat(selection, { enterFromHome = false } = {}) {
