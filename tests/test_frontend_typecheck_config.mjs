@@ -56,6 +56,8 @@ const EXPECTED_CORE_FILES = [
   'src/controllers/update_manager.js',
   'src/controllers/voice_settings.js',
   'src/conversation.js',
+  'src/main.js',
+  'src/model_badge.js',
   'src/request.js',
   'src/session_api.js',
   'src/session_data.js',
@@ -68,7 +70,7 @@ const EXPECTED_CORE_FILES = [
   'src/voice.js',
 ];
 
-test('frontend/jsconfig.json enables checkJs + noEmit and covers all 57 checked modules with // @ts-check', () => {
+test('frontend/jsconfig.json enables checkJs + noEmit and covers all 59 checked modules with // @ts-check', () => {
   assert.equal(fs.existsSync(JSCONFIG_PATH), true, 'frontend/jsconfig.json must exist');
   const jsconfig = JSON.parse(fs.readFileSync(JSCONFIG_PATH, 'utf8'));
 
