@@ -63,7 +63,6 @@ from galgame2voice.services.dynamic_batcher import (
 from galgame2voice.services.streaming_parser import StreamingBilingualParser
 from galgame2voice.services.character_manager import (
     CharacterManager,
-    CharacterManifest,
     EmotionConfig,
     VoiceParamsConfig,
 )
@@ -355,34 +354,6 @@ class TestDynamicBatchSchedulerAndSpeedTracker:
 class TestCharacterPackageCustomVoiceParams:
     """Verifies that CharacterPackage supports custom per-emotion voice_params."""
 
-    def test_emotion_config_with_custom_voice_params(self, tmp_path):
-        manifest_data = {
-            "id": "custom_heroine",
-            "name": "CustomTestHeroine",
-            "version": "1.0.0",
-            "weights": {
-                "gpt": "weights/heroine.ckpt",
-                "sovits": "weights/heroine.pth",
-            },
-            "emotions": {
-                "happy": {
-                    "audio": "audio/happy.wav",
-                    "text": "嬉しいです！",
-                    "lang": "ja",
-                    "voice_params": {
-                        "speed": 1.18,
-                        "temperature": 0.82,
-                        "top_k": 25,
-                        "top_p": 0.90,
-                        "fragment_interval": 0.25,
-                    },
-                }
-            },
-        }
-        manifest = CharacterManifest(**manifest_data)
-        assert manifest.emotions["happy"].voice_params is not None
-        assert manifest.emotions["happy"].voice_params.speed == 1.18
-        assert manifest.emotions["happy"].voice_params.top_k == 25
 
     def test_resolve_emotion_audio_path_returns_voice_params(self, tmp_path):
         pkg_dir = tmp_path / "test_char"

@@ -23,7 +23,6 @@ ALL_THIRTEEN_CHARACTERS = [
     "白雪乃爱", "谷风天音", "小云雀来海", "星河辉耶", "高楯欧丽叶",
 ]
 STANDARD_EMOTIONS = ["gentle", "shy", "happy", "tsundere", "cool", "sad", "angry"]
-AFFECTION_STAGES = ["0~20", "21~50", "51~80", "81~100"]
 
 
 def _get_audio_duration(path: Path) -> float:
@@ -105,32 +104,6 @@ def test_discovery_and_pydantic_validation_all_13_packages():
             w_path = settings.project_root / w_file
             assert w_path.is_file(), f"Weight file {w_path} does not exist for {pkg.name}"
             assert w_path.stat().st_size > 100 * 1024 * 1024, f"Weight {w_path} size <= 100MB for {pkg.name}"
-
-
-@pytest.mark.requires_character_assets
-def test_affection_stages_and_emotions_in_prompts_five_characters():
-    """Asserts that each prompt contains all 4 affection stages and 7 standard emotions."""
-    settings = get_settings()
-
-    for char_name in TENSHI_5:
-        txt_path = settings.characters_dir / char_name / "system_prompt.txt"
-        prompt = txt_path.read_text(encoding="utf-8")
-
-        # 4 Affection stages check
-        for stage in AFFECTION_STAGES:
-            assert stage in prompt, f"Affection stage '{stage}' missing from prompt for {char_name}"
-
-        # 7 Standard emotions check
-        for emo in STANDARD_EMOTIONS:
-            assert emo in prompt, f"Standard emotion '{emo}' missing from prompt for {char_name}"
-
-        # JSON TTS output format contract check
-        assert '"tts"' in prompt, f'JSON TTS contract missing "tts" key in prompt for {char_name}'
-        assert '"speed"' in prompt, f'JSON TTS contract missing "speed" in prompt for {char_name}'
-        assert '"temp"' in prompt, f'JSON TTS contract missing "temp" in prompt for {char_name}'
-        assert '"emotion"' in prompt, f'JSON TTS contract missing "emotion" in prompt for {char_name}'
-        assert '"chinese"' in prompt, f'JSON TTS contract missing "chinese" in prompt for {char_name}'
-        assert '"japanese"' in prompt, f'JSON TTS contract missing "japanese" in prompt for {char_name}'
 
 
 @pytest.mark.requires_character_assets

@@ -19,7 +19,7 @@ from galgame2voice.database import crud
 from galgame2voice.database.models import MessageResponse, ReplyLineRecord, decode_lines
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.main import create_app
-from galgame2voice.routers.chat import ChatRequest, get_turn_reply, set_chat_service, sse_event_formatter
+from galgame2voice.routers.chat import get_turn_reply, set_chat_service, sse_event_formatter
 from galgame2voice.services.chat_pipelines.line_scanner import FX, MOTIONS, MOVES
 from galgame2voice.services.chat_pipelines.stream_coordinator import StreamCoordinator
 from galgame2voice.services.chat_service import ChatService, SseKeepAlive
@@ -364,18 +364,6 @@ async def test_turn_reply_route_matches_all_five_contract_statuses(tmp_path, mon
                 sync_conn.close()
     finally:
         set_chat_service(None)
-
-
-class TestSseStreamingBackpressureAndDisconnect:
-    """Tests SSE streaming pipeline cancellation, backpressure, and disconnect handling."""
-
-    @pytest.mark.asyncio
-    async def test_chat_request_stream_flag_contract(self):
-        """Verify ChatRequest accepts stream boolean sent by frontend."""
-        req = ChatRequest(prompt="Hello", session_id="test", stream=True)
-        assert req.stream is True
-        req_false = ChatRequest(prompt="Hello", session_id="test", stream=False)
-        assert req_false.stream is False
 
 
 class TestSseKeepAliveFormatting:

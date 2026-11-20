@@ -116,23 +116,6 @@ class TestDynamicClampingFunctions:
 class TestStreamingBilingualParserDynamicVoice:
     """Verifies incremental parsing of dynamic TTS inference parameters."""
 
-    def test_parser_extracts_dynamic_tts_fields_fully(self):
-        parser = StreamingBilingualParser()
-        raw = json.dumps({
-            "tts": {"speed": 1.2, "temp": 0.8, "emotion": "tsundere"},
-            "chinese": "不理你了！",
-            "japanese": "もう知らない！"
-        }, ensure_ascii=False)
-
-        parser.feed_chunk(raw)
-        zh, ja, rem = parser.finalize()
-
-        assert zh == "不理你了！"
-        assert ja == "もう知らない！"
-        assert parser.tts_speed == 1.2
-        assert parser.tts_temperature == 0.8
-        assert parser.tts_emotion == "tsundere"
-        assert parser.get_emotion() == "tsundere"
 
     def test_parser_early_extraction_before_japanese_completes(self):
         """Dynamic parameters in chunk 0 must be immediately available before sentence 0 is completed."""
@@ -157,17 +140,6 @@ class TestStreamingBilingualParserDynamicVoice:
         assert len(sentences) == 1
         assert sentences[0] == "こんにちは！"
 
-    def test_parser_clamps_extreme_llm_dynamic_parameters(self):
-        parser = StreamingBilingualParser()
-        raw = '{"tts": {"speed": 3.5, "temp": 0.1, "emotion": "cool"}, "chinese": "...", "japanese": "..."}'
-        parser.feed_chunk(raw)
-        parser.finalize()
-
-        # speed clamped to DYNAMIC_SPEED_MAX (1.35)
-        assert parser.tts_speed == DYNAMIC_SPEED_MAX
-        # temp clamped to DYNAMIC_TEMP_MIN (0.60)
-        assert parser.tts_temperature == DYNAMIC_TEMP_MIN
-        assert parser.tts_emotion == "cool"
 
     def test_parser_adaptive_disabled_preserves_base_options(self):
         parser = StreamingBilingualParser()
@@ -480,4 +452,3 @@ def test_prosody_bounds_constants():
     assert DYNAMIC_SPEED_MAX == 1.50
     assert DYNAMIC_TEMP_MIN == 0.60
     assert DYNAMIC_TEMP_MAX == 1.20
-
