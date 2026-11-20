@@ -4,7 +4,7 @@
 import { getErrorMessage, connectionMessage } from './request.js';
 
 const MAX_VOICE_WAIT_MS = 600000;
-const KEPT_LINES = '已收到的台词保留在 LOG 里。';
+const KEPT_LINES = '已收到的台词保留在「对话记录」里。';
 
 const pickText = value => (typeof value === 'string' ? value.trim() : '');
 

@@ -15,6 +15,7 @@ import tarfile
 import tempfile
 from typing import Any, Callable, IO, Iterable
 import zipfile
+import zlib
 
 from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -181,7 +182,7 @@ def extract_archive_safely(
                 _extract_members(_zip_members(), extract_dir, max_bytes)
         except HTTPException:
             raise
-        except (zipfile.BadZipFile, RuntimeError, OSError, EOFError) as exc:
+        except (zipfile.BadZipFile, zlib.error, RuntimeError, OSError, EOFError) as exc:
             msg = (
                 "压缩包设有密码，请先解压后再导入角色包文件夹。"
                 if "encrypted" in str(exc).lower()

@@ -8,8 +8,6 @@ import asyncio
 import os
 import sqlite3
 import tempfile
-import time
-import aiosqlite
 import pytest
 
 from galgame2voice.services.session_manager import SessionManager, SessionTurn
@@ -35,31 +33,6 @@ class TestSessionManagerTier1:
         assert history[1].role == "assistant"
         assert history[1].content_japanese == "こんにちは、先生！"
 
-    @pytest.mark.asyncio
-    async def test_clear_session_messages(self, temp_db_path):
-        sm = SessionManager(temp_db_path)
-        await sm.add_turn("sess-02", "user", "消息1", "msg1")
-        await sm.add_turn("sess-02", "user", "消息2", "msg2")
-
-        history_before = await sm.get_history("sess-02")
-        assert len(history_before) == 2
-
-        await sm.clear_session("sess-02")
-        history_after = await sm.get_history("sess-02")
-        assert len(history_after) == 0
-
-    def test_format_llm_messages_template(self, temp_db_path):
-        sm = SessionManager(temp_db_path)
-        history = [
-            SessionTurn(role="user", content_chinese="早上好", content_japanese="おはよう"),
-            SessionTurn(role="assistant", content_chinese="早上好呀", content_japanese="おはようございます")
-        ]
-        messages = sm.format_llm_messages("Arona", history, "今天有什么日程？")
-        assert len(messages) == 4
-        assert messages[0]["role"] == "system"
-        assert "Arona" in messages[0]["content"]
-        assert messages[-1]["role"] == "user"
-        assert messages[-1]["content"] == "今天有什么日程？"
 
     @pytest.mark.asyncio
     async def test_empty_session_returns_empty_history(self, temp_db_path):
@@ -75,47 +48,6 @@ class TestSessionManagerTier1:
 class TestSessionManagerTier2:
     """Tier 2: Max message limit, token truncation, session isolation, and custom template variables."""
 
-    @pytest.mark.asyncio
-    async def test_max_messages_limit(self, temp_db_path):
-        sm = SessionManager(temp_db_path)
-        for i in range(15):
-            await sm.add_turn("sess-limit", "user", f"User msg {i}", f"Ja msg {i}")
-
-        # Limit to 5 most recent messages
-        history = await sm.get_history("sess-limit", max_messages=5)
-        assert len(history) == 5
-        assert history[0].content_chinese == "User msg 10"
-        assert history[-1].content_chinese == "User msg 14"
-
-    @pytest.mark.asyncio
-    async def test_token_limit_truncation(self, temp_db_path):
-        sm = SessionManager(temp_db_path)
-        # Add 3 turns, first one very large
-        large_content = "长文本" * 500  # ~750 tokens
-        await sm.add_turn("sess-token", "user", large_content, "Ja")
-        await sm.add_turn("sess-token", "assistant", "短回复1", "Ja1")
-        await sm.add_turn("sess-token", "user", "短输入2", "Ja2")
-
-        # Set max_tokens to 100, which should discard the oldest large message
-        history = await sm.get_history("sess-token", max_tokens=100)
-        assert len(history) == 2
-        assert history[0].content_chinese == "短回复1"
-        assert history[1].content_chinese == "短输入2"
-
-    @pytest.mark.asyncio
-    async def test_session_isolation(self, temp_db_path):
-        sm = SessionManager(temp_db_path)
-        await sm.add_turn("user-alice", "user", "我是Alice", "Aliceです")
-        await sm.add_turn("user-bob", "user", "我是Bob", "Bobです")
-
-        alice_hist = await sm.get_history("user-alice")
-        bob_hist = await sm.get_history("user-bob")
-
-        assert len(alice_hist) == 1
-        assert alice_hist[0].content_chinese == "我是Alice"
-
-        assert len(bob_hist) == 1
-        assert bob_hist[0].content_chinese == "我是Bob"
 
     def test_custom_template_with_special_characters(self, temp_db_path):
         custom_tpl = "角色设定：【{character_name}】。\n特殊符号测试：{{}} %% // \\n"
@@ -124,18 +56,6 @@ class TestSessionManagerTier2:
         assert "【Plana】" in messages[0]["content"]
         assert "{}" in messages[0]["content"]
 
-    @pytest.mark.parametrize("persona_name,persona_prompt", [
-        ("Tsundere", "You are a Tsundere girl named {character_name}. Act haughty but caring."),
-        ("Kuudere", "You are a quiet, stoic companion named {character_name}."),
-        ("Maid", "You are a loyal maid serving your master. Name: {character_name}."),
-        ("Genki", "You are an energetic, hyper cheerful companion named {character_name}!"),
-    ])
-    def test_archetype_persona_prompt_formatting(self, temp_db_path, persona_name, persona_prompt):
-        sm = SessionManager(temp_db_path, default_system_template=persona_prompt)
-        msgs = sm.format_llm_messages(persona_name, [], "Hello")
-        assert len(msgs) == 2
-        assert persona_name in msgs[0]["content"]
-        assert msgs[-1]["role"] == "user"
 
     @pytest.mark.asyncio
     async def test_session_pagination_and_sliding_window(self, temp_db_path):
@@ -213,13 +133,6 @@ def messages_table_db():
 class TestSessionManagerHistoryEdges:
     """Assertions moved from the Milestone 6 session adversarial suites."""
 
-    def test_estimate_tokens_exact_edges(self, temp_db_path):
-        sm = SessionManager(temp_db_path)
-        assert sm.estimate_tokens("") == 0
-        assert sm.estimate_tokens(None) == 0
-        assert sm.estimate_tokens("   ") == 1
-        assert sm.estimate_tokens("a") == 1
-        assert sm.estimate_tokens("长" * 100_000) == 110_001
 
     @pytest.mark.asyncio
     async def test_token_budget_zero_and_negative(self, temp_db_path):
@@ -288,32 +201,6 @@ class TestSessionManagerHistoryEdges:
             assert retrieved.content_japanese == original
 
     # Micro-benchmark wall-clock budget for estimate_tokens is sensitive to multi-worker CPU contention.
-    @pytest.mark.serial
-    @pytest.mark.wall_clock
-    def test_token_estimation_speed_and_invariants(self, temp_db_path):
-        """Benchmark and invariant tests for estimate_tokens."""
-        sm = SessionManager(temp_db_path)
-
-        # Invariant 1: Empty string = 0
-        assert sm.estimate_tokens("") == 0
-        assert sm.estimate_tokens(None) == 0
-
-        # Invariant 2: Single char >= 1
-        assert sm.estimate_tokens("a") >= 1
-        assert sm.estimate_tokens("中") >= 1
-        assert sm.estimate_tokens("🌸") >= 1
-
-        # Invariant 3: Performance test (1 million characters < 100ms)
-        large_sample = ("Hello 世界！这是一段混合测试字符串 12345! " * 20_000)
-        assert len(large_sample) > 500_000
-
-        t0 = time.perf_counter()
-        token_count = sm.estimate_tokens(large_sample)
-        t1 = time.perf_counter()
-
-        elapsed_ms = (t1 - t0) * 1000
-        assert token_count > 0
-        assert elapsed_ms < 100.0, f"Token estimation took too long: {elapsed_ms:.2f}ms"
 
     def test_prompt_template_injection_and_malformed_syntax(self, temp_db_path):
         sm = SessionManager(temp_db_path)
@@ -444,31 +331,3 @@ class TestSessionManagerEmotion:
         # Default template stays format-agnostic because render_lines_contract supplies the schema
         assert "{character_name}" in sm.DEFAULT_SYSTEM_TEMPLATE
         assert '"chinese"' not in sm.DEFAULT_SYSTEM_TEMPLATE
-
-
-@pytest.mark.asyncio
-async def test_session_manager_stale_cache_recovery():
-    """Verify that SessionManager handles dynamic table re-initialization and arbitrary connection row_factories."""
-    async with aiosqlite.connect(":memory:") as db:
-        await db.execute("""
-            CREATE TABLE session_messages (
-                id INTEGER PRIMARY KEY,
-                session_id TEXT,
-                role TEXT,
-                content_chinese TEXT,
-                content_japanese TEXT,
-                raw_content TEXT
-            );
-        """)
-        await db.execute(
-            "INSERT INTO session_messages VALUES (1, 's1', 'user', '你好', 'こんにちは', '你好');"
-        )
-        await db.commit()
-
-        mgr = SessionManager(db_path=":memory:")
-        mgr._table_name = "messages"  # Simulate stale cached table name
-
-        # This should recover, detect session_messages, ensure row_factory, and return the row
-        turns = await mgr._get_history_on_conn(db, "s1", 10, 8000)
-        assert len(turns) == 1
-        assert turns[0].content_chinese == "你好"

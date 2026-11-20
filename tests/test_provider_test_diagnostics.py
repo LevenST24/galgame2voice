@@ -260,7 +260,6 @@ async def test_get_providers_includes_builtin_presets_without_breaking_legacy_pr
     expected_ids = [p["id"] for p in legacy_contract["presets"]]
     assert [p["id"] for p in builtin] == expected_ids
 
-    stt_supported_ids = {"openai", "qwen", "siliconflow", "custom"}
     for item in builtin:
         assert set(item.keys()) == {
             "id",
@@ -270,7 +269,6 @@ async def test_get_providers_includes_builtin_presets_without_breaking_legacy_pr
             "default_stt_model",
             "default_reasoning_effort",
             "requires_api_key",
-            "supports_stt",
             "preset_models",
             "description",
         }
@@ -279,7 +277,6 @@ async def test_get_providers_includes_builtin_presets_without_breaking_legacy_pr
         else:
             assert item["requires_api_key"] is True
 
-        assert item["supports_stt"] is (item["id"] in stt_supported_ids)
         assert item["default_reasoning_effort"] == {
             "gemini": "low", "openai": "none", "deepseek": "none", "anthropic": "none",
             "xai": "low", "glm": "none", "moonshot": "low",
