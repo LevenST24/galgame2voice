@@ -213,18 +213,6 @@ class SessionBase(BaseModel):
     token_budget: int = 4096
 
 
-class SessionCreate(SessionBase):
-    pass
-
-
-class SessionUpdate(BaseModel):
-    voice_profile_id: int | None = None
-    custom_system_prompt: str | None = None
-    title: str | None = None
-    settings_json: str | None = None
-    token_budget: int | None = Field(default=None, ge=128, le=131072)
-
-
 class SessionInDB(SessionBase):
     created_at: str | None = None
     updated_at: str | None = None

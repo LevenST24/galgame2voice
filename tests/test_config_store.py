@@ -27,7 +27,6 @@ from galgame2voice.database.crud import (
 from galgame2voice.database.models import (
     SettingsUpdate, ProviderCreate, ProviderUpdate,
     VoiceProfileCreate, VoiceProfileUpdate,
-    SessionCreate, SessionUpdate,
     MessageCreate
 )
 
