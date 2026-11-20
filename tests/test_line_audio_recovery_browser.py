@@ -23,8 +23,9 @@ import {createLineAudioRecovery} from '/frontend/src/controllers/line_audio_reco
 import {StreamAudioController} from '/frontend/src/audio_player.js';"""
     wait_until = """\
 const wait = () => new Promise(resolve => setTimeout(resolve, 20));
-const until = async check => {
-  for (let i = 0; i < 200; i++) {
+const until = async (check, ms = 0) => {
+  const deadline = performance.now() + ms;
+  for (let i = 0; i < 200 || performance.now() < deadline; i++) {
     if (check()) return;
     await wait();
   }
@@ -350,7 +351,9 @@ __CLICK__
 
   click('.adv-log-regenerate-btn');
 
-  await until(() => line.audio.status === 'ready');
+  // The server holds each repair until the other page has posted its own (up to 15 s), and on a busy
+  // runner that page can start seconds later, so this wait must outlast the hold, not 200 short polls.
+  await until(() => line.audio.status === 'ready', 20000);
   await wait();
 
   result.audioStatus = line.audio.status;
