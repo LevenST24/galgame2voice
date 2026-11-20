@@ -148,5 +148,121 @@ await dom.sVoiceRedeemCode.fire('keydown', keyEvent());
 assert.equal(listCalls, 1);
 assert.equal(prevented, true);
 assert.equal(dom.sVoiceRedeemCode.value, '');
+// Race 1: a slow earlier redeem query must not overwrite or clear a newer query's list.
+let resolveSlowCode;
+let rejectSlowCode;
+let slowMode = 'resolve';
+globalThis.fetch = async (url, opts = {}) => {
+  const u = String(url);
+  if (u.includes('/redeem/list')) {
+    const reqCode = JSON.parse(opts.body).code;
+    if (reqCode === 'G2V1.slow-old') {
+      return new Promise((resolve, reject) => {
+        resolveSlowCode = resolve;
+        rejectSlowCode = reject;
+      });
+    }
+    return ok({ packages: [{ id: 'bob', name: '鲍勃', size: 1024, remaining: 3 }] });
+  }
+  if (u.includes('/redeem/download')) {
+    bodies.push(JSON.parse(opts.body));
+    return ok({ status: 'ok', imported: [{ name: '鲍勃', profile_id: 12 }] });
+  }
+  if (u.includes('/profiles')) {
+    return ok({ profiles: [{ id: 12, name: '鲍勃', system_prompt: '你是鲍勃' }], active_profile_id: 12 });
+  }
+  return ok({});
+};
+dom.sVoiceRedeemCode.value = 'G2V1.slow-old';
+const slowQuery = dom.sVoiceRedeemQuery.fire('click');
+dom.sVoiceRedeemCode.value = 'G2V1.fast-new';
+await dom.sVoiceRedeemQuery.fire('click');
+assert.equal(dom.sVoiceRedeemList.children[0].children[0].textContent, '鲍勃 · 1.0 KB · 还可下载 3 次');
+resolveSlowCode(ok({ packages: [{ id: 'stale', name: '旧包', size: 512, remaining: 1 }] }));
+await slowQuery;
+assert.equal(
+  dom.sVoiceRedeemList.children[0]?.children[0]?.textContent,
+  '鲍勃 · 1.0 KB · 还可下载 3 次',
+  '迟到的旧兑换码查询结果不应覆盖较新的角色包列表',
+);
+
+// Same race when the earlier query fails late: must not wipe the newer query's list.
+dom.sVoiceRedeemCode.value = 'G2V1.slow-old';
+const slowFailQuery = dom.sVoiceRedeemQuery.fire('click');
+dom.sVoiceRedeemCode.value = 'G2V1.fast-new';
+await dom.sVoiceRedeemQuery.fire('click');
+rejectSlowCode(new Error('旧查询超时'));
+await slowFailQuery;
+assert.equal(
+  dom.sVoiceRedeemList.children[0]?.children[0]?.textContent,
+  '鲍勃 · 1.0 KB · 还可下载 3 次',
+  '迟到的旧兑换码查询失败不应清空较新的角色包列表',
+);
+
+// Race 2: post-download list refresh from pkg1 must not wipe out pkg2's active download progress.
+let resolvePostRefresh;
+let resolvePkg2Download;
+let listRefreshCount = 0;
+globalThis.fetch = async (url, opts = {}) => {
+  const u = String(url);
+  if (u.includes('/redeem/list')) {
+    listRefreshCount += 1;
+    if (listRefreshCount === 1) {
+      return ok({
+        packages: [
+          { id: 'pkg1', name: '角色一', size: 1024, remaining: 2 },
+          { id: 'pkg2', name: '角色二', size: 2048, remaining: 2 },
+        ],
+      });
+    }
+    if (listRefreshCount === 2) {
+      return new Promise(resolve => { resolvePostRefresh = resolve; });
+    }
+    return ok({
+      packages: [
+        { id: 'pkg1', name: '角色一', size: 1024, remaining: 1 },
+        { id: 'pkg2', name: '角色二', size: 2048, remaining: 1 },
+      ],
+    });
+  }
+  if (u.includes('/redeem/download')) {
+    const body = JSON.parse(opts.body);
+    if (body.package_id === 'pkg1') {
+      return ok({ status: 'ok', imported: [{ name: '角色一', profile_id: 21 }] });
+    }
+    return new Promise(resolve => { resolvePkg2Download = resolve; });
+  }
+  if (u.includes('/profiles')) {
+    return ok({
+      profiles: [
+        { id: 21, name: '角色一', system_prompt: '一' },
+        { id: 22, name: '角色二', system_prompt: '二' },
+      ],
+      active_profile_id: 21,
+    });
+  }
+  return ok({});
+};
+dom.sVoiceRedeemCode.value = 'G2V1.two-packs';
+await dom.sVoiceRedeemQuery.fire('click');
+const pkg1Done = dom.sVoiceRedeemList.children[0].children[1].fire('click');
+while (!resolvePostRefresh) await new Promise(r => setImmediate(r));
+const pkg2Done = dom.sVoiceRedeemList.children[1].children[1].fire('click');
+assert.match(dom.sVoiceRedeemStatus.textContent, /正在下载「角色二」/);
+resolvePostRefresh(ok({
+  packages: [
+    { id: 'pkg1', name: '角色一', size: 1024, remaining: 1 },
+    { id: 'pkg2', name: '角色二', size: 2048, remaining: 2 },
+  ],
+}));
+await pkg1Done;
+assert.match(
+  dom.sVoiceRedeemStatus.textContent,
+  /正在下载「角色二」/,
+  '上一个包下载后的列表刷新不应抹掉下一个包正在显示的下载进度',
+);
+resolvePkg2Download(ok({ status: 'ok', imported: [{ name: '角色二', profile_id: 22 }] }));
+await pkg2Done;
+
 toastRoot.children.forEach((c) => clearTimeout(c._timer));
 console.log('package redeem frontend tests: passed');
