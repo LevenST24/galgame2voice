@@ -674,7 +674,7 @@ async def restart_sovits_endpoint(payload: RestartSovitsPayload | None = None) -
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"GPT-SoVITS 地址配置无效: {exc}",
+            detail="语音引擎服务地址无效。请在「语音服务」填写以 http:// 或 https:// 开头的完整地址并保存。",
         ) from exc
     if not endpoint.is_local:
         raise HTTPException(
