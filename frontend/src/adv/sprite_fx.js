@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Original inline SVG marks for ADV acting effects:
  * sweat, anger, heart, sparkle, question, exclamation.

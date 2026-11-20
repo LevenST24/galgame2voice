@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * stage.js - ADV Stage and viewport letterboxing container.
  *

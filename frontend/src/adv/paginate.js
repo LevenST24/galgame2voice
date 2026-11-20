@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * paginate.js - Pure pagination and bilingual pairing functions for the ADV message window.
  */

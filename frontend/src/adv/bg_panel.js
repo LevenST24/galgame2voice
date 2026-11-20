@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * bg_panel.js - ADV 背景 overlay panel.
  *
@@ -15,6 +16,20 @@ const SKY_NAME = '无（天空）';
 const AUTO_ID = BG_AUTO;
 const AUTO_NAME = '自动（当前角色默认）';
 
+/**
+ * @param {HTMLElement} container
+ * @param {object} [options]
+ * @param {() => any[]} [options.getList]
+ * @param {() => any[]} [options.getWorks]
+ * @param {() => string | null} [options.getWork]
+ * @param {() => { id: string, time: string }} [options.getSelection]
+ * @param {(patch: Record<string, any>) => void} [options.saveSettings]
+ * @param {(selection: { id: string, time: string }) => void} [options.onPreview]
+ * @param {() => void} [options.onOpen]
+ * @param {() => void} [options.onClose]
+ * @param {() => Date} [options.now]
+ * @param {Document} [options.documentObj]
+ */
 export function createBgPanel(container, {
   getList = () => [],
   getWorks = () => [],
@@ -268,7 +283,7 @@ export function createBgPanel(container, {
     if (event.key !== 'Tab') return;
     const focusable = [...dialog.querySelectorAll('button')].filter(node => !node.disabled && node.tabIndex >= 0);
     if (!focusable.length) return;
-    const first = focusable[0], last = focusable.at(-1);
+    const first = focusable[0], last = /** @type {HTMLButtonElement} */ (focusable.at(-1));
     if (!dialog.contains(doc.activeElement) ||
       (event.shiftKey && doc.activeElement === first) ||
       (!event.shiftKey && doc.activeElement === last)) {

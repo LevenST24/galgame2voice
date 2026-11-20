@@ -1,3 +1,4 @@
+// @ts-check
 import { createStage } from './stage.js';
 import { createSpriteTransition } from './transitions.js';
 import { createTextbox } from './textbox.js';
@@ -136,6 +137,11 @@ export function mountAdv(dom, deps) {
   });
   const voice = {
     supportsStartNotification: audio.supportsStartNotification === true,
+    /**
+     * @param {number} index
+     * @param {any} chunks
+     * @param {{ onStart?: () => void }} [opts]
+     */
     async play(index, chunks, { onStart } = {}) {
       deps.stopOtherVoice?.();
       const key = turnId;

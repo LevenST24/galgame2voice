@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * ADV Sprite Renderer
  * Handles A/B buffers, crossfades, framing math, motion, head-anchored fx, and preload caps.
@@ -35,6 +36,11 @@ function releaseImage(image) {
 
 // The image stays detached for its entire lifetime. Cancelling also settles the
 // decode waiter, even if the browser's decode promise never completes.
+/**
+ * @param {any} ImageClass
+ * @param {string} url
+ * @param {{ speculative?: boolean, beforeDecode?: (image: any) => boolean }} [options]
+ */
 function loadImage(ImageClass, url, { speculative = false, beforeDecode = () => true } = {}) {
   const image = new ImageClass();
   let settled = false;
@@ -636,7 +642,7 @@ export function createSpriteView({
     if (startFx && layered) {
       showSourceFx(true);
     } else if (startFx) {
-      const fxEl = createFxElement(fx, documentObj);
+      const fxEl = /** @type {HTMLDivElement} */ (createFxElement(fx, documentObj));
       fxEl.style.left = `calc(${anchor.x} * var(--u))`;
       fxEl.style.top = `calc(${anchor.y} * var(--u))`;
       fxStaging.appendChild(fxEl);
@@ -647,6 +653,7 @@ export function createSpriteView({
   function createRequest(rev) {
     let resolve;
     const promise = new Promise(done => { resolve = done; });
+    /** @type {{ frame: any, loads: Array<ReturnType<typeof loadImage>>, done: boolean, finish: (result: any) => void }} */
     const request = { frame: null, loads: [], done: false, finish(result) {
       if (request.done) return;
       request.done = true;
@@ -954,6 +961,7 @@ export function createSpriteView({
    * commits, and faces without a mouth partner just keep their mouth closed.
    * Returns a token; stopLipSync(token) from an older line is ignored.
    */
+  /** @param {{ audioPlayer?: any, characterVoice?: boolean }} [options] */
   function startLipSync({ audioPlayer, characterVoice = true } = {}) {
     if (destroyed || !characterVoice || typeof audioPlayer?.getRms !== 'function') return 0;
     if (speech) pauseSpeech();
@@ -982,6 +990,7 @@ export function createSpriteView({
     showFace();
   }
 
+  /** @param {{ advBlink?: boolean, advLipSync?: boolean, reducedMotion?: boolean }} [options] */
   function setAnimationOptions({ advBlink, advLipSync, reducedMotion: reduced } = {}) {
     if (destroyed) return;
     if (typeof advBlink === 'boolean') enabledAnimations.blink = advBlink;

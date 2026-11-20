@@ -1,3 +1,4 @@
+// @ts-check
 import { normalizePortrait, resolveSpriteState } from '../sprite_state.js';
 import { planLayers } from './sprite.js';
 
@@ -34,7 +35,7 @@ export function createPortraitCache(load, now = () => Date.now()) {
           .map(item => ({ file: item.file, rect: item.rect, opacity: item.opacity })) };
     }
     if (!costume?.faceRect) return null;
-    const sprite = model.sprites?.[frame.state.outfit]?.[frame.state.face];
+    const sprite = /** @type {NonNullable<typeof model>} */ (model).sprites?.[frame.state.outfit]?.[frame.state.face];
     return { rect: costume.faceRect, layers: [{ file: frame.faceUrl, width: sprite?.width, height: sprite?.height }] };
   }
   return { get, avatar };

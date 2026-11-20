@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * background.js - ADV stage background.
  *
@@ -41,6 +42,10 @@ export const BG_AUTO = '';
 export const BG_NONE = 'none';
 
 // The key the stage shows for a stored value; '' (the sky) when nothing fits.
+/**
+ * @param {string} stored
+ * @param {{ list?: any[], works?: any[], work?: string | null }} [options]
+ */
 export function effectiveBackgroundKey(stored, { list, works, work } = {}) {
   if (stored === BG_NONE) return '';
   // Bare ids saved before per-work packs fall back to auto, like an empty value.
@@ -71,11 +76,14 @@ export function normalizeBackgroundSelection(value) {
 }
 
 /**
- * @param {object} options
- * @param {HTMLElement} options.layer stage background layer
+ * @param {object} [options]
+ * @param {HTMLElement} [options.layer] stage background layer
  * @param {() => Date} [options.now]
  * @param {(fn: () => void, ms: number) => any} [options.setTimer]
  * @param {(id: any) => void} [options.clearTimer]
+ * @param {(query: string) => any} [options.matchMedia]
+ * @param {any} [options.ImageClass]
+ * @param {Document} [options.documentObj]
  * @returns {{ setList: (list: any[]) => void, setSelection: (s: { id?: string, time?: string }) => void, destroy: () => void }}
  */
 export function createBackgroundView({

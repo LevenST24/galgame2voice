@@ -1,3 +1,4 @@
+// @ts-check
 // Shared session drawer and toast rendering.
 export function timeLabel(ts) {
   const d = new Date(ts);
@@ -14,15 +15,26 @@ export function timeLabel(ts) {
 
 const TOAST_BATCH_MS = 1000;
 
+/** @typedef {HTMLDivElement & { _shownAt?: number, _timer?: ReturnType<typeof setTimeout> }} ToastElement */
+
 // 新提示出现时撤掉已显示超过 1 秒的其他提示。1 秒内连着出现的几条留在同一批。
+/**
+ * @param {HTMLElement} root
+ * @param {number} now
+ */
 function dropToastsOlderThanBatch(root, now) {
-  for (const toast of [...root.querySelectorAll('.toast')]) {
-    if (!(now - toast._shownAt > TOAST_BATCH_MS)) continue;
+  for (const toast of /** @type {ToastElement[]} */ ([...root.querySelectorAll('.toast')])) {
+    if (!(now - /** @type {number} */ (toast._shownAt) > TOAST_BATCH_MS)) continue;
     clearTimeout(toast._timer);
     toast.remove();
   }
 }
 
+/**
+ * @param {string} message
+ * @param {string} [type]
+ * @param {{ actionLabel?: string, onAction?: () => any } | null} [options]
+ */
 export function showToast(message, type = 'info', options = null) {
   const root = document.getElementById('toastRoot');
   if (!root) return;
@@ -30,7 +42,7 @@ export function showToast(message, type = 'info', options = null) {
     ? { label: options.actionLabel || '前往处理', onAction: options.onAction }
     : null;
   // 同文案 toast 去重：已存在则只重置消失计时，避免堆叠闪烁
-  const existing = [...root.querySelectorAll('.toast')].find((t) => t.dataset.msg === message && !t.classList.contains('leaving'));
+  const existing = /** @type {ToastElement[]} */ ([...root.querySelectorAll('.toast')]).find((t) => t.dataset.msg === message && !t.classList.contains('leaving'));
   const duration = action ? 10000 : (type === 'error' ? 8000 : Math.min(7000, Math.max(3200, message.length * 80)));
   if (existing) {
     clearTimeout(existing._timer);
@@ -42,6 +54,7 @@ export function showToast(message, type = 'info', options = null) {
   }
   const now = Date.now();
   dropToastsOlderThanBatch(root, now);
+  /** @type {ToastElement} */
   const el = document.createElement('div');
   el.className = `toast toast-${type}${action ? ' toast-with-action' : ''}`;
   el.dataset.msg = message;
@@ -82,7 +95,7 @@ export function renderSessionList(container, { sessions, activeId, onSelect, onD
   sessions.forEach((s, idx) => {
     const item = document.createElement('div');
     item.className = `session-item animate-in${s.id === activeId ? ' active' : ''}`;
-    item.style.setProperty('--i', Math.min(idx, 10));
+    item.style.setProperty('--i', /** @type {any} */ (Math.min(idx, 10)));
     item.dataset.id = s.id;
     item.tabIndex = 0;
     item.setAttribute('role', 'button');
@@ -105,15 +118,15 @@ export function renderSessionList(container, { sessions, activeId, onSelect, onD
       <button class="si-del" title="删除对话" aria-label="删除对话">
         <svg class="icon"><use href="#i-trash"></use></svg>
       </button>`;
-    item.querySelector('.si-title').textContent = s.title;
-    item.querySelector('.si-title').title = s.title;
-    item.querySelector('.si-preview').textContent = preview;
+    /** @type {HTMLElement} */ (item.querySelector('.si-title')).textContent = s.title;
+    /** @type {HTMLElement} */ (item.querySelector('.si-title')).title = s.title;
+    /** @type {HTMLElement} */ (item.querySelector('.si-preview')).textContent = preview;
 
     item.addEventListener('click', () => onSelect(s.id));
     item.addEventListener('keydown', (e) => {
       if (e.target === item && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onSelect(s.id); }
     });
-    const del = item.querySelector('.si-del');
+    const del = /** @type {HTMLButtonElement} */ (item.querySelector('.si-del'));
     del.addEventListener('click', (e) => {
       e.stopPropagation();
       if (del.classList.contains('si-del-confirm')) {

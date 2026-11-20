@@ -9,6 +9,28 @@ const JSCONFIG_PATH = path.join(FRONTEND_DIR, 'jsconfig.json');
 const PACKAGE_JSON_PATH = path.join(FRONTEND_DIR, 'package.json');
 
 const EXPECTED_CORE_FILES = [
+  'src/adv/actions.js',
+  'src/adv/adv_app.js',
+  'src/adv/background.js',
+  'src/adv/backlog.js',
+  'src/adv/bg_panel.js',
+  'src/adv/config_panel.js',
+  'src/adv/graphemes.js',
+  'src/adv/line_player.js',
+  'src/adv/paginate.js',
+  'src/adv/portrait_cache.js',
+  'src/adv/quick_menu.js',
+  'src/adv/replay.js',
+  'src/adv/settings.js',
+  'src/adv/shortcuts.js',
+  'src/adv/sprite.js',
+  'src/adv/sprite_fx.js',
+  'src/adv/stage.js',
+  'src/adv/staging.js',
+  'src/adv/textbox.js',
+  'src/adv/title.js',
+  'src/adv/title_hook.js',
+  'src/adv/transitions.js',
   'src/ai.js',
   'src/api.js',
   'src/audio_player.js',
@@ -16,6 +38,7 @@ const EXPECTED_CORE_FILES = [
   'src/auth.js',
   'src/cache.js',
   'src/chat_backup.js',
+  'src/controllers/turn_reply_identity.js',
   'src/conversation.js',
   'src/request.js',
   'src/session_api.js',
@@ -25,10 +48,10 @@ const EXPECTED_CORE_FILES = [
   'src/sprite_state.js',
   'src/store.js',
   'src/tar_pack.js',
-  'src/controllers/turn_reply_identity.js',
+  'src/ui.js',
 ];
 
-test('frontend/jsconfig.json enables checkJs + noEmit and covers all 17 core modules with // @ts-check', () => {
+test('frontend/jsconfig.json enables checkJs + noEmit and covers all 40 checked modules with // @ts-check', () => {
   assert.equal(fs.existsSync(JSCONFIG_PATH), true, 'frontend/jsconfig.json must exist');
   const jsconfig = JSON.parse(fs.readFileSync(JSCONFIG_PATH, 'utf8'));
 
