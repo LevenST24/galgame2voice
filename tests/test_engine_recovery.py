@@ -293,3 +293,16 @@ def test_engine_guidance_quotes_only_names_the_settings_page_shows():
               for step in name.split("→")}
     # 「文档」 is the Windows Documents folder, not part of the page.
     assert sorted(name for name in quoted - {"文档"} if name not in visible) == []
+
+
+@pytest.mark.asyncio
+async def test_restart_invalid_sovits_url_returns_chinese_guidance(monkeypatch):
+    async def bad_resolve():
+        raise ValueError("invalid GPT-SoVITS URL scheme '' (source: env): must be http or https")
+
+    monkeypatch.setattr(health, "resolve_effective_sovits_endpoint", bad_resolve)
+    with pytest.raises(HTTPException) as exc_info:
+        await health.restart_sovits_endpoint(None)
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "语音引擎服务地址无效。请在「语音服务」填写以 http:// 或 https:// 开头的完整地址并保存。"
+    assert "invalid GPT-SoVITS URL" not in exc_info.value.detail

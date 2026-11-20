@@ -634,3 +634,23 @@ class TestPrecisionAPI:
             assert hw_auto["inference_precision"] == "FP16"
             assert hw_auto["next_inference_precision"] == "FP16"
             assert hw_auto["precision_pending_restart"] is False
+
+
+@pytest.mark.asyncio
+async def test_invalid_sovits_url_and_params_return_chinese_guidance(tmp_path, monkeypatch):
+    _setup_sovits_project(tmp_path, monkeypatch, create_engine=False)
+    async with _api_client() as client:
+        bad_url = await client.post("/api/config", json={"settings": {"gpt_sovits_url": "127.0.0.1:9880"}})
+        assert bad_url.status_code == 400
+        detail = bad_url.json()["detail"]
+        assert "语音引擎地址格式无效" in detail
+        assert "http://127.0.0.1:9880" in detail
+        assert "Invalid gpt_sovits_url" not in detail
+
+        bad_param = await client.post(
+            "/api/config", json={"settings": {"audio_retention_minutes": "not-a-number"}}
+        )
+        assert bad_param.status_code == 422
+        param_detail = bad_param.json()["detail"]
+        assert "全局配置参数格式或范围无效" in param_detail
+        assert "Invalid configuration parameters" not in param_detail
