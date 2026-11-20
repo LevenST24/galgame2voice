@@ -371,7 +371,17 @@ export async function loadGlobalConfig() {
     const activeVoice = voiceProfiles.find((p) => p.id === activeProfileId);
 
     const isOk = cfg.status === 'ok';
-    const providerStr = provider ? `${provider.name} · ${provider.chat_model || '-'}` : '未配置';
+    const missingKey = Boolean(provider) && provider.id !== 'custom' && !String(provider.api_key || '').trim();
+    const providerStr = !provider
+      ? '未配置'
+      : missingKey
+        ? `${provider.name} · 未填写 API Key`
+        : `${provider.name} · ${provider.chat_model || '-'}`;
+    const providerTitle = !provider
+      ? '尚未配置对话模型'
+      : missingKey
+        ? `「${provider.name}」尚未填写 API Key，请先填写并保存`
+        : providerStr;
     const voiceStr = activeVoice ? activeVoice.name : '未加载';
 
     const diagBackend = $('gDiagBackend');
@@ -385,9 +395,9 @@ export async function loadGlobalConfig() {
     if (diagBackendDot) diagBackendDot.className = `diag-dot ${isOk ? 'ok' : ''}`;
     if (diagModel) {
       diagModel.textContent = providerStr;
-      diagModel.title = providerStr;
+      diagModel.title = providerTitle;
     }
-    if (diagModelDot) diagModelDot.className = `diag-dot ${provider ? 'ok' : ''}`;
+    if (diagModelDot) diagModelDot.className = `diag-dot ${provider && !missingKey ? 'ok' : ''}`;
     if (diagVoice) {
       diagVoice.textContent = voiceStr;
       diagVoice.title = voiceStr;
