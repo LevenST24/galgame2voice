@@ -201,3 +201,24 @@ async def test_streaming_pipeline_mixed_vocal_and_non_vocal_lines(tmp_path: Path
         assert len(stored_lines) == 2
         assert stored_lines[0]["audio"]["status"] == "skipped"
         assert stored_lines[1]["audio"]["status"] == "ready"
+
+
+def test_is_vocal_sentence_rejects_kaomoji_urls_and_laugh_w():
+    """Kaomoji containing Greek omega or underscores, bare URLs, and laugh w's must not be vocal."""
+    assert TtsStreamPipeline.is_vocal_sentence("(´・ω・｀)") is False
+    assert TtsStreamPipeline.is_vocal_sentence("(T_T)") is False
+    assert TtsStreamPipeline.is_vocal_sentence("(≧ω≦)") is False
+    assert TtsStreamPipeline.is_vocal_sentence("´・ω・｀") is False
+    assert TtsStreamPipeline.is_vocal_sentence("___") is False
+    assert TtsStreamPipeline.is_vocal_sentence("https://example.com/guide") is False
+    assert TtsStreamPipeline.is_vocal_sentence("www") is False
+    assert TtsStreamPipeline.is_vocal_sentence("ｗｗｗ") is False
+    assert TtsStreamPipeline.is_vocal_sentence("ごめんね (´・ω・｀)") is True
+
+
+def test_is_vocal_sentence_accepts_fullwidth_alnum_zero_and_inner_voice_monologue():
+    assert TtsStreamPipeline.is_vocal_sentence("ＯＫ！") is True
+    assert TtsStreamPipeline.is_vocal_sentence("１２３！") is True
+    assert TtsStreamPipeline.is_vocal_sentence("〇") is True
+    assert TtsStreamPipeline.is_vocal_sentence("【心の声：顔が熱い……！】") is True
+    assert TtsStreamPipeline.is_vocal_sentence("www～") is False
