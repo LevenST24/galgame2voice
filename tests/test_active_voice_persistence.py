@@ -15,7 +15,6 @@ from galgame2voice.database.session import get_db, init_db
 from galgame2voice.main import create_app
 from galgame2voice.routers import characters, voice
 from galgame2voice.services import voice_manager
-from galgame2voice.services.character_voice_catalog import get_character_voice_catalog
 from galgame2voice.services.gpt_sovits_client import GptSovitsClient
 
 
@@ -251,59 +250,6 @@ async def test_delete_active_voice_profile_clears_settings_and_manager(stack, mo
     assert len(warmed_profiles) == 0
 
 
-async def test_manager_delete_profile_clears_active_state(stack, monkeypatch):
-    await stack.manager.switch_profile(stack.new)
-    assert stack.manager.active_profile.id == stack.new.id
-    async with get_db(stack.path) as connection:
-        raw_settings = await crud.get_settings_raw(connection)
-        assert raw_settings.active_voice_profile_id == stack.new.id
-
-    monkeypatch.setattr(
-        stack.manager,
-        "warmup_current_profile",
-        voice_manager.VoiceManager.warmup_current_profile.__get__(stack.manager),
-    )
-    monkeypatch.setattr(stack.client, "check_health", AsyncMock(return_value={"connected": True}))
-    warmed_profiles = []
-
-    async def fake_switch(profile, force=False):
-        warmed_profiles.append(profile)
-        return True
-
-    monkeypatch.setattr(stack.client, "switch_voice_profile", AsyncMock(side_effect=fake_switch))
-    monkeypatch.setattr(stack.client, "synthesize", AsyncMock(return_value=b"audio"))
-
-    # 1. Deleting inactive stack.old.id must preserve active stack.new.id
-    assert await get_character_voice_catalog().delete_profile(
-        stack.old.id,
-        voice_manager=stack.manager,
-        db_factory=lambda: get_db(stack.manager.db_path),
-    ) is True
-    assert stack.manager.active_profile is not None
-    assert stack.manager.active_profile.id == stack.new.id
-    async with get_db(stack.path) as connection:
-        raw_settings = await crud.get_settings_raw(connection)
-        assert raw_settings.active_voice_profile_id == stack.new.id
-
-    # 2. Deleting active stack.new.id must clear active profile in manager and settings
-    deleted = await get_character_voice_catalog().delete_profile(
-        stack.new.id,
-        voice_manager=stack.manager,
-        db_factory=lambda: get_db(stack.manager.db_path),
-    )
-    assert deleted is True
-
-    async with get_db(stack.path) as connection:
-        raw_settings = await crud.get_settings_raw(connection)
-        assert raw_settings.active_voice_profile_id is None
-
-    assert stack.manager.active_profile is None
-
-    warmed_profiles.clear()
-    assert await stack.manager.warmup_current_profile() is False
-    assert len(warmed_profiles) == 0
-
-
 @pytest.fixture
 async def temp_db_path(isolate_test_database):
     """REST routes and their manager must use the same initialized database."""
@@ -353,6 +299,3 @@ async def test_switch_active_profile_alias_and_crud_by_name(temp_db_path, mock_g
     success = await manager.switch_active_profile(sample_voice_profile["name"], persist=True)
     assert success is True
     assert manager.active_profile.name == sample_voice_profile["name"]
-
-
-

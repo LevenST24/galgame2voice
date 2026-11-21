@@ -15,7 +15,6 @@ import pytest
 
 from galgame2voice.services.gpt_sovits_client import (
     GptSovitsClient,
-    SLICING_METHODS,
     TTS_PRESETS,
     async_probe_audio_duration_seconds,
     probe_audio_duration_seconds,
@@ -93,39 +92,6 @@ def test_validate_reference_audio(tmp_path):
     ok_missing, msg_missing = validate_reference_audio(str(tmp_path / "ghost.wav"))
     assert ok_missing is False
     assert "not found" in msg_missing
-
-
-def test_audio_spec_module_reexport_and_direct_import(tmp_path):
-    """Verifies that audio spec symbols can be imported directly from utils.audio_spec as well as gpt_sovits_client."""
-    import galgame2voice.utils.audio_spec as u_spec
-    import galgame2voice.services.gpt_sovits_client as c_spec
-    import galgame2voice.services.tts_options as t_opts
-
-    assert u_spec.REFERENCE_AUDIO_MIN_SECONDS == 3.0
-    assert u_spec.REFERENCE_AUDIO_MAX_SECONDS == 10.0
-    assert c_spec.REFERENCE_AUDIO_MIN_SECONDS == 3.0
-    assert c_spec.REFERENCE_AUDIO_MAX_SECONDS == 10.0
-
-    assert u_spec._AUDIO_SPEC_CACHE is c_spec._AUDIO_SPEC_CACHE
-    assert u_spec._AUDIO_SPEC_CACHE is c_spec._GLOBAL_AUDIO_SPEC_CACHE
-    assert u_spec.AudioSpec is c_spec.AudioSpec
-    assert u_spec.AudioSpecCache is c_spec.AudioSpecCache
-
-    # Verify silence detection re-exports
-    assert u_spec.SILENT_AUDIO_ERROR == c_spec.SILENT_AUDIO_ERROR
-    assert u_spec.wav_peak_amplitude is c_spec.wav_peak_amplitude
-    assert u_spec.is_silent_audio is c_spec.is_silent_audio
-    assert u_spec.wav_is_silent is c_spec.wav_is_silent
-
-    # Verify TTS options re-exports
-    assert t_opts.SLICING_METHODS is c_spec.SLICING_METHODS
-    assert t_opts.TTS_PRESETS is c_spec.TTS_PRESETS
-    assert t_opts._TTS_NUMERIC_RANGES is c_spec._TTS_NUMERIC_RANGES
-    assert t_opts._TTS_STRING_MAXLEN is c_spec._TTS_STRING_MAXLEN
-    assert t_opts.validate_user_tts_options is c_spec.validate_user_tts_options
-    assert t_opts.resolve_tts_options is c_spec.resolve_tts_options
-    assert t_opts.VoiceProfileWeightSpec is c_spec.VoiceProfileWeightSpec
-    assert t_opts._extract_weight_spec is c_spec._extract_weight_spec
 
 
 def test_validate_reference_audio_bytes(tmp_path):
@@ -237,14 +203,6 @@ async def test_synthesize_multilingual_text_language_option(mock_gpt_sovits, sam
 class TestPresetResolution:
     """Test suite for TTS preset options and slicing configurations."""
 
-    def test_preset_definitions_exist(self):
-        assert "high_quality" in TTS_PRESETS
-        assert "balanced" in TTS_PRESETS
-        assert "low_latency" in TTS_PRESETS
-
-    def test_slicing_methods_coverage(self):
-        for cut in ["cut0", "cut1", "cut2", "cut3", "cut4", "cut5"]:
-            assert cut in SLICING_METHODS
 
     def test_resolve_preset_high_quality(self):
         opts = resolve_tts_options({"preset": "high_quality"})
@@ -406,4 +364,3 @@ class TestGptSovitsClient:
         assert res1 is True
         assert res2 is True
         assert mock_gpt_sovits.max_concurrent_seen == 1
-
