@@ -20,6 +20,7 @@ import {
 import { createConversation } from './conversation.js';
 import { createLineAudioRecovery } from './controllers/line_audio_recovery.js';
 import { mountAdv } from './adv/adv_app.js';
+import { CONFIG_PANEL_FIELDS } from './adv/config_panel.js';
 import { getModelStatus } from './model_badge.js';
 import { audioStore } from './voice.js';
 import { fetchAndCacheAudio, putCachedAudioBlob } from './cache.js';
@@ -715,6 +716,14 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     const activeProfileId = getActiveProfileId();
     const voiceProfiles = getVoiceProfiles();
 
+    if (prevSession && prevSession.settings) {
+      for (const field of CONFIG_PANEL_FIELDS) {
+        if (field === 'advOutfit') continue;
+        if (Object.hasOwn(prevSession.settings, field) && prevSession.settings[field] !== undefined) {
+          s.settings[field] = prevSession.settings[field];
+        }
+      }
+    }
     if (prevSession && prevSession.settings && prevSession.settings.voiceProfileId) {
       // 只继承角色绑定与语速；人设提示词属于角色包，由后端按绑定角色解析，
       // 不再复制会话副本（复制正是同一角色在不同会话设定不一致的来源）
@@ -736,6 +745,13 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           ? manifestSpeed
           : DEFAULT_SESSION_SETTINGS.ttsSpeed;
       }
+    }
+    if (
+      prevSession?.settings?.advOutfit &&
+      s.settings.voiceProfileId != null &&
+      prevSession.settings.voiceProfileId === s.settings.voiceProfileId
+    ) {
+      s.settings.advOutfit = prevSession.settings.advOutfit;
     }
     saveState();
     fullRender();
