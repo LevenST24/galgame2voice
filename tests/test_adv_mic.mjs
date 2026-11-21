@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { initAudioPlayerUi, toggleMic, cancelMic, finalizeVoice } from '../frontend/src/controllers/audio_player_ui.js';
-import { startListening, stopListening } from '../frontend/src/voice.js';
+import { startListening, stopListening, isListening } from '../frontend/src/voice.js';
 import { fakeDocument } from './helpers/adv_dom.mjs';
 
 function setup(t, { syncEndOnStop = true } = {}) {
@@ -125,4 +125,153 @@ test('spontaneous SpeechRecognition end clears micTimer and avoids leaking inter
 
   cancelMic();
   assert.equal(active.size, 0);
+});
+
+function setupWithRecorder(t, { syncEndOnStop = false, asyncRecordStopMs = 15 } = {}) {
+  const h = setup(t, { syncEndOnStop });
+  const toastRoot = document.createElement('div');
+  toastRoot.id = 'toastRoot';
+  document.body.appendChild(toastRoot);
+  const recorders = [];
+  const tracks = [];
+  const origMediaRecorder = globalThis.MediaRecorder;
+  const origCreateObjectURL = URL.createObjectURL;
+  const origRevokeObjectURL = URL.revokeObjectURL;
+  const createdUrls = [];
+  const revokedUrls = [];
+  let urlSeq = 0;
+
+  class FakeMediaRecorder {
+    static isTypeSupported() { return true; }
+    constructor(stream, opts) {
+      this.stream = stream;
+      this.mimeType = opts?.mimeType || 'audio/webm';
+      this.state = 'inactive';
+      this.stopped = false;
+      recorders.push(this);
+    }
+    start() {
+      this.state = 'recording';
+    }
+    stop() {
+      if (this.state === 'inactive') return;
+      this.stopped = true;
+      this.state = 'inactive';
+      const finish = () => {
+        this.ondataavailable?.({ data: new Blob(['audio-bytes'], { type: this.mimeType }) });
+        this.onstop?.();
+      };
+      if (asyncRecordStopMs > 0) setTimeout(finish, asyncRecordStopMs);
+      else finish();
+    }
+  }
+
+  Object.defineProperty(globalThis, 'navigator', {
+    value: {
+      mediaDevices: {
+        getUserMedia: async () => {
+          const track = { stopped: false, stop() { this.stopped = true; } };
+          tracks.push(track);
+          return { getTracks: () => [track] };
+        },
+      },
+    },
+    configurable: true,
+    writable: true,
+  });
+  globalThis.MediaRecorder = FakeMediaRecorder;
+  globalThis.window.MediaRecorder = FakeMediaRecorder;
+  URL.createObjectURL = () => {
+    const url = `blob:fake-mic-${++urlSeq}`;
+    createdUrls.push(url);
+    return url;
+  };
+  URL.revokeObjectURL = (url) => {
+    revokedUrls.push(url);
+  };
+  t.after(() => {
+    globalThis.MediaRecorder = origMediaRecorder;
+    URL.createObjectURL = origCreateObjectURL;
+    URL.revokeObjectURL = origRevokeObjectURL;
+    for (const toast of [...toastRoot.querySelectorAll('.toast')]) {
+      clearTimeout(toast._timer);
+      toast.remove();
+    }
+  });
+  return {
+    ...h,
+    recorders,
+    tracks,
+    toastRoot,
+    createdUrls,
+    revokedUrls,
+    toasts: () => [...toastRoot.querySelectorAll('.toast')].map((el) => el.dataset.msg),
+  };
+}
+
+test('spontaneous SpeechRecognition end with MediaRecorder stops recording and sends text with audio', async (t) => {
+  const h = setupWithRecorder(t, { asyncRecordStopMs: 20 });
+  toggleMic();
+  assert.match(h.input.placeholder, /停顿/);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(h.recorders.length, 1);
+  assert.equal(h.recorders[0].state, 'recording');
+
+  h.result(h.recognizers[0], '你好世界', true);
+  h.recognizers[0].onend?.();
+
+  assert.equal(isListening(), false, 'spontaneous end should stop listening even when recorder is active');
+  assert.equal(h.mic.getAttribute('aria-pressed'), 'false');
+  assert.equal(h.recorders[0].stopped, true, 'spontaneous end should stop MediaRecorder');
+  assert.equal(h.sent.length, 0, 'should wait for onRecorded instead of synchronously sending without audio');
+
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(h.sent.length, 1);
+  assert.equal(h.sent[0][0], '原稿 你好世界');
+  assert.ok(h.sent[0][1]?.url?.startsWith('blob:'), 'sent message should include recorded audio attachment');
+  assert.ok(h.sent[0][1]?.blob instanceof Blob);
+  assert.equal(h.tracks[0].stopped, true);
+});
+
+test('no-speech with MediaRecorder stops recording, leaks no Blob URL, and shows only one toast', async (t) => {
+  const h = setupWithRecorder(t, { asyncRecordStopMs: 15 });
+  toggleMic();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(h.recorders.length, 1);
+
+  h.recognizers[0].onerror?.({ error: 'no-speech' });
+  h.recognizers[0].onend?.();
+
+  assert.equal(isListening(), false);
+  assert.equal(h.mic.getAttribute('aria-pressed'), 'false');
+  assert.equal(h.recorders[0].stopped, true);
+
+  await new Promise((r) => setTimeout(r, 80));
+  assert.deepEqual(h.sent, []);
+  assert.deepEqual(h.toasts(), ['没有听到说话，请再试一次']);
+  assert.equal(h.createdUrls.length, h.revokedUrls.length, 'must not leak any Blob URL when discarding recording');
+  assert.equal(h.tracks[0].stopped, true);
+});
+
+test('manual mic stop with MediaRecorder keeps late onresult and sends text with audio', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const h = setupWithRecorder(t, { syncEndOnStop: false, asyncRecordStopMs: 20 });
+  toggleMic();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(h.recorders.length, 1);
+
+  toggleMic();
+  assert.equal(isListening(), false);
+  assert.equal(h.mic.getAttribute('aria-pressed'), 'false');
+  assert.equal(h.recorders[0].stopped, true);
+
+  h.result(h.recognizers[0], '手动结束句', true);
+  h.recognizers[0].onend?.();
+  t.mock.timers.tick(20);
+  assert.equal(h.sent.length, 0);
+  t.mock.timers.tick(600);
+  assert.equal(h.sent.length, 1);
+  assert.equal(h.sent[0][0], '原稿 手动结束句');
+  assert.ok(h.sent[0][1]?.url?.startsWith('blob:'));
 });
