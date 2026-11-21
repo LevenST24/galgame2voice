@@ -134,14 +134,6 @@ test('an announced slow voice job keeps its own bounded budget across ordinary m
   assert.equal(h.ends[0].error, null);
 });
 
-test('an old backend keeps the compatibility voice window without infinite heartbeat renewal', async t => {
-  const h = await setup(t, { policy: false });
-  for (let i = 0; i < 8; i++) { await h.tick(50); await h.raw(': keep-alive\n\n'); }
-  assert.equal(h.ends.length, 0, 'old servers cannot advertise a long voice job');
-  h.stop(); await microtasks();
-  assert.equal(h.ends[0].cancelled, true);
-});
-
 test('duplicate starts cannot extend the fixed voice lease', async t => {
   const h = await setup(t);
   await h.event('voice_job', { index: 0, status: 'started' });

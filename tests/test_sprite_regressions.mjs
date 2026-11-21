@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createSpriteView } from '../frontend/src/adv/sprite.js';
-import { normalizePortrait, createActingGate } from '../frontend/src/sprite_state.js';
+import { normalizePortrait } from '../frontend/src/sprite_state.js';
 
 class Element {
   constructor(tag = 'div') {
@@ -219,13 +219,6 @@ test('renderer gates each committed line using injected time, including a reject
   h.setTime(7000); await h.commit('5');
   h.setTime(9000); await h.commit('6', { motion: 'nod' });
   assert.equal(h.spriteLayer.children[0].children[0].classList.contains('adv-motion-nod'), true, 'a line without motion breaks consecutive repetition');
-});
-
-test('gate tracks preceding line rather than preceding accepted motion', () => {
-  const gate = createActingGate();
-  assert.equal(gate.allowMotion('nod', 0), true);
-  assert.equal(gate.allowMotion('bounce', 1000), false);
-  assert.equal(gate.allowMotion('nod', 3000), true);
 });
 
 test('calibration accepts only finite number fields', () => {

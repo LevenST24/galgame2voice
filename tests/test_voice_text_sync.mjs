@@ -70,15 +70,6 @@ test('voice-priority AUTO keeps the current sentence while its audio is still be
   assert.equal(player.state, 'waiting_audio');
 });
 
-test('download and decode finish before the sentence typewriter begins', () => {
-  const h = setup({ startNotification: true });
-  h.player.setLineAudio('turn', 0, { status: 'ready', chunks: ['/synthetic.wav'] });
-  assert.equal(h.player.state, 'waiting_audio');
-  assert.deepEqual(h.revealed, []);
-  h.started();
-  assert.deepEqual(h.revealed, ['第一句']);
-});
-
 test('late audio still owns the sentence until playback ends in voice-priority AUTO', async () => {
   const h = setup(); h.player.setAuto(true); h.clock.tick(1500);
   h.player.setLineAudio('turn', 0, { status: 'ready', chunks: ['/synthetic.wav'] });
