@@ -74,9 +74,18 @@ function setupEnv() {
     sVoiceImport: mkEl('', ['btn', 'primary']), sVoiceImportFolder: mkEl('', ['btn', 'ghost']),
     sVoiceDropOverlay: mkEl('', ['hidden']), sCustomVoiceBox: mkEl('', ['hidden']), sCvLang: mkEl('ja'),
   });
-  let openedSettings = 0;
-  initVoiceSettings(dom, { onOpenSessionSettings: () => { openedSettings += 1; } });
-  return { dom, session, toastRoot, getOpenedSettings: () => openedSettings, cleanup: () => toastRoot.children.forEach((c) => clearTimeout(c._timer)) };
+  let openedSettings = 0, renderSidebarCalls = 0, renderHeaderCalls = 0;
+  initVoiceSettings(dom, {
+    onOpenSessionSettings: () => { openedSettings += 1; },
+    renderSidebar: () => { renderSidebarCalls += 1; },
+    renderHeader: () => { renderHeaderCalls += 1; },
+  });
+  return {
+    dom, session, toastRoot,
+    getOpenedSettings: () => openedSettings,
+    getRenderCounts: () => ({ sidebar: renderSidebarCalls, header: renderHeaderCalls }),
+    cleanup: () => toastRoot.children.forEach((c) => clearTimeout(c._timer)),
+  };
 }
 
 // 2. First-use hint toggle + 409 confirm -> overwrite=1 & select new char; cancel -> no retry + failure toast
@@ -87,14 +96,24 @@ globalThis.XMLHttpRequest = class {
   open(m, u) { this.method = m; this.url = u; } setRequestHeader() {} send() {}
 };
 
-const { dom, session, toastRoot, getOpenedSettings, cleanup } = setupEnv();
+const { dom, session, toastRoot, getOpenedSettings, getRenderCounts, cleanup } = setupEnv();
 let profiles = [], confirmResult = false;
 let confirmCalls = 0;
 globalThis.window = { confirm: () => { confirmCalls += 1; return confirmResult; } };
-globalThis.fetch = async (url) => ({
-  ok: true, status: 200,
-  json: async () => (String(url).endsWith('/profiles') ? { profiles, active_profile_id: profiles[0]?.id ?? null } : {}),
-});
+const fetchCalls = [];
+let switchShouldFail = false;
+globalThis.fetch = async (url, init = {}) => {
+  fetchCalls.push({ url: String(url), method: init.method || 'GET' });
+  if (String(url).includes('/api/voice/switch') && switchShouldFail) {
+    return { ok: false, status: 503, json: async () => ({ detail: 'engine not ready' }) };
+  }
+  return {
+    ok: true, status: 200,
+    json: async () => (String(url).endsWith('/profiles')
+      ? { profiles, active_profile_id: profiles[0]?.id ?? null }
+      : { profile: profiles[0]?.name || 'ok' }),
+  };
+};
 
 try {
   // First-use hint when empty
@@ -135,6 +154,19 @@ try {
   assert.equal(dom.sSystem.value, '你是爱丽丝');
   assert.equal(dom.sVoiceImport.classList.contains('primary'), false);
   assert.equal(dom.sVoiceActive.textContent, '当前加载：爱丽丝');
+  // Session had no character bound (voiceProfileId === null), so import must bind & persist immediately.
+  await tick();
+  await tick();
+  assert.equal(session.settings.voiceProfileId, 8);
+  assert.equal(toastRoot.children.at(-1)?.dataset.msg, '已导入并选用「爱丽丝」，现在可以直接开始聊天');
+  assert.ok(
+    !toastRoot.children.some((c) => String(c.dataset.msg || '').includes('已切换音色')),
+    'auto-bind must switch voice silently without a duplicate 已切换音色 toast',
+  );
+  assert.ok(fetchCalls.some((c) => c.url.includes('/api/chat/sessions') && c.method === 'POST'), 'must persist session binding');
+  assert.ok(fetchCalls.some((c) => c.url.includes('/api/voice/switch') && c.method === 'POST'), 'must trigger ensureSessionVoice');
+  assert.ok(getRenderCounts().sidebar >= 1, 'auto-bind must call renderSidebar');
+  assert.ok(getRenderCounts().header >= 1, 'auto-bind must call renderHeader');
 
   // Failure response -> error toast
   dom.sVoiceImportZipInput.files = [z1];
@@ -176,6 +208,8 @@ try {
   });
   readyXhr.onload();
   await pReady;
+  assert.equal(session.settings.voiceProfileId, 8, 'already-bound session must not be overwritten on import');
+  assert.equal(dom.sVoice.value, '10');
   assert.equal(toastRoot.children.at(-1)?.dataset.msg, '已导入「爱丽丝」，点「保存」即可使用');
   assert.match(toastRoot.children.at(-1)?.className || '', /toast-success/);
 
@@ -225,6 +259,7 @@ try {
   closedXhr.onload();
   await pClosed;
   assert.equal(confirmCalls, 0);
+  assert.equal(session.settings.voiceProfileId, 8);
   assert.equal(dom.sVoice.value, '11');
   assert.equal(dom.sSystem.value, '用户手写的未保存人设');
   const closedToast = toastRoot.children.at(-1);
@@ -234,6 +269,82 @@ try {
   assert.equal(actionBtn?.textContent, '去选用');
   await actionBtn.fire('click', { stopPropagation() {} });
   assert.equal(getOpenedSettings(), 1);
+
+  // Reopen modal on an unbound session:
+  // 1) Importing a package with missing_voice_weights must auto-bind & render stage,
+  //    but must NOT call /api/voice/switch or overwrite the missing-weights toast.
+  dom.sessionModal.hidden = false;
+  dom.sessionModal.classList.remove('hidden');
+  session.settings.voiceProfileId = null;
+  profiles = [{ id: 19, name: '缺权重小灯', system_prompt: '你是缺权重小灯。' }];
+  const switchBeforeMissing = fetchCalls.filter((c) => c.url.includes('/api/voice/switch')).length;
+  const countsBeforeMissing = getRenderCounts();
+  dom.sVoiceImportZipInput.files = [z1];
+  const pMissingUnbound = dom.sVoiceImportZipInput.fire('change');
+  await tick();
+  const missingUnboundXhr = xhrs.at(-1);
+  missingUnboundXhr.status = 200;
+  missingUnboundXhr.responseText = JSON.stringify({
+    status: 'ok',
+    imported: [{ name: '缺权重小灯', profile_id: 19, missing_voice_weights: true }],
+  });
+  missingUnboundXhr.onload();
+  await pMissingUnbound;
+  await tick();
+  await tick();
+  assert.equal(session.settings.voiceProfileId, 19);
+  assert.equal(fetchCalls.filter((c) => c.url.includes('/api/voice/switch')).length, switchBeforeMissing, 'missing_voice_weights must not call /api/voice/switch');
+  assert.equal(getRenderCounts().sidebar, countsBeforeMissing.sidebar + 1, 'must call renderSidebar on missing-weights auto-bind');
+  assert.equal(getRenderCounts().header, countsBeforeMissing.header + 1, 'must call renderHeader on missing-weights auto-bind');
+  assert.equal(toastRoot.children.at(-1)?.dataset.msg, '已导入「缺权重小灯」，但还不能出声，需要补上模型权重');
+
+  // 2) Importing into an unbound session when /api/voice/switch fails must still call renderSidebar & renderHeader.
+  session.settings.voiceProfileId = null;
+  switchShouldFail = true;
+  profiles = [{ id: 20, name: '无引擎小春', system_prompt: '你是无引擎小春。' }];
+  const countsBeforeFailSwitch = getRenderCounts();
+  dom.sVoiceImportZipInput.files = [z1];
+  const pFailSwitch = dom.sVoiceImportZipInput.fire('change');
+  await tick();
+  const failSwitchXhr = xhrs.at(-1);
+  failSwitchXhr.status = 200;
+  failSwitchXhr.responseText = JSON.stringify({
+    status: 'ok',
+    imported: [{ name: '无引擎小春', profile_id: 20, missing_voice_weights: false }],
+  });
+  failSwitchXhr.onload();
+  await pFailSwitch;
+  await tick();
+  await tick();
+  switchShouldFail = false;
+  assert.equal(session.settings.voiceProfileId, 20);
+  assert.equal(getRenderCounts().sidebar, countsBeforeFailSwitch.sidebar + 1, 'must call renderSidebar even when /api/voice/switch fails');
+  assert.ok(getRenderCounts().header > countsBeforeFailSwitch.header, 'must call renderHeader even when /api/voice/switch fails');
+
+  // 3) Importing multiple packages into an unbound session binds only the first and says so clearly.
+  session.settings.voiceProfileId = null;
+  profiles = [
+    { id: 21, name: 'A', system_prompt: '你是A' },
+    { id: 22, name: 'B', system_prompt: '你是B' },
+  ];
+  dom.sVoiceImportZipInput.files = [z1];
+  const pMulti = dom.sVoiceImportZipInput.fire('change');
+  await tick();
+  const multiXhr = xhrs.at(-1);
+  multiXhr.status = 200;
+  multiXhr.responseText = JSON.stringify({
+    status: 'ok',
+    imported: [
+      { name: 'A', profile_id: 21, missing_voice_weights: false },
+      { name: 'B', profile_id: 22, missing_voice_weights: false },
+    ],
+  });
+  multiXhr.onload();
+  await pMulti;
+  await tick();
+  await tick();
+  assert.equal(session.settings.voiceProfileId, 21);
+  assert.equal(toastRoot.children.at(-1)?.dataset.msg, '已导入「A」、「B」，已选用「A」，现在可以直接开始聊天');
 } finally {
   globalThis.XMLHttpRequest = prevXHR; globalThis.window = prevWin;
   cleanup();
