@@ -197,11 +197,21 @@ class LineScanner:
         self._line_ordinal: int = 0
 
         # High-level phase:
-        # 0: BEFORE_ROOT (looking for '{')
+        # 0: BEFORE_ROOT (looking for '{' or leading '[')
         # 1: ROOT_OPENING (saw '{', verifying next non-ws is '"' or '}')
-        # 2: IN_ROOT (inside top-level object)
-        # 3: AFTER_ROOT (top-level object cleanly closed)
+        # 2: IN_ROOT (inside top-level object or top-level lines array)
+        # 3: AFTER_ROOT (top-level value cleanly closed)
+        # 4: ARRAY_OPENING (saw leading '[', verifying next non-ws is '{')
         self._phase: int = 0
+
+        # Root shape tracking (top-level array vs root object / flat line object)
+        self._can_open_array: bool = True
+        self._fence_buf: str = ""
+        self._fence_consumed: bool = False
+        self._root_is_array: bool = False
+        self._saw_lines_key: bool = False
+        self._saw_flat_line_key: bool = False
+        self._root_chars: list[str] = []
 
         # String / escape tracking
         self._in_string: bool = False
@@ -270,6 +280,37 @@ class LineScanner:
                 self._orphan_close_pending = ""
         return False
 
+    def _enter_root_object(self) -> None:
+        self._can_open_array = False
+        self._fence_buf = ""
+        self._root_is_array = False
+        self._saw_lines_key = False
+        self._saw_flat_line_key = False
+        self._root_chars = ["{"]
+        self._phase = 1
+
+    def _finish_flat_root_if_needed(self, emitted_lines: list[ScannedLine]) -> None:
+        raw_chars = self._root_chars
+        self._root_chars = []
+        if self._saw_lines_key or not self._saw_flat_line_key:
+            return
+        raw_json = "".join(raw_chars)
+        try:
+            obj = json.loads(raw_json)
+        except Exception as e:
+            self.issues.append(f"JSON decode error in line {self._line_ordinal}: {e}")
+            self._line_ordinal += 1
+            return
+        if not isinstance(obj, dict) or "lines" in obj:
+            return
+        line, line_issues = validate_line(obj, ordinal=self._line_ordinal)
+        self._line_ordinal += 1
+        if line is not None:
+            self.lines.append(line)
+            emitted_lines.append(line)
+        if line_issues:
+            self.issues.extend(line_issues)
+
     def feed(self, chunk: str) -> list[ScannedLine]:
         """
         Feeds an incoming stream token chunk.
@@ -292,7 +333,7 @@ class LineScanner:
                 continue
 
             if self._phase == 0:
-                # BEFORE_ROOT: Handle thinking tags and look for opening '{'
+                # BEFORE_ROOT: Handle thinking tags and look for opening '{' or leading '['
                 if self._think_depth > 0:
                     # Inside a thinking block: look for tags e.g. </think> or nested <thought>
                     if c == "<":
@@ -312,11 +353,14 @@ class LineScanner:
                         if not _is_think_prefix(self._tag_pending) and not _is_think_close_prefix(self._tag_pending):
                             self._tag_pending = ""
                         continue
-                    # Ignore all characters (including '{') while inside thinking block
+                    # Ignore all characters (including '{' and '[') while inside thinking block
                     continue
 
                 # Outside thinking block in phase 0:
                 if c == "<":
+                    if self._fence_buf:
+                        self._can_open_array = False
+                        self._fence_buf = ""
                     self._tag_pending = "<"
                     continue
                 if self._tag_pending:
@@ -336,35 +380,92 @@ class LineScanner:
                         # Not a think tag (e.g. <p>)
                         pending = self._tag_pending
                         self._tag_pending = ""
+                        self._can_open_array = False
+                        self._fence_buf = ""
                         if "{" in pending:
-                            self._phase = 1
+                            self._enter_root_object()
                             continue
                     elif c == "{":
                         if _is_think_prefix(self._tag_pending):
                             # '{' inside tag attribute (e.g. <think metadata="{...}">)
                             continue
                         self._tag_pending = ""
-                        self._phase = 1
+                        self._enter_root_object()
                         continue
                     elif not _is_think_prefix(self._tag_pending) and not _is_think_close_prefix(self._tag_pending):
                         pending = self._tag_pending
                         self._tag_pending = ""
+                        self._can_open_array = False
+                        self._fence_buf = ""
                         if "{" in pending:
-                            self._phase = 1
+                            self._enter_root_object()
                             continue
                     continue
 
+                # Leading '[' (with optional leading whitespace or single markdown code fence)
+                if self._can_open_array:
+                    if not self._fence_buf:
+                        if c.isspace():
+                            continue
+                        if c == "[":
+                            self._can_open_array = False
+                            self._phase = 4
+                            continue
+                        if c == "`" and not self._fence_consumed:
+                            self._fence_buf = "`"
+                            continue
+                    else:
+                        cand = (self._fence_buf + c).lower()
+                        if cand in ("`", "``", "```", "```j", "```js", "```jso", "```json"):
+                            self._fence_buf = cand
+                            continue
+                        if self._fence_buf in ("```", "```json"):
+                            self._fence_buf = ""
+                            self._fence_consumed = True
+                            if c.isspace():
+                                continue
+                            if c == "[":
+                                self._can_open_array = False
+                                self._phase = 4
+                                continue
+                            if c == "{":
+                                self._enter_root_object()
+                                continue
+                        self._fence_buf = ""
+                    self._can_open_array = False
+
                 # Normal phase 0 character check
                 if c == "{":
-                    self._phase = 1
+                    self._enter_root_object()
+                continue
+
+            if self._phase == 4:
+                # ARRAY_OPENING: Only counts as top-level lines array if '[' is followed by '{'
+                if c.isspace():
+                    continue
+                if c == "{":
+                    self.format = "lines"
+                    self._root_is_array = True
+                    self._phase = 2
+                    self._in_lines = True
+                    self._in_line_elem = True
+                    self._elem_obj_depth = 1
+                    self._elem_chars = ["{"]
+                    continue
+                # Not '[{' (e.g. '[happy] 今天真开心！'); reset to BEFORE_ROOT
+                self._phase = 0
+                if c == "<":
+                    self._tag_pending = "<"
                 continue
 
             if self._phase == 1:
                 # ROOT_OPENING: Expecting '"' or '}' or whitespace
                 if c.isspace():
+                    self._root_chars.append(c)
                     continue
                 if c == '"':
                     self._phase = 2
+                    self._root_chars.append(c)
                     self._reading_key = True
                     self._key_chars = []
                     self._in_string = True
@@ -372,12 +473,14 @@ class LineScanner:
                     continue
                 if c == "}":
                     # Empty root object {}
+                    self._root_chars = []
                     self._phase = 3
                     continue
                 # Not a valid JSON object start; reset to BEFORE_ROOT
+                self._root_chars = []
                 self._phase = 0
                 if c == "{":
-                    self._phase = 1
+                    self._enter_root_object()
                 elif c == "<":
                     self._tag_pending = "<"
                 continue
@@ -385,13 +488,23 @@ class LineScanner:
             # self._phase == 2: IN_ROOT
             if self._in_string:
                 self._orphan_close_pending = ""
+                if not self._root_is_array and not self._saw_lines_key:
+                    self._root_chars.append(c)
             else:
+                had_tag_pending = bool(self._orphan_close_pending)
                 if self._feed_think_tag_outside_string(c):
                     self._reset_state()
                     emitted_lines.clear()
                     continue
                 if self._think_depth > 0:
                     continue
+                if (
+                    not self._root_is_array
+                    and not self._saw_lines_key
+                    and not self._orphan_close_pending
+                    and not (had_tag_pending and c == ">")
+                ):
+                    self._root_chars.append(c)
             if self._in_lines:
                 self._process_in_lines(c, emitted_lines)
             elif self._in_tts:
@@ -400,6 +513,8 @@ class LineScanner:
                 self._process_in_other_val(c)
             else:
                 self._process_root_level(c)
+            if not self._root_is_array and self._phase == 3:
+                self._finish_flat_root_if_needed(emitted_lines)
 
         return emitted_lines
 
@@ -465,6 +580,8 @@ class LineScanner:
                         self._in_non_obj_elem = False
                         self._non_obj_chars = []
                         self._in_lines = False
+                        if self._root_is_array:
+                            self._phase = 3
                 elif c == "{":
                     self._non_obj_obj_depth += 1
                     self._non_obj_chars.append(c)
@@ -490,6 +607,8 @@ class LineScanner:
                 self._elem_chars = ["{"]
             elif c == "]":
                 self._in_lines = False
+                if self._root_is_array:
+                    self._phase = 3
             else:
                 # Non-object element
                 self._in_non_obj_elem = True
@@ -576,6 +695,8 @@ class LineScanner:
                         key = raw_key
                     self._current_key = key
                     if key == "lines":
+                        self._saw_lines_key = True
+                        self._root_chars = []
                         self.format = "lines"
                     self._waiting_colon = True
                 else:
@@ -619,11 +740,15 @@ class LineScanner:
                         self._in_other_val = False
                         self._phase = 3
             else:
+                if key in ("zh", "ja") and c == '"':
+                    self._saw_flat_line_key = True
+                    self.format = "lines"
                 self._in_other_val = True
                 self._other_obj_depth = 1 if c == "{" else 0
                 self._other_arr_depth = 1 if c == "[" else 0
                 if c == '"':
                     self._in_string = True
+                    self._escape = False
                 elif c == "}":
                     self._in_other_val = False
                     self._phase = 3
