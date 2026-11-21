@@ -243,18 +243,30 @@ class LineScanner:
         self._tag_pending: str = ""
         self._orphan_close_pending: str = ""
 
-    def _feed_orphan_close(self, c: str) -> bool:
-        """Tracks a potential unmatched closing reasoning tag (e.g. </think>) outside JSON strings."""
+    def _feed_think_tag_outside_string(self, c: str) -> bool:
+        """Tracks reasoning tags outside JSON strings; returns True only on an unmatched closing tag."""
         if c == "<":
             self._orphan_close_pending = "<"
             return False
         if self._orphan_close_pending:
             self._orphan_close_pending += c
             if c == ">":
-                matched = bool(_RE_THINK_CLOSE_MATCH.match(self._orphan_close_pending))
+                tag = self._orphan_close_pending
                 self._orphan_close_pending = ""
-                return matched
-            if not _is_think_close_prefix(self._orphan_close_pending):
+                if _RE_THINK_SELF_CLOSING.match(tag):
+                    return False
+                if _RE_THINK_OPEN_MATCH.match(tag):
+                    self._think_depth += 1
+                    return False
+                if _RE_THINK_CLOSE_MATCH.match(tag):
+                    if self._think_depth > 0:
+                        self._think_depth -= 1
+                        return False
+                    return True
+                return False
+            if not _is_think_prefix(self._orphan_close_pending) and not _is_think_close_prefix(
+                self._orphan_close_pending
+            ):
                 self._orphan_close_pending = ""
         return False
 
@@ -270,8 +282,9 @@ class LineScanner:
 
         for c in chunk:
             if self._phase == 3:
-                # AFTER_ROOT: An unmatched closing reasoning tag means everything before it was thinking.
-                if self._feed_orphan_close(c):
+                # AFTER_ROOT: Paired <think>...</think> blocks are ignored; an unmatched closing
+                # reasoning tag means everything before it was thinking.
+                if self._feed_think_tag_outside_string(c):
                     self._reset_state()
                     emitted_lines.clear()
                     continue
@@ -372,10 +385,13 @@ class LineScanner:
             # self._phase == 2: IN_ROOT
             if self._in_string:
                 self._orphan_close_pending = ""
-            elif self._feed_orphan_close(c):
-                self._reset_state()
-                emitted_lines.clear()
-                continue
+            else:
+                if self._feed_think_tag_outside_string(c):
+                    self._reset_state()
+                    emitted_lines.clear()
+                    continue
+                if self._think_depth > 0:
+                    continue
             if self._in_lines:
                 self._process_in_lines(c, emitted_lines)
             elif self._in_tts:

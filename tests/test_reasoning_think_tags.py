@@ -583,3 +583,65 @@ async def test_stream_coordinator_emits_thinking_progress_for_unmatched_close_th
     assert text_deltas == "笨、笨蛋，别突然说这种话啦！"
 
     assert spoken == ["ば、ばか、急にそんなこと言わないでよ！"]
+
+
+def test_two_orphan_close_think_tags_hold_back_long_middle_thinking():
+    raw = "第一段思考</think>第二段思考，再斟酌一下怎么温柔安慰用户吧</think>没关系，有我在呢。"
+    chunks = [raw[i : i + 3] for i in range(0, len(raw), 3)]
+
+    emitted, zh, ja, parser = _stream_reply(*chunks)
+    assert "第一段思考" not in emitted
+    assert "第二段思考" not in emitted
+    assert "</thin" not in emitted
+    assert "</think" not in emitted
+    assert zh == "没关系，有我在呢。"
+    assert ja == "没关系，有我在呢。"
+    assert parser.lines_truncated is False
+
+
+def test_unprefixed_thinking_with_nested_paired_think_block_holds_back_until_outer_close():
+    raw = "外层思考 <think>内层草稿</think> 继续外层思考，这里已经超过十五个字了吧</think>正式回复，有我在呢。"
+    chunks = [raw[i : i + 3] for i in range(0, len(raw), 3)]
+
+    emitted, zh, ja, parser = _stream_reply(*chunks)
+    assert "外层思考" not in emitted
+    assert "内层草稿" not in emitted
+    assert "</thin" not in emitted
+    assert "</think" not in emitted
+    assert zh == "正式回复，有我在呢。"
+    assert ja == "正式回复，有我在呢。"
+    assert parser.lines_truncated is False
+
+
+def test_paired_think_block_after_lines_json_does_not_discard_reply():
+    raw = '{"lines": [{"zh": "你好呀", "ja": "こんにちは", "emotion": "happy"}]}\n<think>补充一点思考</think>'
+    chunks = [raw[i : i + 3] for i in range(0, len(raw), 3)]
+
+    scanned = _scan_reply(*chunks)
+    assert scanned.format == "lines"
+    assert scanned.truncated is False
+    assert len(scanned.lines) == 1
+    assert scanned.lines[0].zh == "你好呀"
+    assert scanned.lines[0].ja == "こんにちは"
+    assert scanned.lines[0].emotion == "happy"
+
+    emitted, zh, ja, parser = _stream_reply(*chunks)
+    assert emitted == "你好呀"
+    assert zh == "你好呀"
+    assert ja == "こんにちは"
+    assert parser.line_scanner.format == "lines"
+    assert len(parser.normalized_lines()) == 1
+
+
+def test_bracket_prefixed_unprefixed_thinking_is_held_back_not_treated_as_json():
+    raw = "[思考] 用户想听安慰的话，温柔一点回答吧，先说点暖心的话。</think>没关系，有我在呢。"
+    chunks = [raw[i : i + 3] for i in range(0, len(raw), 3)]
+
+    emitted, zh, ja, parser = _stream_reply(*chunks)
+    assert "[思考]" not in emitted
+    assert "用户想听安慰的话" not in emitted
+    assert "</thin" not in emitted
+    assert "</think" not in emitted
+    assert zh == "没关系，有我在呢。"
+    assert ja == "没关系，有我在呢。"
+    assert parser.lines_truncated is False
