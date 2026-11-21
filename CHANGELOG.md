@@ -5,11 +5,12 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [3.2.9] - 2026-11-21
 ### Changed
 - 精简并汉化后端返回给前端直接展示的错误提示文案（去除连接、鉴权、限流与网关诊断中的英文状态说明，并将音频重试与显存预警中的英文术语统一为中文）。
 - 统一界面中残留的英文文案为简洁中文（包括对话栏语音指示、对话记录与自动播放提示、运行状态进程号与时长、参数面板标签、访问令牌弹窗及接口地址提示）。
 - 对齐 README 与 Windows 便携版使用说明中和当前界面不一致的文案与步骤（包括快捷菜单「自动」、回复失败提示与按钮、新建自定义音色的必填项「音色名称」以及「语音同步（推荐）」选项名称）。
-
 ### Fixed
 - 修复模型回复到一半连接断开时，提示仍让用户「重新发送」（与界面上的「继续」按钮矛盾）且将流式断开误判为需要改模型配置的问题；现在会引导点「继续」回到对话，且不再弹出「配置对话模型」。
 - 修复导入角色包途中关闭设置中心或切到其他标签页后，导入完成时仍改动隐藏表单、弹出人设覆盖确认框，并提示「点『保存』即可使用」的问题；现在面板已关闭时只静默刷新角色列表，并给出「可在『角色与会话』中选用」提示和「去选用」入口。
@@ -166,7 +167,8 @@ All notable changes to galgame2voice are documented here. The format follows
 - 修复聊天输入框超过 4000 字发送时清空草稿且报错失真，以及打开设置中心时未立即停止首页正在播放的试听语音的问题。
 - 修复在输入框使用中文/日文输入法组字时按 Esc 取消候选词会直接关闭弹窗，以及在背景选择对话框按 Tab 或 Shift+Tab 时焦点跳出对话框的问题。
 
-[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.8...HEAD
+[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.9...HEAD
+[3.2.9]: https://github.com/LevenST24/galgame2voice/compare/v3.2.8...v3.2.9
 [3.2.8]: https://github.com/LevenST24/galgame2voice/compare/v3.2.7...v3.2.8
 [3.2.7]: https://github.com/LevenST24/galgame2voice/compare/v3.2.6...v3.2.7
 [3.2.6]: https://github.com/LevenST24/galgame2voice/compare/v3.2.5...v3.2.6
