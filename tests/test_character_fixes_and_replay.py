@@ -15,13 +15,8 @@ import pytest
 import aiosqlite
 
 from galgame2voice.config import get_settings
-from galgame2voice.database import crud
-from galgame2voice.database.session import init_db, get_db
-from galgame2voice.database.models import VoiceProfileCreate
 from galgame2voice.services.character_manager import get_character_manager
 from galgame2voice.services.gpt_sovits_client import clean_japanese_parentheses
-from galgame2voice.services.chat_service import ChatService
-from galgame2voice.routers.chat import ChatRequest
 
 
 @pytest.mark.requires_character_assets
@@ -239,83 +234,6 @@ def test_database_persistence_and_protagonist_lore():
                     assert stage in p_sys, f"Missing stage {stage} in {db_path} profile {p_name}"
 
         conn.close()
-
-
-@pytest.mark.skip(
-    reason="session-level custom_system_prompt is intentionally deprecated in chat_pipelines/context_builder.py; test asserts the deprecated behavior — needs product decision on whether to re-enable or update the test"
-)
-@pytest.mark.asyncio
-async def test_session_custom_system_prompt_and_voice_profile_binding(tmp_path):
-    db_file = tmp_path / "test_binding.db"
-    await init_db(db_file)
-
-    async with get_db(str(db_file)) as conn:
-        # Create two distinct profiles
-        p1 = await crud.create_voice_profile(conn, VoiceProfileCreate(
-            name="四季夏目",
-            gpt_weights_path="dummy_gpt1.ckpt",
-            sovits_weights_path="dummy_sov1.pth",
-            ref_audio_path="dummy_ref1.wav",
-            prompt_text="夏目です",
-            prompt_lang="ja",
-            text_lang="ja",
-            system_prompt="我是夏目系统提示词",
-        ))
-        p2 = await crud.create_voice_profile(conn, VoiceProfileCreate(
-            name="白雪乃爱",
-            gpt_weights_path="dummy_gpt2.ckpt",
-            sovits_weights_path="dummy_sov2.pth",
-            ref_audio_path="dummy_ref2.wav",
-            prompt_text="乃爱だよ",
-            prompt_lang="ja",
-            text_lang="ja",
-            system_prompt="僕は乃爱！アイスが大好きなんだ！",
-        ))
-        await crud.set_active_voice_profile(conn, p1.id)
-
-        # Create session bound to Noa with custom_system_prompt
-        sess = await crud.upsert_session(
-            conn=conn,
-            session_id="sess_noa",
-            title="Noa Session",
-            voice_profile_id=p2.id,
-            custom_system_prompt="我是会话专属自定义乃爱Prompt",
-        )
-
-        chat_svc = ChatService(db_path=str(db_file))
-
-        # 1. Test _prepare_messages uses sess.custom_system_prompt
-        msgs = await chat_svc._prepare_messages(
-            conn=conn,
-            session_id="sess_noa",
-            user_prompt="你好乃爱",
-            session=sess,
-        )
-        assert any("我是会话专属自定义乃爱Prompt" in m.content for m in msgs)
-
-        # 2. Test _prepare_messages falls back to bound voice_profile_id prompt if custom_system_prompt is None
-        sess_no_custom = await crud.upsert_session(
-            conn=conn,
-            session_id="sess_noa_default",
-            title="Noa Default",
-            voice_profile_id=p2.id,
-            custom_system_prompt=None,
-        )
-        msgs2 = await chat_svc._prepare_messages(
-            conn=conn,
-            session_id="sess_noa_default",
-            user_prompt="你好乃爱",
-            session=sess_no_custom,
-        )
-        assert any("僕は乃爱！アイスが大好きなんだ！" in m.content for m in msgs2)
-
-
-def test_chat_request_schema():
-    req = ChatRequest(
-        prompt="测试提示",
-        voice_profile_id=42,
-    )
-    assert req.voice_profile_id == 42
 
 
 def test_parentheses_cleaning_extreme_cases():

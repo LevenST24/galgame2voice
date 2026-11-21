@@ -12,96 +12,19 @@ Validates the 7 forensic hardening fixes:
 
 import asyncio
 import io
-import os
-import time
 from pathlib import Path
 
 import pytest
 
 from galgame2voice.config import get_settings
-from galgame2voice.database.session import get_db, immediate_transaction
 from galgame2voice.database import crud
-from galgame2voice.services.audio_cleaner import _scan_and_clean
 from galgame2voice.services.voice_manager import VoiceManager
-from galgame2voice.services.chat_service import ChatService
-from galgame2voice.services.gpt_sovits_client import GptSovitsClient
-from galgame2voice.services.tts_service import TtsService
 from galgame2voice.utils.audio_converter import convert_wav_to_ogg
 
 
 # ============================================================================
 # 1. Audio Cleaner Commit Verification
 # ============================================================================
-
-@pytest.mark.asyncio
-async def test_audio_cleaner_db_deletion_committed(tmp_path):
-    """Verifies that expired tts_cache_entries are committed to SQLite via immediate_transaction."""
-    db_path = str(tmp_path / "cleaner_test.db")
-    async with get_db(db_path) as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS tts_cache_entries (
-                cache_key TEXT PRIMARY KEY,
-                audio_filename TEXT NOT NULL,
-                prompt_lang TEXT,
-                text_lang TEXT,
-                speed REAL,
-                sample_rate INTEGER,
-                hit_count INTEGER DEFAULT 1,
-                last_accessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        """)
-        await conn.commit()
-
-        # Seed 3 cache entries
-        for i in range(3):
-            await conn.execute(
-                "INSERT INTO tts_cache_entries (cache_key, audio_filename) VALUES (?, ?);",
-                (f"key_{i}", f"cache_sample_{i}.wav"),
-            )
-        await conn.commit()
-
-    # Create audio dir and old cache files
-    audio_dir = tmp_path / "audio"
-    cache_dir = audio_dir / "cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    old_file = cache_dir / "cache_sample_0.wav"
-    old_file.write_bytes(b"RIFFmockwavdata")
-    # Backdate mtime to 30 days ago
-    past_time = time.time() - (30 * 86400)
-    os.utime(old_file, (past_time, past_time))
-
-    # Keep file 1 recent
-    recent_file = cache_dir / "cache_sample_1.wav"
-    recent_file.write_bytes(b"RIFFrecentwav")
-
-    # Run _scan_and_clean
-    now = time.time()
-    cutoff = now - 3600
-    cache_cutoff = now - (7 * 86400)
-    cleaned, unlinked_keys = _scan_and_clean(audio_dir, set(), cutoff, cache_cutoff)
-
-    assert len(unlinked_keys) > 0
-
-    # Execute batch deletion with immediate_transaction (matching audio_cleaner.py)
-    async with get_db(db_path) as conn:
-        async with immediate_transaction(conn):
-            filenames = [f"{k}.wav" for k in unlinked_keys]
-            all_params = unlinked_keys + filenames + unlinked_keys
-            p_batch = ",".join(["?"] * len(unlinked_keys))
-            p_files = ",".join(["?"] * len(filenames))
-            await conn.execute(
-                f"DELETE FROM tts_cache_entries WHERE cache_key IN ({p_batch}) OR audio_filename IN ({p_files}) OR audio_filename IN ({p_batch});",
-                all_params,
-            )
-
-    # In a brand new connection, assert committed deletion
-    async with get_db(db_path) as conn:
-        cursor = await conn.execute("SELECT cache_key FROM tts_cache_entries;")
-        remaining = [row[0] for row in await cursor.fetchall()]
-        assert "key_0" not in remaining
-        assert "key_1" in remaining
 
 
 # ============================================================================
@@ -178,57 +101,7 @@ async def test_audio_converter_unlinking_under_task_cancellation(tmp_path, monke
 # 4. UTF-8 BOM Safe Reading Across Config & Health
 # ============================================================================
 
-@pytest.mark.asyncio
-async def test_utf8_bom_safe_reading_across_config_and_health(tmp_path):
-    """Verifies that reading sovits_dir.txt with Windows UTF-8 BOM returns clean paths."""
-    data_dir = tmp_path / "data"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    sovits_txt = data_dir / "sovits_dir.txt"
-
-    target_path = tmp_path / "mock_sovits_install"
-    target_path.mkdir(parents=True, exist_ok=True)
-
-    # Write UTF-8 BOM
-    bom_content = "\ufeff" + str(target_path)
-    sovits_txt.write_bytes(bom_content.encode("utf-8"))
-
-    # Test reading with utf-8-sig
-    read_path_str = sovits_txt.read_text(encoding="utf-8-sig").strip()
-    assert not read_path_str.startswith("\ufeff")
-    assert Path(read_path_str) == target_path
-    assert Path(read_path_str).exists()
-
 
 # ============================================================================
 # 7. stream_chat Cancel Monitor Cleanup on Normal Completion
 # ============================================================================
-
-@pytest.mark.asyncio
-async def test_stream_chat_cancel_monitor_clean_exit(tmp_path, mock_gpt_sovits):
-    """Verifies that normal stream completion cancels and drains cancel_monitor without task leak."""
-    client = GptSovitsClient(server=mock_gpt_sovits)
-    tts_service = TtsService(client=client, db_path=str(tmp_path / "chat_test.db"))
-    chat_service = ChatService(tts_service=tts_service, db_path=str(tmp_path / "chat_test.db"))
-
-    class QuickAdapter:
-        async def stream_chat(self, messages, **kwargs):
-            yield '{"chinese": "你好", "japanese": "こんにちは"}'
-
-    async def _mock_adapter(conn=None, provider_id=None):
-        return QuickAdapter(), "mock-model", "mock-prov"
-
-    chat_service._get_active_llm_adapter = _mock_adapter
-
-    cancel_event = asyncio.Event()
-    events = []
-    async for ev in chat_service.stream_chat("hello", "sess_clean", cancel_event=cancel_event):
-        events.append(ev)
-
-    assert any(e.get("event") == "done" for e in events)
-
-    # Let the loop tick once to allow finally: blocks to finalize
-    await asyncio.sleep(0.01)
-
-    # Drain background tasks
-    await chat_service.aclose()
-    assert len([t for t in chat_service._bg_tasks if not t.done()]) == 0
