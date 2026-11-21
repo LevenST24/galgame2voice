@@ -2221,3 +2221,46 @@ test('complete chat backup preserves unconfirmed reading settings when backend s
   const exported = JSON.parse(merged.content).sessions.find(s => s.id === session.id);
   assert.equal(exported.settings.advPlayerName, '旅人', '完整备份应保留尚未同步到后端的较新本地设置');
 });
+
+
+test('audio error toast points to character settings when message instructs 角色与会话', async t => {
+  const toasts = [];
+  const calls = [];
+  const h = setup(t, {
+    callbacks: {
+      showToast: (msg, type, opts) => toasts.push({ msg, type, opts }),
+      openGlobalSettings: tab => calls.push(['global', tab]),
+      openSessionSettings: () => calls.push(['session']),
+    },
+  });
+
+  const turn1 = h.app.sendMessage('你好');
+  await tick();
+  const req1 = h.stream.requests.at(-1);
+  await req1.event('audio_chunk_error', {
+    error: '尚未配置角色包或参考音频，请在「设置中心 → 角色与会话」导入角色包或创建自定义音色后重试。',
+  });
+  await req1.onEnd('你好！');
+  await turn1;
+
+  assert.equal(toasts.length, 1);
+  assert.equal(toasts[0].opts.actionLabel, '去选择角色');
+  toasts[0].opts.onAction();
+  assert.deepEqual(calls, [['session']]);
+
+  toasts.length = 0;
+  calls.length = 0;
+  const turn2 = h.app.sendMessage('再说一句');
+  await tick();
+  const req2 = h.stream.requests.at(-1);
+  await req2.event('audio_chunk_error', {
+    error: '语音引擎尚未启动，请在「设置中心 → 运行状态」启动引擎。',
+  });
+  await req2.onEnd('好的');
+  await turn2;
+
+  assert.equal(toasts.length, 1);
+  assert.equal(toasts[0].opts.actionLabel, '检查运行状态');
+  toasts[0].opts.onAction();
+  assert.deepEqual(calls, [['global', 'dashboard']]);
+});
