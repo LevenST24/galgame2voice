@@ -747,9 +747,15 @@ function isSessionModalOpen() {
   return Boolean(modal && !modal.hidden && !modal.classList?.contains('hidden'));
 }
 
-function characterImportSuccessMessage(label, imported, modalOpen = true) {
+function characterImportSuccessMessage(label, imported, modalOpen = true, autoBound = false) {
   const missing = imported.filter((item) => item.missing_voice_weights);
   if (!missing.length) {
+    if (autoBound) {
+      if (imported.length > 1 && imported[0]?.name) {
+        return `已导入${label}，已选用「${imported[0].name}」，现在可以直接开始聊天`;
+      }
+      return `已导入并选用${label}，现在可以直接开始聊天`;
+    }
     return modalOpen ? `已导入${label}，点「保存」即可使用` : `已导入${label}，可在「角色与会话」中选用`;
   }
   if (missing.length === imported.length) {
@@ -772,17 +778,56 @@ async function finishCharacterImport(data, filename) {
     return;
   }
   await loadSessionVoiceSelect(getActive(), { preserveDraft: true, syncCustomBox: false });
+  let autoBound = false;
+  let note = '';
   if (isSessionModalOpen()) {
-    if (imported[0]?.profile_id != null && _dom.sVoice) {
-      _dom.sVoice.value = String(imported[0].profile_id);
+    const firstImported = imported[0];
+    const profileId = firstImported?.profile_id ?? null;
+    if (profileId != null && _dom.sVoice) {
+      _dom.sVoice.value = String(profileId);
       handleVoiceSelectionChange();
+      const active = getActive();
+      const shouldAutoBind = Boolean(
+        active
+        && state.sessions.includes(active)
+        && !active.settings?.voiceProfileId
+        && _dom.sVoice.value === String(profileId)
+      );
+      if (shouldAutoBind && active) {
+        _callbacks.invalidateSessionSync?.();
+        active.settings.voiceProfileId = profileId;
+        active.updatedAt = Math.max(Date.now(), (active.updatedAt || 0) + 1);
+        const version = (active.unconfirmedSettingsVersion || 0) + 1;
+        active.unconfirmedSettingsVersion = version;
+        saveState();
+        autoBound = true;
+        if (storageChangedByAnotherPage()) {
+          note = '；当前网页已暂停保存，会话绑定未提交到本机服务';
+        } else {
+          try {
+            await persistSession(active);
+            if (active.unconfirmedSettingsVersion === version) {
+              delete active.unconfirmedSettingsVersion;
+              saveState();
+            }
+          } catch (e) {
+            note = `；会话绑定尚未同步到本机服务：${e.message}`;
+          }
+        }
+        _callbacks.renderSidebar?.();
+        _callbacks.renderHeader?.();
+        if (!firstImported?.missing_voice_weights && getActive() === active && state.sessions.includes(active)) {
+          ensureSessionVoice(active, { silent: true });
+        }
+      }
     } else syncCustomVoiceBox();
   }
   const modalOpen = isSessionModalOpen();
-  const toastOpts = !modalOpen && _callbacks.onOpenSessionSettings
+  const toastOpts = !modalOpen && !autoBound && _callbacks.onOpenSessionSettings
     ? { actionLabel: '去选用', onAction: () => _callbacks.onOpenSessionSettings() }
     : null;
-  showToast(characterImportSuccessMessage(label, imported, modalOpen), 'success', toastOpts);
+  const message = characterImportSuccessMessage(label, imported, modalOpen, autoBound);
+  showToast(note ? `${message}${note}` : message, note ? 'info' : 'success', toastOpts);
 }
 
 async function importCharacterArchive(blob, filename) {
