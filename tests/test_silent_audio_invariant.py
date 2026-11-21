@@ -97,3 +97,69 @@ async def test_normal_audio_passes_through():
     client = GptSovitsClient(base_url="http://mock", server=SilentTtsStubServer(payload))
     result = await client.synthesize("テスト", options={"ref_audio_path": "mock.wav", "prompt_text": "mock"})
     assert result == payload
+
+
+def _build_extensible_wav(samples: bytes, subformat: int, bits: int, sample_rate: int = 32000, channels: int = 1) -> bytes:
+    """Builds a WAVE_FORMAT_EXTENSIBLE (0xFFFE) RIFF/WAVE payload."""
+    block_align = channels * (bits // 8)
+    # 16-byte base fmt + cbSize(22) + validBitsPerSample + dwChannelMask + SubFormat GUID (first 2 bytes = subformat)
+    subformat_guid = struct.pack("<H", subformat) + b"\x00\x00\x00\x00\x10\x00\x80\x00\x00\xaa\x00\x38\x9b\x71"
+    fmt = (
+        struct.pack("<HHIIHH", 0xFFFE, channels, sample_rate, sample_rate * block_align, block_align, bits)
+        + struct.pack("<HHI", 22, bits, 0)
+        + subformat_guid
+    )
+    chunk = b"fmt " + struct.pack("<I", len(fmt)) + fmt + b"data" + struct.pack("<I", len(samples)) + samples
+    if len(samples) % 2:
+        chunk += b"\x00"
+    return b"RIFF" + struct.pack("<I", 4 + len(chunk)) + b"WAVE" + chunk
+
+
+def test_wav_is_silent_leading_silence_then_audio():
+    wav = build_wav(b"\x00\x00" * 4000 + struct.pack("<h", 1) + b"\x00\x00" * 100)
+    assert wav_peak_amplitude(wav) > 0.0
+    assert wav_is_silent(wav) is False
+
+
+def test_wav_is_silent_float32_positive_and_negative_zero_and_subnormal():
+    # Mix of +0.0 and -0.0 must be flagged silent
+    mixed_zeros = struct.pack("<4f", 0.0, -0.0, 0.0, -0.0) * 100
+    wav_zeros = build_wav(mixed_zeros, bits=32, audio_format=3)
+    assert wav_peak_amplitude(wav_zeros) == 0.0
+    assert wav_is_silent(wav_zeros) is True
+
+    # Non-zero subnormal made exclusively of 0x00 and 0x80 bytes (\x80\x00\x00\x00 != 0.0)
+    wav_subnormal = build_wav(b"\x00\x00\x00\x80" * 10 + b"\x80\x00\x00\x00", bits=32, audio_format=3)
+    assert wav_peak_amplitude(wav_subnormal) > 0.0
+    assert wav_is_silent(wav_subnormal) is False
+
+
+def test_wav_is_silent_wave_format_extensible():
+    pcm_silent = _build_extensible_wav(b"\x00\x00" * 400, subformat=1, bits=16)
+    pcm_sound = _build_extensible_wav(b"\x00\x00" * 200 + struct.pack("<h", 42), subformat=1, bits=16)
+    f32_silent = _build_extensible_wav(struct.pack("<4f", 0.0, -0.0, 0.0, -0.0), subformat=3, bits=32)
+    f32_sound = _build_extensible_wav(struct.pack("<4f", 0.0, -0.0, 0.25, 0.0), subformat=3, bits=32)
+
+    assert wav_is_silent(pcm_silent) is True
+    assert wav_is_silent(pcm_sound) is False
+    assert wav_is_silent(f32_silent) is True
+    assert wav_is_silent(f32_sound) is False
+
+
+def test_wav_is_silent_empty_data_chunk_not_silent():
+    empty_wav = build_wav(b"")
+    assert wav_peak_amplitude(empty_wav) is None
+    assert wav_is_silent(empty_wav) is False
+
+
+def test_wav_is_silent_bypasses_python_sample_loop(monkeypatch):
+    """Normal audio silence check must not fall back to wav_peak_amplitude's per-sample loop."""
+    from galgame2voice.utils import audio_spec
+
+    def _forbid_peak(_audio: bytes):
+        raise AssertionError("wav_peak_amplitude must not be called by is_silent_audio")
+
+    monkeypatch.setattr(audio_spec, "wav_peak_amplitude", _forbid_peak)
+    wav = build_wav(b"\x00\x00" * 3200 + struct.pack("<h", 8000) * 3200)
+    assert audio_spec.is_silent_audio(wav) is False
+    assert audio_spec.is_silent_audio(build_wav(b"\x00\x00" * 3200)) is True
