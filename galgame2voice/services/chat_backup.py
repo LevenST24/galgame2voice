@@ -101,7 +101,13 @@ async def export_chat_backup() -> dict:
         # A read transaction provides one WAL snapshot without reserving a writer.
         await conn.execute("BEGIN")
         try:
-            async with conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC, id DESC LIMIT ?", (MAX_SESSIONS + 1,)) as cursor:
+            async with conn.execute(
+                "SELECT s.*, vp.name AS character_name "
+                "FROM sessions s "
+                "LEFT JOIN voice_profiles vp ON vp.id = s.voice_profile_id "
+                "ORDER BY s.updated_at DESC, s.id DESC LIMIT ?",
+                (MAX_SESSIONS + 1,),
+            ) as cursor:
                 rows = await cursor.fetchall()
             if len(rows) > MAX_SESSIONS:
                 raise _too_large()
@@ -116,11 +122,15 @@ async def export_chat_backup() -> dict:
                 settings["voiceProfileId"] = row["voice_profile_id"]
                 if row["custom_system_prompt"]:
                     settings["systemPrompt"] = row["custom_system_prompt"]
-                sessions[row["id"]] = {
+                character_name = (row["character_name"] or "").strip()
+                session_entry = {
                     "id": row["id"], "title": row["title"] or "新对话", "settings": settings,
                     "createdAt": _timestamp(row["created_at"]), "updatedAt": _timestamp(row["updated_at"]),
                     "messages": [],
                 }
+                if character_name:
+                    session_entry["characterName"] = character_name
+                sessions[row["id"]] = session_entry
             count = size = 0
             async with conn.execute(
                 "SELECT m.id, m.session_id, m.role, m.content_chinese, m.content_japanese, m.created_at, m.lines_json "

@@ -134,7 +134,7 @@ async def test_legacy_telegram_sqlite_data_and_backup_compatibility(isolate_test
             },
         )
         assert import_resp.status_code == 200, import_resp.text
-        assert import_resp.json() == {"status": "ok", "count": 1}
+        assert import_resp.json() == {"status": "ok", "count": 1, "restored_sessions": []}
 
         exported = await client.get("/api/chat/export")
         assert exported.status_code == 200

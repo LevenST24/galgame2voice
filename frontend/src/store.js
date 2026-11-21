@@ -309,10 +309,37 @@ export function loadState() {
   saveState();
 }
 
-/** @returns {string} */
-export function exportSessionData() {
-  return JSON.stringify({ format: 'galgame2voice.chat', version: 1, exportedAt: new Date().toISOString(),
-    ...portableSnapshot(normalizeSnapshot(snapshot(), DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL)) }, null, 2);
+/**
+ * @param {Array<{ id?: number | string | null, name?: string | null }>} [profiles]
+ * @returns {string}
+ */
+export function exportSessionData(profiles = []) {
+  const portable = portableSnapshot(normalizeSnapshot(snapshot(), DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL));
+  const nameById = new Map();
+  if (Array.isArray(profiles)) {
+    for (const profile of profiles) {
+      const id = Number(profile?.id);
+      const name = typeof profile?.name === 'string' ? profile.name.trim() : '';
+      if (Number.isInteger(id) && id > 0 && name && name.length <= 200) {
+        nameById.set(id, name);
+      }
+    }
+  }
+  for (const session of portable.sessions) {
+    const voiceId = session.settings.voiceProfileId;
+    const resolvedName = voiceId !== null ? nameById.get(voiceId) : undefined;
+    if (resolvedName) {
+      session.characterName = resolvedName;
+    } else {
+      delete session.characterName;
+    }
+  }
+  return JSON.stringify({
+    format: 'galgame2voice.chat',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    ...portable,
+  }, null, 2);
 }
 
 // Ids come from the raw text of the chosen file (before parsing fills in missing times) plus the
@@ -358,13 +385,29 @@ export function prepareSessionImport(raw) {
 
 /**
  * @param {PortableChatSnapshot} incoming
- * @returns {{ count: number, saved: boolean }}
+ * @param {Array<{ id?: string, voice_profile_id?: number | null }>} [restoredSessions]
+ * @returns {{ count: number, restoredCount: number, saved: boolean }}
  */
-export function applySessionImport(incoming) {
+export function applySessionImport(incoming, restoredSessions = []) {
+  const restoredById = new Map();
+  if (Array.isArray(restoredSessions)) {
+    for (const item of restoredSessions) {
+      if (item && typeof item.id === 'string' && Number.isInteger(item.voice_profile_id) && /** @type {number} */ (item.voice_profile_id) > 0) {
+        restoredById.set(item.id, /** @type {number} */ (item.voice_profile_id));
+      }
+    }
+  }
+  let restoredCount = 0;
+  for (const session of incoming.sessions) {
+    const voiceId = restoredById.get(session.id) ?? null;
+    session.settings.voiceProfileId = voiceId;
+    delete session.characterName;
+    if (voiceId !== null) restoredCount += 1;
+  }
   state.sessions.unshift(...incoming.sessions);
   state.activeId = incoming.sessions[0].id;
   const saved = saveState();
-  return { count: incoming.sessions.length, saved };
+  return { count: incoming.sessions.length, restoredCount, saved };
 }
 
 /** @returns {boolean} */

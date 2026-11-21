@@ -82,6 +82,7 @@
  * @property {number} createdAt
  * @property {number} updatedAt
  * @property {SessionSettings} settings
+ * @property {string} [characterName]
  * @property {string} [lastLine]
  * @property {boolean} [hasServerMessages]
  * @property {number} [unconfirmedSettingsVersion]
@@ -275,6 +276,12 @@ export function normalizeSnapshot(data, sessionDefaults, globalDefaults) {
       createdAt: timestamp(session.createdAt), updatedAt: timestamp(session.updatedAt),
       settings: pickSettings(session.settings, sessionDefaults),
     };
+    if (typeof session.characterName === 'string') {
+      const characterName = session.characterName.trim();
+      if (characterName && characterName.length <= 200) {
+        normalizedSession.characterName = characterName;
+      }
+    }
     if (typeof session.lastLine === 'string' && session.lastLine) {
       normalizedSession.lastLine = session.lastLine;
     }

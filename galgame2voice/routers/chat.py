@@ -15,9 +15,10 @@ import uuid
 from anyio import CancelScope
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 from starlette.requests import ClientDisconnect
 
+from galgame2voice.services.character_identity import identity_key
 from galgame2voice.services.chat_service import ChatService
 from galgame2voice.services.chat_pipelines.line_scanner import FX, MOTIONS
 from galgame2voice.services.chat_pipelines.tts_pipeline import TTS_JOB_TIMEOUT_SECONDS
@@ -323,8 +324,23 @@ class ImportedSession(BaseModel):
     title: str = Field(max_length=200)
     messages: list[ImportedMessage] = Field(max_length=10000)
     settings: dict[str, Any] = Field(default_factory=dict)
+    character_name: str | None = Field(
+        default=None,
+        max_length=200,
+        validation_alias=AliasChoices("characterName", "character_name"),
+    )
     created_at: int | None = Field(default=None, ge=0, le=253402300799000)
     updated_at: int | None = Field(default=None, ge=0, le=253402300799000)
+
+    @field_validator("character_name", mode="before")
+    @classmethod
+    def normalize_character_name(cls, value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        cleaned = value.strip()
+        if not cleaned or len(cleaned) > 200:
+            return None
+        return cleaned
 
     @field_validator("settings")
     @classmethod
@@ -352,21 +368,32 @@ class ChatImportRequest(BaseModel):
 @router.post("/api/chat/import", summary="Import chat history into new sessions atomically")
 async def import_chat_sessions(req: ChatImportRequest) -> dict[str, Any]:
     """Restore model context as well as browser display, without overwriting IDs."""
+    restored_sessions: list[dict[str, Any]] = []
     async with get_db() as conn, immediate_transaction(conn):
+        profile_rows = await (await conn.execute("SELECT id, name FROM voice_profiles")).fetchall()
+        profiles_by_name: dict[str, int | None] = {}
+        for row in profile_rows:
+            key = identity_key(str(row["name"] or ""))
+            if not key:
+                continue
+            profiles_by_name[key] = None if key in profiles_by_name else int(row["id"])
+
         for session in req.sessions:
             existing = await (await conn.execute("SELECT id FROM sessions WHERE id = ?", (session.id,))).fetchone()
             if existing:
                 raise HTTPException(409, "导入的会话已存在，原记录未修改。请刷新查看后再决定是否导入另一份副本。")
-            # Profile IDs are installation-specific; a restored session must
-            # choose its voice explicitly rather than binding a different person.
-            settings = {**session.settings, "voiceProfileId": None}
+            # Profile IDs are installation-specific; restore binding only when
+            # exactly one local voice profile matches the exported character name.
+            char_key = identity_key(session.character_name or "")
+            voice_profile_id = profiles_by_name.get(char_key) if char_key else None
+            settings = {**session.settings, "voiceProfileId": voice_profile_id}
             system_prompt = settings.get("systemPrompt")
             if system_prompt is not None and not isinstance(system_prompt, str):
                 raise HTTPException(422, "人设提示词应为文字，当前记录未修改。")
             await conn.execute(
-                "INSERT INTO sessions (id, channel, title, settings_json, custom_system_prompt, created_at, updated_at) "
-                "VALUES (?, 'web', ?, ?, ?, ?, ?)",
-                (session.id, session.title, json.dumps(settings, ensure_ascii=False), system_prompt,
+                "INSERT INTO sessions (id, channel, title, voice_profile_id, settings_json, custom_system_prompt, created_at, updated_at) "
+                "VALUES (?, 'web', ?, ?, ?, ?, ?, ?)",
+                (session.id, session.title, voice_profile_id, json.dumps(settings, ensure_ascii=False), system_prompt,
                  import_timestamp(session.created_at), import_timestamp(session.updated_at)),
             )
             await conn.executemany(
@@ -375,7 +402,9 @@ async def import_chat_sessions(req: ChatImportRequest) -> dict[str, Any]:
                   json.dumps([line.to_persisted_dict() for line in message.lines], ensure_ascii=False) if message.lines is not None else None)
                  for message in session.messages],
             )
-    return {"status": "ok", "count": len(req.sessions)}
+            if voice_profile_id is not None:
+                restored_sessions.append({"id": session.id, "voice_profile_id": voice_profile_id})
+    return {"status": "ok", "count": len(req.sessions), "restored_sessions": restored_sessions}
 
 
 @router.get("/api/chat/export", summary="Export complete portable chat history")
