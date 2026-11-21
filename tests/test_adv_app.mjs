@@ -44,6 +44,7 @@ function setup(t, options = {}) {
   const mql = { matches: false, addEventListener: (_, fn) => mediaListeners.add(fn), removeEventListener: (_, fn) => mediaListeners.delete(fn) };
   const calls = { settings: 0, models: 0, newSession: 0, history: 0, mic: 0 };
   const app = mountAdv(dom, { controller, audio, clock, getSession: () => active, voiceEnabled: () => voiceEnabled,
+    toggleVoice: () => { voiceEnabled = !voiceEnabled; },
     getCharacter: () => character, ImageClass: Image,
     loadPortrait: options.loadPortrait || (async () => options.art ? portrait() : null),
     raf: fn => { frames.set(++frameId, fn); return frameId; }, cancelRaf: id => frames.delete(id),
@@ -71,7 +72,7 @@ function setup(t, options = {}) {
     const event = { messageId: id, line: index, status,
       chunks: status === 'ready' ? [{ index: 0, line: index, audio_url: '/audio/0.wav' }] : [] };
     if (id === turn) {
-      const record = active.messages.find(message => message.index === index);
+      const record = active.messages.findLast(message => message.index === index);
       if (record) record.audio = { status, chunks: event.chunks };
     }
     emit('line_audio', event);
@@ -554,6 +555,211 @@ test('stale replay cannot resume a different turn behind a dialog', async t => {
   h.start('new'); h.line(); h.line(1); h.overlay(true);
   h.endVoice('ended'); await microtasks();
   assert.equal(h.app.player.state, 'suspended');
+});
+
+test('stage replay stops and advances on stage click, Space, or SKIP', async t => {
+  const h = setup(t, { settings: { advTextIntervalMs: 0 } });
+  const stage = h.app.stage.stage;
+  const replayBtn = stage.querySelector('.adv-qm-btn-voice');
+  const skipBtn = stage.querySelector('.adv-qm-btn-skip');
+  const voiceDisplay = stage.querySelector('.adv-voice-display');
+
+  h.start();
+  h.line(0, { zh: '第一句。' });
+  h.line(1, { zh: '第二句。' });
+  h.line(2, { zh: '第三句。' });
+  h.audioEvent(0);
+  h.audioEvent(1);
+  h.audioEvent(2);
+  h.done();
+  h.endVoice('ended');
+  await microtasks();
+  assert.equal(h.app.player.currentIndex, 0);
+  assert.equal(h.app.player.state, 'waiting_advance');
+
+  // Stage click during replay stops replay and advances to line 1
+  replayBtn.click();
+  assert.equal(h.audio.played.length, 2);
+  assert.equal(h.app.player.state, 'suspended');
+  assert.equal(voiceDisplay.classList.contains('is-hidden'), false);
+  stage.click();
+  assert.equal(h.audio.stopped.length, 1);
+  assert.equal(h.app.player.currentIndex, 1);
+  assert.equal(h.app.player.state, 'waiting_advance');
+  h.endVoice('ended');
+  await microtasks();
+
+  // Space during replay stops replay and advances to line 2
+  replayBtn.click();
+  assert.equal(h.app.player.state, 'suspended');
+  const stoppedBeforeSpace = h.audio.stopped.length;
+  stage.dispatchEvent({ type: 'keydown', key: ' ' });
+  assert.equal(h.audio.stopped.length, stoppedBeforeSpace + 1);
+  assert.equal(h.app.player.currentIndex, 2);
+  h.endVoice('ended');
+  await microtasks();
+
+  // SKIP during replay stops replay and fast-forwards out of the turn
+  replayBtn.click();
+  assert.equal(h.app.player.state, 'suspended');
+  const stoppedBeforeSkip = h.audio.stopped.length;
+  skipBtn.click();
+  assert.equal(h.audio.stopped.length, stoppedBeforeSkip + 1);
+  assert.equal(h.app.player.skip, true);
+  h.clock.tick(80);
+  assert.equal(h.app.player.state, 'input');
+});
+
+test('stage replay lets AUTO toggle without cutting off replay and resumes naturally when replay ends', async t => {
+  const h = setup(t, { settings: { advTextIntervalMs: 0, advAutoBaseMs: 0, advAutoPerCharMs: 0 } });
+  const stage = h.app.stage.stage;
+  const replayBtn = stage.querySelector('.adv-qm-btn-voice');
+  const autoBtn = stage.querySelector('.adv-qm-btn-auto');
+  const voiceDisplay = stage.querySelector('.adv-voice-display');
+  const glyph = stage.querySelector('.adv-click-glyph');
+
+  h.start();
+  h.line(0, { zh: '第一句。' });
+  h.line(1, { zh: '第二句。' });
+  h.audioEvent(0);
+  h.audioEvent(1);
+  h.done();
+  h.endVoice('ended');
+  await microtasks();
+
+  // Natural completion with AUTO toggled ON mid-replay
+  replayBtn.click();
+  assert.equal(h.app.player.state, 'suspended');
+  autoBtn.click();
+  assert.equal(h.app.player.auto, true);
+  assert.equal(autoBtn.getAttribute('aria-pressed'), 'true');
+  assert.equal(h.audio.stopped.length, 0, 'toggling AUTO keeps replay voice playing');
+  h.clock.tick(5000);
+  assert.equal(h.app.player.currentIndex, 0, 'AUTO waits until replay finishes');
+
+  h.endVoice('ended');
+  await microtasks();
+  assert.equal(h.app.player.state, 'waiting_advance');
+  assert.equal(voiceDisplay.classList.contains('is-hidden'), true);
+  assert.equal(glyph.classList.contains('is-hidden'), false);
+  assert.equal(h.app.player.currentIndex, 0);
+  h.clock.tick(1200);
+  assert.equal(h.app.player.currentIndex, 1);
+
+  // Natural completion with AUTO toggled OFF mid-replay stays on the same line
+  h.endVoice('ended');
+  await microtasks();
+  replayBtn.click();
+  autoBtn.click();
+  assert.equal(h.app.player.auto, false);
+  assert.equal(autoBtn.getAttribute('aria-pressed'), 'false');
+  h.endVoice('ended');
+  await microtasks();
+  assert.equal(h.app.player.state, 'waiting_advance');
+  assert.equal(h.app.player.currentIndex, 1);
+  h.clock.tick(5000);
+  assert.equal(h.app.player.currentIndex, 1);
+});
+
+test('opening panels or overlays during stage replay stops replay and closing does not resume it', async t => {
+  const h = setup(t, { settings: { advTextIntervalMs: 0 } });
+  const stage = h.app.stage.stage;
+  const replayBtn = stage.querySelector('.adv-qm-btn-voice');
+  const voiceDisplay = stage.querySelector('.adv-voice-display');
+  const toolButton = name => stage.querySelector('.adv-app-tools').children.find(btn => btn.dataset.action === name);
+
+  h.start();
+  h.line(0, { zh: '第一句。' });
+  h.line(1, { zh: '第二句。' });
+  h.audioEvent(0);
+  h.done();
+  h.endVoice('ended');
+  await microtasks();
+
+  const cases = [
+    ['config', () => stage.querySelector('.adv-qm-btn-config').click(), () => stage.querySelector('.adv-config-btn-close').click()],
+    ['background', () => stage.querySelector('.adv-qm-btn-background').click(), () => stage.querySelector('.adv-bg-close').click()],
+    ['log', () => stage.querySelector('.adv-qm-btn-log').click(), () => stage.querySelector('.adv-log-close-btn').click()],
+    ['dialog', () => h.overlay(true), () => h.overlay(false)],
+    ['sessions', () => toolButton('sessions').click(), () => stage.dispatchEvent({ type: 'keydown', key: 'Escape' })],
+    ['hide', () => stage.querySelector('.adv-qm-btn-hide').click(), () => stage.click()],
+  ];
+
+  for (const [label, openPanel, closePanel] of cases) {
+    replayBtn.click();
+    const playedCount = h.audio.played.length;
+    const stoppedBefore = h.audio.stopped.length;
+    assert.equal(voiceDisplay.classList.contains('is-hidden'), false, `${label}: replay voice indicator active`);
+
+    openPanel();
+    assert.equal(h.audio.stopped.length, stoppedBefore + 1, `${label}: opening stops replay audio`);
+    assert.equal(voiceDisplay.classList.contains('is-hidden'), true, `${label}: opening clears voice indicator`);
+    assert.equal(h.app.player.state, 'suspended', `${label}: stage remains suspended while open`);
+
+    closePanel();
+    assert.equal(h.app.player.state, 'waiting_advance', `${label}: closing restores waiting_advance immediately`);
+    assert.equal(h.app.player.currentIndex, 0, `${label}: closing stays on the same line`);
+    assert.equal(h.audio.played.length, playedCount, `${label}: closing does not restart replay`);
+  }
+});
+
+test('typing in input, turning off voice, starting a turn, or returning home stops stage replay', async t => {
+  const h = setup(t, { settings: { advTextIntervalMs: 0 } });
+  const stage = h.app.stage.stage;
+  const replayBtn = stage.querySelector('.adv-qm-btn-voice');
+  const voiceDisplay = stage.querySelector('.adv-voice-display');
+  const toolButton = name => stage.querySelector('.adv-app-tools').children.find(btn => btn.dataset.action === name);
+
+  // 1. Typing in the input box during replay stops replay
+  h.start('turn_edit');
+  h.line(0, { zh: '可重播台词。' });
+  h.audioEvent(0);
+  h.done();
+  h.endVoice('ended');
+  await microtasks();
+
+  replayBtn.click();
+  let stoppedBefore = h.audio.stopped.length;
+  toolButton('input').click();
+  const input = h.app.textbox.inputElement;
+  input.value = '打字中断重播';
+  input.dispatchEvent({ type: 'input' });
+  assert.equal(h.audio.stopped.length, stoppedBefore + 1);
+  assert.equal(voiceDisplay.classList.contains('is-hidden'), true);
+  assert.equal(h.app.player.state, 'input');
+
+  // 2. Turning off voice_mode during replay stops replay
+  h.start('turn_voice_off');
+  h.line(0, { zh: '可重播台词。' });
+  h.audioEvent(0);
+  h.done();
+  h.endVoice('ended');
+  await microtasks();
+
+  replayBtn.click();
+  stoppedBefore = h.audio.stopped.length;
+  toolButton('voice_mode').click();
+  assert.equal(h.audio.stopped.length, stoppedBefore + 1);
+  assert.equal(voiceDisplay.classList.contains('is-hidden'), true);
+  assert.equal(h.app.player.state, 'waiting_advance');
+  toolButton('voice_mode').click();
+
+  // 3. turnstart and prepareHome stop replay
+  replayBtn.click();
+  stoppedBefore = h.audio.stopped.length;
+  h.start('turn_home');
+  assert.equal(h.audio.stopped.length, stoppedBefore + 1);
+  h.line(0, { zh: '回首页前的台词。' });
+  h.audioEvent(0);
+  h.done();
+  h.endVoice('ended');
+  await microtasks();
+
+  replayBtn.click();
+  stoppedBefore = h.audio.stopped.length;
+  h.app.prepareHome();
+  assert.equal(h.audio.stopped.length, stoppedBefore + 1);
+  assert.equal(h.app.player.state, 'input');
 });
 
 test('partial failure exposes its reason and settings without an unsupported retry', t => {

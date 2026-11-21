@@ -83,7 +83,8 @@ export function mountAdv(dom, deps) {
   }
   const moved = new Map();
   const drafts = new Map();
-  let replayToken = 0;
+  let replayToken = 0, stageReplaying = false;
+  let lastVoiceEnabled = Boolean(deps.voiceEnabled?.());
   const listen = (el, type, fn, options) => {
     if (!el?.addEventListener) return;
     el.addEventListener(type, fn, options);
@@ -109,15 +110,16 @@ export function mountAdv(dom, deps) {
   const textbox = createTextbox(stage.textbox, {
     clock, matchMedia, getSettings: playerSettings,
     isOverlayOpen: () => Boolean(stage.stage.classList.contains('is-home') || drawer || backlog || externalOverlay || configPanel?.isOpen || bgPanel?.isOpen),
-    onAdvance: () => player.advance(),
+    onAdvance: () => action('advance'),
     onSend: text => !controller.busy && controller.send(text),
     onMic: () => {
       player.beginPlayerEdit();
+      stopStageReplay();
       deps.onMic?.(textbox.inputElement, textbox.micButton);
     },
-    onAction: (action, data) => {
-      if (action === 'player_edit') { player.beginPlayerEdit(); sprite.suspend(); syncControls(); }
-      if (action === 'swap_languages') {
+    onAction: (actionName, data) => {
+      if (actionName === 'player_edit') { player.beginPlayerEdit(); stopStageReplay(); sprite.suspend(); syncControls(); }
+      if (actionName === 'swap_languages') {
         deps.saveSettings?.({ advPrimaryLanguage: data.primary, advSubtitleLanguage: data.subtitle });
         update();
       }
@@ -202,6 +204,15 @@ export function mountAdv(dom, deps) {
   const player = createLinePlayer({ clock, voice, render,
     paginate: (line, primary) => textbox.paginate(line, primary), settings: playerSettings() });
   textbox.setPlayer(player);
+  /** @param {{ fadeMs?: number }} [options] */
+  function stopStageReplay(options = { fadeMs: 40 }) {
+    if (!stageReplaying) return false;
+    stageReplaying = false;
+    ++replayToken;
+    voice.stop(options);
+    player.resume('replay');
+    return true;
+  }
   const quickMenu = createQuickMenu(stage.quickmenu, { onAction: action });
   const tools = doc.createElement('div'); tools.className = 'adv-app-tools';
   let voiceModeButton;
@@ -273,6 +284,7 @@ export function mountAdv(dom, deps) {
     },
     onOpen: () => {
       player.suspend('dialog');
+      stopStageReplay();
       sprite.suspend();
       textbox.completeReveal();
       textbox.glyph(false);
@@ -323,6 +335,7 @@ export function mountAdv(dom, deps) {
     },
     onOpen: () => {
       player.suspend('dialog');
+      stopStageReplay();
       sprite.suspend();
       textbox.completeReveal();
       textbox.glyph(false);
@@ -447,7 +460,7 @@ export function mountAdv(dom, deps) {
     const node = dom.sidebar;
     if (!node?.parentNode) return;
     savedFocus = doc.activeElement;
-    player.suspend('overlay'); deps.stopOtherVoice?.(); sprite.suspend(); textbox.completeReveal(); textbox.glyph(false);
+    player.suspend('overlay'); stopStageReplay(); deps.stopOtherVoice?.(); sprite.suspend(); textbox.completeReveal(); textbox.glyph(false);
     const element = doc.createElement('div'); element.className = `adv-drawer adv-drawer-${kind}`;
     element.setAttribute('role', 'dialog'); element.setAttribute('aria-modal', 'true');
     element.setAttribute('aria-label', '会话列表');
@@ -514,8 +527,9 @@ export function mountAdv(dom, deps) {
     temporarySkip = false;
     player.setSkip(false);
     player.suspend('overlay');
+    const stoppedReplay = stopStageReplay({ fadeMs: 0 });
     deps.stopOtherVoice?.();
-    audio.stopLine?.({ fadeMs: 0 });
+    if (!stoppedReplay) audio.stopLine?.({ fadeMs: 0 });
     sprite.suspend();
     textbox.glyph(false);
     backlog = createBacklog(stage.overlay, {
@@ -546,11 +560,12 @@ export function mountAdv(dom, deps) {
   function action(name) {
     if (destroyed) return;
     switch (name) {
-      case 'advance': player.advance(); break;
+      case 'advance': stopStageReplay(); player.advance(); break;
       case 'toggle_auto':
-      case 'auto': if (!['input', 'error', 'suspended'].includes(player.state)) player.setAuto(!player.auto); break;
+      case 'auto': if (stageReplaying || !['input', 'error', 'suspended'].includes(player.state)) player.setAuto(!player.auto); break;
       case 'toggle_skip':
       case 'skip':
+        stopStageReplay();
         if (!['input', 'error', 'suspended'].includes(player.state)) {
           temporarySkip = false;
           const next = !player.skip;
@@ -560,6 +575,7 @@ export function mountAdv(dom, deps) {
         }
         break;
       case 'skip-hold-start':
+        stopStageReplay();
         if (!['input', 'error', 'suspended'].includes(player.state) && !player.skip) {
           temporarySkip = true;
           player.setSkip(true);
@@ -578,7 +594,7 @@ export function mountAdv(dom, deps) {
       case 'toggle_hide':
       case 'hide':
         if (player.hidden) unhide();
-        else { player.hide(); player.suspend('hidden'); sprite.suspend(); }
+        else { player.hide(); player.suspend('hidden'); stopStageReplay(); sprite.suspend(); }
         break;
       case 'unhide': unhide(); break;
       case 'log': openLog(); break;
@@ -610,16 +626,22 @@ export function mountAdv(dom, deps) {
       case 'model_status': deps.onModelSettings?.(); break;
       case 'swap_languages': textbox.swapLanguages(); break;
       case 'new_session': deps.onNewSession?.(); break;
-      case 'stop': controller.stop(); break;
+      case 'stop': stopStageReplay(); controller.stop(); break;
       case 'input': textbox.prepareInput({ canSend: !controller.busy }); break;
-      case 'voice_mode': deps.toggleVoice?.(); backlog?.stopReplay(); update(); break;
+      case 'voice_mode': deps.toggleVoice?.(); if (!deps.voiceEnabled?.()) stopStageReplay(); backlog?.stopReplay(); update(); break;
       case 'replay_voice': {
         const line = currentLine;
-        if (line?.audio?.chunks?.length && !controller.busy && player.state !== 'input') {
+        const overlayActive = Boolean(drawer || backlog || externalOverlay || configPanel?.isOpen || bgPanel?.isOpen);
+        if (line?.audio?.chunks?.length && !controller.busy && !player.hidden && !overlayActive && !['input', 'error'].includes(player.state)) {
           const key = turnId, token = ++replayToken;
+          stageReplaying = true;
           player.suspend('replay');
           voice.play(line.index, line.audio.chunks).then(() => {
-            if (!destroyed && key === turnId && token === replayToken) { player.resume('replay'); syncControls(); }
+            if (!destroyed && key === turnId && token === replayToken) {
+              stageReplaying = false;
+              player.resume('replay');
+              syncControls();
+            }
           });
         }
         break;
@@ -680,7 +702,7 @@ export function mountAdv(dom, deps) {
   else if (mql?.addListener) { mql.addListener(motionChange); disposers.push(() => mql.removeListener(motionChange)); }
   function setOverlay(open) {
     externalOverlay = open;
-    if (open) { player.suspend('dialog'); sprite.suspend(); textbox.completeReveal(); textbox.glyph(false); }
+    if (open) { player.suspend('dialog'); stopStageReplay(); sprite.suspend(); textbox.completeReveal(); textbox.glyph(false); }
     else { player.resume('dialog'); if (!drawer && !backlog && !configPanel?.isOpen) restoreSprite(); }
     syncControls();
   }
@@ -737,6 +759,9 @@ export function mountAdv(dom, deps) {
   }
   function update() {
     if (destroyed) return;
+    const nextVoiceEnabled = Boolean(deps.voiceEnabled?.());
+    if (lastVoiceEnabled && !nextVoiceEnabled) stopStageReplay();
+    lastVoiceEnabled = nextVoiceEnabled;
     const session = deps.getSession();
     const nextSettings = pickSettings(session?.settings, DEFAULT_SESSION_SETTINGS);
     const switched = sessionId !== session?.id;
@@ -812,6 +837,7 @@ export function mountAdv(dom, deps) {
     liveMessage = null;
     turnLines = [];
     player.reset();
+    stopStageReplay({ fadeMs: 0 });
     const idle = Symbol('session input');
     player.startTurn(idle); player.settle(idle, { ok: true });
     textbox.enterInput({ canSend: !controller.busy });
@@ -828,7 +854,7 @@ export function mountAdv(dom, deps) {
     activeTurn = { turn_seq: turnSeq, startedAtMs: clock.now(), first_audio_play_ms: null, entry: null };
     textbox.setDraft(''); textbox.clearError();
     textbox.setSpeaker({ name: deps.getCharacter?.()?.name || '角色', mode: 'character' });
-    player.startTurn(turnId); syncControls();
+    player.startTurn(turnId); stopStageReplay({ fadeMs: 0 }); syncControls();
     // Sending hides the input or removes the retry button that had focus. Focus
     // then falls to the page body, where Space, Enter and Esc never reach the
     // stage's shortcuts, so hand it to the stage unless an overlay holds it.
@@ -907,8 +933,8 @@ export function mountAdv(dom, deps) {
     getRecentTurnTimelines: () => recentTurnTimelines.map(item => ({ ...item })),
     prepareHome() {
       configPanel.close({ revert: true }); closeBgPanel(); closeLog(); closeDrawer();
-      temporarySkip = false; ++replayToken;
-      resetInput(); turnId = null; currentLine = null;
+      temporarySkip = false;
+      resetInput(); ++replayToken; turnId = null; currentLine = null;
       sprite.suspend(); syncControls();
     },
     backgroundUrl: (id, time, work) => selectionUrl(backgrounds, { id: backgroundKey(id ?? '', work || null), time }),
