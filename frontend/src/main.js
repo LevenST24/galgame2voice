@@ -751,6 +751,12 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       let engine;
       try { engine = await requestJson('/api/system/engine-status', {}, { timeoutMs: 10000 }); }
       catch (error) { engine = { state: 'unavailable', message: error.message }; }
+      if (engine?.state !== 'ready' && engine?.directory_configured == null) {
+        try {
+          const dir = await requestJson('/api/system/sovits-directory', {}, { timeoutMs: 5000 });
+          engine = { ...engine, directory_configured: Boolean(dir?.valid) };
+        } catch (_) {}
+      }
       syncAdv();
       // Read the model fields together. Providers may finish during the engine
       // request; do not pair that flag with a snapshot taken earlier.

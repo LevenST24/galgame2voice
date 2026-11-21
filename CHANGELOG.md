@@ -5,6 +5,8 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fixed
+- 修复配置本机语音引擎目录后需在首页、「语音服务」与「运行状态」之间来回跳转的问题；现在保存引擎目录后会提供「前往运行状态」按钮并聚焦到启动按钮，且在目录已配置但引擎未启动时，首页的语音设置入口会直接打开「运行状态」。
 
 ## [3.2.9] - 2026-11-21
 ### Changed

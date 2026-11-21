@@ -2221,3 +2221,17 @@ test('complete chat backup preserves unconfirmed reading settings when backend s
   const exported = JSON.parse(merged.content).sessions.find(s => s.id === session.id);
   assert.equal(exported.settings.advPlayerName, '旅人', '完整备份应保留尚未同步到后端的较新本地设置');
 });
+
+
+test('title getStatus includes directory_configured from sovits-directory when engine is not ready', async t => {
+  const h = setup(t, {
+    fetch: async url => {
+      if (url === '/api/system/engine-status') return Response.json({ state: 'unavailable', ready: false, message: '未启动' });
+      if (url === '/api/system/sovits-directory') return Response.json({ directory: 'D:/GPT-SoVITS', valid: true, runtime_available: true });
+      return Response.json({});
+    },
+  });
+  const status = await h.app.actions.getStatus();
+  assert.equal(status.engine.state, 'unavailable');
+  assert.equal(status.engine.directory_configured, true);
+});
