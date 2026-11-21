@@ -75,6 +75,10 @@ export function loadProviders(options) {
   return providerController ? providerController.loadProviders(options) : Promise.resolve();
 }
 
+export function ensureProvidersLoaded() {
+  return providerController ? providerController.ensureProvidersLoaded() : Promise.resolve();
+}
+
 export function onProviderChange() {
   return providerController?.onProviderChange();
 }

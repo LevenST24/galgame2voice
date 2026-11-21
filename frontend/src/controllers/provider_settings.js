@@ -71,6 +71,7 @@ export class ProviderSettingsController {
     this.providerDirty = false;
     this.providerRevision = 0;
     this.providerLoad = 0;
+    this.providerLoadingLoad = 0;
     this.providerSaving = false;
     this.dirtyProviderFields = new Set();
     this.providerTestRevision = 0;
@@ -121,6 +122,7 @@ export class ProviderSettingsController {
     this.disposed = true;
     this.invalidateActiveProviderTest();
     this.providerLoad += 1;
+    this.providerLoadingLoad = 0;
     this.providerRevision += 1;
     if (this.dom.gBtnResetBaseUrl) {
       this.dom.gBtnResetBaseUrl.onclick = null;
@@ -142,6 +144,13 @@ export class ProviderSettingsController {
 
   hasProviderReadError() {
     return this.providerReadError;
+  }
+
+  ensureProvidersLoaded() {
+    if (this.disposed || this.providersLoaded || this.providerLoadingLoad !== 0) {
+      return Promise.resolve();
+    }
+    return this.loadProviders();
   }
 
   isProviderSaving() {
@@ -403,6 +412,7 @@ export class ProviderSettingsController {
   async loadProviders({ formRevision = this.providerRevision } = {}) {
     if (this.disposed) return;
     const load = ++this.providerLoad;
+    this.providerLoadingLoad = load;
     const hadOptions = Boolean(this.dom.gProvider?.children?.length);
     if (this.dom.gProvider && !hadOptions) this.dom.gProvider.innerHTML = '<option value="">加载模型服务列表…</option>';
     try {
@@ -514,6 +524,10 @@ export class ProviderSettingsController {
       }
       showToast('模型服务列表加载失败：请检查网络后重试。', 'error');
       this.renderLoadedProvider(this.providerDirty || this.providerRevision !== formRevision);
+    } finally {
+      if (this.providerLoadingLoad === load) {
+        this.providerLoadingLoad = 0;
+      }
     }
   }
 

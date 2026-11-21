@@ -1107,3 +1107,282 @@ test('late-arriving character list refreshes open home screen immediately', asyn
   assert.equal(Boolean(title.element.querySelector('.home-first-title')), false, 'home screen must refresh when late character list arrives');
   assert.equal(textTree(title.element.querySelector('.home-continue')), '开始聊天');
 });
+
+function bootTitleStartupEnv(t, { storageEntries = [], fetchImpl, renderSessionList = () => {} } = {}) {
+  const doc = fakeDocument();
+  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
+  globalThis.document = doc;
+  const root = doc.body.appendChild(doc.createElement('div'));
+  root.id = 'advRoot';
+  const sessionList = doc.body.appendChild(doc.createElement('div'));
+  sessionList.id = 'sessionList';
+  const toastRoot = doc.body.appendChild(doc.createElement('div'));
+  toastRoot.id = 'toastRoot';
+  const storage = new Map(storageEntries);
+  globalThis.localStorage = {
+    getItem: k => storage.get(k) ?? null,
+    setItem: (k, v) => storage.set(k, v),
+    removeItem: k => storage.delete(k),
+  };
+  const loc = { search: '', hash: '', origin: 'http://home.test' };
+  globalThis.location = loc;
+  globalThis.window = {
+    innerWidth: 1280,
+    location: loc,
+    sessionStorage: { getItem: () => '', setItem() {} },
+    fetch: fetchImpl,
+  };
+  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+  const app = initApp({ dom: { advRoot: root, sessionList }, renderSessionList });
+  let bootedTitle = null;
+  app.ready?.then?.(s => { bootedTitle = s; });
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    bootedTitle?.destroy?.();
+    for (const toast of toastRoot.children) clearTimeout(toast._timer);
+    app.conversation.stop();
+    app.adv?.unmount();
+    for (const key of ['document', 'window', 'localStorage', 'fetch', 'location']) delete globalThis[key];
+  };
+  t.after(cleanup);
+  return { doc, root, storage, app, cleanup };
+}
+
+test('sending a message while startup /api/chat/sessions is pending loads providers and clears 正在检查设置… on return home', async t => {
+  const activeProvider = { id: 'deepseek', name: 'DeepSeek', chat_model: 'deepseek-chat', api_key: 'sk-****', is_active: true };
+  const sseReply = [
+    'event: line\ndata: {"index":0,"zh":"你好呀。","ja":"こんにちは。"}\n\n',
+    'event: line_audio\ndata: {"line":0,"status":"skipped","chunks":[]}\n\n',
+    'event: done\ndata: {"full_chinese":"你好呀。"}\n\n',
+  ].join('');
+
+  // Case 1: /api/chat/sessions finishes after user sends a message, then user returns home.
+  let releaseSessions;
+  const sessionsGate = new Promise(resolve => { releaseSessions = resolve; });
+  let providerCalls = 0;
+  const env1 = bootTitleStartupEnv(t, {
+    fetchImpl: async (url, options = {}) => {
+      const path = String(url);
+      const method = (options.method || 'GET').toUpperCase();
+      if (path === '/api/providers') {
+        providerCalls += 1;
+        return Response.json({ providers: [activeProvider], presets: [] });
+      }
+      if (path.startsWith('/api/chat/sessions') && !path.startsWith('/api/chat/sessions/') && method === 'GET') {
+        await sessionsGate;
+        return Response.json({ sessions: [], has_more: false });
+      }
+      if (path === '/api/chat/stream') {
+        return new Response(sseReply, { headers: { 'Content-Type': 'text/event-stream' } });
+      }
+      if (path === '/api/system/engine-status') return Response.json({ state: 'ready', base_url: 'http://127.0.0.1:9880' });
+      if (path === '/api/voice/profiles') return Response.json({ profiles: [{ id: 7, name: '星野' }], active_profile_id: 7 });
+      return Response.json({ status: 'ok', backgrounds: [], settings: {} });
+    },
+  });
+
+  await tick();
+  const input = env1.app.adv.textbox.inputElement;
+  input.value = '在同步完成前发消息';
+  input.dispatchEvent({ type: 'keydown', key: 'Enter' });
+  for (let i = 0; i < 5; i++) await tick();
+
+  releaseSessions();
+  const startupTitle = await env1.app.ready;
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(startupTitle === null, true, 'stale startup sync must not open home over active chat');
+  assert.equal(env1.app.adv.stage.stage.classList.contains('is-home'), false);
+
+  const homeScreen1 = env1.app.returnHome();
+  t.after(() => homeScreen1?.destroy());
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(homeScreen1.isOpen, true);
+  assert.doesNotMatch(textTree(homeScreen1.element), /正在检查设置…/);
+  assert.equal(textTree(homeScreen1.element.querySelector('.home-continue')), '接着聊 →');
+  assert.equal(providerCalls, 1, 'stale startup sync and home entry must load providers once');
+  homeScreen1.destroy();
+  env1.cleanup();
+
+  // Case 2: user returns home while /api/chat/sessions is still pending -> getStatus() loads providers once without duplicating on late sync.
+  let releaseSessions2;
+  const sessionsGate2 = new Promise(resolve => { releaseSessions2 = resolve; });
+  let providerCalls2 = 0;
+  const env2 = bootTitleStartupEnv(t, {
+    fetchImpl: async (url, options = {}) => {
+      const path = String(url);
+      const method = (options.method || 'GET').toUpperCase();
+      if (path === '/api/providers') {
+        providerCalls2 += 1;
+        return Response.json({ providers: [activeProvider], presets: [] });
+      }
+      if (path.startsWith('/api/chat/sessions') && !path.startsWith('/api/chat/sessions/') && method === 'GET') {
+        await sessionsGate2;
+        return Response.json({ sessions: [], has_more: false });
+      }
+      if (path === '/api/chat/stream') {
+        return new Response(sseReply, { headers: { 'Content-Type': 'text/event-stream' } });
+      }
+      if (path === '/api/system/engine-status') return Response.json({ state: 'ready', base_url: 'http://127.0.0.1:9880' });
+      if (path === '/api/voice/profiles') return Response.json({ profiles: [{ id: 7, name: '星野' }], active_profile_id: 7 });
+      return Response.json({ status: 'ok', backgrounds: [], settings: {} });
+    },
+  });
+
+  await tick();
+  const input2 = env2.app.adv.textbox.inputElement;
+  input2.value = '还没返回就回首页';
+  input2.dispatchEvent({ type: 'keydown', key: 'Enter' });
+  for (let i = 0; i < 5; i++) await tick();
+
+  const homeScreen2 = env2.app.returnHome();
+  t.after(() => homeScreen2?.destroy());
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(providerCalls2, 1, 'getStatus must fetch /api/providers when not yet loaded');
+  assert.doesNotMatch(textTree(homeScreen2.element), /正在检查设置…/);
+  assert.equal(textTree(homeScreen2.element.querySelector('.home-continue')), '接着聊 →');
+
+  releaseSessions2();
+  await env2.app.ready;
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(providerCalls2, 1, 'late stale startup sync must not fetch /api/providers a second time');
+  homeScreen2.destroy();
+  env2.cleanup();
+});
+
+test('normal startup without user interaction fetches /api/providers once and opens home', async t => {
+  const activeProvider = { id: 'deepseek', name: 'DeepSeek', chat_model: 'deepseek-chat', api_key: 'sk-****', is_active: true };
+  let providerCalls = 0;
+  const env = bootTitleStartupEnv(t, {
+    fetchImpl: async url => {
+      const path = String(url);
+      if (path === '/api/providers') {
+        providerCalls += 1;
+        return Response.json({ providers: [activeProvider], presets: [] });
+      }
+      if (path.startsWith('/api/chat/sessions')) {
+        return Response.json({
+          sessions: [{ id: 's_1', title: '新对话', voice_profile_id: 7, created_at: '2026-06-01 00:00:01', updated_at: '2026-06-01 00:00:01', message_count: 0, last_message: '', settings: {} }],
+          has_more: false,
+        });
+      }
+      if (path === '/api/system/engine-status') return Response.json({ state: 'ready', base_url: 'http://127.0.0.1:9880' });
+      if (path === '/api/voice/profiles') return Response.json({ profiles: [{ id: 7, name: '星野' }], active_profile_id: 7 });
+      return Response.json({ status: 'ok', backgrounds: [], settings: {} });
+    },
+  });
+
+  const title = await env.app.ready;
+  t.after(() => title?.destroy());
+  for (let i = 0; i < 5; i++) await tick();
+  assert.ok(title?.isOpen, 'normal startup must open home');
+  assert.equal(env.app.adv.stage.stage.classList.contains('is-home'), true);
+  assert.equal(providerCalls, 1, 'normal startup must fetch /api/providers only once');
+  assert.doesNotMatch(textTree(title.element), /正在检查设置…/);
+  assert.equal(textTree(title.element.querySelector('.home-continue')), '开始聊天');
+  title.destroy();
+});
+
+test('typing in input or switching session during startup sync keeps chat open and preserves draft', async t => {
+  const activeProvider = { id: 'deepseek', name: 'DeepSeek', chat_model: 'deepseek-chat', api_key: 'sk-****', is_active: true };
+
+  // 1. Typing during startup sync: home does not open and typed draft remains in input.
+  let releaseTypingSync;
+  const typingGate = new Promise(resolve => { releaseTypingSync = resolve; });
+  let providerCalls1 = 0;
+  const envTyping = bootTitleStartupEnv(t, {
+    fetchImpl: async (url, options = {}) => {
+      const path = String(url);
+      const method = (options.method || 'GET').toUpperCase();
+      if (path === '/api/providers') {
+        providerCalls1 += 1;
+        return Response.json({ providers: [activeProvider], presets: [] });
+      }
+      if (path.startsWith('/api/chat/sessions') && !path.startsWith('/api/chat/sessions/') && method === 'GET') {
+        await typingGate;
+        return Response.json({
+          sessions: [{ id: 's_server', title: '已有对话', voice_profile_id: 7, created_at: '2026-06-01 00:00:01', updated_at: '2026-06-01 00:00:01', message_count: 1, last_message: '欢迎回来', settings: {} }],
+          has_more: false,
+        });
+      }
+      if (path.startsWith('/api/chat/history')) {
+        return Response.json({
+          session_id: 's_server',
+          messages: [{ id: 1, role: 'assistant', content_chinese: '欢迎回来', created_at: '2026-06-01 00:00:01' }],
+          has_more: false,
+          oldest_id: 1,
+        });
+      }
+      if (path === '/api/system/engine-status') return Response.json({ state: 'ready', base_url: 'http://127.0.0.1:9880' });
+      if (path === '/api/voice/profiles') return Response.json({ profiles: [{ id: 7, name: '星野' }], active_profile_id: 7 });
+      return Response.json({ status: 'ok', backgrounds: [], settings: {} });
+    },
+  });
+
+  await tick();
+  const input = envTyping.app.adv.textbox.inputElement;
+  input.value = '正在输入的半句话';
+  input.dispatchEvent({ type: 'input' });
+
+  releaseTypingSync();
+  const titleAfterTyping = await envTyping.app.ready;
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(titleAfterTyping === null, true, 'home must not pop over active typing');
+  assert.equal(envTyping.app.adv.stage.stage.classList.contains('is-home'), false);
+  assert.equal(envTyping.app.adv.stage.textbox.inert, false);
+  assert.equal(envTyping.app.adv.textbox.draft, '正在输入的半句话');
+  assert.equal(envTyping.app.adv.textbox.inputElement.value, '正在输入的半句话');
+  assert.equal(providerCalls1, 1, 'providers still load once in background');
+  envTyping.cleanup();
+
+  // 2. Switching session during startup sync: home does not open and stays on chosen session.
+  let releaseSwitchSync;
+  const switchGate = new Promise(resolve => { releaseSwitchSync = resolve; });
+  let selectSession = null;
+  let providerCalls2 = 0;
+  const seeded = JSON.stringify({
+    sessions: [
+      { id: 's_one', title: '会话一', createdAt: 2000, updatedAt: 2000, messages: [{ id: 'm_1', serverMessageId: 1, role: 'user', content: '一' }], settings: { voiceProfileId: 7 } },
+      { id: 's_two', title: '会话二', createdAt: 1000, updatedAt: 1000, messages: [{ id: 'm_2', serverMessageId: 2, role: 'user', content: '二' }], settings: { voiceProfileId: 7 } },
+    ],
+    activeId: 's_one',
+    global: { voiceMode: true, ttsPreset: '' },
+  });
+  const envSwitch = bootTitleStartupEnv(t, {
+    storageEntries: [['gal2voice.chat.v1', seeded]],
+    renderSessionList(_el, { onSelect }) { selectSession = onSelect; },
+    fetchImpl: async (url, options = {}) => {
+      const path = String(url);
+      const method = (options.method || 'GET').toUpperCase();
+      if (path === '/api/providers') {
+        providerCalls2 += 1;
+        return Response.json({ providers: [activeProvider], presets: [] });
+      }
+      if (path.startsWith('/api/chat/sessions') && !path.startsWith('/api/chat/sessions/') && method === 'GET') {
+        await switchGate;
+        return Response.json({
+          sessions: [
+            { id: 's_one', title: '会话一', voice_profile_id: 7, created_at: '2026-06-01 00:00:02', updated_at: '2026-06-01 00:00:02', message_count: 1, last_message: '一', settings: {} },
+            { id: 's_two', title: '会话二', voice_profile_id: 7, created_at: '2026-06-01 00:00:01', updated_at: '2026-06-01 00:00:01', message_count: 1, last_message: '二', settings: {} },
+          ],
+          has_more: false,
+        });
+      }
+      if (path === '/api/system/engine-status') return Response.json({ state: 'ready', base_url: 'http://127.0.0.1:9880' });
+      if (path === '/api/voice/profiles') return Response.json({ profiles: [{ id: 7, name: '星野' }], active_profile_id: 7 });
+      return Response.json({ status: 'ok', backgrounds: [], settings: {} });
+    },
+  });
+
+  await tick();
+  await selectSession('s_two');
+  releaseSwitchSync();
+  const titleAfterSwitch = await envSwitch.app.ready;
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(titleAfterSwitch === null, true, 'home must not pop open after user switched session');
+  assert.equal(envSwitch.app.adv.stage.stage.classList.contains('is-home'), false);
+  assert.equal(envSwitch.app.actions.getActiveId(), 's_two');
+  assert.equal(providerCalls2, 1);
+  envSwitch.cleanup();
+});
