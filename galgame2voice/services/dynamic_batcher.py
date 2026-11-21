@@ -90,17 +90,6 @@ class SynthesisSpeedTracker:
             "is_high_throughput": avg_rtf < 0.5 and avg_cps >= 20.0,
         }
 
-    @property
-    def sample_count(self) -> int:
-        with self._lock:
-            return len(self._history)
-
-    def is_resource_constrained(self) -> bool:
-        return bool(self.get_metrics()["is_resource_constrained"])
-
-    def is_high_throughput(self) -> bool:
-        return bool(self.get_metrics()["is_high_throughput"])
-
     def clear(self) -> None:
         with self._lock:
             self._history.clear()

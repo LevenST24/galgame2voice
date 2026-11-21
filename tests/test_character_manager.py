@@ -262,11 +262,6 @@ def test_character_manager_lazy_discovery():
     available = mgr.get_available_characters()
     assert len(available) >= 1
 
-    # get_active_character_manifest works
-    manifest = mgr.get_active_character_manifest()
-    assert manifest is not None
-    assert manifest.id == "natsume"
-
 
 def test_character_manager_path_traversal_rejection(tmp_path):
     """Verifies that character packages containing directory traversal payloads are rejected."""

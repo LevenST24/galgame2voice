@@ -241,24 +241,12 @@ class TtsScheduler:
         return self._active_streams
 
     @property
-    def active_stream_counts(self) -> int:
-        return self._active_streams
-
-    @property
     def cancelled_streams(self) -> int:
         return self._cancelled_streams
 
     @property
-    def last_queue_wait_time(self) -> float:
-        return self._last_queue_wait_time
-
-    @property
     def avg_queue_wait_time(self) -> float:
         return (self._total_queue_wait_time / self._queue_wait_samples) if self._queue_wait_samples > 0 else 0.0
-
-    @property
-    def total_queue_wait_time(self) -> float:
-        return self._total_queue_wait_time
 
     def get_metrics(self) -> dict[str, Any]:
         return {

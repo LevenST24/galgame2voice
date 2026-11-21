@@ -44,7 +44,6 @@ from galgame2voice.utils.audio_spec import (
     wav_peak_amplitude,
 )
 from galgame2voice.services.tts_options import (
-    SLICING_METHODS,
     TTS_PRESETS,
     VoiceProfileWeightSpec,
     _TTS_NUMERIC_RANGES,
@@ -1049,7 +1048,6 @@ __all__ = [
     "normalize_japanese_for_tts",
     "normalize_dialogue_prosody",
     "resolve_tts_options",
-    "SLICING_METHODS",
     "TTS_PRESETS",
     "_TTS_NUMERIC_RANGES",
     "_TTS_STRING_MAXLEN",

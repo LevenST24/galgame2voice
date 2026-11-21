@@ -332,13 +332,7 @@ def detect_gpu_capability() -> tuple[bool, str, int | None]:
     Re-exported from galgame2voice.utils.hardware for backward compatibility.
     """
     import galgame2voice.utils.hardware as hw
-    if "subprocess" in globals() and globals()["subprocess"] is not hw.subprocess:
-        orig = hw.subprocess
-        try:
-            hw.subprocess = globals()["subprocess"]
-            return hw.detect_gpu_capability()
-        finally:
-            hw.subprocess = orig
+
     return hw.detect_gpu_capability()
 
 

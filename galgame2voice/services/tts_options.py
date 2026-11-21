@@ -2,7 +2,6 @@
 TTS options handling, validation, preset resolution, and voice profile weight specifications.
 
 Provides:
-- SLICING_METHODS: mapping of text slice method keys to human-readable labels
 - TTS_PRESETS: default synthesis parameters for presets (high_quality, balanced, low_latency)
 - _TTS_NUMERIC_RANGES, _TTS_STRING_MAXLEN: validation bounds for untrusted user options
 - validate_user_tts_options(options): boundary validator raising ValueError on illegal params
@@ -35,15 +34,6 @@ from galgame2voice.utils.prosody import (
 DEFAULT_SPLIT_METHOD = "cut5"
 DEFAULT_PRESET = "balanced"
 DEFAULT_LANGUAGE = "ja"
-
-SLICING_METHODS = {
-    "cut0": "No slice / 不切",
-    "cut1": "Slice by 4 sentences / 凑四句切",
-    "cut2": "Slice by 50 characters / 凑50字切",
-    "cut3": "Slice by Chinese punctuation / 按中文句号。切",
-    "cut4": "Slice by English punctuation / 按英文句号.切",
-    DEFAULT_SPLIT_METHOD: "Slice by punctuation / 按标点符号切",
-}
 
 TTS_PRESETS: dict[str, dict[str, Any]] = {
     "high_quality": {
@@ -315,7 +305,6 @@ def _extract_weight_spec(target: Any) -> VoiceProfileWeightSpec:
 
 
 __all__ = [
-    "SLICING_METHODS",
     "TTS_PRESETS",
     "_TTS_NUMERIC_RANGES",
     "_TTS_STRING_MAXLEN",

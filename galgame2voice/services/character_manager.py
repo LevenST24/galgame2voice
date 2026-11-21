@@ -393,26 +393,6 @@ class CharacterManager:
                 result.append(pkg)
         return result
 
-    def get_active_character_manifest(self, active_profile_name: str | None = None) -> CharacterManifest | None:
-        """Returns the active character manifest, or falls back to default character."""
-        self._ensure_discovered()
-        if active_profile_name:
-            pkg = self.get_character(active_profile_name)
-            if pkg and pkg.is_valid:
-                return pkg.manifest
-
-        # Fallback to default
-        pkg = self.get_character("default")
-        if pkg and pkg.is_valid:
-            return pkg.manifest
-
-        # Return first valid package if available
-        available = self.get_available_characters()
-        if available:
-            return available[0].manifest
-
-        return None
-
     def resolve_emotion_audio_path(
         self,
         character_id_or_name: str,

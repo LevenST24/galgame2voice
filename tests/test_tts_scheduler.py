@@ -86,7 +86,6 @@ async def test_schedule_stream_metrics_tracking(scheduler):
 
     # While inside generator, active_streams must be 1
     assert scheduler.active_streams == 1
-    assert scheduler.active_stream_counts == 1
 
     # Let stream complete
     gate.set()

@@ -184,58 +184,6 @@ class AffectionService:
         """Calculates affection points earned for a turn based on content analysis."""
         return self.calculate_turn_points(user_text, assistant_text)
 
-    def classify_emotion(
-        self,
-        assistant_text: str,
-        user_text: str = "",
-        current_emotion: str = "normal",
-        affection_level: int = 1,
-    ) -> str:
-        """
-        Classifies emotion based on dialogue keywords and context.
-        """
-        a_str = (assistant_text or "")[:4000] if isinstance(assistant_text, str) else ""
-        u_str = (user_text or "")[:4000] if isinstance(user_text, str) else ""
-        text = f"{a_str} {u_str}".lower()
-
-        try:
-            aff_lvl = int(affection_level)
-        except (TypeError, ValueError):
-            aff_lvl = 1
-
-        # Shy keywords
-        if any(k in text for k in ["脸红", "害羞", "///", "唔……", "那个……", "别盯着我看", "秘密", "不好意思", "恥ずかしい", "照れ"]):
-            return "shy"
-
-        # Tsundere keywords
-        if any(k in text for k in ["才不是", "谁管你", "不要自作多情", "哼", "才没有", "别自以为是", "バカ", "笨蛋", "べ、別に", "别误会"]):
-            return "tsundere"
-
-        # Happy keywords
-        if any(k in text for k in ["太好了", "好高兴", "开心", "嘻嘻", "真棒", "笑", "うれしい", "よかった", "很高兴"]):
-            return "happy"
-
-        # Sad keywords
-        if any(k in text for k in ["对不起", "难过", "伤心", "抱歉", "呜", "悲しい", "ごめん", "失落"]):
-            return "sad"
-
-        # Gentle keywords
-        if any(k in text for k in ["微笑着", "没关系哦", "乖", "摸头", "辛苦了", "陪着你", "温柔", "大丈夫", "陪伴"]):
-            return "gentle"
-
-        # Angry keywords
-        if any(k in text for k in ["生气", "愤怒", "气愤", "怒り", "怒る", "怒", "烦人", "讨厌死了", "吵死了", "うるさい", "ふざけるな", "怒りますよ", "怒ってる"]):
-            return "angry"
-
-        # Cold / Cool keywords
-        if any(k in text for k in ["高冷", "cool", "无聊", "……", "冷淡", "走开", "发卡", "別に"]):
-            return "cool"
-
-        # Default by intimacy tier
-        if aff_lvl >= 4:
-            return "gentle"
-        return current_emotion or "normal"
-
     def check_easter_eggs(self, user_text: str, current_level: int = 1) -> dict[str, Any] | None:
         """
         Checks if the user input triggers a specific Galgame easter egg dialogue.
@@ -257,24 +205,16 @@ class AffectionService:
         self,
         current: Any,
         explicit_emotion: str | None,
-        u_text: str,
-        a_text: str,
         triggered_egg: dict[str, Any] | None,
     ) -> str:
-        """Resolves target emotion using explicit classification, dynamic classification, or easter egg triggers."""
+        """Resolves target emotion using explicit classification or easter egg triggers."""
         clean_exp = (explicit_emotion or "").strip().lower()
         if clean_exp and clean_exp in EMOTION_SYNONYMS:
             emotion = EMOTION_SYNONYMS[clean_exp]
         elif clean_exp and clean_exp in EMOTION_NAME_MAP:
             emotion = EMOTION_NAME_MAP[clean_exp]
         else:
-            raw_emo = self.classify_emotion(
-                assistant_text=a_text,
-                user_text=u_text,
-                current_emotion=current.current_emotion,
-                affection_level=current.affection_level,
-            )
-            raw_clean = (raw_emo or "").strip().lower()
+            raw_clean = (current.current_emotion or "").strip().lower()
             emotion = EMOTION_SYNONYMS.get(raw_clean, EMOTION_NAME_MAP.get(raw_clean, raw_clean))
 
         if triggered_egg:
@@ -344,7 +284,7 @@ class AffectionService:
         async with get_db(self.db_path) as conn:
             current = await crud.get_or_create_character_affection(conn, u_id, char_id)
             triggered_egg = self.check_easter_eggs(u_text, current.affection_level)
-            emotion = self._resolve_turn_emotion(current, explicit_emotion, u_text, a_text, triggered_egg)
+            emotion = self._resolve_turn_emotion(current, explicit_emotion, triggered_egg)
 
             # Increment points atomically
             updated, actual_gain, level_up = await crud.increment_affection(

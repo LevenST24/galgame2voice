@@ -75,23 +75,6 @@ def contains_traversal_payload(raw_path: str) -> bool:
     return False
 
 
-def is_safe_filename(filename: str) -> bool:
-    """
-    Verifies that a string represents a pure, safe filename without
-    directory traversal, path separators, or device names.
-    """
-    if not filename or not isinstance(filename, str):
-        return False
-    clean = filename.strip()
-    if not clean or len(clean) > 255:
-        return False
-    if "/" in clean or "\\" in clean:
-        return False
-    if contains_traversal_payload(clean):
-        return False
-    return not is_windows_device_name(clean)
-
-
 def get_effective_sovits_dir(project_root: Path | None = None) -> Path | None:
     """
     Returns the resolved Path of the explicitly configured GPT-SoVITS directory,
@@ -296,19 +279,6 @@ def validate_path_containment(
     return candidate
 
 
-def safe_resolve_audio_path(
-    path_or_filename: str | Path,
-    allowed_roots: Sequence[str | Path] | None = None,
-) -> Path:
-    """
-    Specifically validates and resolves audio file paths (reference audio, cache audio).
-    Must resolve inside settings.audio_dir or settings.project_root.
-    """
-    settings = get_settings()
-    roots = allowed_roots or [settings.audio_dir.resolve(), settings.project_root.resolve()]
-    return validate_path_containment(path_or_filename, allowed_roots=roots, base_dir=settings.audio_dir)
-
-
 def validate_voice_profile_paths(
     gpt_weights_path: str | None = None,
     sovits_weights_path: str | None = None,
@@ -497,12 +467,10 @@ __all__ = [
     "PathTraversalError",
     "is_windows_device_name",
     "contains_traversal_payload",
-    "is_safe_filename",
     "get_effective_sovits_dir",
     "discover_gpt_sovits_roots",
     "get_authorized_roots",
     "validate_path_containment",
-    "safe_resolve_audio_path",
     "validate_voice_profile_paths",
     "resolve_existing_audio_path",
     "resolve_weight_file_path",

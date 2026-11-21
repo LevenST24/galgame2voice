@@ -217,61 +217,54 @@ def launch_browser_with_devtools(
     extra_args: Sequence[str],
     *,
     attempt_timeout: float = 15.0,
-    attempts: int = 2,
 ) -> tuple[subprocess.Popen[Any], int, Path]:
-    """Starts browser with a fresh profile per attempt and polls DevToolsActivePort.
+    """Starts browser with a fresh profile and polls DevToolsActivePort.
 
-    If an attempt times out while the browser process is still running, the stalled
-    process is terminated via stop_browser_process() and a retry is performed with
-    a fresh profile directory. If the process exits before exposing the port, no
-    retry is attempted and RuntimeError is raised immediately with the exit code.
+    If polling times out while the browser process is still running, the stalled
+    process is terminated via stop_browser_process() and RuntimeError is raised.
+    If the process exits before exposing the port, RuntimeError is raised
+    immediately with the exit code.
     """
-    attempt_reports: list[str] = []
+    profile_dir = make_profile_dir()
+    cmd = [
+        str(browser_exe),
+        *extra_args,
+        f"--user-data-dir={profile_dir}",
+        "about:blank",
+    ]
+    start = time.monotonic()
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    port_file = profile_dir / "DevToolsActivePort"
+    cdp_port: int | None = None
+    deadline = start + attempt_timeout
 
-    for attempt in range(1, attempts + 1):
-        profile_dir = make_profile_dir()
-        cmd = [
-            str(browser_exe),
-            *extra_args,
-            f"--user-data-dir={profile_dir}",
-            "about:blank",
-        ]
-        start = time.monotonic()
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    while time.monotonic() < deadline and proc.poll() is None:
+        if port_file.is_file():
+            try:
+                cdp_port = int(port_file.read_text(encoding="utf-8").splitlines()[0])
+                break
+            except (OSError, ValueError, IndexError):
+                pass
+        time.sleep(0.05)
+
+    if cdp_port is not None:
+        return proc, cdp_port, profile_dir
+
+    elapsed = time.monotonic() - start
+    exit_code = proc.poll()
+    if exit_code is not None:
+        raise RuntimeError(
+            f"Browser exited before exposing DevToolsActivePort after {elapsed:.2f}s (exit code: {exit_code})"
         )
-        port_file = profile_dir / "DevToolsActivePort"
-        cdp_port: int | None = None
-        deadline = start + attempt_timeout
 
-        while time.monotonic() < deadline and proc.poll() is None:
-            if port_file.is_file():
-                try:
-                    cdp_port = int(port_file.read_text(encoding="utf-8").splitlines()[0])
-                    break
-                except (OSError, ValueError, IndexError):
-                    pass
-            time.sleep(0.05)
-
-        if cdp_port is not None:
-            return proc, cdp_port, profile_dir
-
-        elapsed = time.monotonic() - start
-        exit_code = proc.poll()
-        if exit_code is not None:
-            attempt_reports.append(f"attempt {attempt} waited {elapsed:.2f}s (exit code: {exit_code})")
-            raise RuntimeError(
-                f"Browser exited before exposing DevToolsActivePort: {'; '.join(attempt_reports)}"
-            )
-
-        attempt_reports.append(f"attempt {attempt} timed out after {elapsed:.2f}s (exit code: None)")
-        stop_browser_process(proc)
-
+    stop_browser_process(proc)
     raise RuntimeError(
-        f"Browser did not expose DevToolsActivePort after {attempts} attempts: {'; '.join(attempt_reports)}"
+        f"Browser did not expose DevToolsActivePort: timed out after {elapsed:.2f}s (exit code: None)"
     )
 
 
@@ -613,7 +606,7 @@ def launch_browser_to_page(
         succeeded = False
         try:
             proc, cdp_port, profile_dir = launch_browser_with_devtools(
-                browser_exe, make_profile_dir, extra_args, attempt_timeout=attempt_timeout, attempts=1
+                browser_exe, make_profile_dir, extra_args, attempt_timeout=attempt_timeout
             )
             target = wait_for_page_target(cdp_port, timeout=attempt_timeout, proc=proc)
             client = factory(target["webSocketDebuggerUrl"])
