@@ -427,9 +427,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     }
   }
   async function refresh() {
-    if (!opened || polling?.revision === revision) return;
-    const token = revision, request = { revision: token };
-    polling = request;
+    if (!opened) return;
     const syncRecents = () => {
       // Keep recent buttons stable during polling so keyboard focus is preserved.
       const recentKey = JSON.stringify(sessions.map(s => [s.id, s.characterName, s.title, s.updatedAt, s.settings?.voiceProfileId]));
@@ -439,12 +437,34 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
         if (session) updateAvatar(button.querySelector('.home-avatar'), session);
       }
     };
+    const syncGrid = () => {
+      if (mode !== 'all') return;
+      if (grid.dataset.key !== gridSignature()) {
+        renderGrid();
+      } else {
+        // Same sessions on the page: only the relative times move on.
+        const slice = sessions.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+        for (const slot of grid.querySelectorAll('.adv-title-slot')) {
+          const session = slice.find(s => s.id === slot.getAttribute('data-session'));
+          const dateEl = slot.querySelector('.adv-title-slot-date');
+          if (dateEl && session) dateEl.textContent = formatHomeTime(session.updatedAt, now());
+        }
+      }
+    };
+    readSessions();
+    renderPane();
+    syncGrid();
+    syncRecents();
+    if (polling?.revision === revision) return;
+    const token = revision, request = { revision: token };
+    polling = request;
     const apply = next => {
       if (!opened || token !== revision) return;
       status = { ...status, ...next };
       readSessions();
       renderStatus();
       renderPane();
+      syncGrid();
       syncRecents();
     };
     try {
@@ -452,19 +472,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
       if (!opened || token !== revision) return;
       status = result ? { ...result, engineLoaded: result.engineLoaded ?? true } : status;
       readSessions(); renderStatus(); renderPane();
-      if (mode === 'all') {
-        if (grid.dataset.key !== gridSignature()) {
-          renderGrid();
-        } else {
-          // Same sessions on the page: only the relative times move on.
-          const slice = sessions.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
-          for (const slot of grid.querySelectorAll('.adv-title-slot')) {
-            const session = slice.find(s => s.id === slot.getAttribute('data-session'));
-            const dateEl = slot.querySelector('.adv-title-slot-date');
-            if (dateEl && session) dateEl.textContent = formatHomeTime(session.updatedAt, now());
-          }
-        }
-      }
+      syncGrid();
       syncRecents();
       setStageHome(true);
     } finally { if (polling === request) polling = null; }
