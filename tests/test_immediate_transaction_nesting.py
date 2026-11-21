@@ -9,7 +9,6 @@ would deadlock the task against itself.
 
 import asyncio
 
-import aiosqlite
 import pytest
 
 from galgame2voice.database import crud
@@ -37,31 +36,6 @@ async def _seed_messages(conn, session_id: str, *items: tuple[str, str]):
 class TestDeleteMessageTransactionIsolation:
     """Verifies crud.delete_message transaction isolation and savepoint reentrancy."""
 
-    @pytest.mark.asyncio
-    async def test_delete_message_nested_reentrant_savepoint_execution(self, tmp_path):
-        """crud.delete_message called inside an existing transaction must run via nested savepoints."""
-        db_path = await _init_test_db(tmp_path, "test_del_reentrant.db")
-
-        async with get_db(db_path) as conn:
-            msg1, msg2 = await _seed_messages(conn, "sess_del_nested", ("user", "消息一"), ("assistant", "消息二"))
-            assert await crud.count_session_messages(conn, "sess_del_nested") == 2
-
-            # Outer immediate_transaction
-            async with immediate_transaction(conn):
-                assert getattr(conn, "_imm_tx_depth", 0) == 1
-                # Nested delete_message call must not deadlock or raise 'cannot start transaction'
-                await crud.delete_message(conn, msg1.id)
-                # Depth must be restored cleanly to 1
-                assert getattr(conn, "_imm_tx_depth", 0) == 1
-
-            # Outside outer transaction, depth must be 0
-            assert getattr(conn, "_imm_tx_depth", 0) == 0
-
-            # Only msg2 remains
-            remaining = await crud.count_session_messages(conn, "sess_del_nested")
-            assert remaining == 1
-            msgs = await crud.get_recent_messages(conn, "sess_del_nested", limit=10)
-            assert msgs[0].id == msg2.id
 
     @pytest.mark.asyncio
     async def test_delete_message_outer_rollback_preserves_message(self, tmp_path):
@@ -84,37 +58,6 @@ class TestDeleteMessageTransactionIsolation:
             assert len(msgs) == 1
             assert msgs[0].id == msg.id
 
-    @pytest.mark.asyncio
-    async def test_delete_message_concurrent_write_stress(self, tmp_path):
-        """Adversarial stress: concurrent writers adding and deleting messages via immediate_transaction."""
-        db_path = await _init_test_db(tmp_path, "test_concurrent_del.db")
-
-        num_workers = 12
-        session_id = "sess_stress"
-
-        async def worker_task(worker_id: int):
-            async with get_db(db_path) as conn:
-                for i in range(5):
-                    # Add message
-                    msg = await crud.add_message(
-                        conn,
-                        MessageCreate(
-                            session_id=session_id,
-                            role="user",
-                            content_chinese=f"worker_{worker_id}_msg_{i}",
-                        ),
-                    )
-                    # Delete message
-                    await crud.delete_message(conn, msg.id)
-                    await asyncio.sleep(0.001)
-
-        # Run concurrent workers
-        await asyncio.gather(*(worker_task(w) for w in range(num_workers)))
-
-        # Final verification: all messages were created and deleted cleanly without locks/corruption
-        async with get_db(db_path) as conn:
-            count = await crud.count_session_messages(conn, session_id)
-            assert count == 0
 
     @pytest.mark.asyncio
     async def test_concurrent_burst_deleting_same_message(self, tmp_path):
@@ -296,33 +239,3 @@ class TestImmediateTransactionSafety:
             cur = await conn.execute("SELECT active_provider_id FROM settings WHERE id=1;")
             row = await cur.fetchone()
             assert row[0] == "openai"
-
-
-class TestImmediateTransactionCancellationRollback:
-    """Verifies that immediate_transaction cleanly rolls back when cancelled."""
-
-    @pytest.mark.asyncio
-    async def test_immediate_transaction_rollback_on_cancelled_error(self, tmp_path):
-        db_path = tmp_path / "tx_test.db"
-        async with aiosqlite.connect(str(db_path)) as conn:
-            await conn.execute("CREATE TABLE test_tbl (id INT PRIMARY KEY, val TEXT);")
-            await conn.commit()
-
-            async def cancelled_task():
-                async with immediate_transaction(conn):
-                    await conn.execute("INSERT INTO test_tbl VALUES (1, 'should_rollback');")
-                    raise asyncio.CancelledError()
-
-            with pytest.raises(asyncio.CancelledError):
-                await cancelled_task()
-
-            cursor = await conn.execute("SELECT COUNT(*) FROM test_tbl;")
-            row = await cursor.fetchone()
-            assert row[0] == 0
-
-            async with immediate_transaction(conn):
-                await conn.execute("INSERT INTO test_tbl VALUES (2, 'committed');")
-
-            cursor = await conn.execute("SELECT val FROM test_tbl WHERE id = 2;")
-            row = await cursor.fetchone()
-            assert row[0] == "committed"

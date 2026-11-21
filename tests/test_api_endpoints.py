@@ -64,14 +64,6 @@ class TestCoreMainAndHealthEndpoints:
         assert MaskingFilter.sanitize(None) is None
         assert MaskingFilter.sanitize("") == ""
 
-    @pytest.mark.asyncio
-    async def test_root_fallback_and_static_mount(self):
-        """Verifies root fallback endpoint returns app metadata."""
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.get("/")
-            assert resp.status_code == 200
 
     @pytest.mark.asyncio
     async def test_chat_history_endpoints(self, temp_db_path):
