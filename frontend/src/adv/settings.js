@@ -2,7 +2,7 @@
 import { validAdvSetting } from '../session_data.js';
 
 // Same field/label structure as the existing session panel. Values are inert text.
-export const ADV_FIELDS = {
+const ADV_FIELDS = {
   advPlayerName: ['玩家名字'],
   advPrimaryLanguage: ['主要语言', ['zh', 'ja']],
   advSubtitleLanguage: ['字幕语言', ['zh', 'ja', 'none']],

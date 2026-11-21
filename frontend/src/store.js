@@ -128,7 +128,7 @@ export const LEGACY_GREETINGS = [
  * @param {T} session
  * @returns {T}
  */
-export function refreshLegacyGreeting(session) {
+function refreshLegacyGreeting(session) {
   if (!session || !Array.isArray(session.messages) || session.messages.length === 0) return session;
   const firstAssistant = session.messages.find((m) => m && m.role === 'assistant');
   if (firstAssistant && LEGACY_GREETINGS.includes(firstAssistant.content)) {
@@ -250,7 +250,7 @@ function ensureSettings(session) {
 }
 
 /** @returns {ChatSession} */
-export function makeStarterSession() {
+function makeStarterSession() {
   const s = ensureSettings({
     id: uid('s'),
     title: '新对话',

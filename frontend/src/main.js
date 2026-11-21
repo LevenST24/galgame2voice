@@ -101,7 +101,7 @@ export function mapBackendMessage(bm) {
 }
 
 /** @param {Record<string, any> | null | undefined} msg @returns {number | null} */
-export function extractServerId(msg) {
+function extractServerId(msg) {
   if (!msg) return null;
   if (Number.isSafeInteger(msg.serverMessageId) && msg.serverMessageId > 0) {
     return msg.serverMessageId;
@@ -233,7 +233,6 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     gProviderTest: $('gProviderTest'),
     gProviderActivate: $('gProviderActivate'),
     gPrecision: $('gPrecision'),
-    gStatus: $('gStatus'),
     gAudioRetention: $('gAudioRetention'),
     gTgSave: $('gTgSave'),
     gTabs: $('gTabs'),

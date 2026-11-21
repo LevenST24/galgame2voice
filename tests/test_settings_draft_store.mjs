@@ -40,7 +40,6 @@ test('commitAll saves the engine directory, then global config, without saving d
   const provider = {
     disposed: false,
     isProviderSaving: () => false,
-    isProviderDirty: () => true,
     async saveAndActivateProvider() {
       order.push('saveAndActivateProvider');
       return true;

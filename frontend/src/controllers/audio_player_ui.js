@@ -253,7 +253,7 @@ export function playVoice(msg, ctl) {
   if (msg?.role === 'user') return playUserVoice(msg, ctl);
 }
 
-export function updateVoiceModeUI() {
+function updateVoiceModeUI() {
   if (!state.global.voiceMode) stopCurrentVoice();
 }
 
@@ -263,7 +263,7 @@ export function toggleVoiceMode() {
   updateVoiceModeUI();
 }
 
-export function updateMicUI(listening) {
+function updateMicUI(listening) {
   if (micDom()) {
     micDom().classList.toggle('listening', Boolean(listening));
     micDom().setAttribute('aria-pressed', listening ? 'true' : 'false');

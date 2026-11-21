@@ -24,7 +24,7 @@ export function getConsoleToken() {
  * 设置控制台令牌并保存至 sessionStorage
  * @param {string} token
  */
-export function setConsoleToken(token) {
+function setConsoleToken(token) {
   try {
     if (token && token.trim()) {
       window.sessionStorage.setItem(STORAGE_KEY, token.trim());

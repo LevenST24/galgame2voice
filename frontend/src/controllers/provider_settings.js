@@ -8,7 +8,7 @@ import { describeProviderModelCheck, formatProviderDiagnostic, BUILTIN_PRESETS, 
 import { showToast } from '../ui.js';
 import { saveConfirmedProvider, activateConfirmedProvider } from './provider_recovery.js';
 
-export const PROVIDER_FIELDS = ['gApiKey', 'gBaseUrl', 'gChatModel', 'gChatModelSelect', 'gReasoningEffort', 'gCustomName'];
+const PROVIDER_FIELDS = ['gApiKey', 'gBaseUrl', 'gChatModel', 'gChatModelSelect', 'gReasoningEffort', 'gCustomName'];
 
 const API_KEY_PAGES = Object.freeze({
   deepseek: 'https://platform.deepseek.com/api_keys',
@@ -142,10 +142,6 @@ export class ProviderSettingsController {
 
   hasProviderReadError() {
     return this.providerReadError;
-  }
-
-  isProviderDirty() {
-    return this.providerDirty;
   }
 
   isProviderSaving() {

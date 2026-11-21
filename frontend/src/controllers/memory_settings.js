@@ -24,7 +24,7 @@ function resetDeleteButton(del) {
   del.setAttribute('aria-label', '删除这条记忆');
 }
 
-export class MemorySettingsController {
+class MemorySettingsController {
   constructor(dom, coordinator) {
     this.dom = dom;
     this.coordinator = coordinator;

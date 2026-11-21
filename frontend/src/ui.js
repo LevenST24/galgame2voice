@@ -1,6 +1,6 @@
 // @ts-check
 // Shared session drawer and toast rendering.
-export function timeLabel(ts) {
+function timeLabel(ts) {
   const d = new Date(ts);
   const now = new Date();
   const pad = (n) => String(n).padStart(2, '0');
