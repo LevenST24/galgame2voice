@@ -224,6 +224,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     sCtx: $('sCtx'),
     sCtxVal: $('sCtxVal'),
     sAiAdaptiveVoice: $('sAiAdaptiveVoice'),
+    sAiAdaptiveVoiceHint: $('sAiAdaptiveVoiceHint'),
     sTtsSpeed: $('sTtsSpeed'),
     sTtsSpeedVal: $('sTtsSpeedVal'),
     sTtsTopK: $('sTtsTopK'),

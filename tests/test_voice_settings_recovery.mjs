@@ -1079,4 +1079,43 @@ for (const voiceOn of [false, true]) {
     passed++;
   }, { captureError: true, callbacks: { isVoiceEnabled: () => voiceOn } });
 }
+{
+  // Auto adaptive voice mode disables the four manual TTS sliders and explains why;
+  // switching to fixed mode enables them, and clicking reset disables them again.
+  const { dom } = setup();
+  dom.sAiAdaptiveVoiceHint = element();
+  initVoiceSettings(dom, {});
+  globalThis.fetch = async () => response({ profiles: [], active_profile_id: null });
+
+  await openSessionSettings();
+  assert.equal(dom.sAiAdaptiveVoice.value, 'true');
+  for (const key of ['sTtsSpeed', 'sTtsTopK', 'sTtsTopP', 'sTtsTemp']) {
+    assert.equal(dom[key].disabled, true, `${key} should be disabled in auto mode`);
+  }
+  assert.equal(
+    dom.sAiAdaptiveVoiceHint.textContent,
+    '当前为自动模式，下方参数不生效；想手动调语速，请把上面的模式改成「固定参数模式」。',
+  );
+
+  dom.sAiAdaptiveVoice.value = 'false';
+  await dom.sAiAdaptiveVoice.fire('change');
+  for (const key of ['sTtsSpeed', 'sTtsTopK', 'sTtsTopP', 'sTtsTemp']) {
+    assert.equal(dom[key].disabled, false, `${key} should be enabled in fixed mode`);
+  }
+  assert.equal(
+    dom.sAiAdaptiveVoiceHint.textContent,
+    '当前为固定参数模式，合成时使用下方参数。',
+  );
+
+  await dom.sReset.click();
+  assert.equal(dom.sAiAdaptiveVoice.value, 'true');
+  for (const key of ['sTtsSpeed', 'sTtsTopK', 'sTtsTopP', 'sTtsTemp']) {
+    assert.equal(dom[key].disabled, true, `${key} should be disabled again after reset`);
+  }
+  assert.equal(
+    dom.sAiAdaptiveVoiceHint.textContent,
+    '当前为自动模式，下方参数不生效；想手动调语速，请把上面的模式改成「固定参数模式」。',
+  );
+  passed++;
+}
 console.log(`Voice settings recovery: ${passed} scenarios passed`);
