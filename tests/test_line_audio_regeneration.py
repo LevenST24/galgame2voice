@@ -720,3 +720,19 @@ async def test_regenerate_line_returns_chinese_fp32_guidance_on_silent_audio(rep
     resp_ext = await repair.client.post("/api/voice/regenerate-line", json=repair.body)
     assert resp_ext.status_code == 502
     assert SILENT_AUDIO_USER_GUIDANCE_EXTERNAL in resp_ext.json()["detail"]
+
+
+@pytest.mark.parametrize("text", ["´・ω・｀", "(´・ω・｀)", "www～", "【心の声：……】"])
+async def test_regenerate_line_rejects_non_vocal_kaomoji_and_laugh_text(repair, text):
+    body = {**repair.body, "message_id": None, "text": text}
+    response = await repair.client.post("/api/voice/regenerate-line", json=body)
+    assert response.status_code == 422, response.text
+    assert repair.engine.calls == []
+
+
+@pytest.mark.parametrize("text", ["ＯＫ！", "１２３！", "〇"])
+async def test_regenerate_line_accepts_fullwidth_alnum_and_ideographic_zero(repair, text):
+    body = {**repair.body, "message_id": None, "text": text}
+    response = await repair.client.post("/api/voice/regenerate-line", json=body)
+    assert response.status_code == 200, response.text
+    assert len(repair.engine.calls) == 1

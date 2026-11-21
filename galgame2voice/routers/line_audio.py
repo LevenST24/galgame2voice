@@ -15,6 +15,7 @@ from galgame2voice.database.commit_hooks import after_commit
 from galgame2voice.database.models import ReplyLineRecord, TtsOptions
 from galgame2voice.database.session import get_db, get_database_path, immediate_transaction
 from galgame2voice.services.gpt_sovits_client import normalize_japanese_for_tts
+from galgame2voice.utils.japanese_phonetics import has_vocal_text
 from galgame2voice.services.tts_service import VoiceModelMissingError, VoiceReferenceMissingError
 from galgame2voice.services.voice_resolver import VoiceContextUnavailableError
 from galgame2voice.services.voice_manager import get_voice_manager
@@ -125,7 +126,7 @@ async def regenerate_line(req: LineAudioRequest, request: Request, manager: Anno
     if not req.session_id.strip():
         raise HTTPException(422, "会话编号不能为空。")
     text = normalize_japanese_for_tts(req.text)
-    if not text.strip() or not any(char.isalnum() for char in text):
+    if not has_vocal_text(text):
         raise HTTPException(422, "这句没有可配音的日文台词，原记录未修改。")
     async with get_db(db_path) as conn:
         profile = await crud.get_voice_profile(conn, req.voice_profile_id)
