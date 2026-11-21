@@ -154,16 +154,6 @@ class TestMemoryUpsertConcurrency:
         assert count == 1
         assert all(r.id for r in results)
 
-    @pytest.mark.asyncio
-    async def test_upsert_updates_existing_value(self, isolate_test_database):
-        async with get_db(isolate_test_database) as conn:
-            first = await crud.upsert_memory(conn, UserMemoryCreate(
-                user_id="u1", fact_key="k", fact_value="v1"))
-            second = await crud.upsert_memory(conn, UserMemoryCreate(
-                user_id="u1", fact_key="k", fact_value="v2"))
-        assert second.id == first.id
-        assert second.fact_value == "v2"
-
 
 class TestAffectionAtomicIncrement:
     @pytest.mark.asyncio

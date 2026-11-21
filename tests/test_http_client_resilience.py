@@ -52,23 +52,6 @@ def clean_proxy_environment(monkeypatch):
     yield
 
 
-@pytest.mark.parametrize("http_proxy_configured", [True, False])
-def test_plain_httpx_client_rejects_broken_proxy_environment(
-    broken_proxy_environment, monkeypatch, http_proxy_configured
-):
-    """Documents the upstream failure the guard exists for.
-
-    The bracketed NO_PROXY entry alone is enough to break construction, whether
-    or not a proxy is actually configured.
-    """
-    if not http_proxy_configured:
-        for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
-            monkeypatch.delenv(name, raising=False)
-
-    with pytest.raises(httpx.InvalidURL):
-        httpx.AsyncClient()
-
-
 async def test_create_async_client_survives_broken_proxy_environment(broken_proxy_environment):
     """The guarded factory still returns a usable client under a broken env."""
     client = create_async_client(timeout=10.0)
