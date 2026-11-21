@@ -338,6 +338,16 @@ test('first use checks model/voice/character, text-only persists via setVoiceEna
   assert.equal(h.q('.home-first-title'), null); assert.ok(h.q('.home-continue')); assert.match(textTree(h.q('.home-notice')), /先用文字/);
   assert.equal(textTree(h.q('.home-continue')), '接着聊 →');
 });
+test('the text-only choice on the first-use page can be undone, also once the engine is ready', async t => {
+  const status = { modelLoaded: true, hasModel: false, model: { state: 'error', label: '未配置对话模型' }, engine: { state: 'unavailable' } };
+  const session = snapshot('a'); session.settings.voiceProfileId = null;
+  const h = await fixture(t, { status, sessions: [session] });
+  h.q('.home-text-only').click(); assert.deepEqual(h.calls.at(-1), ['voiceEnabled', false]);
+  h.setStatus({ ...status, engine: { state: 'ready' } }); h.notify(); await microtasks();
+  assert.equal(textTree(h.q('.home-text-only')), '✓ 暂时只用文字');
+  h.q('.home-text-only').click(); assert.deepEqual(h.calls.at(-1), ['voiceEnabled', true]);
+  assert.equal(h.q('.home-text-only'), null);
+});
 test('first use sends a user with no characters to import one, and offers a choice once one is installed', async t => {
   const status = { modelLoaded: true, hasModel: false, model: { state: 'error', label: '未配置对话模型' }, engine: { state: 'unavailable' } };
   const session = snapshot('a'); session.settings.voiceProfileId = null;
@@ -866,5 +876,6 @@ test('first-use checklist hides text-only choice when voice engine is ready', as
   assert.equal(textTree(h.q('.home-text-only')), '✓ 暂时只用文字');
   h.setStatus({ ...unconfigured, engine: { state: 'ready' } });
   await h.ui.refresh();
-  assert.ok(!h.q('.home-text-only'), 'unexpected .home-text-only after engine becomes ready');
+  // The choice persists as voiceMode=false, so it stays visible (and can be undone) once the engine is ready.
+  assert.equal(textTree(h.q('.home-text-only')), '✓ 暂时只用文字');
 });

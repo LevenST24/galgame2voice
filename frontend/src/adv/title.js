@@ -251,10 +251,12 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
       const copy = el('div', 'home-step-copy');
       add(copy, el('b', '', label), el('p', '', descriptions[i]));
       add(row, el('span', 'home-step-mark', done[i] ? '✓' : ''), copy);
-      if (i === 1 && status.engine?.state !== 'ready') row.appendChild(
+      // Stays visible while text only is on, even once the engine is ready: a second click turns voice back on.
+      if (i === 1 && (status.engine?.state !== 'ready' || isTextOnly())) row.appendChild(
         btn('home-link home-text-only', isTextOnly() ? '✓ 暂时只用文字' : '暂时只用文字', () => {
-          textOnly = true;
-          actions.setVoiceEnabled?.(false);
+          const next = !isTextOnly();
+          textOnly = next;
+          actions.setVoiceEnabled?.(!next);
           renderPane(true);
         }));
       row.appendChild(btn(`home-step-button${done[i] ? '' : ' home-step-pending'}`, i === 2 ? (installed ? '选择' : '去导入') : '去设置', () => {

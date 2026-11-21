@@ -609,7 +609,6 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   }
 
   function ensureHomeEntryVoice(session) {
-    if (!state.global.voiceMode) return;
     const want = session?.settings?.voiceProfileId;
     // The saved active ID does not prove that weights finished loading (or
     // survived an engine restart). The switch endpoint checks actual readiness.
@@ -807,6 +806,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     onOpenSessionSettings: openSessionSettings,
     onOpenEngineStatus: () => openGlobalSettings('dashboard'),
     isHomeOpen: () => homeStarting || Boolean(advApp?.stage.stage.classList.contains('is-home')),
+    isVoiceEnabled: () => state.global.voiceMode,
     invalidateSessionSync: () => { ++_syncSessionsGen; },
   });
   initGlobalSettings(dom, {

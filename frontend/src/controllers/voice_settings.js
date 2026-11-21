@@ -383,7 +383,8 @@ async function applySessionVoice(session, { silent = false }, want, isCurrent) {
         }
       } catch { /* Keep the binding when its existence cannot be checked. */ }
     }
-    if (_callbacks.isHomeOpen?.()) return;
+    // On the home screen, or after the user chose text only, a missing engine is not news.
+    if (_callbacks.isHomeOpen?.() || _callbacks.isVoiceEnabled?.() === false) return;
     console.error('音色切换失败:', e);
     showToast('语音引擎还没准备好，现在只有文字、没有声音。可在「运行状态」查看引擎。', 'error', _callbacks.onOpenEngineStatus ? {
       actionLabel: '检查运行状态',

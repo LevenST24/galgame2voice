@@ -2316,3 +2316,22 @@ test('title screen text-only choice persists voiceMode=false and suppresses audi
 
   assert.equal(toasts.length, 0, '关闭语音模式后收到回复不应再弹出语音错误提示');
 });
+
+test('entering a session from home with voice turned off still loads its character voice', async t => {
+  storedState.sessions = [2, 3].map(id => ({ id: `home_${id}`, title: '角色', messages: [],
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: id } }));
+  storedState.activeId = 'home_2';
+  storedState.global.voiceMode = false;
+  t.after(() => { storedState.global.voiceMode = true; });
+  const switches = [];
+  const h = setup(t, { callbacks: { state: storedState, getActive: storedActive, getSession: storedSession, getVoiceProfiles },
+    fetch: async (url, options = {}) => {
+      if (url === '/api/voice/profiles') return Response.json({ profiles: [{ id: 2, name: '甲' }, { id: 3, name: '乙' }], active_profile_id: null });
+      if (url === '/api/voice/switch') { switches.push(JSON.parse(options.body).profile_id); return Response.json({ profile: '乙' }); }
+      return Response.json({ backgrounds: [] });
+    } });
+  initVoiceSettings({});
+  await h.app.actions.loadSession('home_3');
+  for (let i = 0; i < 20 && !switches.length; i += 1) await tick();
+  assert.deepEqual(switches, [3]);
+});
