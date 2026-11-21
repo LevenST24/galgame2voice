@@ -33,7 +33,7 @@ export function createConversation({
   state, getActive, getSession, addMessage, uid, saveState, persistSession,
   isSessionDeleting, audioStore, putCachedAudioBlob, fetchAndCacheAudio,
   audioPlayer, getCurrentVoice, stopCurrentVoice,
-  clearMicTimers, beforeSend, onBlocked,
+  clearMicTimers, takePendingVoice, beforeSend, onBlocked,
   fetch: fetchRequest = (...args) => /** @type {any} */ (globalThis.fetch)(...args),
 }) {
   const listeners = new Map();
@@ -84,6 +84,9 @@ export function createConversation({
     if (text.length > 4000) {
       onBlocked?.('单次发送内容不能超过 4000 字，请删减后再发送。');
       return false;
+    }
+    if (!retryOf && voiceMeta === undefined) {
+      voiceMeta = takePendingVoice?.();
     }
     const originId = session.id;
     beforeSend?.();

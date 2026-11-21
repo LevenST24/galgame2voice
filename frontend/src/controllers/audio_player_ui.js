@@ -37,12 +37,14 @@ let micFinalizeTimers = [];
 let micRevision = 0;
 let micAutoEnded = false;
 let micDiscardRecording = false;
+let micAutoSendDisarmed = false;
 
 export function cancelMic() {
   const wasListening = isListening() || micTimer !== null;
   ++micRevision;
   clearInterval(micTimer); micTimer = null;
   clearMicTimers();
+  micAutoSendDisarmed = false;
   if (pendingVoice.audio) { try { URL.revokeObjectURL(pendingVoice.audio); } catch {} }
   pendingVoice = { text: null, audio: null, dur: 0, blob: null };
   stopListening(); updateMicUI(false);
@@ -74,6 +76,30 @@ export function clearMicTimers() {
   micFinalizeTimers = [];
   micAutoEnded = false;
   micDiscardRecording = true;
+}
+
+export function disarmMicAutoSend() {
+  micFinalizeTimers.forEach((t) => clearTimeout(t));
+  micFinalizeTimers = [];
+  micAutoEnded = false;
+  micAutoSendDisarmed = true;
+}
+
+export function takePendingVoice() {
+  const wasListening = isListening() || micTimer !== null;
+  ++micRevision;
+  clearInterval(micTimer);
+  micTimer = null;
+  clearMicTimers();
+  micAutoSendDisarmed = false;
+  const { audio, dur, blob } = pendingVoice;
+  pendingVoice = { text: null, audio: null, dur: 0, blob: null };
+  if (wasListening) {
+    stopListening();
+    updateMicUI(false);
+    if (inputDom()) inputDom().placeholder = DEFAULT_INPUT_PLACEHOLDER;
+  }
+  return audio ? { url: audio, dur, blob } : undefined;
 }
 
 export function stopCurrentVoice() {
@@ -308,6 +334,7 @@ export function stopMic() {
   updateMicUI(false);
   if (inputDom()) inputDom().placeholder = DEFAULT_INPUT_PLACEHOLDER;
   stopListening();
+  if (micAutoSendDisarmed) return;
   micFinalizeTimers.push(
     setTimeout(() => {
       if (!isListening() && pendingVoice.text !== null) finalizeVoice();
@@ -330,6 +357,7 @@ export function toggleMic() {
   const revision = ++micRevision;
   micAutoEnded = false;
   micDiscardRecording = false;
+  micAutoSendDisarmed = false;
   const handle = startListening({
     onInterim: (t) => {
       if (revision !== micRevision) return;
@@ -383,6 +411,7 @@ export function toggleMic() {
         pendingVoice = { text: null, audio: null, dur: 0, blob: null };
         return;
       }
+      if (micAutoSendDisarmed) return;
       micAutoEnded = true;
       micDiscardRecording = false;
       const delayMs = pendingVoice.audio ? 0 : 600;
