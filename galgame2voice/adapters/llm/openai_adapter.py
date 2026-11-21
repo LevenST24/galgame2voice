@@ -388,6 +388,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 success=True,
                 message=f"Connected successfully to {self.base_url}",
                 latency_ms=latency_ms,
+                models=[test_model] if test_model else None,
             )
 
         diag, diag_guide = self._diagnose_failure(
@@ -474,6 +475,8 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                         models = [m["id"] for m in data.get("data", []) if "id" in m]
                     except (ValueError, KeyError, TypeError):
                         pass
+                    if not models and test_model:
+                        return await self._probe_chat_fallback(client, test_model, headers, provider_id, t0)
                     return TestResult(
                         success=True,
                         message=f"Connected successfully to {self.base_url}",

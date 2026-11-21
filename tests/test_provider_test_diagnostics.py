@@ -5,7 +5,7 @@ Route-level tests for structured diagnostics returned by POST /api/providers/tes
 import json
 from pathlib import Path
 import re
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -190,7 +190,7 @@ async def test_provider_test_ssrf_and_credential_mismatch_return_structured_diag
     resp_ssrf = await _post_provider_test(app_client, "custom", "dummy-local-key", "http://127.0.0.1:11434/v1")
     assert resp_ssrf.status_code == 400
     data_ssrf = resp_ssrf.json()
-    assert "detail" in data_ssrf and "允许私网 LLM 端点" in data_ssrf["detail"]
+    assert "detail" in data_ssrf and "允许连接本机或局域网的模型服务" in data_ssrf["detail"]
     assert data_ssrf.get("success") is False
     assert data_ssrf.get("status_code") == 400
     assert data_ssrf.get("diagnostic_code") == "PRIVATE_ENDPOINT_BLOCKED"
@@ -514,3 +514,92 @@ class TestOpenAICompatibleTestConnection:
             assert result.diagnostic is not None
             assert "aistudio.google.com" in result.diagnostic
             assert chat_called is False
+
+    @pytest.mark.asyncio
+    async def test_test_connection_chat_fallback_returns_probed_model_when_models_unsupported(self):
+        """When /models is unsupported (e.g. 404) and /chat/completions succeeds, models includes the verified model."""
+        adapter = OpenAICompatibleLLMAdapter(
+            api_key="sk-relay-valid-key",
+            base_url="https://relay.example.com/v1",
+            provider_id="custom",
+        )
+        probed_payloads = []
+
+        async def mock_get(client, url, *args, **kwargs):
+            return httpx.Response(status_code=404, text="Not Found", request=httpx.Request("GET", str(url)))
+
+        async def mock_post(client, url, *args, **kwargs):
+            probed_payloads.append((str(url), kwargs.get("json")))
+            return httpx.Response(
+                status_code=200,
+                json={"choices": [{"message": {"content": "ok"}}]},
+                request=httpx.Request("POST", str(url)),
+            )
+
+        with patch("galgame2voice.security.url_guard.assert_llm_url_safe", new_callable=AsyncMock), \
+             patch.object(httpx.AsyncClient, "get", mock_get), \
+             patch.object(httpx.AsyncClient, "post", mock_post):
+            result = await adapter.test_connection(model="relay-custom-model")
+
+        assert result.success is True
+        assert result.models == ["relay-custom-model"]
+        assert len(probed_payloads) == 1
+        assert probed_payloads[0][0].endswith("/chat/completions")
+        assert probed_payloads[0][1]["model"] == "relay-custom-model"
+
+    @pytest.mark.asyncio
+    async def test_test_connection_empty_models_list_falls_back_to_chat_probe(self):
+        """When /models returns 200 with an empty data list, fall back to /chat/completions to verify the model."""
+        adapter = OpenAICompatibleLLMAdapter(
+            api_key="sk-relay-valid-key",
+            base_url="https://relay.example.com/v1",
+            provider_id="custom",
+        )
+        chat_calls = []
+
+        async def mock_get(client, url, *args, **kwargs):
+            return httpx.Response(status_code=200, json={"data": []}, request=httpx.Request("GET", str(url)))
+
+        async def mock_post(client, url, *args, **kwargs):
+            chat_calls.append(kwargs.get("json"))
+            return httpx.Response(
+                status_code=200,
+                json={"choices": [{"message": {"content": "ok"}}]},
+                request=httpx.Request("POST", str(url)),
+            )
+
+        with patch("galgame2voice.security.url_guard.assert_llm_url_safe", new_callable=AsyncMock), \
+             patch.object(httpx.AsyncClient, "get", mock_get), \
+             patch.object(httpx.AsyncClient, "post", mock_post):
+            result = await adapter.test_connection(model="relay-custom-model")
+
+        assert result.success is True
+        assert result.models == ["relay-custom-model"]
+        assert len(chat_calls) == 1
+        assert chat_calls[0]["model"] == "relay-custom-model"
+
+    @pytest.mark.asyncio
+    async def test_test_connection_empty_models_list_reports_chat_probe_failure(self):
+        """When /models returns 200 empty and /chat/completions rejects the model, test_connection fails."""
+        adapter = OpenAICompatibleLLMAdapter(
+            api_key="sk-relay-valid-key",
+            base_url="https://relay.example.com/v1",
+            provider_id="custom",
+        )
+
+        async def mock_get(client, url, *args, **kwargs):
+            return httpx.Response(status_code=200, json={"data": []}, request=httpx.Request("GET", str(url)))
+
+        async def mock_post(client, url, *args, **kwargs):
+            return httpx.Response(
+                status_code=404,
+                text='{"error":{"message":"The model `bad-model` does not exist"}}',
+                request=httpx.Request("POST", str(url)),
+            )
+
+        with patch("galgame2voice.security.url_guard.assert_llm_url_safe", new_callable=AsyncMock), \
+             patch.object(httpx.AsyncClient, "get", mock_get), \
+             patch.object(httpx.AsyncClient, "post", mock_post):
+            result = await adapter.test_connection(model="bad-model")
+
+        assert result.success is False

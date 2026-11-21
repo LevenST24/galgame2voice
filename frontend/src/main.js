@@ -79,6 +79,7 @@ const appDependencies = {
   clearMicTimers, renderSessionList,
   showToast, autoTitle, fetchSessionHistoryPage, earliestServerMessageId,
   getCurrentActiveProvider, getVoiceProfiles, haveProvidersLoaded, hasProviderReadError,
+  openGlobalSettings, openSessionSettings,
   showTitle,
 };
 
@@ -143,6 +144,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     clearMicTimers, renderSessionList,
     showToast, autoTitle, fetchSessionHistoryPage, earliestServerMessageId,
     getCurrentActiveProvider, getVoiceProfiles, haveProvidersLoaded, hasProviderReadError,
+    openGlobalSettings, openSessionSettings,
     showTitle: showTitleScreen,
   } = { ...appDependencies, ...callbacks };
   if (initialize) {
@@ -430,9 +432,12 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         actionLabel: '配置对话模型', onAction: () => openGlobalSettings('models'),
       } : null);
     } else if (meta.audioError && !meta.cancelled && state.global.voiceMode) {
-      showToast(meta.audioError, 'info', {
-        actionLabel: '检查运行状态', onAction: () => openGlobalSettings('dashboard'),
-      });
+      const needsCharacter = typeof meta.audioError === 'string'
+        && meta.audioError.includes('角色与会话')
+        && !meta.audioError.includes('运行状态');
+      showToast(meta.audioError, 'info', needsCharacter
+        ? { actionLabel: '去选择角色', onAction: () => openSessionSettings() }
+        : { actionLabel: '检查运行状态', onAction: () => openGlobalSettings('dashboard') });
     }
     renderSidebar(); renderHeader();
   });
