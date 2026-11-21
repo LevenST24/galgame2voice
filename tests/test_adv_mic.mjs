@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { initAudioPlayerUi, toggleMic, cancelMic, finalizeVoice } from '../frontend/src/controllers/audio_player_ui.js';
+import { initAudioPlayerUi, toggleMic, cancelMic, finalizeVoice, clearMicTimers } from '../frontend/src/controllers/audio_player_ui.js';
+import { mountAdv } from '../frontend/src/adv/adv_app.js';
+import { DEFAULT_SESSION_SETTINGS } from '../frontend/src/store.js';
 import { startListening, stopListening, isListening } from '../frontend/src/voice.js';
-import { fakeDocument } from './helpers/adv_dom.mjs';
+import { fakeDocument, fakeClock, Element } from './helpers/adv_dom.mjs';
 
-function setup(t, { syncEndOnStop = true } = {}) {
+function setup(t, { syncEndOnStop = true, sendReturn = true } = {}) {
   const recognizers = [], sent = [];
   globalThis.document = fakeDocument();
   class SpeechRecognition {
@@ -22,7 +24,7 @@ function setup(t, { syncEndOnStop = true } = {}) {
   const mic = document.createElement('button'); input.value = '原稿';
   initAudioPlayerUi({ input: oldInput }, {
     getInput: () => input, getMicButton: () => mic,
-    isBusy: () => false, sendMessage: (...args) => sent.push(args),
+    isBusy: () => false, sendMessage: (...args) => { sent.push(args); return sendReturn; },
   });
   const result = (recognizer, text, final) => {
     const line = [{ transcript: text }]; line.isFinal = final;
@@ -127,8 +129,8 @@ test('spontaneous SpeechRecognition end clears micTimer and avoids leaking inter
   assert.equal(active.size, 0);
 });
 
-function setupWithRecorder(t, { syncEndOnStop = false, asyncRecordStopMs = 15 } = {}) {
-  const h = setup(t, { syncEndOnStop });
+function setupWithRecorder(t, { syncEndOnStop = false, asyncRecordStopMs = 15, sendReturn = true } = {}) {
+  const h = setup(t, { syncEndOnStop, sendReturn });
   const toastRoot = document.createElement('div');
   toastRoot.id = 'toastRoot';
   document.body.appendChild(toastRoot);
@@ -274,4 +276,179 @@ test('manual mic stop with MediaRecorder keeps late onresult and sends text with
   assert.equal(h.sent.length, 1);
   assert.equal(h.sent[0][0], '原稿 手动结束句');
   assert.ok(h.sent[0][1]?.url?.startsWith('blob:'));
+});
+
+
+function setupMountedAdvWithRecorder(t, { syncEndOnStop = false, asyncRecordStopMs = 20 } = {}) {
+  const h = setupWithRecorder(t, { syncEndOnStop, asyncRecordStopMs });
+  const doc = globalThis.document;
+  const clock = fakeClock();
+  const listeners = new Map();
+  const session = { id: 's_mic', settings: { ...DEFAULT_SESSION_SETTINGS, advEnabled: true }, messages: [] };
+  let turnSeq = 0;
+  let cancelMicCalls = 0;
+  const sent = [];
+
+  class FakeImage extends Element {
+    constructor() { super('img', doc); }
+    decode() { return Promise.resolve(); }
+  }
+
+  const emit = (type, event) => {
+    for (const fn of [...(listeners.get(type) || [])]) fn(event);
+  };
+
+  const controller = {
+    busy: false,
+    on(type, fn) {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type).add(fn);
+      return () => listeners.get(type)?.delete(fn);
+    },
+    send(rawText = '', voiceMeta) {
+      clearMicTimers();
+      const text = String(rawText).trim();
+      if (!text || this.busy) return false;
+      sent.push([text, voiceMeta]);
+      const id = `turn_${++turnSeq}`;
+      const userMessage = { id: `user_${turnSeq}`, role: 'user', content: text };
+      session.messages.push(userMessage);
+      emit('turnstart', { originId: session.id, userMessage, assistantMessage: { id, lines: [] } });
+      return true;
+    },
+    canRetry() { return false; },
+    retry() {},
+    stop() {},
+  };
+
+  const audio = {
+    playLine: async () => 'done',
+    stopLine() {},
+  };
+
+  const root = doc.createElement('div');
+  doc.body.appendChild(root);
+  const mql = { matches: false, addEventListener() {}, removeEventListener() {} };
+  const app = mountAdv({ root }, {
+    controller,
+    audio,
+    clock,
+    getSession: () => session,
+    voiceEnabled: () => false,
+    getCharacter: () => ({ id: 1, name: '测试角色' }),
+    ImageClass: FakeImage,
+    loadPortrait: async () => null,
+    raf: () => 1,
+    cancelRaf: () => {},
+    matchMedia: () => mql,
+    viewport: doc.createElement('div'),
+    onMic: () => toggleMic(),
+    cancelMic: () => {
+      cancelMicCalls += 1;
+      cancelMic();
+    },
+  });
+  t.after(() => app.unmount());
+
+  initAudioPlayerUi({}, {
+    getInput: () => app.textbox.inputElement,
+    getMicButton: () => app.textbox.micButton,
+    isBusy: () => controller.busy,
+    sendMessage: (text, voiceMeta) => controller.send(text, voiceMeta),
+  });
+
+  return {
+    ...h,
+    app,
+    controller,
+    sent,
+    input: app.textbox.inputElement,
+    mic: app.textbox.micButton,
+    getCancelMicCalls: () => cancelMicCalls,
+  };
+}
+
+test('manual send while listening cancels mic, restores placeholder, keeps draft cleared, and avoids duplicate send or Blob leak', async (t) => {
+  const h = setupMountedAdvWithRecorder(t, { syncEndOnStop: false, asyncRecordStopMs: 20 });
+  toggleMic();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(h.recorders.length, 1);
+  assert.match(h.input.placeholder, /停顿/);
+
+  // Interim transcription appears in the input, user manually sends without waiting for auto-end.
+  h.result(h.recognizers[0], '不等停顿直接发', false);
+  assert.equal(h.input.value, '不等停顿直接发');
+
+  assert.equal(h.controller.send(h.input.value), true);
+  assert.equal(h.sent.length, 1);
+  assert.equal(h.sent[0][0], '不等停顿直接发');
+  assert.equal(h.input.value, '');
+  assert.equal(h.input.placeholder, '说点什么，或点麦克风用语音输入…');
+  assert.equal(isListening(), false);
+  assert.equal(h.mic.getAttribute('aria-pressed'), 'false');
+  assert.equal(h.recorders[0].stopped, true);
+
+  // Late final result, onend, and MediaRecorder onRecorded arrive after the turn already cleared.
+  h.result(h.recognizers[0], '不等停顿直接发', true);
+  h.recognizers[0].onend?.();
+  await new Promise((r) => setTimeout(r, 60));
+
+  assert.equal(h.sent.length, 1, 'late recognition end and onRecorded must not trigger a second send');
+  assert.equal(h.input.value, '', 'late onText must not write sent text back into cleared input');
+  assert.equal(h.createdUrls.length, h.revokedUrls.length, 'must not leak any Blob URL');
+  assert.equal(h.tracks[0].stopped, true);
+});
+
+test('manual send after spontaneous recognition end but before onRecorded arrives sends only once without Blob leak', async (t) => {
+  const h = setupWithRecorder(t, { syncEndOnStop: false, asyncRecordStopMs: 30 });
+  toggleMic();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(h.recorders.length, 1);
+
+  h.result(h.recognizers[0], '识别刚结束手动发', true);
+  h.recognizers[0].onend?.();
+  assert.equal(h.sent.length, 0, 'waiting for onRecorded before auto-finalize');
+
+  // Simulate conversation.send() manually sending before onRecorded arrives (calls clearMicTimers()).
+  clearMicTimers();
+  h.sent.push([h.input.value, undefined]);
+  h.input.value = '';
+
+  // MediaRecorder finishes and delivers onRecorded afterwards.
+  await new Promise((r) => setTimeout(r, 70));
+
+  assert.equal(h.sent.length, 1, 'clearMicTimers must disarm pending autoEnded finalize before onRecorded');
+  assert.equal(h.createdUrls.length, h.revokedUrls.length, 'discarded recording must not leak a Blob URL');
+});
+
+test('finalizeVoice revokes recorded Blob URL when sendMessage returns false', async (t) => {
+  const h = setupWithRecorder(t, { syncEndOnStop: false, asyncRecordStopMs: 15, sendReturn: false });
+  toggleMic();
+  await new Promise((r) => setTimeout(r, 0));
+
+  h.result(h.recognizers[0], '忙碌时被拒绝', true);
+  h.recognizers[0].onend?.();
+  await new Promise((r) => setTimeout(r, 60));
+
+  assert.equal(h.sent.length, 1);
+  assert.equal(h.createdUrls.length, 1);
+  assert.deepEqual(h.revokedUrls, h.createdUrls, 'rejected send must revoke the created Blob URL');
+});
+
+test('auto-finalized voice send through ADV turnstart keeps its recording URL unrevoked', async (t) => {
+  const h = setupMountedAdvWithRecorder(t, { syncEndOnStop: false, asyncRecordStopMs: 20 });
+  toggleMic();
+  await new Promise((r) => setTimeout(r, 0));
+
+  const callsBefore = h.getCancelMicCalls();
+  h.result(h.recognizers[0], '自动结束带录音', true);
+  h.recognizers[0].onend?.();
+  await new Promise((r) => setTimeout(r, 60));
+
+  assert.equal(h.sent.length, 1);
+  assert.equal(h.sent[0][0], '自动结束带录音');
+  assert.ok(h.sent[0][1]?.url?.startsWith('blob:'), 'auto-finalized send must carry the recording URL');
+  assert.equal(h.getCancelMicCalls(), callsBefore + 1, 'turnstart should invoke deps.cancelMic');
+  assert.deepEqual(h.revokedUrls, [], 'turnstart cancelMic must not revoke the recording already handed to sendMessage');
+  assert.equal(h.input.value, '');
 });
