@@ -139,4 +139,30 @@ let passed = 0;
   assert.equal(test.controller.isDirty(), false);
   passed++;
 }
+{
+  globalThis.fetch = async () => response({ directory: 'D:/canonical', message: 'saved' });
+  const dom = {
+    gSovitsDirectory: { value: 'D:/chosen', addEventListener() {} },
+    gSovitsDirectoryStatus: { textContent: '' },
+    gBrowseSovitsDirectory: { disabled: false, addEventListener() {} },
+    gSaveSovitsDirectory: { disabled: false, addEventListener() {} },
+  };
+  const notifications = [];
+  let openedDashboard = 0;
+  const controller = initEngineDirectory(
+    dom,
+    (...args) => notifications.push(args),
+    () => {},
+    () => { openedDashboard += 1; },
+  );
+  await controller.save();
+  const last = notifications.at(-1);
+  assert.equal(last[1], 'success');
+  assert.equal(last[2]?.actionLabel, '前往运行状态');
+  assert.equal(typeof last[2]?.onAction, 'function');
+  last[2].onAction();
+  assert.equal(openedDashboard, 1);
+  passed++;
+}
+
 console.log(`Engine directory: ${passed} scenarios passed`);

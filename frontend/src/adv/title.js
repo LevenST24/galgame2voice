@@ -119,13 +119,14 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     dropdown?.remove(); dropdown = null; dropdownButton?.setAttribute('aria-expanded', 'false');
     if (restore) focus(dropdownButton); dropdownButton = null;
   }
+  const voiceSettingsTab = () => (status.engine?.state !== 'ready' && status.engine?.directory_configured ? 'dashboard' : 'inference');
   function togglePopover(kind) {
     const was = popupButton === pills[kind].button;
     closePopup(); closeDropdown(); if (was) return;
     popupButton = pills[kind].button; popupButton.setAttribute('aria-expanded', 'true');
     popup = el('div', 'home-popover'); popup.setAttribute('role', 'group');
     add(popup, el('p', '', explanation(kind)), btn('home-link', '去设置', () => {
-      closePopup(); stopListen(); actions.openSettings?.(kind === 'chat' ? 'models' : 'inference');
+      closePopup(); stopListen(); actions.openSettings?.(kind === 'chat' ? 'models' : voiceSettingsTab());
     }));
     pills[kind].wrap.appendChild(popup); focus(popup.querySelector('button'));
   }
@@ -261,7 +262,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
         }));
       row.appendChild(btn(`home-step-button${done[i] ? '' : ' home-step-pending'}`, i === 2 ? (installed ? '选择' : '去导入') : '去设置', () => {
         stopListen();
-        if (i === 2) actions.openCharacters?.(); else actions.openSettings?.(i === 0 ? 'models' : 'inference');
+        if (i === 2) actions.openCharacters?.(); else actions.openSettings?.(i === 0 ? 'models' : voiceSettingsTab());
       }));
       pane.appendChild(row);
     });
