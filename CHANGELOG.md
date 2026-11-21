@@ -5,6 +5,8 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Added
+- 会话可以改名了：「角色与会话」面板最上面新增「会话名称」，改完后会话列表和首页卡片都显示新名字，其他页面刷新后也会同步，之后发消息也不会被自动标题覆盖；清空后保存则保留原名字。
 ### Fixed
 - 修复「角色与会话 → 语音高级参数」处于默认的「自动调节语速与语气」模式时，下方「语速」「Top K」「TTS Top P」「TTS 温度」四个滑块仍可拖动但合成时不生效的问题；现在自动模式下会禁用并置灰这四个滑块，同时说明切换到「固定参数模式」后才使用手动参数。
 - 修复在本机 Ollama、vLLM 或第三方中转站运行 DeepSeek-R1 蒸馏版、QwQ 等推理模型时，模型的思考过程出现在字幕里、被念出来，台词也解析不出来；这类模型不按台词格式回复时，文字改为在回复结束后一次性显示。
