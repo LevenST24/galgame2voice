@@ -139,6 +139,17 @@ _RE_EMOTION_CANDIDATE_PREFIX = re.compile(r'^(?:情绪|心情|状态|emotion|emo
 _RE_TERMINAL_PUNCT_CHECK = re.compile(r'[。！？!?…]')
 _RE_ACTION_ASTERISK = re.compile(r'(?<!\*)\*([^*]{1,35})\*(?!\*)')
 _RE_BRACKET_CUES = re.compile(r'[（\(\[【〖〔\*]([^）\)\]】〗〕\*]{1,30})[）\)\]】〗〕\*]')
+_RE_HAS_CJK_OR_KANA = re.compile(r'[\u3041-\u3096\u30a1-\u30fa\u3400-\u4dbf\u4e00-\u9fff]')
+_RE_LATIN_WORD_OR_NUM = re.compile(r'[A-Za-z0-9]{2,}')
+_RE_MARKDOWN_LINK = re.compile(r'\[([^\[\]]+)\]\(\s*https?://[^)\s]+\s*\)', re.IGNORECASE)
+_RE_URL = re.compile(r'https?://[^\s<>()（）\[\]【】「」『』、。，！？!?]+', re.IGNORECASE)
+_RE_MARKDOWN_DECORATION = re.compile(r'\*\*|__|'+r'`+')
+_RE_JAPANESE_LAUGH_W = re.compile(
+    r'(?:(?<=[\u3041-\u3096\u30a1-\u30fa\u3400-\u4dbf\u4e00-\u9fff])[ \t]*[wｗ]{2,}(?![A-Za-z])'
+    r'|(?<![A-Za-z])[ \t]*[wｗ]{2,}(?=[ \t]*(?:[。！？!?、，,…~〜」』"\'）\)]|$)))'
+)
+_RE_INNER_VOICE_LABEL = re.compile(r'(?:心の声|心声)\s*[:：]\s*')
+_RE_MULTI_SPACE = re.compile(r'[ \t]{2,}')
 
 BRACKET_REGEX_PAIRS = [
     re.compile(re.escape(o) + r'([^' + re.escape(o) + re.escape(cl) + r']*)' + re.escape(cl))
@@ -154,6 +165,10 @@ def is_spoken_dialogue_inside_brackets(content: str) -> bool:
     """
     c = _RE_BRACKET_STRIP_EDGES.sub("", content.strip()).strip()
     if not c:
+        return False
+
+    # Strip kaomoji / symbol-only parentheticals like (´・ω・｀), (T_T), (≧ω≦), (>_<), (^o^)
+    if not _RE_HAS_CJK_OR_KANA.search(c) and not _RE_LATIN_WORD_OR_NUM.search(c):
         return False
 
     # Check English stage direction cues first (e.g. (giggles), (waves), (sigh), (whispers: 'hello'))
@@ -251,11 +266,18 @@ def clean_japanese_parentheses(text: str, max_passes: int = 5) -> str:
     if not cleaned:
         return ""
 
-    # 1. Clean Markdown action asterisks e.g. *sighs*, *blushes*, *叹气*, *脸红*
+    # 0. Clean Markdown links, bare URLs, Markdown wrappers, Japanese laugh w's, and inner-voice prefixes
+    cleaned = _RE_MARKDOWN_LINK.sub(r'\1', cleaned)
+    cleaned = _RE_URL.sub('', cleaned)
+    cleaned = _RE_MARKDOWN_DECORATION.sub('', cleaned)
+    cleaned = _RE_JAPANESE_LAUGH_W.sub('', cleaned)
+    cleaned = _RE_INNER_VOICE_LABEL.sub('', cleaned)
+
+    # 1. Clean Markdown action asterisks e.g. *sighs*, *blushes*, *叹气*, *脸红*, and unwrap *emphasis*
     def _replace_asterisk(m: re.Match) -> str:
         inside = m.group(1).strip()
         if is_spoken_dialogue_inside_brackets(inside):
-            return m.group(0)
+            return inside
         return ""
 
     cleaned = _RE_ACTION_ASTERISK.sub(_replace_asterisk, cleaned)
@@ -275,6 +297,7 @@ def clean_japanese_parentheses(text: str, max_passes: int = 5) -> str:
             break
 
     cleaned = cleaned.translate(str.maketrans('', '', '（）()【】[]〖〗〔〕'))
+    cleaned = _RE_MULTI_SPACE.sub(' ', cleaned)
     return cleaned.strip()
 
 

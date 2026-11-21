@@ -174,3 +174,37 @@ class TestJapaneseParenthesesCleaner:
         pure = "先生、準備は完了しました！いつでも出発できます。"
         assert clean_japanese_parentheses(pure) == pure
 
+
+
+def test_tts_cleaner_strips_kaomoji_urls_markdown_laugh_w_and_inner_voice():
+    """TTS cleaning removes kaomoji, URLs, Markdown wrappers, laugh w's, asterisk markup, and inner-voice labels."""
+    # Kaomoji
+    assert normalize_japanese_for_tts("(´・ω・｀)") == ""
+    assert normalize_japanese_for_tts("(T_T)") == ""
+    assert normalize_japanese_for_tts("(≧ω≦)") == ""
+    assert normalize_japanese_for_tts("ごめんね (´・ω・｀)") == "ごめんね"
+    assert normalize_japanese_for_tts("やったね！(≧ω≦)") == "やったね！"
+
+    # Markdown links, standalone URLs, bold/italic/code wrappers, laugh w
+    assert (
+        normalize_japanese_for_tts("詳しくは[公式ガイド](https://example.com/guide)を見てね **めっちゃ簡単** www")
+        == "詳しくは公式ガイドを見てね めっちゃ簡単"
+    )
+    assert normalize_japanese_for_tts("見てね https://example.com/guide だよ") == "見てね だよ"
+    assert normalize_japanese_for_tts("https://example.com/guide") == ""
+    assert normalize_japanese_for_tts("これは`テスト`と__強調__だよｗｗｗ！") == "これはテストと強調だよ！"
+    assert normalize_japanese_for_tts("www") == ""
+
+    # Single-asterisk emphasis vs known stage cues
+    assert normalize_japanese_for_tts("*本当に*嬉しい！") == "本当に嬉しい！"
+    assert normalize_japanese_for_tts("*ため息* もう知らない！") == "もう知らない！"
+    assert normalize_japanese_for_tts("*微笑みながら* もう知らない！") == "もう知らない！"
+    assert "*" not in normalize_japanese_for_tts("*頬を膨らませる* もう知らない！")
+
+    # Inner voice label prefix (keep spoken monologue, drop label; bare stage cue still stripped)
+    assert (
+        normalize_japanese_for_tts("【心の声：本当はすごく嬉しい】ふん、付き合ってあげるわ。")
+        == "本当はすごく嬉しいふん、付き合ってあげるわ。"
+    )
+    assert normalize_japanese_for_tts("（心声：其实我很开心）哼！") == "其实我很开心哼！"
+    assert normalize_japanese_for_tts("心の声が聞こえる") == "心の声が聞こえる"
