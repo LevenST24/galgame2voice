@@ -201,7 +201,7 @@ export async function openSessionSettings() {
   loadSessionVoiceSelect(s);
 }
 
-export function syncRangeLabels() {
+function syncRangeLabels() {
   if (_dom.sTempVal && _dom.sTemp) _dom.sTempVal.textContent = Number(_dom.sTemp.value).toFixed(2);
   if (_dom.sTopPVal && _dom.sTopP) _dom.sTopPVal.textContent = Number(_dom.sTopP.value).toFixed(2);
   if (_dom.sFreqVal && _dom.sFreq) _dom.sFreqVal.textContent = Number(_dom.sFreq.value).toFixed(1);
@@ -509,7 +509,7 @@ function syncVoiceDeleteButton() {
   if (_dom.sVoiceDelete) _dom.sVoiceDelete.disabled = isDeletingVoice || !id || !voiceProfiles.some((p) => p.id === id);
 }
 
-export function syncCustomVoiceBox() {
+function syncCustomVoiceBox() {
   syncVoiceDeleteButton();
   if (!_dom.sVoice || !_dom.sCustomVoiceBox) return;
   const show = _dom.sVoice.value === '__custom__';

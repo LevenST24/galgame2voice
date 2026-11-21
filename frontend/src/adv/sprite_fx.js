@@ -6,7 +6,7 @@
 
 export const FX_TYPES = new Set(['sweat', 'anger', 'heart', 'sparkle', 'question', 'exclamation']);
 
-export const FX_SVGS = {
+const FX_SVGS = {
   sweat: `
     <svg viewBox="0 0 48 64" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg" class="adv-fx-svg">
       <defs>

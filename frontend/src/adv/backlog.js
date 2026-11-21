@@ -20,7 +20,7 @@ const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 // A double-click's second hit lands on the button that just became「取消生成」.
 const REGENERATE_CANCEL_GRACE_MS = 500;
 
-export function resolveLogTexts(lineOrMsg, settings = {}) {
+function resolveLogTexts(lineOrMsg, settings = {}) {
   const primaryLang = settings.advPrimaryLanguage || 'zh';
   const subtitleLang = settings.advSubtitleLanguage !== undefined ? settings.advSubtitleLanguage : 'ja';
 

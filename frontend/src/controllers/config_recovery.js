@@ -51,7 +51,7 @@ async function writeConfirmedConfig(payload) {
       const entries = Object.entries(payload).filter(([, value]) => value !== undefined);
       if (current?.settings && entries.length
         && entries.every(([key, value]) => current.settings[key] === value)) {
-        return { ...current, confirmed_after_disconnect: !error.status, confirmed_after_readback: true };
+        return { ...current, confirmed_after_disconnect: !error.status };
       }
     }
     throw error;

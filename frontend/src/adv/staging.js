@@ -1,7 +1,7 @@
 // @ts-check
 // Per-view ephemeral stage direction. Explicit moves take precedence over the director.
-export const MOVES = ['approach', 'retreat', 'closeup', 'left', 'right', 'center'];
-export const DEPTHS = [0.84, 1, 1.12, 1.24];
+const MOVES = ['approach', 'retreat', 'closeup', 'left', 'right', 'center'];
+const DEPTHS = [0.84, 1, 1.12, 1.24];
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
 export function createStaging({ random = Math.random } = {}) {

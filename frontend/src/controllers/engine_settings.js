@@ -7,7 +7,7 @@ import { clearMemAudioCache } from '../cache.js';
 
 export const UNCONFIRMED_RESTART_MESSAGE = '重启请求结果未确认；当前引擎已在线。计算方式以「启动计算方式」显示的状态为准。';
 
-export class EngineSettingsController {
+class EngineSettingsController {
   constructor(dom = {}, coordinator = {}) {
     this.dom = dom || {};
     this.coordinator = coordinator || {};

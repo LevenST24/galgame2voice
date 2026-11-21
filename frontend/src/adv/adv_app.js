@@ -16,7 +16,6 @@ import { DEFAULT_SESSION_SETTINGS } from '../store.js';
 import { pickSettings } from '../session_data.js';
 import { requestJson } from '../request.js';
 import { needsModelSettings } from '../ui.js';
-export { advActions } from './actions.js';
 
 const MAX_TIMELINE_TURNS = 5;
 

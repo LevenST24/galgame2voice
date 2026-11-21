@@ -1,7 +1,7 @@
 // @ts-check
 // Settings operations have deadlines and never retry writes automatically.
 import { requestJson } from './request.js';
-export { getErrorMessage, requestJson } from './request.js';
+export { requestJson } from './request.js';
 
 const post = (body) => ({
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -44,5 +44,3 @@ export async function testProviderConnection(payload, { signal = null } = {}) {
     return providerTestResultFromError(error);
   }
 }
-
-export { getConsoleToken, setConsoleToken, promptConsoleToken } from './auth.js';

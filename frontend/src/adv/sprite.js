@@ -20,7 +20,7 @@ export const FRAMING = {
 };
 
 // Blink and lip sync timing, docs/design/adv-ui.md §6.3.
-export const BLINK = { minDelayMs: 2000, maxDelayMs: 6000, halfMs: 60, closedMs: 90 };
+const BLINK = { minDelayMs: 2000, maxDelayMs: 6000, halfMs: 60, closedMs: 90 };
 export const LIP_SYNC = { intervalMs: 34, closedBelow: 0.012, halfBelow: 0.045, hysteresisMs: 40 };
 
 const PRELOAD_BUDGET = 96 * 1024 * 1024;

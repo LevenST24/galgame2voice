@@ -14,7 +14,7 @@
  * @param {number} status
  * @returns {string}
  */
-export function statusMessage(status) {
+function statusMessage(status) {
   if (status === 401) return '需要访问令牌，请在弹出的验证窗口中输入启动目录 data/.console_token 中的令牌。';
   if (status === 403) return '当前操作未获授权，请检查访问令牌或服务地址。';
   if (status === 404) return '此配置或功能已不存在，请刷新列表后重新选择。';
