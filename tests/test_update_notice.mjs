@@ -141,7 +141,7 @@ test('formatUpdateStatus covers all 5 notice states in Chinese', () => {
   assert.equal(portableUpdate.tagText, '发现新版本 v9.9.0');
   assert.equal(
     portableUpdate.desc,
-    '当前版本为 v3.1.2。请点击「前往下载页」下载新版便携包；解压到新文件夹后，将旧目录中的 data、audio、characters、backgrounds（及个人 .env）复制过去即可保留全部数据。',
+    '当前版本为 v3.1.2。更新方法：先点「前往下载页」下载新版便携包，然后关闭当前程序的启动窗口；把新包解压到一个新文件夹，再把旧文件夹里的 data、audio、characters、backgrounds（以及自己改过的 .env）复制到新版的 Galgame2Voice 文件夹里，然后启动新版。如果新版提示找不到语音引擎，到「设置中心 → 语音服务」重新选择「本机 GPT-SoVITS 引擎文件夹」并保存。',
   );
 
   const latest = formatUpdateStatus({
@@ -266,7 +266,9 @@ test('update panel shows the local version, then the GitHub Releases result with
     dom.gBtnCheckUpdate.click();
     await untilIdle(dom.gBtnCheckUpdate);
     assert.equal(dom.gCurrentBranch.textContent, '便携版');
+    assert.match(dom.gUpdateNoticeDesc.textContent, /关闭当前程序/);
     assert.match(dom.gUpdateNoticeDesc.textContent, /data、audio、characters、backgrounds/);
+    assert.match(dom.gUpdateNoticeDesc.textContent, /本机 GPT-SoVITS 引擎文件夹/);
 
     // 6. A GitHub error keeps the download link usable, and a link outside this repository is ignored.
     remotePayload = {
