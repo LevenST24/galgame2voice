@@ -243,13 +243,17 @@ def launch_browser_with_devtools(
     cdp_port: int | None = None
     deadline = start + attempt_timeout
 
-    while time.monotonic() < deadline and proc.poll() is None:
+    # Look for the port file at least once before the deadline check: Popen itself
+    # counts against the deadline and can outlast a short attempt timeout.
+    while proc.poll() is None:
         if port_file.is_file():
             try:
                 cdp_port = int(port_file.read_text(encoding="utf-8").splitlines()[0])
                 break
             except (OSError, ValueError, IndexError):
                 pass
+        if time.monotonic() >= deadline:
+            break
         time.sleep(0.05)
 
     if cdp_port is not None:
