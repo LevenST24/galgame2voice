@@ -25,7 +25,7 @@
 .home-dot.bad { background: #ff6b6b; }
 .adv-title-screen .home-popover, .adv-title-screen .home-dropdown { position: absolute; z-index: 20; padding: calc(22 * var(--u)); border: 1px solid #ffffff33; border-radius: calc(16 * var(--u)); background: #0e101cf5; box-shadow: 0 calc(12 * var(--u)) calc(40 * var(--u)) #0007; font-size: calc(24 * var(--u)); line-height: 1.55; }
 .home-popover { right: 0; top: calc(100% + 14 * var(--u)); width: calc(480 * var(--u)); overflow-wrap: anywhere; }
-.adv-title-screen .home-excerpt { position: absolute; left: calc(150 * var(--u)); top: calc(330 * var(--u)); width: calc(880 * var(--u)); max-height: calc(580 * var(--u)); overflow: visible; }
+.adv-title-screen .home-excerpt { position: absolute; left: calc(150 * var(--u)); top: calc(170 * var(--u)); width: calc(880 * var(--u)); max-height: calc(690 * var(--u)); overflow: visible; }
 .adv-title-screen .home-excerpt.is-reading { top: calc(330 * var(--u)); max-height: none; }
 .adv-title-screen .home-label { color: var(--home-accent); font-size: calc(22 * var(--u)); font-weight: 600; letter-spacing: .3em; margin-bottom: calc(18 * var(--u)); }
 .adv-title-screen .home-first-heading { display: flex; align-items: center; justify-content: space-between; gap: calc(20 * var(--u)); margin-bottom: calc(18 * var(--u)); }
@@ -38,6 +38,7 @@
 .adv-title-screen .home-quote { padding-left: calc(28 * var(--u)); border-left: calc(3 * var(--u)) solid var(--home-accent); font-family: "Songti SC", "SimSun", serif; font-size: calc(54 * var(--u)); font-weight: 500; line-height: 1.45; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; text-shadow: 0 2px 18px #0008; }
 .adv-title-screen .home-ja { margin-top: calc(14 * var(--u)); padding-left: calc(32 * var(--u)); font-family: "Yu Mincho", "SimSun", serif; font-size: calc(30 * var(--u)); line-height: 1.5; color: #ffffffb8; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; }
 .adv-title-screen .home-actions { display: flex; align-items: center; flex-wrap: wrap; gap: calc(36 * var(--u)); margin-top: calc(48 * var(--u)); }
+.adv-title-screen .home-excerpt:not(.is-reading) .home-actions { margin-top: calc(32 * var(--u)); }
 .adv-title-screen .home-checking { margin: 0; color: #ffffffb8; font-size: calc(26 * var(--u)); }
 .adv-title-screen .home-primary { border: 0; border-radius: 999px; background: #fff; color: #12141f; font-size: calc(30 * var(--u)); font-weight: 700; padding: calc(19 * var(--u)) calc(46 * var(--u)); min-width: calc(240 * var(--u)); box-shadow: 0 calc(8 * var(--u)) calc(30 * var(--u)) #0005; }
 .adv-title-screen .home-primary:hover { background: #fff4f0; }
@@ -59,8 +60,8 @@
 .adv-title-screen .home-option { display: block; width: 100%; padding: calc(10 * var(--u)); font-size: calc(26 * var(--u)); border: 0; background: transparent; text-align: left; white-space: nowrap; }
 .home-option[aria-pressed="true"] { color: var(--home-accent); }
 .home-option:hover { background: #ffffff18; }
-.adv-title-screen .home-first-title { font-size: calc(42 * var(--u)); line-height: 1.5; margin-bottom: calc(28 * var(--u)); }
-.adv-title-screen .home-step { display: flex; align-items: center; gap: calc(24 * var(--u)); min-height: calc(121 * var(--u)); padding: calc(24 * var(--u)) 0; border-top: 1px solid #ffffff33; font-size: calc(28 * var(--u)); }
+.adv-title-screen .home-first-title { font-size: calc(42 * var(--u)); line-height: 1.45; margin-bottom: calc(20 * var(--u)); }
+.adv-title-screen .home-step { display: flex; align-items: center; gap: calc(24 * var(--u)); min-height: calc(106 * var(--u)); padding: calc(18 * var(--u)) 0; border-top: 1px solid #ffffff33; font-size: calc(28 * var(--u)); }
 .adv-title-screen .home-step:last-child { border-bottom: 1px solid #ffffff33; }
 .home-step-mark { display: grid; place-items: center; flex: none; width: calc(44 * var(--u)); height: calc(44 * var(--u)); border: calc(2 * var(--u)) solid #ffffff80; border-radius: 50%; color: var(--home-accent); }
 .home-step-copy { flex: 1; }

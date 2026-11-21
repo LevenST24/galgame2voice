@@ -186,14 +186,17 @@ function writeState({ allowDamaged = false } = {}) {
           .filter((s) => s && s.id !== state.activeId && Array.isArray(s.messages) && s.messages.length > 0 &&
             !s.messages.some((m) => m && m.role === 'user' && m.failed))
           .sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0));
-        /** @type {Array<{ session: ChatSession, messages: ChatMessage[], lastLine: string | undefined }>} */
+        /** @type {Array<{ session: ChatSession, messages: ChatMessage[], lastLine: string | undefined, hasServerMessages: boolean | undefined }>} */
         const evicted = [];
         let saved = false;
         for (const s of inactive) {
-          evicted.push({ session: s, messages: s.messages, lastLine: s.lastLine });
+          evicted.push({ session: s, messages: s.messages, lastLine: s.lastLine, hasServerMessages: s.hasServerMessages });
           if (!s.lastLine) {
             const last = s.messages.at(-1);
             s.lastLine = last?.lines?.at(-1)?.zh || last?.lines?.at(-1)?.ja || last?.content || last?.japanese || '';
+          }
+          if (s.messages.some((m) => m && m.role === 'user')) {
+            s.hasServerMessages = true;
           }
           s.messages = [];
           next = JSON.stringify(snapshot());
@@ -212,6 +215,11 @@ function writeState({ allowDamaged = false } = {}) {
               delete item.session.lastLine;
             } else {
               item.session.lastLine = item.lastLine;
+            }
+            if (item.hasServerMessages === undefined) {
+              delete item.session.hasServerMessages;
+            } else {
+              item.session.hasServerMessages = item.hasServerMessages;
             }
           }
           throw retryError;

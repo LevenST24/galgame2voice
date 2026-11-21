@@ -18,6 +18,7 @@ export function formatHomeTime(value, now = new Date()) {
 function createInitialStatus() {
   return {
     modelLoaded: false,
+    engineLoaded: false,
     engine: {
       state: 'checking',
       message: '正在核对语音引擎，可以先用文字聊天',
@@ -170,6 +171,11 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     playing = false; listenButton.children[0].textContent = '▶ 试听这句'; listenButton.setAttribute('aria-pressed', 'false');
     if (result === 'failed') { failedAudio.add(JSON.stringify(excerpt)); listenButton.hidden = true; }
   }
+  function isCheckingState() {
+    const anySessionHasMessages = sessions.some(s => Boolean(s?.hasUserMessages));
+    const enginePending = chatOK() && !anySessionHasMessages && !isTextOnly() && !status.engineLoaded;
+    return !status.modelLoaded || enginePending;
+  }
   function renderPane(force = false) {
     const session = main();
     const characters = actions.listCharacters?.() || [];
@@ -177,9 +183,11 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     const voiceStepDone = status.engine?.state === 'ready' || isTextOnly();
     const characterStepDone = characters.some(p => p.id === session?.settings?.voiceProfileId);
     const anySessionHasMessages = sessions.some(s => Boolean(s?.hasUserMessages));
+    const enginePending = modelReady && !anySessionHasMessages && !isTextOnly() && !status.engineLoaded;
+    const checking = !status.modelLoaded || enginePending;
     const firstUse = status.modelLoaded && !status.model?.readFailed
-      && (!modelReady || (!anySessionHasMessages && (!voiceStepDone || !characterStepDone)));
-    const signature = JSON.stringify([mode, session, status.modelLoaded, firstUse, modelReady, status.engine?.state,
+      && (!modelReady || (!anySessionHasMessages && !enginePending && (!voiceStepDone || !characterStepDone)));
+    const signature = JSON.stringify([mode, session, status.modelLoaded, status.engineLoaded, firstUse, modelReady, status.engine?.state,
       isTextOnly(), anySessionHasMessages, characters.length > 0, characterStepDone,
       canReplayLine(session?.excerpt?.line, session?.excerpt, actions.voiceEnabled?.() ?? true, now().getTime())]);
     if (!force && rendered === signature) return;
@@ -208,7 +216,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
       pane.appendChild(el('blockquote', 'home-quote', `「${String(quote).replace(/^「|」$/g, '')}」`));
       if (excerpt.zh && excerpt.ja && excerpt.zh !== excerpt.ja) pane.appendChild(el('p', 'home-ja', excerpt.ja));
       const row = el('div', 'home-actions');
-      if (!status.modelLoaded) row.appendChild(el('p', 'home-checking', '正在检查设置…'));
+      if (checking) row.appendChild(el('p', 'home-checking', '正在检查设置…'));
       else {
         const primaryLabel = session?.hasUserMessages ? '接着聊 →' : '开始聊天';
         row.appendChild(btn('home-primary home-continue', primaryLabel, () => enter()));
@@ -224,12 +232,12 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     }
     const idleFocus = !doc.activeElement || doc.activeElement === doc.body || doc.activeElement === pendingFocus;
     if (hadFocus || (pendingFocus && idleFocus)) focusPrimary();
-    else if (status.modelLoaded) pendingFocus = null;
+    else if (!checking) pendingFocus = null;
   }
   function focusPrimary() {
     const target = pane.querySelector('.home-continue')
       || pane.querySelector('.home-step-pending') || pane.querySelector('button');
-    pendingFocus = !target && mode === 'home' && !status.modelLoaded ? (doc.activeElement || true) : null;
+    pendingFocus = !target && mode === 'home' && isCheckingState() ? (doc.activeElement || true) : null;
     focus(target);
   }
   function renderFirst() {
@@ -422,17 +430,28 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     if (!opened || polling?.revision === revision) return;
     const token = revision, request = { revision: token };
     polling = request;
+    const syncRecents = () => {
+      // Keep recent buttons stable during polling so keyboard focus is preserved.
+      const recentKey = JSON.stringify(sessions.map(s => [s.id, s.characterName, s.title, s.updatedAt, s.settings?.voiceProfileId]));
+      if (recents.dataset.key !== recentKey) { recents.dataset.key = recentKey; renderRecents(); }
+      else for (const button of recents.querySelectorAll('.home-recent')) {
+        const session = sessions.find(s => s.id === button.dataset.session);
+        if (session) updateAvatar(button.querySelector('.home-avatar'), session);
+      }
+    };
     const apply = next => {
       if (!opened || token !== revision) return;
       status = { ...status, ...next };
       readSessions();
       renderStatus();
       renderPane();
+      syncRecents();
     };
     try {
       const result = await actions.getStatus?.(apply);
       if (!opened || token !== revision) return;
-      status = result || status; readSessions(); renderStatus(); renderPane();
+      status = result ? { ...result, engineLoaded: result.engineLoaded ?? true } : status;
+      readSessions(); renderStatus(); renderPane();
       if (mode === 'all') {
         if (grid.dataset.key !== gridSignature()) {
           renderGrid();
@@ -446,13 +465,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
           }
         }
       }
-      // Keep recent buttons stable during polling so keyboard focus is preserved.
-      const recentKey = JSON.stringify(sessions.map(s => [s.id, s.characterName, s.title, s.updatedAt, s.settings?.voiceProfileId]));
-      if (recents.dataset.key !== recentKey) { recents.dataset.key = recentKey; renderRecents(); }
-      else for (const button of recents.querySelectorAll('.home-recent')) {
-        const session = sessions.find(s => s.id === button.dataset.session);
-        if (session) updateAvatar(button.querySelector('.home-avatar'), session);
-      }
+      syncRecents();
       setStageHome(true);
     } finally { if (polling === request) polling = null; }
   }

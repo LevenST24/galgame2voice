@@ -126,6 +126,16 @@ function isLocalStarterGreeting(msg) {
   );
 }
 
+/** @param {Record<string, any> | null | undefined} bs */
+function hasServerChatMessages(bs) {
+  const count = Number(bs?.message_count) || 0;
+  if (count <= 0) return false;
+  if (count === 1 && (bs?.last_message === GREETING || LEGACY_GREETINGS.includes(bs?.last_message))) {
+    return false;
+  }
+  return true;
+}
+
 /**
  * Mirrors SovitsEndpoint.is_local: plain http on a loopback host without a subpath,
  * the only kind of engine this app starts itself from a local folder.
@@ -411,7 +421,10 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     }
   }
 
-  function renderHeader() { updateBadge(); }
+  function renderHeader() {
+    updateBadge();
+    onModelStatus?.({});
+  }
 
   function fullRender() {
     renderSidebar();
@@ -556,6 +569,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           }
         }
         session.messages = incoming;
+        session.hasServerMessages = Boolean(data.has_more) || incoming.some((m) => m.role === 'user');
         session.hasMoreHistory = Boolean(data.has_more);
         session.oldestMessageId = Number.isInteger(data.oldest_id) ? data.oldest_id : earliestServerMessageId(session.messages);
         autoTitle(session);
@@ -567,6 +581,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           const changed = initialCount !== retained.length || Boolean(session.lastLine);
           session.messages = retained;
           session.lastLine = '';
+          session.hasServerMessages = false;
           if (changed) saveState();
         }
         session.hasMoreHistory = false;
@@ -913,6 +928,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           let local = existingMap.get(bs.id);
           if (local) {
             local.lastLine = bs.last_message || '';
+            local.hasServerMessages = hasServerChatMessages(bs);
             if (bs.title && (local.title === '新对话' || !local.title)) local.title = bs.title;
             const serverUpdatedAt = serverTimestamp(bs.updated_at, local.updatedAt);
             if (local.unconfirmedSettingsVersion) {
@@ -955,6 +971,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
               updatedAt: serverTimestamp(bs.updated_at),
               messages: [],
               lastLine: bs.last_message || '',
+              hasServerMessages: hasServerChatMessages(bs),
               settings: pickSettings({
                 ...DEFAULT_SESSION_SETTINGS,
                 ...(bs.settings || {}),

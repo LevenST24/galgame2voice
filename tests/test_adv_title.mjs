@@ -8,6 +8,7 @@ import { showTitle } from '../frontend/src/adv/title_hook.js';
 import { createPortraitCache } from '../frontend/src/adv/portrait_cache.js';
 import { tick } from './helpers/chat_stream.mjs';
 import { initApp } from '../frontend/src/main.js';
+import { GREETING, LEGACY_GREETINGS } from '../frontend/src/store.js';
 
 const NOW = new Date(2026, 9, 24, 22, 30);
 const audio = { status: 'ready', chunks: [{ audio_url: '/fake.wav' }] };
@@ -941,4 +942,168 @@ test('onboarding checklist stays visible after step 1 until all 3 steps are done
   });
   assert.equal(hReturning.q('.home-first-title'), null, 'returning user with a new empty session must not see onboarding checklist');
   assert.equal(textTree(hReturning.q('.home-continue')), '开始聊天');
+});
+
+
+
+test('syncSessionsFromBackend marks server messages on unloaded/evicted sessions while ignoring greeting-only sessions', async t => {
+  const doc = fakeDocument();
+  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
+  globalThis.document = doc;
+  const root = doc.body.appendChild(doc.createElement('div'));
+  root.id = 'advRoot';
+  const storage = new Map();
+  // Seed an existing local session whose messages were evicted (messages: []) by storage quota.
+  storage.set('gal2voice.chat.v1', JSON.stringify({
+    sessions: [
+      { id: 's_fresh', title: '新对话', createdAt: 3000, updatedAt: 3000, messages: [], settings: { voiceProfileId: null } },
+      { id: 's_evicted', title: '已淘汰老会话', createdAt: 2000, updatedAt: 2000, messages: [], settings: { voiceProfileId: null } },
+    ],
+    activeId: 's_fresh',
+    global: { voiceMode: true, ttsPreset: '' },
+  }));
+  globalThis.localStorage = { getItem: k => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, v), removeItem: k => storage.delete(k) };
+  const activeProvider = { id: 'deepseek', name: 'DeepSeek', chat_model: 'deepseek-chat', api_key: 'sk-****', is_active: true };
+  const fetchMock = async url => {
+    const path = String(url);
+    if (path === '/api/providers') return Response.json({ providers: [activeProvider], presets: [] });
+    if (path.startsWith('/api/chat/sessions/')) return Response.json({ messages: [], has_more: false });
+    if (path.startsWith('/api/chat/sessions')) {
+      return Response.json({
+        sessions: [
+          { id: 's_fresh', title: '新对话', created_at: '2026-06-01 00:00:05', updated_at: '2026-06-01 00:00:05', message_count: 0, last_message: '', settings: {} },
+          { id: 's_evicted', title: '已淘汰老会话', created_at: '2026-06-01 00:00:04', updated_at: '2026-06-01 00:00:04', message_count: 2, last_message: '之前聊过的内容', settings: {} },
+          { id: 's_remote_only', title: '换端口同步来的老会话', created_at: '2026-06-01 00:00:03', updated_at: '2026-06-01 00:00:03', message_count: 2, last_message: '服务端历史消息', settings: {} },
+          { id: 's_greet_only', title: '仅开场白', created_at: '2026-06-01 00:00:02', updated_at: '2026-06-01 00:00:02', message_count: 1, last_message: GREETING, settings: {} },
+          { id: 's_legacy_greet', title: '旧版开场白', created_at: '2026-06-01 00:00:01', updated_at: '2026-06-01 00:00:01', message_count: 1, last_message: LEGACY_GREETINGS[0], settings: {} },
+        ],
+        has_more: false,
+      });
+    }
+    if (path === '/api/system/engine-status') return Response.json({ state: 'unavailable' });
+    if (path === '/api/voice/profiles') return Response.json({ profiles: [], active_profile_id: null });
+    return Response.json({ backgrounds: [], settings: {} });
+  };
+  const loc = { search: '', hash: '', origin: 'http://home.test' };
+  globalThis.location = loc;
+  globalThis.window = { innerWidth: 1280, location: loc, sessionStorage: { getItem: () => '', setItem() {} }, fetch: fetchMock };
+  globalThis.fetch = fetchMock;
+  const app = initApp({ dom: { advRoot: root }, renderSessionList() {} });
+  let title;
+  t.after(() => {
+    title?.destroy();
+    app.conversation.stop();
+    app.adv?.unmount();
+    for (const key of ['document', 'window', 'localStorage', 'fetch', 'location']) delete globalThis[key];
+  });
+  title = await app.ready;
+  await tick();
+  const byId = Object.fromEntries(app.actions.listSessions().map(s => [s.id, s]));
+  assert.equal(byId.s_fresh.hasUserMessages, false);
+  assert.equal(byId.s_evicted.hasUserMessages, true, 'evicted local session with server message_count > 0 must count as having messages');
+  assert.equal(byId.s_remote_only.hasUserMessages, true, 'remote-synced unloaded session with server message_count > 0 must count as having messages');
+  assert.equal(byId.s_greet_only.hasUserMessages, false, 'session with only GREETING must not count as having user messages');
+  assert.equal(byId.s_legacy_greet.hasUserMessages, false, 'session with only LEGACY_GREETINGS must not count as having user messages');
+  assert.equal(Boolean(title.element.querySelector('.home-first-title')), false, 'returning user with unloaded server history must not see onboarding checklist');
+});
+
+test('opening home waits on checking instead of flashing checklist before engine status returns', async t => {
+  let resolveStatus;
+  const emptySession = { ...snapshot('empty'), hasUserMessages: false, settings: { voiceProfileId: 7, advBackground: '', advBgTime: 'auto' } };
+  const h = await fixture(t, {
+    sessions: [emptySession],
+    active: 'empty',
+    actions: {
+      listCharacters: () => [{ id: 7, name: '星野' }],
+      getStatus: (onModel) => {
+        onModel?.({ modelLoaded: true, hasModel: true, model: { state: 'ok', label: 'DeepSeek' } });
+        return new Promise(resolve => { resolveStatus = resolve; });
+      },
+    },
+  });
+  t.after(() => {
+    resolveStatus?.({ modelLoaded: true, hasModel: true, model: { state: 'ok' }, engine: { state: 'ready' } });
+  });
+  // Model is already loaded and OK, but engine status has not returned yet: must show checking, NOT flash checklist.
+  assert.equal(Boolean(h.q('.home-first-title')), false, 'must not flash onboarding checklist while engine status is still pending');
+  assert.match(textTree(h.ui.element), /正在检查设置…/);
+  assert.equal(h.q('.home-continue'), null);
+
+  resolveStatus({ modelLoaded: true, hasModel: true, model: { state: 'ok', label: 'DeepSeek' }, engine: { state: 'ready' } });
+  await microtasks();
+  assert.equal(Boolean(h.q('.home-first-title')), false, 'must stay in continue view when engine returns ready and character is chosen');
+  assert.equal(textTree(h.q('.home-continue')), '开始聊天');
+
+  // When user chose text-only (voiceEnabled === false), do NOT wait on engine status before showing checklist for unfinished step 3.
+  let resolveTextOnlyStatus;
+  const hTextOnly = await fixture(t, {
+    sessions: [{ ...emptySession, settings: { voiceProfileId: null, advBackground: '', advBgTime: 'auto' } }],
+    active: 'empty',
+    actions: {
+      voiceEnabled: () => false,
+      listCharacters: () => [{ id: 7, name: '星野' }],
+      getStatus: (onModel) => {
+        onModel?.({ modelLoaded: true, hasModel: true, model: { state: 'ok', label: 'DeepSeek' } });
+        return new Promise(resolve => { resolveTextOnlyStatus = resolve; });
+      },
+    },
+  });
+  t.after(() => {
+    resolveTextOnlyStatus?.({ modelLoaded: true, hasModel: true, model: { state: 'ok' }, engine: { state: 'unavailable' } });
+  });
+  assert.ok(hTextOnly.q('.home-first-title'), 'text-only user should not block on pending engine status');
+});
+
+test('late-arriving character list refreshes open home screen immediately', async t => {
+  const doc = fakeDocument();
+  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
+  globalThis.document = doc;
+  const root = doc.body.appendChild(doc.createElement('div'));
+  root.id = 'advRoot';
+  const storage = new Map();
+  globalThis.localStorage = { getItem: k => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, v), removeItem: k => storage.delete(k) };
+  const activeProvider = { id: 'deepseek', name: 'DeepSeek', chat_model: 'deepseek-chat', api_key: 'sk-****', is_active: true };
+  const profileReplies = [];
+  const fetchMock = async url => {
+    const path = String(url);
+    if (path === '/api/providers') return Response.json({ providers: [activeProvider], presets: [] });
+    if (path.startsWith('/api/chat/sessions/')) return Response.json({ messages: [], has_more: false });
+    if (path.startsWith('/api/chat/sessions')) {
+      return Response.json({
+        sessions: [
+          { id: 's_bound', title: '新对话', voice_profile_id: 7, created_at: '2026-06-01 00:00:01', updated_at: '2026-06-01 00:00:01', message_count: 0, last_message: '', settings: {} },
+        ],
+        has_more: false,
+      });
+    }
+    if (path === '/api/system/engine-status') return Response.json({ state: 'ready', base_url: 'http://127.0.0.1:9880' });
+    if (path === '/api/voice/profiles') return new Promise(resolve => profileReplies.push(resolve));
+    if (path === '/api/voice/switch') return Response.json({ profile: '星野' });
+    return Response.json({ backgrounds: [], settings: {} });
+  };
+  const loc = { search: '', hash: '', origin: 'http://home.test' };
+  globalThis.location = loc;
+  globalThis.window = { innerWidth: 1280, location: loc, sessionStorage: { getItem: () => '', setItem() {} }, fetch: fetchMock };
+  globalThis.fetch = fetchMock;
+  const app = initApp({ dom: { advRoot: root }, renderSessionList() {} });
+  let title;
+  t.after(() => {
+    while (profileReplies.length) profileReplies.shift()(Response.json({ profiles: [], active_profile_id: null }));
+    title?.destroy();
+    app.conversation.stop();
+    app.adv?.unmount();
+    for (const key of ['document', 'window', 'localStorage', 'fetch', 'location']) delete globalThis[key];
+  });
+  title = await app.ready;
+  await tick();
+  // Profiles haven't loaded yet, so step 3 is not yet satisfied.
+  assert.ok(title.element.querySelector('.home-first-title'), 'checklist shows while character list has not arrived yet');
+  // Now character list arrives late -> renderHeader refreshes the open home screen without waiting for poll.
+  while (profileReplies.length) {
+    profileReplies.shift()(Response.json({ profiles: [{ id: 7, name: '星野' }], active_profile_id: 7 }));
+    await tick();
+  }
+  await tick();
+  assert.equal(Boolean(title.element.querySelector('.home-first-title')), false, 'home screen must refresh when late character list arrives');
+  assert.equal(textTree(title.element.querySelector('.home-continue')), '开始聊天');
 });
