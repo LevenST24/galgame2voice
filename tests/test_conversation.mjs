@@ -506,3 +506,77 @@ test('send: whitespace-padded text respects trimmed length against 4000 limit', 
   assert.deepEqual(h2.blocked, ['单次发送内容不能超过 4000 字，请删减后再发送。']);
 });
 
+test('send: takes pendingVoice only after validation passes and skips it for retry or explicit voiceMeta', async () => {
+  const session = { id: 's_pv', title: '新对话', settings: { temperature: 0.7, voiceProfileId: 3 }, messages: [] };
+  const stream = fakeChatStream();
+  const audioStore = new Map();
+  const recordings = [];
+  let seq = 0;
+  let pending = { url: 'blob:pending-1', dur: 4, blob: new Blob(['mic-1']) };
+  let takeCalls = 0;
+  const conversation = createConversation({
+    state: { activeId: 's_pv', global: { voiceMode: false, ttsPreset: '' } },
+    getActive: () => session,
+    getSession: (id) => (id === session.id ? session : null),
+    uid: (prefix) => `${prefix}_${++seq}`,
+    saveState: () => {},
+    addMessage(role, content) {
+      const msg = { id: `m_${++seq}`, role, content, ts: Date.now() };
+      session.messages.push(msg);
+      return msg;
+    },
+    persistSession: async () => {},
+    isSessionDeleting: () => false,
+    audioStore,
+    putCachedAudioBlob: (...args) => recordings.push(args),
+    fetchAndCacheAudio: async () => {},
+    audioPlayer: { isPlaying: false, interrupt() {} },
+    getCurrentVoice: () => null,
+    stopCurrentVoice: () => {},
+    takePendingVoice: () => {
+      takeCalls += 1;
+      const out = pending;
+      pending = undefined;
+      return out;
+    },
+    fetch: stream.fetch,
+  });
+
+  // Rejected sends (empty or >4000 chars) must not consume pendingVoice
+  assert.equal(conversation.send('   '), false);
+  assert.equal(conversation.send('超'.repeat(4001)), false);
+  assert.equal(takeCalls, 0);
+
+  // Accepted manual send consumes pendingVoice and attaches it
+  assert.equal(conversation.send('改短后发送'), true);
+  assert.equal(takeCalls, 1);
+  const firstUser = session.messages[0];
+  assert.equal(firstUser.dur, 4);
+  assert.equal(firstUser.voiceKey, `user_${firstUser.id}`);
+  assert.deepEqual(audioStore.get(firstUser.id), { url: 'blob:pending-1', dur: 4 });
+  assert.equal(recordings.length, 1);
+  await stream.requests[0].onEnd('', { error: '模拟错误', errorCode: 'NET_ERR' });
+
+  // Retry (retryOf != null) must not call takePendingVoice
+  pending = { url: 'blob:pending-2', dur: 6, blob: new Blob(['mic-2']) };
+  assert.equal(conversation.retry(firstUser), true);
+  assert.equal(takeCalls, 1);
+  assert.deepEqual(audioStore.get(firstUser.id), { url: 'blob:pending-1', dur: 4 });
+  await stream.requests[1].onEnd('恢复回复');
+
+  // Explicit voiceMeta (object or null) must not call takePendingVoice
+  const explicitBlob = new Blob(['explicit']);
+  assert.equal(conversation.send('显式带音', { url: 'blob:explicit', dur: 8, blob: explicitBlob }), true);
+  assert.equal(takeCalls, 1);
+  const explicitUser = session.messages.at(-1);
+  assert.deepEqual(audioStore.get(explicitUser.id), { url: 'blob:explicit', dur: 8 });
+  await stream.requests[2].onEnd('收到');
+
+  assert.equal(conversation.send('显式无音', null), true);
+  assert.equal(takeCalls, 1);
+  const nullVoiceUser = session.messages.at(-1);
+  assert.equal(audioStore.get(nullVoiceUser.id), undefined);
+  conversation.stop();
+});
+
+
