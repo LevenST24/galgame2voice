@@ -750,7 +750,12 @@ function isSessionModalOpen() {
 function characterImportSuccessMessage(label, imported, modalOpen = true, autoBound = false) {
   const missing = imported.filter((item) => item.missing_voice_weights);
   if (!missing.length) {
-    if (autoBound) return `已导入并选用${label}，现在可以直接开始聊天`;
+    if (autoBound) {
+      if (imported.length > 1 && imported[0]?.name) {
+        return `已导入${label}，已选用「${imported[0].name}」，现在可以直接开始聊天`;
+      }
+      return `已导入并选用${label}，现在可以直接开始聊天`;
+    }
     return modalOpen ? `已导入${label}，点「保存」即可使用` : `已导入${label}，可在「角色与会话」中选用`;
   }
   if (missing.length === imported.length) {
@@ -776,7 +781,8 @@ async function finishCharacterImport(data, filename) {
   let autoBound = false;
   let note = '';
   if (isSessionModalOpen()) {
-    const profileId = imported[0]?.profile_id ?? null;
+    const firstImported = imported[0];
+    const profileId = firstImported?.profile_id ?? null;
     if (profileId != null && _dom.sVoice) {
       _dom.sVoice.value = String(profileId);
       handleVoiceSelectionChange();
@@ -808,8 +814,10 @@ async function finishCharacterImport(data, filename) {
             note = `；会话绑定尚未同步到本机服务：${e.message}`;
           }
         }
-        if (getActive() === active && state.sessions.includes(active)) {
-          ensureSessionVoice(active);
+        _callbacks.renderSidebar?.();
+        _callbacks.renderHeader?.();
+        if (!firstImported?.missing_voice_weights && getActive() === active && state.sessions.includes(active)) {
+          ensureSessionVoice(active, { silent: true });
         }
       }
     } else syncCustomVoiceBox();
