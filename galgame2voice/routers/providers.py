@@ -443,14 +443,15 @@ async def test_provider(req: ProviderTestRequest):
         allow_private = await _enforce_llm_url_guard(base_url)
     except HTTPException as exc:
         detail_str = str(exc.detail)
-        if "允许私网 LLM 端点" in detail_str:
+        if "允许连接本机或局域网的模型服务" in detail_str or "允许私网 LLM 端点" in detail_str:
             return _preflight_bad_request_response(
                 detail=detail_str,
                 diagnostic_code="PRIVATE_ENDPOINT_BLOCKED",
                 summary_zh="私网或本机模型地址未启用",
                 action_zh=(
                     "如确需连接本机或局域网模型服务（如 Ollama、vLLM、LM Studio），"
-                    "请在设置中开启「允许私网 LLM 端点」后重试；否则请改用公网 HTTPS 接口地址。"
+                    "或正在使用代理软件的 TUN 模式，请在「设置中心 → 对话模型」勾选「允许连接本机或局域网的模型服务」后重试；"
+                    "否则请改用公网 HTTPS 接口地址。"
                 ),
             )
         return _preflight_bad_request_response(

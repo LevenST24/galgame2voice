@@ -297,11 +297,18 @@ def _diagnose_local_configuration(
     api_key_configured: bool | None,
 ) -> DiagnosticResult | None:
     """Failures caused by this console's own settings rather than by the provider."""
-    if "ssrf/dns-rebinding" in raw_lower or "允许私网 llm 端点" in raw_lower:
+    if (
+        "ssrf/dns-rebinding" in raw_lower
+        or "允许连接本机或局域网的模型服务" in raw_lower
+        or "允许私网 llm 端点" in raw_lower
+    ):
         return DiagnosticResult(
             error_code="PRIVATE_ENDPOINT_BLOCKED",
             message="模型地址指向本机或局域网，当前未允许连接",
-            guidance="如果这是你信任的本地模型（如 Ollama、LM Studio），请在「设置中心 → 对话模型」开启「允许私网 LLM 端点」后重试；否则请改用服务商提供的公网地址。",
+            guidance=(
+                "如果这是你信任的本地模型（如 Ollama、LM Studio），或正在使用代理软件的 TUN 模式，"
+                "请在「设置中心 → 对话模型」勾选「允许连接本机或局域网的模型服务」后重试；否则请改用服务商提供的公网地址。"
+            ),
             raw_error=sanitized_raw,
         )
     is_timeout_text = any(kw in raw_lower for kw in ("timed out", "timeouterror", "readtimeout", "connecttimeout"))
