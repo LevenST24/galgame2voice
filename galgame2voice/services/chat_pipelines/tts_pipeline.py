@@ -21,7 +21,7 @@ from galgame2voice.utils.profiler import ChatTurnProfiler
 
 logger = logging.getLogger("galgame2voice.services.chat_pipelines.tts_pipeline")
 
-_VOCAL_RE = re.compile(r'[\w\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]')
+_VOCAL_RE = re.compile(r'[A-Za-z0-9\u3041-\u3096\u30a1-\u30fa\u3400-\u4dbf\u4e00-\u9fff]')
 
 # Two model-weight switches, inference, and a minute for queue/IO overhead.
 # The same bound is advertised over HTTP; it is an end-to-end sentence budget.
