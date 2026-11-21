@@ -110,6 +110,16 @@ function goToInferenceTab() {
   if (tabBtn) tabBtn.click();
 }
 
+function goToDashboardTab({ focusRestart = false } = {}) {
+  // The toast that offers this outlives the settings window: reopen it instead of switching a hidden tab.
+  if (!settingsVisible()) openGlobalSettings('dashboard');
+  else {
+    const tabBtn = _dom.gTabs ? _dom.gTabs.querySelector('[data-gtab="dashboard"]') : null;
+    if (tabBtn) tabBtn.click();
+  }
+  if (focusRestart) _dom.gBtnRestartSovits?.focus?.();
+}
+
 export function initGlobalSettings(dom, callbacks = {}) {
   // 1. Release previous controllers and coordinator listeners
   telemetryController?.dispose();
@@ -204,7 +214,12 @@ export function initGlobalSettings(dom, callbacks = {}) {
     }
   });
 
-  engineDirectory = initEngineDirectory(_dom, showToast, () => _callbacks.onSovitsDirectorySaved?.());
+  engineDirectory = initEngineDirectory(
+    _dom,
+    showToast,
+    () => _callbacks.onSovitsDirectorySaved?.(),
+    () => goToDashboardTab({ focusRestart: true }),
+  );
 
   // Tabs
   tabsCleanup = initSettingsTabs(_dom.gTabs, (name) => {

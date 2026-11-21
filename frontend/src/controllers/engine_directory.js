@@ -2,7 +2,13 @@
 import { requestJson } from '../api.js';
 
 // Saving the installation directory is separate from starting the engine.
-export function initEngineDirectory(dom, notify, onSaved = () => {}) {
+/**
+ * @param {Record<string, any>} dom
+ * @param {(message: string, type?: string, options?: any) => any} notify
+ * @param {() => any} [onSaved]
+ * @param {(() => any) | null} [onOpenDashboard]
+ */
+export function initEngineDirectory(dom, notify, onSaved = () => {}, onOpenDashboard = null) {
   const input = dom.gSovitsDirectory;
   const status = dom.gSovitsDirectoryStatus;
   let edited = false;
@@ -97,7 +103,13 @@ export function initEngineDirectory(dom, notify, onSaved = () => {}) {
           setStatus('之前选择的目录已保存；当前修改尚未保存。');
         }
         onSaved();
-        notify('引擎目录已保存。可在「运行状态」中启动或重启引擎。', 'success');
+        notify(
+          '引擎目录已保存。可在「运行状态」中启动或重启引擎。',
+          'success',
+          typeof onOpenDashboard === 'function'
+            ? { actionLabel: '前往运行状态', onAction: () => onOpenDashboard() }
+            : null,
+        );
         return true;
       }
       return false;

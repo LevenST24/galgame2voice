@@ -126,6 +126,22 @@ function isLocalStarterGreeting(msg) {
   );
 }
 
+/**
+ * Mirrors SovitsEndpoint.is_local: plain http on a loopback host without a subpath,
+ * the only kind of engine this app starts itself from a local folder.
+ * @param {unknown} url
+ */
+function isManagedEngineUrl(url) {
+  try {
+    const u = new URL(String(url || ''));
+    const host = u.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    return u.protocol === 'http:' && (u.pathname === '/' || u.pathname === '')
+      && (host === 'localhost' || host === '::1' || /^127\.\d+\.\d+\.\d+$/.test(host));
+  } catch {
+    return false;
+  }
+}
+
 function retainLocalOnlyMessages(messages = []) {
   const lastIdx = messages.length - 1;
   return messages.filter((m, idx) =>
@@ -753,9 +769,17 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         onModelStatus = onModel;
         if (haveProvidersLoaded()) onModel(sampleModel());
       }
-      let engine;
+      let engine, engineRead = true;
       try { engine = await requestJson('/api/system/engine-status', {}, { timeoutMs: 10000 }); }
-      catch (error) { engine = { state: 'unavailable', message: error.message }; }
+      catch (error) { engine = { state: 'unavailable', message: error.message }; engineRead = false; }
+      // A remote address or an unreadable status is fixed in 「语音服务」, not with the start button.
+      if (engineRead && engine?.state !== 'ready' && engine?.directory_configured == null
+        && isManagedEngineUrl(engine?.base_url)) {
+        try {
+          const dir = await requestJson('/api/system/sovits-directory', {}, { timeoutMs: 5000 });
+          engine = { ...engine, directory_configured: Boolean(dir?.valid) };
+        } catch (_) {}
+      }
       syncAdv();
       // Read the model fields together. Providers may finish during the engine
       // request; do not pair that flag with a snapshot taken earlier.

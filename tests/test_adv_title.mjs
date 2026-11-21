@@ -867,3 +867,24 @@ test('first-use checklist hides text-only choice when voice engine is ready', as
   await h.ui.refresh();
   assert.ok(!h.q('.home-text-only'), 'unexpected .home-text-only after engine becomes ready');
 });
+
+
+test('home voice settings jumps to dashboard when engine directory is already configured', async t => {
+  const h = await fixture(t, {
+    status: {
+      modelLoaded: true,
+      hasModel: false,
+      model: { state: 'error', label: '未配置对话模型' },
+      engine: { state: 'unavailable', directory_configured: true },
+    },
+    sessions: [{ ...snapshot('a'), settings: { voiceProfileId: null } }],
+  });
+  const stepButtons = h.ui.element.querySelectorAll('.home-step-button');
+  stepButtons[1].click();
+  assert.deepEqual(h.calls.at(-1), ['settings', 'dashboard']);
+
+  const pills = h.ui.element.querySelectorAll('.home-pill');
+  pills[1].click();
+  h.q('.home-popover').querySelector('button').click();
+  assert.deepEqual(h.calls.at(-1), ['settings', 'dashboard']);
+});
