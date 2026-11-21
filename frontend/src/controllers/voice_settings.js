@@ -88,6 +88,8 @@ export function initVoiceSettings(dom, callbacks = {}) {
   _dom.sCvCreate?.addEventListener('click', createCustomVoice);
   cleanupDragListeners = bindSessionDropTarget();
 
+  _dom.sAiAdaptiveVoice?.addEventListener('change', syncAdaptiveVoiceControls);
+
   // Sliders range input sync
   const sliders = [
     _dom.sTemp,
@@ -119,6 +121,7 @@ export function initVoiceSettings(dom, callbacks = {}) {
       _dom.sTtsTopP.value = DEFAULT_SESSION_SETTINGS.ttsTopP;
       _dom.sTtsTemp.value = DEFAULT_SESSION_SETTINGS.ttsTemperature;
       syncRangeLabels();
+      syncAdaptiveVoiceControls();
     });
   }
 
@@ -194,11 +197,25 @@ export async function openSessionSettings() {
   if (_dom.sTtsTopP) _dom.sTtsTopP.value = s.settings.ttsTopP;
   if (_dom.sTtsTemp) _dom.sTtsTemp.value = s.settings.ttsTemperature;
   syncRangeLabels();
+  syncAdaptiveVoiceControls();
   syncInitialSessionVoiceSelection(s);
   if (_callbacks.openModal) _callbacks.openModal(_dom.sessionModal);
   // Opening the shared center starts a background catalog refresh. Start the
   // editor's own read afterwards so its render uses the newest catalog owner.
   loadSessionVoiceSelect(s);
+}
+
+const ADAPTIVE_VOICE_AUTO_HINT = '当前为自动模式，下方参数不生效；想手动调语速，请把上面的模式改成「固定参数模式」。';
+const ADAPTIVE_VOICE_FIXED_HINT = '当前为固定参数模式，合成时使用下方参数。';
+
+function syncAdaptiveVoiceControls() {
+  const isAuto = _dom.sAiAdaptiveVoice ? _dom.sAiAdaptiveVoice.value !== 'false' : true;
+  for (const slider of [_dom.sTtsSpeed, _dom.sTtsTopK, _dom.sTtsTopP, _dom.sTtsTemp]) {
+    if (slider) slider.disabled = isAuto;
+  }
+  if (_dom.sAiAdaptiveVoiceHint) {
+    _dom.sAiAdaptiveVoiceHint.textContent = isAuto ? ADAPTIVE_VOICE_AUTO_HINT : ADAPTIVE_VOICE_FIXED_HINT;
+  }
 }
 
 function syncRangeLabels() {
