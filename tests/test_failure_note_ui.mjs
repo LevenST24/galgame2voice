@@ -50,3 +50,27 @@ test('toast positioning uses stage geometry above the ADV band', () => {
   const css = readFileSync(new URL('../frontend/src/adv/app.css', import.meta.url), 'utf8');
   assert.ok(css.includes('.toast-root { bottom: calc((100dvh - 1080 * var(--u)) / 2 + 300 * var(--u))'));
 });
+
+test('partial-reply disconnect keeps received lines and guides user to continue instead of resending', async t => {
+  const h = setup(t);
+  h.app.sendMessage('第一句问候');
+  await h.stream.requests[0].event('line', { index: 0, zh: '前半句台词', ja: '前半', emotion: 'calm' });
+  await h.stream.requests[0].event('error', {
+    error_code: 'stream_incomplete',
+    retryable: true,
+    summary_zh: '流式连接提前断开',
+    action_zh: '无需修改配置，可直接重新发送尝试重试。',
+  });
+  const note = h.dom.advRoot.querySelector('.adv-error-message')?.textContent || '';
+  assert.match(note, /已收到的台词保留在「对话记录」里/);
+  assert.match(note, /继续/);
+  assert.doesNotMatch(note, /重新发送/);
+  assert.equal(needsModelSettings(note, 'stream_incomplete'), false);
+  assert.equal(needsModelSettings('等待超时', 'stream_idle_timeout'), false);
+
+  const stageBtns = h.dom.advRoot.querySelectorAll('.adv-error-btn');
+  assert.deepEqual(stageBtns.map(b => b.textContent), ['继续', '去设置']);
+  stageBtns[0].click();
+  assert.equal(h.getActive().messages.length, 2);
+  assert.equal(h.getActive().messages[1].content, '前半句台词');
+});

@@ -21,7 +21,12 @@ function formatChatErrorPayload(data, fallback, receivedReply = false) {
   const summary = pickText(data.summary_zh).replace(/[。；;：:，,]+$/, '');
   const action = pickText(data.action_zh);
   if (summary && action) {
-    return receivedReply ? `${summary}。${KEPT_LINES}${action}` : `${summary}：${action}`;
+    if (!receivedReply) return `${summary}：${action}`;
+    // Received reply text is saved with the turn, so the stage only offers「继续」instead of「重新发送」.
+    const nextStep = data.retryable === true || /重新发送/.test(action)
+      ? '点「继续」即可回到对话继续输入。'
+      : action;
+    return `${summary}。${KEPT_LINES}${nextStep}`;
   }
   return getErrorMessage(data, fallback);
 }
