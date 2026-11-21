@@ -684,3 +684,39 @@ async def test_legacy_chinese_exact_boundary_10000_succeeds_and_roundtrips(repai
     assert len(decoded[0]["zh"]) == 10000
     assert decoded[0]["ja"] == "こんにちは。"
     assert decoded[0]["audio"]["status"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_regenerate_line_returns_chinese_fp32_guidance_on_silent_audio(repair, monkeypatch):
+    """Single-line regeneration surfaces Chinese FP32 guidance when synthesis returns an all-zero WAV."""
+    from galgame2voice.routers import line_audio
+    from galgame2voice.utils.audio_spec import (
+        SILENT_AUDIO_ERROR,
+        SILENT_AUDIO_USER_GUIDANCE_EXTERNAL,
+        SILENT_AUDIO_USER_GUIDANCE_MANAGED,
+    )
+
+    async def fail_silent(*args, **kwargs):
+        raise RuntimeError(SILENT_AUDIO_ERROR)
+
+    repair.engine.base_url = "http://127.0.0.1:9880"
+    monkeypatch.setattr(repair.service, "synthesize_to_file", fail_silent)
+
+    live_launch = SimpleNamespace(process=SimpleNamespace(poll=lambda: None))
+    monkeypatch.setattr(
+        line_audio,
+        "get_engine_supervisor",
+        lambda request=None: SimpleNamespace(get_managed_launch=lambda ep: live_launch),
+    )
+    resp_managed = await repair.client.post("/api/voice/regenerate-line", json=repair.body)
+    assert resp_managed.status_code == 502
+    assert SILENT_AUDIO_USER_GUIDANCE_MANAGED in resp_managed.json()["detail"]
+
+    monkeypatch.setattr(
+        line_audio,
+        "get_engine_supervisor",
+        lambda request=None: SimpleNamespace(get_managed_launch=lambda ep: None),
+    )
+    resp_ext = await repair.client.post("/api/voice/regenerate-line", json=repair.body)
+    assert resp_ext.status_code == 502
+    assert SILENT_AUDIO_USER_GUIDANCE_EXTERNAL in resp_ext.json()["detail"]

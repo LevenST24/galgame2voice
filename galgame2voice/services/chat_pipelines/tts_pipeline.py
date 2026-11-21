@@ -13,6 +13,7 @@ from typing import Any
 
 from galgame2voice.services.tts_options import resolve_default_text_split_method
 from galgame2voice.services.tts_service import TtsService
+from galgame2voice.utils.audio_spec import describe_silent_audio_error
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.services.gpt_sovits_client import SWITCH_TIMEOUT, TTS_TIMEOUT, clean_japanese_parentheses
 from galgame2voice.utils.async_tasks import cancel_and_drain
@@ -134,5 +135,9 @@ class TtsStreamPipeline:
                 "Failed to synthesize audio chunk %d for sentence '%s': %s",
                 chunk_index, sentence, exc,
             )
+            client_base_url = getattr(getattr(self.tts_service, "client", None), "base_url", None)
+            silent_guidance = describe_silent_audio_error(exc, base_url=client_base_url)
+            if silent_guidance:
+                return None, silent_guidance
             safe_err = sanitize_error_detail(str(exc)[:200])
             return None, safe_err or "TTS synthesis failed"

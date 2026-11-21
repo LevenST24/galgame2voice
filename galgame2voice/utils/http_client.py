@@ -29,16 +29,39 @@ per process instead of once per client and proxy transport (see
 ``_shared_ssl_context``).
 """
 
+import asyncio
 import functools
 import logging
 import ssl
+import urllib.request
+import weakref
 from typing import Any
 
 import httpx
 
 logger = logging.getLogger("galgame2voice.utils.http_client")
 
-__all__ = ["create_async_client", "proxy_environment_is_usable", "PROXY_ENV_HINT"]
+SHARED_CLIENT_KEEPALIVE_EXPIRY: float = 300.0
+
+__all__ = [
+    "create_async_client",
+    "get_shared_async_client",
+    "close_shared_async_clients",
+    "proxy_environment_is_usable",
+    "PROXY_ENV_HINT",
+    "SHARED_CLIENT_KEEPALIVE_EXPIRY",
+]
+
+_shared_clients_by_loop: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop,
+    dict[Any, tuple[tuple[tuple[str, str], ...], httpx.AsyncClient]],
+] = weakref.WeakKeyDictionary()
+_retired_clients_by_loop: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop,
+    list[httpx.AsyncClient],
+] = weakref.WeakKeyDictionary()
+_no_loop_shared_clients: dict[Any, tuple[tuple[tuple[str, str], ...], httpx.AsyncClient]] = {}
+_no_loop_retired_clients: list[httpx.AsyncClient] = []
 
 PROXY_ENV_HINT = (
     "Check NO_PROXY/HTTP_PROXY/HTTPS_PROXY for malformed entries such as the "
@@ -97,6 +120,89 @@ def create_async_client(**kwargs: Any) -> httpx.AsyncClient:
     default certificate verification reuses one shared SSL context.
     """
     return _build_with_fallback(_async_client_with_shared_ssl, kwargs)
+
+def _current_proxy_key() -> tuple[tuple[str, str], ...]:
+    """Snapshots the active ambient/system proxy settings so proxy toggles get a fresh pool."""
+    try:
+        proxies = urllib.request.getproxies()
+    except Exception:
+        return ()
+    return tuple(sorted((str(k).lower(), str(v)) for k, v in proxies.items()))
+
+
+def _loop_client_stores() -> tuple[
+    dict[Any, tuple[tuple[tuple[str, str], ...], httpx.AsyncClient]],
+    list[httpx.AsyncClient],
+]:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return _no_loop_shared_clients, _no_loop_retired_clients
+    bucket = _shared_clients_by_loop.get(loop)
+    if bucket is None:
+        bucket = {}
+        _shared_clients_by_loop[loop] = bucket
+    retired = _retired_clients_by_loop.get(loop)
+    if retired is None:
+        retired = []
+        _retired_clients_by_loop[loop] = retired
+    return bucket, retired
+
+
+def get_shared_async_client(*, factory: Any = None) -> httpx.AsyncClient:
+    """
+    Returns a long-lived ``httpx.AsyncClient`` keyed by running event loop and
+    current proxy settings (``urllib.request.getproxies()``).
+
+    Connections stay alive for ``SHARED_CLIENT_KEEPALIVE_EXPIRY`` (300 s) so
+    consecutive chat turns reuse TLS/TCP connections. No client-level timeout is
+    configured; callers must pass ``timeout=...`` on each request.
+    """
+    builder = create_async_client if factory is None else factory
+    proxy_key = _current_proxy_key()
+    bucket, retired = _loop_client_stores()
+    entry = bucket.get(builder)
+    if entry is not None:
+        cached_proxy_key, cached_client = entry
+        if cached_proxy_key == proxy_key and not getattr(cached_client, "is_closed", False):
+            return cached_client
+        if not getattr(cached_client, "is_closed", False):
+            retired.append(cached_client)
+
+    limits = httpx.Limits(
+        max_keepalive_connections=20,
+        max_connections=50,
+        keepalive_expiry=SHARED_CLIENT_KEEPALIVE_EXPIRY,
+    )
+    client = builder(limits=limits)
+    bucket[builder] = (proxy_key, client)
+    return client
+
+
+async def close_shared_async_clients() -> None:
+    """Closes all cached and retired shared async clients for the current loop."""
+    bucket, retired = _loop_client_stores()
+    to_close: list[httpx.AsyncClient] = [client for _, client in bucket.values()]
+    to_close.extend(retired)
+    bucket.clear()
+    retired.clear()
+
+    if bucket is not _no_loop_shared_clients:
+        to_close.extend(client for _, client in _no_loop_shared_clients.values())
+        to_close.extend(_no_loop_retired_clients)
+        _no_loop_shared_clients.clear()
+        _no_loop_retired_clients.clear()
+
+    seen: set[int] = set()
+    for client in to_close:
+        if id(client) in seen or getattr(client, "is_closed", False):
+            continue
+        seen.add(id(client))
+        try:
+            await client.aclose()
+        except Exception as exc:
+            logger.debug("Failed closing shared HTTP client: %s", exc)
+
 
 
 def proxy_environment_is_usable() -> bool:

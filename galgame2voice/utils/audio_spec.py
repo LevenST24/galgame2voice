@@ -21,6 +21,7 @@ from __future__ import annotations
 import array
 import asyncio
 import io
+import re
 import struct
 import sys
 import threading
@@ -454,6 +455,60 @@ SILENT_AUDIO_ERROR = (
     "directly without probing) before starting api_v2.py. See logs/gpt_sovits.log."
 )
 
+SILENT_AUDIO_USER_GUIDANCE_MANAGED = (
+    "语音合成输出了静音（常见于显卡 FP16 半精度兼容问题）。"
+    "请在「设置中心 → 语音服务」将「计算方式」改为「FP32 单精度 · 兼容模式」，"
+    "再到「运行状态」重启语音引擎后重试。"
+)
+
+SILENT_AUDIO_USER_GUIDANCE_EXTERNAL = (
+    "语音合成输出了静音（常见于显卡 FP16 半精度兼容问题）。"
+    "请使用 FP32 单精度（is_half=False）重新启动语音引擎后重试。"
+)
+
+
+def is_silent_audio_error(exc_or_msg: Exception | str | None) -> bool:
+    """Returns True when an exception or message represents the silent-audio FP16 failure."""
+    if exc_or_msg is None:
+        return False
+    text = str(exc_or_msg)
+    return SILENT_AUDIO_ERROR in text or "all-zero silent audio" in text.lower()
+
+
+def describe_silent_audio_error(
+    exc_or_msg: Exception | str | None,
+    *,
+    managed_engine: bool | None = None,
+    base_url: str | None = None,
+    supervisor: Any = None,
+) -> str | None:
+    """Returns actionable Chinese FP32 guidance for UI surfaces when synthesis yielded all-zero audio."""
+    if not is_silent_audio_error(exc_or_msg):
+        return None
+    if managed_engine is None:
+        managed_engine = False
+        try:
+            from galgame2voice.services.engine_supervisor import get_engine_supervisor
+            from galgame2voice.services.sovits_endpoint import parse_sovits_endpoint
+
+            effective_url = base_url
+            if not effective_url:
+                from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client
+
+                effective_url = getattr(get_gpt_sovits_client(), "base_url", None)
+            if effective_url:
+                endpoint = parse_sovits_endpoint(effective_url, source="runtime")
+                sup = supervisor if supervisor is not None else get_engine_supervisor()
+                launch = sup.get_managed_launch(endpoint)
+                managed_engine = bool(launch is not None and launch.process.poll() is None)
+        except Exception:
+            managed_engine = False
+    return (
+        SILENT_AUDIO_USER_GUIDANCE_MANAGED
+        if managed_engine
+        else SILENT_AUDIO_USER_GUIDANCE_EXTERNAL
+    )
+
 
 def wav_peak_amplitude(audio: bytes) -> float | None:
     """
@@ -493,10 +548,62 @@ def wav_peak_amplitude(audio: bytes) -> float | None:
         return None
 
 
+_NON_ZERO_BYTE_RE = re.compile(rb"[^\x00]")
+_NON_FLOAT_ZERO_BYTE_RE = re.compile(rb"[^\x00\x80]")
+
+
+def _parse_wav_chunk_views(
+    audio: bytes,
+) -> tuple[memoryview | None, memoryview | None]:
+    """Zero-copy scan of RIFF/WAVE chunks returning (fmt_view, data_view)."""
+    if len(audio) < WAV_HEADER_BYTES or audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
+        return None, None
+    mv = memoryview(audio)
+    pos = 12
+    fmt_view: memoryview | None = None
+    data_view: memoryview | None = None
+    total = len(audio)
+    while pos + 8 <= total:
+        chunk_id = audio[pos : pos + 4]
+        chunk_size = int.from_bytes(audio[pos + 4 : pos + 8], "little")
+        chunk_start = pos + 8
+        chunk_end = chunk_start + chunk_size
+        if chunk_id == b"fmt ":
+            fmt_view = mv[chunk_start:chunk_end]
+        elif chunk_id == b"data":
+            data_view = mv[chunk_start:chunk_end]
+            break
+        pos = chunk_end + (chunk_size & 1)
+    return fmt_view, data_view
+
+
 def is_silent_audio(audio: bytes) -> bool:
     """True only when the WAV parses and every sample is exactly zero."""
-    peak = wav_peak_amplitude(audio)
-    return peak is not None and peak == 0.0
+    try:
+        fmt, data = _parse_wav_chunk_views(audio)
+        if fmt is None or len(fmt) < 16 or data is None or len(data) == 0:
+            return False
+        audio_format, _channels, _rate, _byte_rate, _align, bits = struct.unpack_from("<HHIIHH", fmt, 0)
+        if audio_format == 0xFFFE and len(fmt) >= 26:  # WAVE_FORMAT_EXTENSIBLE
+            audio_format = struct.unpack_from("<H", fmt, 24)[0]
+        if audio_format == 1 and bits == 16:
+            count = len(data) // 2
+            if count == 0:
+                return False
+            return _NON_ZERO_BYTE_RE.search(data[: count * 2]) is None
+        if audio_format == 3 and bits == 32:
+            count = len(data) // 4
+            if count == 0:
+                return False
+            f32_view = data[: count * 4]
+            if _NON_FLOAT_ZERO_BYTE_RE.search(f32_view) is not None:
+                return False
+            if _NON_ZERO_BYTE_RE.search(f32_view) is None:
+                return True
+            return all(sample == 0.0 for (sample,) in struct.iter_unpack("<f", f32_view))
+        return False
+    except Exception:
+        return False
 
 
 # Backward compatibility alias
@@ -517,6 +624,10 @@ __all__ = [
     "resolve_reference_audio_path",
     "extract_wav_duration",
     "SILENT_AUDIO_ERROR",
+    "SILENT_AUDIO_USER_GUIDANCE_MANAGED",
+    "SILENT_AUDIO_USER_GUIDANCE_EXTERNAL",
+    "is_silent_audio_error",
+    "describe_silent_audio_error",
     "wav_peak_amplitude",
     "is_silent_audio",
     "wav_is_silent",

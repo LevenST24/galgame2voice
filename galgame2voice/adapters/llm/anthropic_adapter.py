@@ -24,7 +24,7 @@ from galgame2voice.adapters.base import (
     validate_stream_completion,
 )
 from galgame2voice.utils.logger import sanitize_error_detail
-from galgame2voice.utils.http_client import create_async_client
+from galgame2voice.utils.http_client import create_async_client, get_shared_async_client
 
 logger = logging.getLogger("galgame2voice.adapters.llm.anthropic")
 
@@ -255,48 +255,45 @@ class AnthropicAdapter(BaseLLMAdapter):
         from galgame2voice.security.url_guard import assert_llm_url_safe
         await assert_llm_url_safe(url, allow_private=allow_private)
 
-        client = create_async_client(timeout=timeout_s)
-        try:
-            for attempt in range(max_retries + 1):
-                if attempt:
-                    await assert_llm_url_safe(url, allow_private=allow_private)
-                try:
-                    resp = await client.post(url, json=payload, headers=headers)
-                except TRANSIENT_NETWORK_EXCEPTIONS as exc:
-                    if attempt < max_retries:
-                        delay = calculate_backoff_delay(attempt, base_delay)
-                        logger.warning(
-                            "Transient network error connecting to %s (%s: %s). Retrying (%d/%d) in %.2fs...",
-                            url, type(exc).__name__, exc, attempt + 1, max_retries, delay
-                        )
-                        await asyncio.sleep(delay)
-                        continue
-                    raise RuntimeError(f"Network error connecting to {url}: {exc}") from exc
+        for attempt in range(max_retries + 1):
+            if attempt:
+                await assert_llm_url_safe(url, allow_private=allow_private)
+            client = get_shared_async_client(factory=create_async_client)
+            try:
+                resp = await client.post(url, json=payload, headers=headers, timeout=timeout_s)
+            except TRANSIENT_NETWORK_EXCEPTIONS as exc:
+                if attempt < max_retries:
+                    delay = calculate_backoff_delay(attempt, base_delay)
+                    logger.warning(
+                        "Transient network error connecting to %s (%s: %s). Retrying (%d/%d) in %.2fs...",
+                        url, type(exc).__name__, exc, attempt + 1, max_retries, delay
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                raise RuntimeError(f"Network error connecting to {url}: {exc}") from exc
 
-                if resp.status_code in (401, 403):
-                    raise ValueError(f"Anthropic authentication failed ({resp.status_code}): {resp.text}")
+            if resp.status_code in (401, 403):
+                raise ValueError(f"Anthropic authentication failed ({resp.status_code}): {resp.text}")
 
-                if resp.status_code in TRANSIENT_STATUS_CODES:
-                    if attempt < max_retries:
-                        retry_after = parse_retry_after(resp.headers)
-                        delay = calculate_backoff_delay(attempt, base_delay, retry_after)
-                        logger.warning(
-                            "Anthropic API returned HTTP %d. Retrying (%d/%d) in %.2fs...",
-                            resp.status_code, attempt + 1, max_retries, delay
-                        )
-                        await asyncio.sleep(delay)
-                        continue
-                    raise RuntimeError(f"Anthropic API error ({resp.status_code}): {resp.text}")
+            if resp.status_code in TRANSIENT_STATUS_CODES:
+                if attempt < max_retries:
+                    retry_after = parse_retry_after(resp.headers)
+                    delay = calculate_backoff_delay(attempt, base_delay, retry_after)
+                    logger.warning(
+                        "Anthropic API returned HTTP %d. Retrying (%d/%d) in %.2fs...",
+                        resp.status_code, attempt + 1, max_retries, delay
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                raise RuntimeError(f"Anthropic API error ({resp.status_code}): {resp.text}")
 
-                if resp.status_code != 200:
-                    raise RuntimeError(f"Anthropic API error ({resp.status_code}): {resp.text}")
+            if resp.status_code != 200:
+                raise RuntimeError(f"Anthropic API error ({resp.status_code}): {resp.text}")
 
-                data = resp.json()
-                self._record_finish_reason(data)
-                return LLMResponse(content=_extract_content_text(data), usage=None)
-            raise RuntimeError("Max retries exceeded without a response")
-        finally:
-            await client.aclose()
+            data = resp.json()
+            self._record_finish_reason(data)
+            return LLMResponse(content=_extract_content_text(data), usage=None)
+        raise RuntimeError("Max retries exceeded without a response")
 
     async def stream_chat(
         self,
@@ -351,13 +348,13 @@ class AnthropicAdapter(BaseLLMAdapter):
         for attempt in range(max_retries + 1):
             if attempt:
                 await assert_llm_url_safe(url, allow_private=allow_private)
-            client = create_async_client(timeout=timeout_s)
+            client = get_shared_async_client(factory=create_async_client)
             stream_ctx = None
             try:
-                stream_ctx = client.stream("POST", url, json=payload, headers=headers)
+                stream_ctx = client.stream("POST", url, json=payload, headers=headers, timeout=timeout_s)
                 response = await stream_ctx.__aenter__()
             except TRANSIENT_NETWORK_EXCEPTIONS as exc:
-                await aclose_stream_context(stream_ctx, client)
+                await aclose_stream_context(stream_ctx)
                 if attempt < max_retries:
                     delay = calculate_backoff_delay(attempt, base_delay)
                     logger.warning(
@@ -368,21 +365,21 @@ class AnthropicAdapter(BaseLLMAdapter):
                     continue
                 raise RuntimeError(f"Streaming request failed to {url}: {exc}") from exc
             except BaseException:
-                await aclose_stream_context(stream_ctx, client)
+                await aclose_stream_context(stream_ctx)
                 raise
 
             if response.status_code in (401, 403):
                 try:
                     err_body = await response.aread()
                 finally:
-                    await aclose_stream_context(stream_ctx, client)
+                    await aclose_stream_context(stream_ctx)
                 raise ValueError(f"Anthropic auth failed ({response.status_code}): {err_body.decode('utf-8', errors='ignore')}")
 
             if response.status_code in TRANSIENT_STATUS_CODES:
                 try:
                     err_body = await response.aread()
                 finally:
-                    await aclose_stream_context(stream_ctx, client)
+                    await aclose_stream_context(stream_ctx)
                 retry_after = parse_retry_after(response.headers)
                 if attempt < max_retries:
                     delay = calculate_backoff_delay(attempt, base_delay, retry_after)
@@ -398,7 +395,7 @@ class AnthropicAdapter(BaseLLMAdapter):
                 try:
                     err_body = await response.aread()
                 finally:
-                    await aclose_stream_context(stream_ctx, client)
+                    await aclose_stream_context(stream_ctx)
                 raise RuntimeError(f"Anthropic API error ({response.status_code}): {err_body.decode('utf-8', errors='ignore')}")
 
             yielded_any = False
@@ -418,7 +415,7 @@ class AnthropicAdapter(BaseLLMAdapter):
                     continue
                 raise RuntimeError(f"Streaming request failed to {url}: {exc}") from exc
             finally:
-                await aclose_stream_context(stream_ctx, client)
+                await aclose_stream_context(stream_ctx)
 
     async def list_models(self) -> list[str]:
         """Returns known Anthropic Claude models."""

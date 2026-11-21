@@ -34,6 +34,7 @@ async def drive_stream_completion(
 
     requests_log = []
     clients_log = []
+    responses_log = []
     if response_factory is None:
         responses_sse = [sse_body]
         idx = 0
@@ -46,11 +47,15 @@ async def drive_stream_completion(
                 idx += 1
             else:
                 content = ""
-            return httpx.Response(200, text=content, headers={"Content-Type": "text/event-stream"})
+            resp = httpx.Response(200, text=content, headers={"Content-Type": "text/event-stream"})
+            responses_log.append(resp)
+            return resp
     else:
         def handler(request: httpx.Request) -> httpx.Response:
             requests_log.append(request)
-            return response_factory(request)
+            resp = response_factory(request)
+            responses_log.append(resp)
+            return resp
 
     def create_client(**kwargs):
         transport = httpx.MockTransport(handler)
@@ -82,10 +87,15 @@ async def drive_stream_completion(
     finally:
         await stream.aclose()
 
-    # A non-SSE transport such as HTTP 500 is retried, so only SSE drives are one request.
-    if sse_body is not None:
-        assert len(requests_log) == 1, "Must never automatically retry after partial tokens yielded"
-    assert all(client.is_closed for client in clients_log), "All HTTP clients must be closed"
+    try:
+        # A non-SSE transport such as HTTP 500 is retried, so only SSE drives are one request.
+        if sse_body is not None:
+            assert len(requests_log) == 1, "Must never automatically retry after partial tokens yielded"
+        assert all(resp.is_closed for resp in responses_log), "All HTTP stream responses must be closed"
+    finally:
+        for client in clients_log:
+            if not client.is_closed:
+                await client.aclose()
     return coordinator, database, events
 
 
