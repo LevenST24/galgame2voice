@@ -37,13 +37,14 @@ export function homeExcerpt(messages = []) {
  * @param {() => any} [deps.stopExcerpt]
  * @param {(fn: (open: boolean) => void) => () => void} [deps.subscribeSettings]
  * @param {() => boolean} [deps.voiceEnabled]
+ * @param {(enabled: boolean) => any} [deps.setVoiceEnabled]
  * @param {(id?: any) => boolean} [deps.isBehindServer]
  */
 export function createTitleActions({ getSessions, getProfiles, getActiveId = () => null,
   startNew, loadSession, previewSession = loadSession, openCharacters, openSettings,
   getBackgroundUrl = () => '', getStatus = () => ({}), getBackgrounds = () => [],
   getAvatar = async () => null, playExcerpt = async () => 'ended', stopExcerpt = () => {},
-  subscribeSettings = () => () => {}, voiceEnabled = () => true,
+  subscribeSettings = () => () => {}, voiceEnabled = () => true, setVoiceEnabled = () => {},
   isBehindServer = () => false }) {
   function listSessions() {
     const profiles = getProfiles();
@@ -74,6 +75,6 @@ export function createTitleActions({ getSessions, getProfiles, getActiveId = () 
     openCharacters: () => openCharacters(), openSettings: page => openSettings(page),
     listSessions, getActiveId, getStatus, getBackgrounds,
     listCharacters: () => getProfiles().map(({ id, name, work }) => ({ id, name, work })),
-    getAvatar, playExcerpt, stopExcerpt, subscribeSettings, voiceEnabled,
+    getAvatar, playExcerpt, stopExcerpt, subscribeSettings, voiceEnabled, setVoiceEnabled,
   };
 }

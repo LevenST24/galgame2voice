@@ -429,7 +429,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       showToast(error, 'error', needsModelSettings(error, code) ? {
         actionLabel: '配置对话模型', onAction: () => openGlobalSettings('models'),
       } : null);
-    } else if (meta.audioError && !meta.cancelled) {
+    } else if (meta.audioError && !meta.cancelled && state.global.voiceMode) {
       showToast(meta.audioError, 'info', {
         actionLabel: '检查运行状态', onAction: () => openGlobalSettings('dashboard'),
       });
@@ -604,6 +604,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   }
 
   function ensureHomeEntryVoice(session) {
+    if (!state.global.voiceMode) return;
     const want = session?.settings?.voiceProfileId;
     // The saved active ID does not prove that weights finished loading (or
     // survived an engine restart). The switch endpoint checks actual readiness.
@@ -757,6 +758,12 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       return { ...sampleModel(), engine };
     },
     voiceEnabled: () => state.global.voiceMode,
+    setVoiceEnabled: enabled => {
+      state.global.voiceMode = Boolean(enabled);
+      saveState();
+      if (!state.global.voiceMode) stopCurrentVoice();
+      syncAdv();
+    },
     playExcerpt: excerpt => {
       stopCurrentVoice();
       return streamAudioController.playLine(excerpt.line.index, excerpt.line.audio.chunks, { msgId: excerpt.messageId });

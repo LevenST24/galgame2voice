@@ -94,14 +94,14 @@ async function fixture(t, options = {}) {
   let active = options.active === undefined ? 'a' : options.active;
   let status = options.status || { model: { state: 'ok', label: '测试模型 · 假模型' }, modelLoaded: true, hasModel: true, engine: { state: 'ready', base_url: 'http://127.0.0.1:9880' } };
   const sessions = options.sessions || ['a','b','c','d','e','f','g','h'].map((id, n) => snapshot(id, n));
-  let finish, notify;
+  let finish, notify, voiceOn = true;
   const actions = { listSessions: () => sessions, getActiveId: () => active, getStatus: async () => { calls.push('status'); return status; },
     loadSession: id => calls.push(['load', id]), startNew: () => calls.push('new'), startNewWith: data => calls.push(['newWith', data]),
     previewSession: async id => { active = id; calls.push(['preview', id]); },
     listCharacters: () => [{ id: 7, name: '角色甲' }, { id: 8, name: '角色乙' }],
     getBackgrounds: () => [{ key: 'w/sea', name: '海边' }, { key: 'w/room', name: '房间' }],
     openSettings: tab => calls.push(['settings', tab]), openCharacters: () => calls.push('characters'),
-    voiceEnabled: () => true,
+    voiceEnabled: () => voiceOn, setVoiceEnabled: v => { voiceOn = Boolean(v); calls.push(['voiceEnabled', voiceOn]); },
     playExcerpt: e => { calls.push(['play', e.messageId, e.line.index]); return new Promise(resolve => { finish = resolve; }); },
     stopExcerpt: () => calls.push('stop'), subscribeSettings: fn => { notify = fn; return () => { notify = null; }; },
     ...options.actions };
@@ -322,7 +322,7 @@ test('changing to a work without backgrounds resets the previous work place whil
   assert.deepEqual(opts.map(textTree), ['默认背景', '甲海边']); assert.equal(opts[0].getAttribute('aria-pressed'), 'true');
 });
 
-test('first use checks model/voice/character, text-only lasts only this opening, updates after settings close', async t => {
+test('first use checks model/voice/character, text-only persists via setVoiceEnabled, updates after settings close', async t => {
   const status = { modelLoaded: true, hasModel: false, model: { state: 'error', label: '未配置对话模型' }, engine: { state: 'unavailable' } };
   const session = snapshot('a'); session.settings.voiceProfileId = null;
   const h = await fixture(t, { status, sessions: [session] });
@@ -331,8 +331,9 @@ test('first use checks model/voice/character, text-only lasts only this opening,
   assert.equal(h.ui.element.querySelectorAll('button').some(button => textTree(button) === '开始聊天'), false);
   h.q('.home-step-pending').click(); assert.deepEqual(h.calls.at(-1), ['settings','models']);
   h.q('.home-text-only').click(); assert.equal(h.ui.element.querySelectorAll('.home-step.is-done').length, 1);
+  assert.deepEqual(h.calls.at(-1), ['voiceEnabled', false]);
   session.settings.voiceProfileId = 7; h.notify(); await microtasks(); assert.equal(h.ui.element.querySelectorAll('.home-step.is-done').length, 2);
-  h.ui.close(); h.ui.open(); await microtasks(); assert.equal(h.ui.element.querySelectorAll('.home-step.is-done').length, 1);
+  h.ui.close(); h.ui.open(); await microtasks(); assert.equal(h.ui.element.querySelectorAll('.home-step.is-done').length, 2);
   h.setStatus({ ...status, hasModel: true, model: { state: 'ok' } }); h.notify(); await microtasks();
   assert.equal(h.q('.home-first-title'), null); assert.ok(h.q('.home-continue')); assert.match(textTree(h.q('.home-notice')), /先用文字/);
   assert.equal(textTree(h.q('.home-continue')), '接着聊 →');

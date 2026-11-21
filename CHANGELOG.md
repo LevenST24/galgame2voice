@@ -5,6 +5,8 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fixed
+- 修复在首页新手引导点击「暂时只用文字」后只改变临时界面状态、进入对话后每轮仍反复弹出语音失败提示且重开首页后丢失该选择的问题；现在会关闭并保存全局语音开关，关闭语音期间不再弹出语音合成失败提示。
 
 ## [3.2.9] - 2026-11-21
 ### Changed
