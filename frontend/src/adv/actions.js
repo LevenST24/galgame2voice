@@ -61,7 +61,7 @@ export function createTitleActions({ getSessions, getProfiles, getActiveId = () 
         excerpt: (behind && session.lastLine)
           ? { zh: session.lastLine, ja: '', user: lastUser?.content || (last?.role === 'user' ? last.content : ''), messageId: null, ts: session.updatedAt, line: null }
           : excerpt,
-        settings, hasUserMessages: Boolean(session.messages?.some(m => m.role === 'user')), updatedAt: session.updatedAt || 0,
+        settings, hasUserMessages: Boolean(session.hasServerMessages || session.messages?.some(m => m.role === 'user')), updatedAt: session.updatedAt || 0,
         get background() { return getBackgroundUrl(settings.advBackground || '', settings.advBgTime, profile?.work || null) || ''; },
       };
     });
