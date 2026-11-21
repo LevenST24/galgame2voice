@@ -21,6 +21,7 @@ from __future__ import annotations
 import array
 import asyncio
 import io
+import re
 import struct
 import sys
 import threading
@@ -547,10 +548,62 @@ def wav_peak_amplitude(audio: bytes) -> float | None:
         return None
 
 
+_NON_ZERO_BYTE_RE = re.compile(rb"[^\x00]")
+_NON_FLOAT_ZERO_BYTE_RE = re.compile(rb"[^\x00\x80]")
+
+
+def _parse_wav_chunk_views(
+    audio: bytes,
+) -> tuple[memoryview | None, memoryview | None]:
+    """Zero-copy scan of RIFF/WAVE chunks returning (fmt_view, data_view)."""
+    if len(audio) < WAV_HEADER_BYTES or audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
+        return None, None
+    mv = memoryview(audio)
+    pos = 12
+    fmt_view: memoryview | None = None
+    data_view: memoryview | None = None
+    total = len(audio)
+    while pos + 8 <= total:
+        chunk_id = audio[pos : pos + 4]
+        chunk_size = int.from_bytes(audio[pos + 4 : pos + 8], "little")
+        chunk_start = pos + 8
+        chunk_end = chunk_start + chunk_size
+        if chunk_id == b"fmt ":
+            fmt_view = mv[chunk_start:chunk_end]
+        elif chunk_id == b"data":
+            data_view = mv[chunk_start:chunk_end]
+            break
+        pos = chunk_end + (chunk_size & 1)
+    return fmt_view, data_view
+
+
 def is_silent_audio(audio: bytes) -> bool:
     """True only when the WAV parses and every sample is exactly zero."""
-    peak = wav_peak_amplitude(audio)
-    return peak is not None and peak == 0.0
+    try:
+        fmt, data = _parse_wav_chunk_views(audio)
+        if fmt is None or len(fmt) < 16 or data is None or len(data) == 0:
+            return False
+        audio_format, _channels, _rate, _byte_rate, _align, bits = struct.unpack_from("<HHIIHH", fmt, 0)
+        if audio_format == 0xFFFE and len(fmt) >= 26:  # WAVE_FORMAT_EXTENSIBLE
+            audio_format = struct.unpack_from("<H", fmt, 24)[0]
+        if audio_format == 1 and bits == 16:
+            count = len(data) // 2
+            if count == 0:
+                return False
+            return _NON_ZERO_BYTE_RE.search(data[: count * 2]) is None
+        if audio_format == 3 and bits == 32:
+            count = len(data) // 4
+            if count == 0:
+                return False
+            f32_view = data[: count * 4]
+            if _NON_FLOAT_ZERO_BYTE_RE.search(f32_view) is not None:
+                return False
+            if _NON_ZERO_BYTE_RE.search(f32_view) is None:
+                return True
+            return all(sample == 0.0 for (sample,) in struct.iter_unpack("<f", f32_view))
+        return False
+    except Exception:
+        return False
 
 
 # Backward compatibility alias
