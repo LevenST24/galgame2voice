@@ -53,7 +53,7 @@ import {
 import {
   initGlobalSettings,
   openGlobalSettings,
-  loadProviders,
+  ensureProvidersLoaded,
   getCurrentActiveProvider,
   haveProvidersLoaded,
   hasProviderReadError,
@@ -80,6 +80,7 @@ const appDependencies = {
   clearMicTimers, renderSessionList,
   showToast, autoTitle, fetchSessionHistoryPage, earliestServerMessageId,
   getCurrentActiveProvider, getVoiceProfiles, haveProvidersLoaded, hasProviderReadError,
+  ensureProvidersLoaded,
   openGlobalSettings, openSessionSettings,
   showTitle,
 };
@@ -171,6 +172,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     clearMicTimers, renderSessionList,
     showToast, autoTitle, fetchSessionHistoryPage, earliestServerMessageId,
     getCurrentActiveProvider, getVoiceProfiles, haveProvidersLoaded, hasProviderReadError,
+    ensureProvidersLoaded,
     openGlobalSettings, openSessionSettings,
     showTitle: showTitleScreen,
   } = { ...appDependencies, ...callbacks };
@@ -317,6 +319,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   let syncingAdv = false;
   // Home opens after the startup sync; a voice result that arrives earlier belongs to it too.
   let homeStarting = true;
+  let startupSessionSwitched = false;
   const portraits = createPortraitCache(id => requestJson(`/api/characters/${encodeURIComponent(id)}/portrait`));
   const conversation = createConversation({
     state, getActive, getSession, addMessage, uid, saveState, persistSession,
@@ -649,8 +652,9 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     if (want) ensureSessionVoice(session, { silent: getActiveProfileId() === want });
   }
 
-  async function switchSession(id, { focusInput = true, enterFromHome = false } = {}) {
+  async function switchSession(id, { focusInput = true, enterFromHome = false, homePreview = false } = {}) {
     if (!getSession(id)) return false;
+    if (!homePreview) startupSessionSwitched = true;
     closeDrawer();
     if (id === state.activeId) {
       const current = getActive();
@@ -792,7 +796,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     isBehindServer: id => sessionsBehindServer.has(id),
     startNew: selection => newChat(selection, { enterFromHome: true }),
     loadSession: id => switchSession(id, { enterFromHome: true }),
-    previewSession: id => switchSession(id, { focusInput: false }),
+    previewSession: id => switchSession(id, { focusInput: false, homePreview: true }),
     openCharacters: openSessionSettings, openSettings: page => openGlobalSettings(page),
     getBackgroundUrl: (id, time, work) => advApp?.backgroundUrl(id, time, work) || '',
     getBackgrounds: () => advApp?.listBackgrounds() || [],
@@ -801,6 +805,9 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       if (onModel) {
         onModelStatus = onModel;
         if (haveProvidersLoaded()) onModel(sampleModel());
+      }
+      if (!haveProvidersLoaded()) {
+        Promise.resolve(ensureProvidersLoaded()).catch(() => {});
       }
       let engine, engineRead = true;
       try { engine = await requestJson('/api/system/engine-status', {}, { timeoutMs: 10000 }); }
@@ -923,7 +930,11 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     const isStale = () => gen !== _syncSessionsGen;
     try {
       const backendSessions = await fetchAllSessions();
-      if (isStale()) return false;
+      if (isStale()) {
+        Promise.resolve(ensureProvidersLoaded()).catch(() => {});
+        return false;
+      }
+      const prevActiveId = state.activeId;
       // 保存设置尚未确认时本机已记录标记。刷新后保留本机设置并补发，不要用服务端旧设置盖掉它。
       const unconfirmedLocalSessions = [];
       const markInterruptedPrompt = (session, serverCount = 0) => {
@@ -1002,7 +1013,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         }
         for (const [_, rem] of existingMap) {
           markInterruptedPrompt(rem);
-          if (rem.messages && rem.messages.some((m) => m.role === 'user')) {
+          if ((rem.messages && rem.messages.some((m) => m.role === 'user')) || (startupSessionSwitched && rem.id === state.activeId)) {
             merged.push(rem);
           }
         }
@@ -1020,7 +1031,10 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       if (curActive && (!curActive.messages || curActive.messages.length === 0 || sessionsBehindServer.has(curActive.id))) {
         await loadSessionHistory(curActive);
       }
-      if (isStale()) return false;
+      if (isStale()) {
+        Promise.resolve(ensureProvidersLoaded()).catch(() => {});
+        return false;
+      }
       saveState();
       for (const session of storageChangedByAnotherPage() ? [] : unconfirmedLocalSessions) {
         const version = session.unconfirmedSettingsVersion;
@@ -1031,10 +1045,16 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           }
         }).catch(() => {});
       }
+      const carryDraft = !startupSessionSwitched && prevActiveId && state.activeId !== prevActiveId
+        ? (advApp?.textbox.draft || '')
+        : '';
       fullRender();
+      if (carryDraft && advApp && !advApp.textbox.draft) {
+        advApp.textbox.setDraft(carryDraft);
+      }
       ensureSessionVoice(getActive(), { silent: true });
       if (window.innerWidth > 820) advApp?.textbox.inputElement?.focus();
-      loadProviders().catch(() => {});
+      Promise.resolve(ensureProvidersLoaded()).catch(() => {});
       return true;
     } catch (err) {
       console.debug('Failed to sync sessions from backend:', err);
@@ -1042,9 +1062,12 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     }
   }
 
+  const hasStartupUserActivity = () => (
+    startupSessionSwitched || Boolean(advApp?.textbox.draft || advApp?.textbox.composing)
+  );
   // The first protected request completes token authentication before title UI.
   app.ready = syncSessionsFromBackend().then(synced => (
-    synced ? showTitleScreen(actions) : null
+    synced && !hasStartupUserActivity() ? showTitleScreen(actions) : null
   )).catch(error => {
     console.debug('Title startup deferred:', error);
   }).finally(() => { homeStarting = false; });
