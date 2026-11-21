@@ -425,6 +425,23 @@ function isGeneratedAudioRequest(request) {
  * @param {number} [maxEntries]
  * @returns {Promise<void>}
  */
+/**
+ * Clear generated TTS audio copies in Cache Storage without deleting user recordings.
+ * @returns {Promise<void>}
+ */
+export async function clearGeneratedAudioCacheStorage() {
+  if (typeof window === 'undefined' || !('caches' in window)) return;
+  try {
+    const cache = await (globalThis.caches || window.caches).open(AUDIO_CACHE_NAME);
+    const toDelete = (await cache.keys()).filter(isGeneratedAudioRequest);
+    if (toDelete.length > 0) {
+      await Promise.all(toDelete.map((req) => cache.delete(req)));
+    }
+  } catch (e) {
+    console.debug('Failed to clear generated audio cache storage:', e);
+  }
+}
+
 export async function pruneAudioCacheStorage(maxEntries = 100) {
   if (typeof window === 'undefined' || !('caches' in window)) return;
   try {

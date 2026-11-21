@@ -20,6 +20,7 @@ import {
 import { createConversation } from './conversation.js';
 import { createLineAudioRecovery } from './controllers/line_audio_recovery.js';
 import { mountAdv } from './adv/adv_app.js';
+import { CONFIG_PANEL_FIELDS } from './adv/config_panel.js';
 import { getModelStatus } from './model_badge.js';
 import { audioStore } from './voice.js';
 import { fetchAndCacheAudio, putCachedAudioBlob } from './cache.js';
@@ -124,6 +125,16 @@ function isLocalStarterGreeting(msg) {
     (msg.content === GREETING || LEGACY_GREETINGS.includes(msg.content)) &&
     extractServerId(msg) === null
   );
+}
+
+/** @param {Record<string, any> | null | undefined} bs */
+function hasServerChatMessages(bs) {
+  const count = Number(bs?.message_count) || 0;
+  if (count <= 0) return false;
+  if (count === 1 && (bs?.last_message === GREETING || LEGACY_GREETINGS.includes(bs?.last_message))) {
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -411,7 +422,10 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     }
   }
 
-  function renderHeader() { updateBadge(); }
+  function renderHeader() {
+    updateBadge();
+    onModelStatus?.({});
+  }
 
   function fullRender() {
     renderSidebar();
@@ -556,6 +570,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           }
         }
         session.messages = incoming;
+        session.hasServerMessages = Boolean(data.has_more) || incoming.some((m) => m.role === 'user');
         session.hasMoreHistory = Boolean(data.has_more);
         session.oldestMessageId = Number.isInteger(data.oldest_id) ? data.oldest_id : earliestServerMessageId(session.messages);
         autoTitle(session);
@@ -567,6 +582,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           const changed = initialCount !== retained.length || Boolean(session.lastLine);
           session.messages = retained;
           session.lastLine = '';
+          session.hasServerMessages = false;
           if (changed) saveState();
         }
         session.hasMoreHistory = false;
@@ -715,6 +731,14 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     const activeProfileId = getActiveProfileId();
     const voiceProfiles = getVoiceProfiles();
 
+    if (prevSession && prevSession.settings) {
+      for (const field of CONFIG_PANEL_FIELDS) {
+        if (field === 'advOutfit') continue;
+        if (Object.hasOwn(prevSession.settings, field) && prevSession.settings[field] !== undefined) {
+          s.settings[field] = prevSession.settings[field];
+        }
+      }
+    }
     if (prevSession && prevSession.settings && prevSession.settings.voiceProfileId) {
       // 只继承角色绑定与语速；人设提示词属于角色包，由后端按绑定角色解析，
       // 不再复制会话副本（复制正是同一角色在不同会话设定不一致的来源）
@@ -736,6 +760,13 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           ? manifestSpeed
           : DEFAULT_SESSION_SETTINGS.ttsSpeed;
       }
+    }
+    if (
+      prevSession?.settings?.advOutfit &&
+      s.settings.voiceProfileId != null &&
+      prevSession.settings.voiceProfileId === s.settings.voiceProfileId
+    ) {
+      s.settings.advOutfit = prevSession.settings.advOutfit;
     }
     saveState();
     fullRender();
@@ -913,6 +944,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           let local = existingMap.get(bs.id);
           if (local) {
             local.lastLine = bs.last_message || '';
+            local.hasServerMessages = hasServerChatMessages(bs);
             if (bs.title && (local.title === '新对话' || !local.title)) local.title = bs.title;
             const serverUpdatedAt = serverTimestamp(bs.updated_at, local.updatedAt);
             if (local.unconfirmedSettingsVersion) {
@@ -955,6 +987,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
               updatedAt: serverTimestamp(bs.updated_at),
               messages: [],
               lastLine: bs.last_message || '',
+              hasServerMessages: hasServerChatMessages(bs),
               settings: pickSettings({
                 ...DEFAULT_SESSION_SETTINGS,
                 ...(bs.settings || {}),
