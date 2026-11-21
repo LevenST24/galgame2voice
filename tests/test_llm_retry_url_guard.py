@@ -33,6 +33,7 @@ async def test_retry_rechecks_dns_before_sending(monkeypatch, kind, stream, fail
     resolutions = []
     calls = []
     clients = []
+    responses = []
     url_guard.clear_dns_cache()
 
     def resolve(host, port, **kwargs):
@@ -46,13 +47,19 @@ async def test_retry_rechecks_dns_before_sending(monkeypatch, kind, stream, fail
         if len(calls) == 1:
             if failure == 'connection':
                 raise httpx.ConnectError('synthetic failure', request=request)
-            return httpx.Response(503, text='synthetic temporary error', request=request)
+            resp = httpx.Response(503, text='synthetic temporary error', request=request)
+            responses.append(resp)
+            return resp
         if stream:
             data = ('data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
                     if kind == 'openai' else
                     'data: {"type":"content_block_delta","delta":{"text":"ok"}}\n\n')
-            return httpx.Response(200, text=data + 'data: [DONE]\n\n', request=request)
-        return httpx.Response(200, json={'content': [{'type': 'text', 'text': 'ok'}]}, request=request)
+            resp = httpx.Response(200, text=data + 'data: [DONE]\n\n', request=request)
+            responses.append(resp)
+            return resp
+        resp = httpx.Response(200, json={'content': [{'type': 'text', 'text': 'ok'}]}, request=request)
+        responses.append(resp)
+        return resp
 
     def create_client(**kwargs):
         client = httpx.AsyncClient(transport=httpx.MockTransport(handle), trust_env=False)
@@ -80,9 +87,12 @@ async def test_retry_rechecks_dns_before_sending(monkeypatch, kind, stream, fail
             assert await run() == 'ok'
             assert len(calls) == 2
             assert resolutions == ([] if allow_private else addresses)
-        assert all(client.is_closed for client in clients)
+        assert all(resp.is_closed for resp in responses)
     finally:
         url_guard.clear_dns_cache()
+        for client in clients:
+            if not client.is_closed:
+                await client.aclose()
 
 
 _ORIG_HTTPX_ASYNC_CLIENT = httpx.AsyncClient

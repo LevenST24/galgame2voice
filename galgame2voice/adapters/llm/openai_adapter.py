@@ -23,7 +23,7 @@ from galgame2voice.adapters.base import (
     validate_stream_completion,
 )
 from galgame2voice.utils.logger import sanitize_error_detail
-from galgame2voice.utils.http_client import create_async_client
+from galgame2voice.utils.http_client import create_async_client, get_shared_async_client
 
 logger = logging.getLogger("galgame2voice.adapters.llm.openai")
 
@@ -254,13 +254,13 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         for attempt in range(max_retries + 1):
             if attempt:
                 await assert_llm_url_safe(url, allow_private=allow_private)
-            client = create_async_client(timeout=timeout_s)
+            client = get_shared_async_client(factory=create_async_client)
             stream_ctx = None
             try:
-                stream_ctx = client.stream("POST", url, json=payload, headers=headers)
+                stream_ctx = client.stream("POST", url, json=payload, headers=headers, timeout=timeout_s)
                 response = await stream_ctx.__aenter__()
             except TRANSIENT_NETWORK_EXCEPTIONS as exc:
-                await aclose_stream_context(stream_ctx, client)
+                await aclose_stream_context(stream_ctx)
                 if attempt < max_retries:
                     delay = calculate_backoff_delay(attempt, base_delay)
                     logger.warning(
@@ -271,21 +271,21 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                     continue
                 raise RuntimeError(f"Streaming request failed to {url}: {exc}") from exc
             except BaseException:
-                await aclose_stream_context(stream_ctx, client)
+                await aclose_stream_context(stream_ctx)
                 raise
 
             if response.status_code in (401, 403):
                 try:
                     error_body = await response.aread()
                 finally:
-                    await aclose_stream_context(stream_ctx, client)
+                    await aclose_stream_context(stream_ctx)
                 raise ValueError(f"Authentication error ({response.status_code}): {error_body.decode('utf-8', errors='ignore')}")
 
             if response.status_code in TRANSIENT_STATUS_CODES:
                 try:
                     error_body = await response.aread()
                 finally:
-                    await aclose_stream_context(stream_ctx, client)
+                    await aclose_stream_context(stream_ctx)
                 retry_after = parse_retry_after(response.headers)
                 if attempt < max_retries:
                     delay = calculate_backoff_delay(attempt, base_delay, retry_after)
@@ -303,7 +303,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 try:
                     error_body = await response.aread()
                 finally:
-                    await aclose_stream_context(stream_ctx, client)
+                    await aclose_stream_context(stream_ctx)
                 raise RuntimeError(f"API returned status {response.status_code}: {error_body.decode('utf-8', errors='ignore')}")
 
             yielded_any = False
@@ -342,7 +342,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                     continue
                 raise RuntimeError(f"Streaming request failed to {url}: {exc}") from exc
             finally:
-                await aclose_stream_context(stream_ctx, client)
+                await aclose_stream_context(stream_ctx)
 
     @staticmethod
     def _diagnose_failure(

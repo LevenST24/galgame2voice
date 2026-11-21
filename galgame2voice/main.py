@@ -30,6 +30,7 @@ from galgame2voice.services.engine_supervisor import DefaultEngineSupervisor, En
 from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client, close_gpt_sovits_client
 from galgame2voice.services.telemetry_jobs import TelemetryJobs
 from galgame2voice.services.audio_cleaner import _audio_cleanup_loop
+from galgame2voice.utils.http_client import close_shared_async_clients
 from galgame2voice.utils.logger import setup_logger
 
 __all__ = [
@@ -284,6 +285,12 @@ async def _shutdown_services(settings, cleanup_task: asyncio.Task) -> None:
 
     # Drain background tasks from ChatService, SessionManager, and caches before WAL checkpoint
     await _drain_active_services()
+
+    # Release shared outbound LLM HTTP clients after active streams have drained.
+    try:
+        await close_shared_async_clients()
+    except Exception as exc:
+        logger.debug("Error closing shared HTTP clients: %s", exc)
 
     # Safe SQLite WAL truncation checkpoint
     try:
