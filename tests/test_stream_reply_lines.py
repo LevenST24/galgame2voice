@@ -533,3 +533,103 @@ async def test_single_line_with_unescaped_quotes_streams_and_persists(coordinato
         assert history[-1].content_japanese == "「おはよう」と言って行った。"
         assert history[-1].lines == events[-1]["data"]["lines"]
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_reply", "expected_lines", "expected_zh", "expected_ja", "expected_voiced"),
+    [
+        (
+            json.dumps(
+                [
+                    {
+                        "zh": "早上好。",
+                        "ja": "おはよう。",
+                        "emotion": "happy",
+                        "act": {"face": "smile", "pose": "a", "motion": "nod"},
+                    },
+                    {
+                        "zh": "今天一起出门吧。",
+                        "ja": "今日は一緒に出かけよう。",
+                        "emotion": "gentle",
+                        "act": {"face": "gentle", "pose": "b"},
+                    },
+                ],
+                ensure_ascii=False,
+            ),
+            [
+                {"index": 0, "zh": "早上好。", "ja": "おはよう。", "emotion": "happy", "act": {"motion": "nod"}},
+                {"index": 1, "zh": "今天一起出门吧。", "ja": "今日は一緒に出かけよう。", "emotion": "gentle", "act": {}},
+            ],
+            "早上好。今天一起出门吧。",
+            "おはよう。今日は一緒に出かけよう。",
+            ["おはよう。", "今日は一緒に出かけよう。"],
+        ),
+        (
+            json.dumps(
+                {
+                    "zh": "早上好。",
+                    "ja": "おはよう。",
+                    "emotion": "happy",
+                    "act": {"face": "smile", "pose": "a"},
+                },
+                ensure_ascii=False,
+            ),
+            [
+                {"index": 0, "zh": "早上好。", "ja": "おはよう。", "emotion": "happy", "act": {}},
+            ],
+            "早上好。",
+            "おはよう。",
+            ["おはよう。"],
+        ),
+    ],
+    ids=["top_level_array", "flat_object"],
+)
+async def test_unwrapped_array_and_flat_object_stream_and_persist_as_lines(
+    coordinator_factory,
+    mock_llm_server,
+    raw_reply,
+    expected_lines,
+    expected_zh,
+    expected_ja,
+    expected_voiced,
+):
+    async def tokens(*args, **options):
+        for event in mock_llm_server.generate_streaming_chunks(raw_reply):
+            if event.startswith("data: [DONE]"):
+                break
+            payload = json.loads(event.removeprefix("data: "))
+            yield payload["choices"][0]["delta"].get("content", "")
+            await asyncio.sleep(0)
+
+    coordinator, tts, database = coordinator_factory(tokens=tokens)
+    events = [event async for event in coordinator]
+
+    assert not any(event["event"] == "error" for event in events)
+    lines, audio = assert_lifecycle(events)
+    assert lines == expected_lines
+    assert [item["status"] for item in audio] == ["ready"] * len(expected_lines)
+
+    streamed_zh = "".join(event["data"]["delta_chinese"] for event in events if event["event"] == "text")
+    assert streamed_zh == expected_zh
+    for marker in ("{", "}", "[", "]", '"zh"', '"ja"'):
+        assert marker not in streamed_zh
+
+    done = events[-1]["data"]
+    assert done["reply_format"] == "lines"
+    assert done["truncated"] is False
+    assert done["chinese"] == expected_zh
+    assert done["japanese"] == expected_ja
+
+    voiced = [call.args[0] for call in tts.synthesize_to_file.await_args_list]
+    assert voiced == expected_voiced
+
+    async with get_db(database) as conn:
+        history = await crud.get_recent_messages(conn, "lines")
+    assert len(history) == 2
+    saved = history[-1]
+    assert saved.role == "assistant"
+    assert saved.content_chinese == expected_zh
+    assert saved.content_japanese == expected_ja
+    assert saved.lines == done["lines"]
+

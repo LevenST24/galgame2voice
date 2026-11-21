@@ -121,6 +121,17 @@ FIXTURES: dict[str, str] = {
         suffix="\n希望这个回答对您有帮助！如果有其他问题请随时问我。",
     ),
     "empty_lines_array": _lines_fixture(),
+    "top_level_array": json.dumps(
+        [
+            _line("早上好。", "おはよう。", "happy", {"face": "smile"}),
+            _line("今天天气真好。", "今日はいい天気だね。", "gentle", {"motion": "nod"}),
+        ],
+        ensure_ascii=False,
+    ),
+    "flat_object": json.dumps(
+        _line("早上好。", "おはよう。", "happy", {"face": "smile"}),
+        ensure_ascii=False,
+    ),
     "unescaped_quotes": (
         '{"lines": [{"zh": "他说"早上好"就走了。", "ja": "「おはよう」と言って行った。", "emotion": "happy"}]}'
     ),
@@ -498,4 +509,104 @@ def test_repair_line_quotes_helper() -> None:
 
     broken = '{"zh": "他说"早上好"就走了。", "ja" "「おはよう」"}'
     assert repair_line_quotes(broken) == broken
+
+
+
+def _feed_by_step(text: str, step: int | None):
+    scanner = LineScanner()
+    if step is None:
+        emitted = scanner.feed(text)
+    else:
+        emitted = []
+        for idx in range(0, len(text), step):
+            emitted.extend(scanner.feed(text[idx : idx + step]))
+    return emitted, scanner.finish()
+
+
+def test_top_level_array_whole_and_chunked_1_and_7() -> None:
+    payload = [
+        {"zh": "早上好。", "ja": "おはよう。", "emotion": "happy", "act": {"face": "smile"}},
+        {"zh": "今天天气真好。", "ja": "今日はいい天気だね。", "emotion": "gentle", "act": {"motion": "nod"}},
+    ]
+    variants = (
+        json.dumps(payload, ensure_ascii=False),
+        "[\n  " + ",\n  ".join(json.dumps(item, ensure_ascii=False) for item in payload) + "\n]",
+    )
+    for raw in variants:
+        for step in (None, 1, 7):
+            emitted, result = _feed_by_step(raw, step)
+            assert result.format == "lines"
+            assert result.truncated is False
+            assert emitted == result.lines
+            assert [(line.ordinal, line.zh, line.ja, line.emotion, line.act) for line in result.lines] == [
+                (0, "早上好。", "おはよう。", "happy", {"face": "smile"}),
+                (1, "今天天气真好。", "今日はいい天気だね。", "gentle", {"motion": "nod"}),
+            ]
+
+    # First element emits immediately before the second element or closing ']' arrives
+    compact = variants[0]
+    first_close = compact.index("}}", compact.index('"face"')) + 2
+    early_scanner = LineScanner()
+    first_batch = early_scanner.feed(compact[:first_close])
+    assert len(first_batch) == 1 and first_batch[0].zh == "早上好。"
+    second_batch = early_scanner.feed(compact[first_close:])
+    assert len(second_batch) == 1 and second_batch[0].zh == "今天天气真好。"
+    assert early_scanner.finish().truncated is False
+
+
+def test_flat_root_object_emits_single_line() -> None:
+    raw = json.dumps(
+        {"zh": "早上好。", "ja": "おはよう。", "emotion": "happy", "act": {"face": "smile"}},
+        ensure_ascii=False,
+    )
+    for step in (None, 1, 7):
+        emitted, result = _feed_by_step(raw, step)
+        assert result.format == "lines"
+        assert result.truncated is False
+        assert emitted == result.lines
+        assert len(result.lines) == 1
+        assert (
+            result.lines[0].ordinal,
+            result.lines[0].zh,
+            result.lines[0].ja,
+            result.lines[0].emotion,
+            result.lines[0].act,
+        ) == (0, "早上好。", "おはよう。", "happy", {"face": "smile"})
+
+    _, ja_only = _feed_by_step('{"ja": "おはよう。", "emotion": "gentle"}', 7)
+    assert ja_only.format == "lines"
+    assert len(ja_only.lines) == 1 and ja_only.lines[0].ja == "おはよう。" and ja_only.lines[0].zh == ""
+
+    _, non_str = _feed_by_step('{"zh": 123}', 1)
+    assert non_str.format == "unknown"
+    assert non_str.lines == []
+
+
+def test_bracketed_emotion_plain_text_and_legacy_format_unchanged() -> None:
+    from galgame2voice.services.streaming_parser import StreamingBilingualParser
+
+    plain = "[happy] 今天真开心！"
+    for step in (None, 1, 7):
+        emitted, result = _feed_by_step(plain, step)
+        assert emitted == []
+        assert result.format == "unknown"
+        assert result.lines == []
+        assert result.truncated is False
+
+    parser = StreamingBilingualParser()
+    for idx in range(0, len(plain), 7):
+        parser.feed_chunk(plain[idx : idx + 7])
+    zh, ja, _ = parser.finalize()
+    assert parser.line_scanner.format == "unknown"
+    assert zh == "今天真开心！"
+    assert "今天真开心！" in ja
+    assert parser.get_emotion() == "happy"
+
+    for step in (None, 1, 7):
+        legacy_emitted, legacy_res = _feed_by_step(FIXTURES["legacy_format"], step)
+        assert legacy_emitted == []
+        assert legacy_res.format == "unknown"
+        assert legacy_res.lines == []
+        assert legacy_res.tts == {"speed": 1.0, "temp": 0.95, "emotion": "gentle"}
+        assert legacy_res.truncated is False
 
