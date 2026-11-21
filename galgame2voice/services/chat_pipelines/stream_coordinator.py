@@ -593,6 +593,8 @@ class StreamCoordinator:
                 if cancel_event and cancel_event.is_set():
                     break
                 delta_ch, completed_sentences, current_emo = text_pipe.feed_token(token)
+                if run.parser.is_thinking:
+                    self._note_reply_progress(run, "thinking")
                 if delta_ch:
                     profiler.record_llm_first_token()
                     if run.ttft_ms == 0.0:
