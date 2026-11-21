@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test, beforeEach, afterEach } from 'node:test';
 import { StreamAudioController } from '../frontend/src/audio_player.js';
+import { createEngineSettingsController } from '../frontend/src/controllers/engine_settings.js';
 import { clearMemAudioCache, getCachedAudioBlob, loadAudioBlob, putCachedAudioBlob, pruneAudioCacheStorage } from '../frontend/src/cache.js';
 
 const deferred = () => {
@@ -273,4 +274,44 @@ test('a valid cached playback does not fetch or rewrite storage', async () => {
   assert.equal(p.ctx.sources.length, 1);
   p.ctx.sources[0].finish(); assert.equal(await result, 'ended');
   await tick(); assert.equal(fetched.length, 0); assert.equal(writes, 0);
+});
+
+test('clearing TTS cache deletes generated audio entries while preserving user recordings', async () => {
+  await putCachedAudioBlob('user_recording_1', audio('irreplaceable user recording'));
+  await putCachedAudioBlob('legacy_unknown_key', audio('unknown legacy audio'));
+  await putCachedAudioBlob('/audio/cache/synth_1.wav', audio('generated tts 1'));
+  await putCachedAudioBlob('msg_generated_2', audio('generated tts 2'));
+
+  const deletedBuckets = [];
+  globalThis.caches.delete = async (name) => {
+    deletedBuckets.push(name);
+    storage.entries.clear();
+    return true;
+  };
+  const origConfirm = globalThis.confirm;
+  globalThis.confirm = () => true;
+  globalThis.fetch = async (url, options) => {
+    fetched.push({ url, options });
+    return new Response(JSON.stringify({ deleted_files: 2, freed_mb: 1.5 }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  try {
+    const controller = createEngineSettingsController(
+      { gBtnClearCache: { disabled: false } },
+      { showToast() {}, revokeAllCachedAudioUrls() {} },
+    );
+    await controller.handleClearCache();
+  } finally {
+    if (origConfirm === undefined) delete globalThis.confirm;
+    else globalThis.confirm = origConfirm;
+  }
+
+  clearMemAudioCache();
+  assert.deepEqual(deletedBuckets, [], 'handleClearCache must not delete the whole gal2voice-audio-v1 bucket');
+  assert.equal(await (await getCachedAudioBlob('user_recording_1'))?.text(), 'irreplaceable user recording');
+  assert.equal(await (await getCachedAudioBlob('legacy_unknown_key'))?.text(), 'unknown legacy audio');
+  assert.equal(await getCachedAudioBlob('/audio/cache/synth_1.wav'), null);
+  assert.equal(await getCachedAudioBlob('msg_generated_2'), null);
 });
