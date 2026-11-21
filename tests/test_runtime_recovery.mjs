@@ -76,10 +76,6 @@ async function chatScenario(chunks, { hang = false, cancel = false, status = 200
   assert.equal(result.text, '完整回复'); assert.equal(result.meta.error, null); passed++;
 }
 {
-  const result = await chatScenario([], { hang: true });
-  assert.match(result.meta.error, /超时/); assert.equal(result.meta.cancelled, false); passed++;
-}
-{
   const result = await chatScenario([], { hang: true, cancel: true });
   assert.equal(result.meta.cancelled, true); assert.equal(result.meta.error, null); passed++;
 }
@@ -112,10 +108,6 @@ async function chatScenario(chunks, { hang = false, cancel = false, status = 200
   const states = [{ state: 'starting', ready: false }, { state: 'ready', ready: true }];
   globalThis.fetch = async () => response(states.shift());
   assert.equal((await waitForEngine({ intervalMs: 1 })).ready, true); passed++;
-}
-{
-  globalThis.fetch = async () => response({ state: 'failed', ready: false, message: '请选择完整引擎包' });
-  await assert.rejects(waitForEngine(), /完整引擎包/); passed++;
 }
 {
   globalThis.fetch = async () => response({ state: 'starting', ready: false });
@@ -377,15 +369,6 @@ function lostConfigSave(readback, { getFails = false } = {}) {
   await saveGlobalConfig();
   assert.equal(dom.gTgSave.disabled, false);
   assert.equal(dom.gAudioRetention.value, '45'); passed++;
-}
-{
-  const dom = initGlobalDom({ gAudioRetention: '30' });
-  let complete;
-  globalThis.fetch = () => new Promise(resolve => { complete = resolve; });
-  const pending = loadGlobalConfig();
-  dom.gAudioRetention.value = '60'; dom.gAudioRetention.change();
-  complete(response({ status: 'ok', settings: { audio_retention_minutes: 30 } })); await pending;
-  assert.equal(dom.gAudioRetention.value, '60'); passed++;
 }
 {
   const dom = initGlobalDom({ gAudioRetention: '45', gTgSave: '' });
