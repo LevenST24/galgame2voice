@@ -741,9 +741,16 @@ function confirmPackageOverwrite(data, filename) {
   return window.confirm(`已有同名角色包「${names}」，覆盖它吗？旧的会先备份。`);
 }
 
-function characterImportSuccessMessage(label, imported) {
+function isSessionModalOpen() {
+  const modal = _dom.sessionModal;
+  return Boolean(modal && !modal.hidden && !modal.classList?.contains('hidden'));
+}
+
+function characterImportSuccessMessage(label, imported, modalOpen = true) {
   const missing = imported.filter((item) => item.missing_voice_weights);
-  if (!missing.length) return `已导入${label}，点「保存」即可使用`;
+  if (!missing.length) {
+    return modalOpen ? `已导入${label}，点「保存」即可使用` : `已导入${label}，可在「角色与会话」中选用`;
+  }
   if (missing.length === imported.length) {
     return `已导入${label}，但还不能出声，需要补上模型权重`;
   }
@@ -753,14 +760,28 @@ function characterImportSuccessMessage(label, imported) {
 
 async function finishCharacterImport(data, filename) {
   invalidateScannedModels();
-  await loadSessionVoiceSelect(getActive(), { preserveDraft: true, syncCustomBox: false });
   const imported = Array.isArray(data?.imported) ? data.imported : [];
-  if (imported[0]?.profile_id != null && _dom.sVoice) {
-    _dom.sVoice.value = String(imported[0].profile_id);
-    handleVoiceSelectionChange();
-  } else syncCustomVoiceBox();
   const label = imported.length ? imported.map((item) => `「${item.name}」`).join('、') : `「${filename || '角色包'}」`;
-  showToast(characterImportSuccessMessage(label, imported), 'success');
+  if (!isSessionModalOpen()) {
+    await fetchVoiceProfiles({ silent: true }).catch(() => {});
+    const toastOpts = _callbacks.onOpenSessionSettings
+      ? { actionLabel: '去选用', onAction: () => _callbacks.onOpenSessionSettings() }
+      : null;
+    showToast(characterImportSuccessMessage(label, imported, false), 'success', toastOpts);
+    return;
+  }
+  await loadSessionVoiceSelect(getActive(), { preserveDraft: true, syncCustomBox: false });
+  if (isSessionModalOpen()) {
+    if (imported[0]?.profile_id != null && _dom.sVoice) {
+      _dom.sVoice.value = String(imported[0].profile_id);
+      handleVoiceSelectionChange();
+    } else syncCustomVoiceBox();
+  }
+  const modalOpen = isSessionModalOpen();
+  const toastOpts = !modalOpen && _callbacks.onOpenSessionSettings
+    ? { actionLabel: '去选用', onAction: () => _callbacks.onOpenSessionSettings() }
+    : null;
+  showToast(characterImportSuccessMessage(label, imported, modalOpen), 'success', toastOpts);
 }
 
 async function importCharacterArchive(blob, filename) {
