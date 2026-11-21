@@ -118,7 +118,7 @@ export function mountAdv(dom, deps) {
       deps.onMic?.(textbox.inputElement, textbox.micButton);
     },
     onAction: (actionName, data) => {
-      if (actionName === 'player_edit') { player.beginPlayerEdit(); stopStageReplay(); sprite.suspend(); syncControls(); }
+      if (actionName === 'player_edit') { deps.disarmMicAutoSend?.(); player.beginPlayerEdit(); stopStageReplay(); sprite.suspend(); syncControls(); }
       if (actionName === 'swap_languages') {
         deps.saveSettings?.({ advPrimaryLanguage: data.primary, advSubtitleLanguage: data.subtitle });
         update();
@@ -283,6 +283,7 @@ export function mountAdv(dom, deps) {
       }
     },
     onOpen: () => {
+      deps.cancelMic?.();
       player.suspend('dialog');
       stopStageReplay();
       sprite.suspend();
@@ -334,6 +335,7 @@ export function mountAdv(dom, deps) {
       background.setSelection(appliedBackground);
     },
     onOpen: () => {
+      deps.cancelMic?.();
       player.suspend('dialog');
       stopStageReplay();
       sprite.suspend();
@@ -460,6 +462,7 @@ export function mountAdv(dom, deps) {
     const node = dom.sidebar;
     if (!node?.parentNode) return;
     savedFocus = doc.activeElement;
+    deps.cancelMic?.();
     player.suspend('overlay'); stopStageReplay(); deps.stopOtherVoice?.(); sprite.suspend(); textbox.completeReveal(); textbox.glyph(false);
     const element = doc.createElement('div'); element.className = `adv-drawer adv-drawer-${kind}`;
     element.setAttribute('role', 'dialog'); element.setAttribute('aria-modal', 'true');
@@ -527,6 +530,7 @@ export function mountAdv(dom, deps) {
     temporarySkip = false;
     player.setSkip(false);
     player.suspend('overlay');
+    deps.cancelMic?.();
     const stoppedReplay = stopStageReplay({ fadeMs: 0 });
     deps.stopOtherVoice?.();
     if (!stoppedReplay) audio.stopLine?.({ fadeMs: 0 });
@@ -702,7 +706,7 @@ export function mountAdv(dom, deps) {
   else if (mql?.addListener) { mql.addListener(motionChange); disposers.push(() => mql.removeListener(motionChange)); }
   function setOverlay(open) {
     externalOverlay = open;
-    if (open) { player.suspend('dialog'); stopStageReplay(); sprite.suspend(); textbox.completeReveal(); textbox.glyph(false); }
+    if (open) { deps.cancelMic?.(); player.suspend('dialog'); stopStageReplay(); sprite.suspend(); textbox.completeReveal(); textbox.glyph(false); }
     else { player.resume('dialog'); if (!drawer && !backlog && !configPanel?.isOpen) restoreSprite(); }
     syncControls();
   }
