@@ -151,7 +151,7 @@ for (const malformed of [{ sessions: [null] }, { sessions: [{ ...saved().session
   state.sessions[0].title = 'Unsaved work in this tab';
   assert.equal(saveState(), false);
   assert.equal(localStorage.getItem(KEY), raw);
-  assert.match(getStorageStatus().message, /另一网页/);
+  assert.equal(getStorageStatus().message, '另一个页面改动了聊天记录，当前页面已暂停保存。刷新本页即可看到最新记录。');
   assert.ok(exportSessionData().includes('Unsaved work in this tab')); passed++;
 }
 {
@@ -770,6 +770,66 @@ function setupImportScenario() {
   assert.equal(persisted.sessions.find((s) => s.id === 's_inactive_old').lastLine, '已有历史摘要');
   assert.equal(persisted.sessions.find((s) => s.id === 's_inactive_new').messages.length, 2);
   assert.equal(persisted.sessions.find((s) => s.id === 's_inactive_new').lastLine, undefined);
+  passed++;
+}
+
+
+{
+  // Non-damaged cross-tab conflict shows refresh guidance and a reload action instead of backup-export flow.
+  const doc = fakeDocument();
+  const toastRoot = doc.createElement('div');
+  toastRoot.id = 'toastRoot';
+  doc.body.appendChild(toastRoot);
+  globalThis.document = doc;
+  let reloads = 0;
+  let openedBackup = 0;
+  globalThis.window = { location: { reload() { reloads++; } } };
+
+  storage(saved());
+  loadState();
+  initSessionBackup({ onOpenBackupTab: () => { openedBackup++; } });
+
+  const changed = saved();
+  changed.sessions[0].title = 'Changed elsewhere';
+  localStorage.setItem(KEY, JSON.stringify(changed));
+  state.sessions[0].title = 'Local edit';
+  assert.equal(saveState(), false);
+
+  const toasts = [...toastRoot.querySelectorAll('.toast')];
+  assert.equal(toasts.length, 1);
+  assert.equal(toasts[0].dataset.msg, '另一个页面改动了聊天记录，当前页面已暂停保存。刷新本页即可看到最新记录。');
+  const btn = toasts[0].querySelector('button');
+  assert.equal(btn?.textContent, '立即刷新');
+  btn.click();
+  assert.equal(reloads, 1);
+  assert.equal(openedBackup, 0);
+  for (const t of toasts) { clearTimeout(t._timer); t.remove(); }
+  passed++;
+}
+{
+  // Damaged storage still offers the backup settings button instead of reload.
+  const doc = fakeDocument();
+  const toastRoot = doc.createElement('div');
+  toastRoot.id = 'toastRoot';
+  doc.body.appendChild(toastRoot);
+  let reloads = 0;
+  let openedBackup = 0;
+  globalThis.window = { location: { reload() { reloads++; } } };
+
+  globalThis.document = fakeDocument();
+  storage('{broken');
+  loadState();
+  globalThis.document = doc;
+  initSessionBackup({ onOpenBackupTab: () => { openedBackup++; } });
+
+  const toasts = [...toastRoot.querySelectorAll('.toast')];
+  assert.equal(toasts.length, 1);
+  const btn = toasts[0].querySelector('button');
+  assert.equal(btn?.textContent, '打开备份设置');
+  btn.click();
+  assert.equal(openedBackup, 1);
+  assert.equal(reloads, 0);
+  for (const t of toasts) { clearTimeout(t._timer); t.remove(); }
   passed++;
 }
 
