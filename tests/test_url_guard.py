@@ -135,18 +135,19 @@ def test_dns_rebind_ssrf_cache_vulnerability(monkeypatch):
 
 def test_proxy_tun_fake_ip_allowed_and_error_names_real_checkbox(monkeypatch):
     """Clash/Mihomo/sing-box TUN Fake-IP ranges pass while private/loopback/metadata stay blocked."""
+    # Hosts must not be official or example.* ones: the autouse conftest fixture lets those skip DNS checks.
     clear_dns_cache()
 
     def make_resolver(ip: str, family: int):
         return lambda *args, **kwargs: [(family, socket.SOCK_STREAM, 6, "", (ip, 443))]
 
     monkeypatch.setattr(socket, "getaddrinfo", make_resolver("198.18.0.7", socket.AF_INET))
-    ok, reason = validate_llm_base_url("https://api.deepseek.com/v1")
+    ok, reason = validate_llm_base_url("https://relay.fakeip-check.net/v1")
     assert ok is True, reason
 
     clear_dns_cache()
     monkeypatch.setattr(socket, "getaddrinfo", make_resolver("fc00::1", socket.AF_INET6))
-    ok, reason = validate_llm_base_url("https://api.openai.com/v1")
+    ok, reason = validate_llm_base_url("https://relay6.fakeip-check.net/v1")
     assert ok is True, reason
 
     for blocked_ip, family in (
@@ -157,7 +158,7 @@ def test_proxy_tun_fake_ip_allowed_and_error_names_real_checkbox(monkeypatch):
     ):
         clear_dns_cache()
         monkeypatch.setattr(socket, "getaddrinfo", make_resolver(blocked_ip, family))
-        ok, reason = validate_llm_base_url("https://api.example.com/v1")
+        ok, reason = validate_llm_base_url("https://relay.lan-check.net/v1")
         assert ok is False, f"{blocked_ip} must stay blocked"
         assert "「允许连接本机或局域网的模型服务」" in reason
         assert "允许私网 LLM 端点" not in reason
