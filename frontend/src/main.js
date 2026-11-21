@@ -188,6 +188,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     globalSettingsBtn: $('globalSettingsBtn'),
     globalModal: $('globalModal'),
     sessionModal: $('sessionModal'),
+    sTitle: $('sTitle'),
     sSystem: $('sSystem'),
     sVoice: $('sVoice'),
     sVoiceActive: $('sVoiceActive'),
@@ -952,6 +953,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
               unconfirmedLocalSessions.push(local);
             } else {
               local.updatedAt = serverUpdatedAt;
+              if (bs.title && bs.title !== '新对话') local.title = bs.title;
               if (bs.voice_profile_id && !local.settings.voiceProfileId) local.settings.voiceProfileId = bs.voice_profile_id;
               if (bs.settings && Object.keys(bs.settings).length > 0) local.settings = pickSettings({ ...local.settings, ...bs.settings }, DEFAULT_SESSION_SETTINGS);
             }

@@ -172,6 +172,7 @@ export async function openSessionSettings() {
   if (!s) return;
   const revision = ++editorRevision;
   if (_dom.smTitle) _dom.smTitle.textContent = `· ${s.title}`;
+  if (_dom.sTitle) _dom.sTitle.value = s.title || '';
   syncInitialSessionVoiceSelection(s);
   applyProfilePromptToField(s.settings?.voiceProfileId ?? null);
   if (_dom.sSystem) {
@@ -1178,7 +1179,7 @@ export async function deleteVoiceProfile() {
 }
 
 const EDITOR_FIELDS = [
-  'sVoice', 'sSystem', 'sTemp', 'sTopP', 'sMaxTokens', 'sFreq', 'sPres', 'sCtx',
+  'sTitle', 'sVoice', 'sSystem', 'sTemp', 'sTopP', 'sMaxTokens', 'sFreq', 'sPres', 'sCtx',
   'sAiAdaptiveVoice', 'sTtsSpeed', 'sTtsTopK', 'sTtsTopP', 'sTtsTemp',
   'sCvName', 'sCvGpt', 'sCvSovits', 'sCvRef', 'sCvPromptText', 'sCvLang',
 ];
@@ -1220,6 +1221,11 @@ async function handleSaveSessionSettings() {
       showToast('人设草稿与当前角色不一致，已保留编辑内容。请重新选择对应角色后再保存。', 'error');
       return;
     }
+    const nextTitle = (_dom.sTitle?.value || '').trim();
+    if (nextTitle) {
+      s.title = nextTitle;
+    }
+    if (_dom.smTitle) _dom.smTitle.textContent = `· ${s.title}`;
     s.settings = {
       ...s.settings,
       voiceProfileId: profileId,
@@ -1265,13 +1271,17 @@ async function handleSaveSessionSettings() {
       }
     }
 
-    if (sameEditor() && editorSnapshot() === submitted && promptConfirmed && !syncNote && _callbacks.closeModal) {
+    const editorUnchanged = sameEditor() && editorSnapshot() === submitted;
+    if (editorUnchanged && _dom.sTitle) {
+      _dom.sTitle.value = s.title;
+    }
+    if (editorUnchanged && promptConfirmed && !syncNote && _callbacks.closeModal) {
       _callbacks.closeModal(_dom.sessionModal);
     }
     if (_callbacks.renderSidebar) _callbacks.renderSidebar();
     if (_callbacks.renderHeader) _callbacks.renderHeader();
           if (getActive() === s) await ensureSessionVoice(s);
-    const draftNote = sameEditor() && editorSnapshot() !== submitted ? '；保存期间新增的修改已保留在面板中，请再次保存' : '';
+    const draftNote = sameEditor() && !editorUnchanged ? '；保存期间新增的修改已保留在面板中，请再次保存' : '';
     const nextName = voiceProfiles.find((p) => p.id === profileId)?.name;
     const lead = nextName && profileId !== previousProfileId ? `已换上「${nextName}」。` : '设置已保存。';
     showToast(`${lead}${promptNote}${syncNote}${draftNote}`, promptNote || syncNote || draftNote ? 'info' : 'success');

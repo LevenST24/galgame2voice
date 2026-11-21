@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
-import { state, loadState, DEFAULT_SESSION_SETTINGS } from '../frontend/src/store.js';
+import fs from 'node:fs';
+import { state, loadState, addMessage, DEFAULT_SESSION_SETTINGS } from '../frontend/src/store.js';
 import { initVoiceSettings, createCustomVoice, loadSessionVoiceSelect, handleRescanCharacters, populateScanOptions, invalidateScannedModels, ensureSessionVoice, deleteVoiceProfile, fetchVoiceProfiles, openSessionSettings, getActiveProfileId } from '../frontend/src/controllers/voice_settings.js';
 import { persistSession } from '../frontend/src/session_api.js';
+import { renderSessionList } from '../frontend/src/ui.js';
+import { createTitleActions } from '../frontend/src/adv/actions.js';
+import { createTitleScreen } from '../frontend/src/adv/title.js';
+import { fakeDocument } from './helpers/adv_dom.mjs';
 
 const storage = new Map();
 globalThis.localStorage = { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) };
@@ -1116,6 +1121,186 @@ for (const voiceOn of [false, true]) {
     dom.sAiAdaptiveVoiceHint.textContent,
     '当前为自动模式，下方参数不生效；想手动调语速，请把上面的模式改成「固定参数模式」。',
   );
+  passed++;
+}
+{
+  // Session rename in 「角色与会话」:
+  // 1. index.html places #sTitle ("会话名称") at the top of #sessionModal, and main.js wires it.
+  // 2. Opening the panel fills #sTitle with the current session title; saving trims whitespace,
+  //    updates session.title, #smTitle, sidebar list, home cards, and POST /api/chat/sessions.
+  // 3. Clearing #sTitle to empty/whitespace keeps the previous title.
+  // 4. Editing #sTitle while a save is in-flight keeps the modal open and preserves the newer draft.
+  // 5. Sending user messages afterwards does not overwrite a user-chosen title (even on an empty session).
+  const indexHtml = fs.readFileSync(new URL('../frontend/index.html', import.meta.url), 'utf8');
+  const modalBodyIdx = indexHtml.indexOf('id="sessionModal"');
+  const sTitleIdx = indexHtml.indexOf('id="sTitle"');
+  const sSystemIdx = indexHtml.indexOf('id="sSystem"');
+  assert.ok(modalBodyIdx > 0 && sTitleIdx > modalBodyIdx && sTitleIdx < sSystemIdx,
+    '#sTitle must appear at the top of #sessionModal before #sSystem');
+
+  let closed = 0;
+  const sidebarTitles = [];
+  let modalOpen = false;
+  const settingsListeners = new Set();
+  const doc = fakeDocument();
+  const stage = doc.createElement('div'); stage.className = 'adv-stage'; doc.body.appendChild(stage);
+  const overlay = doc.createElement('div'); overlay.className = 'adv-layer-overlay'; stage.appendChild(overlay);
+  const sidebarList = element();
+  const previousDocument = globalThis.document;
+  const sidebarDoc = {
+    getElementById: id => previousDocument.getElementById(id),
+    createDocumentFragment() {
+      const frag = element();
+      frag.isFrag = true;
+      return frag;
+    },
+    createElement() {
+      const item = element();
+      const siTitle = element();
+      const siPreview = element();
+      const siDel = element();
+      siDel.setAttribute = () => {};
+      item.setAttribute = () => {};
+      item.querySelector = sel => (sel === '.si-title' ? siTitle : sel === '.si-preview' ? siPreview : siDel);
+      item.appendChild = child => {
+        if (child?.isFrag) item.children.push(...child.children);
+        else item.children.push(child);
+      };
+      return item;
+    },
+  };
+  sidebarList.appendChild = child => {
+    if (child?.isFrag) sidebarList.children.push(...child.children);
+    else sidebarList.children.push(child);
+  };
+
+  const { first, second, dom } = setup({
+    openModal() {
+      modalOpen = true;
+      for (const fn of settingsListeners) fn(true);
+    },
+    closeModal() {
+      closed++;
+      modalOpen = false;
+      for (const fn of settingsListeners) fn(false);
+    },
+    renderSidebar() {
+      globalThis.document = sidebarDoc;
+      try {
+        renderSessionList(sidebarList, {
+          sessions: state.sessions,
+          activeId: state.activeId,
+          onSelect() {},
+          onDelete() {},
+        });
+      } finally {
+        globalThis.document = previousDocument;
+      }
+      sidebarTitles.splice(0, sidebarTitles.length, ...sidebarList.children.map(c => c.querySelector('.si-title').textContent));
+    },
+  });
+  dom.sTitle = element();
+  dom.smTitle = element();
+  dom.sessionModal = element();
+
+  const actions = createTitleActions({
+    getSessions: () => state.sessions,
+    getProfiles: () => [],
+    getActiveId: () => state.activeId,
+    startNew() {},
+    loadSession() {},
+    openCharacters() {},
+    openSettings() {},
+    getStatus: async () => ({ modelLoaded: true, hasModel: true, model: { state: 'ok' }, engine: { state: 'ready' } }),
+    subscribeSettings: fn => { settingsListeners.add(fn); return () => settingsListeners.delete(fn); },
+  });
+  const home = createTitleScreen(overlay, { documentObj: doc, actions });
+  home.open();
+  await tick();
+  home.element.querySelector('.home-all').click();
+
+  first.title = '早上好';
+  first.messages = [{ id: 'm1', role: 'user', content: '早上好', ts: 1 }];
+  const saves = [];
+  let deferSessionSave = null;
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/voice/profiles') return response({ profiles: [{ id: 1, name: '角色A' }], active_profile_id: 1 });
+    if (url === '/api/chat/sessions' && options.method === 'POST') {
+      const body = JSON.parse(options.body);
+      saves.push(body);
+      if (deferSessionSave) return new Promise(resolve => { deferSessionSave = resolve; });
+      return response({ status: 'ok' });
+    }
+    return response({});
+  };
+
+  try {
+    await openSessionSettings();
+    await tick();
+    assert.equal(dom.sTitle.value, '早上好', 'opening session settings must fill current session title');
+    assert.equal(dom.smTitle.textContent, '· 早上好');
+
+    // Rename with surrounding spaces and save
+    dom.sTitle.value = '  放学后的天台  ';
+    await dom.sSave.click();
+    await tick();
+
+    assert.equal(first.title, '放学后的天台', 'session title must be trimmed and updated');
+    assert.equal(saves.at(-1)?.title, '放学后的天台', 'POST /api/chat/sessions must receive new title');
+    assert.equal(dom.smTitle.textContent, '· 放学后的天台', 'modal header subtitle must show new title');
+    assert.equal(sidebarTitles[0], '放学后的天台', 'sidebar session list must show new title');
+    assert.equal(home.element.querySelector('.adv-title-slot-meta')?.children[0]?.textContent, '放学后的天台', 'home all-sessions card must show new title');
+    assert.equal(closed, 1);
+    assert.equal(modalOpen, false);
+
+    // Clearing input keeps previous title
+    await openSessionSettings();
+    await tick();
+    assert.equal(dom.sTitle.value, '放学后的天台');
+    dom.sTitle.value = '   ';
+    await dom.sSave.click();
+    await tick();
+    assert.equal(first.title, '放学后的天台', 'blank input must keep previous title');
+    assert.equal(saves.at(-1)?.title, '放学后的天台');
+    assert.equal(closed, 2);
+
+    // Editing #sTitle during an in-flight save preserves the newer draft (EDITOR_FIELDS)
+    await openSessionSettings();
+    await tick();
+    dom.sTitle.value = '第一次改名';
+    deferSessionSave = true;
+    const pendingSave = dom.sSave.click();
+    await tick();
+    dom.sTitle.value = '保存途中再改名';
+    const finishSave = deferSessionSave;
+    deferSessionSave = null;
+    finishSave(response({ status: 'ok' }));
+    await pendingSave;
+    assert.equal(first.title, '第一次改名');
+    assert.equal(closed, 2, 'editing #sTitle mid-save must keep the panel open');
+    assert.equal(dom.sTitle.value, '保存途中再改名', 'newer #sTitle draft must not be lost');
+    await dom.sSave.click();
+    assert.equal(first.title, '保存途中再改名');
+    assert.equal(saves.at(-1)?.title, '保存途中再改名');
+    assert.equal(closed, 3);
+
+    // Renaming a brand-new session ("新对话") before any message, then sending messages keeps the custom title
+    second.title = '新对话';
+    second.messages = [];
+    state.activeId = second.id;
+    await openSessionSettings();
+    await tick();
+    assert.equal(dom.sTitle.value, '新对话');
+    dom.sTitle.value = '雨天的约定';
+    await dom.sSave.click();
+    assert.equal(second.title, '雨天的约定');
+    assert.equal(saves.at(-1)?.title, '雨天的约定');
+
+    addMessage('user', '早上好，今天下雨了呢', second.id);
+    assert.equal(second.title, '雨天的约定', 'sending messages afterwards must not overwrite custom session title');
+  } finally {
+    home.destroy();
+  }
   passed++;
 }
 console.log(`Voice settings recovery: ${passed} scenarios passed`);
