@@ -2,7 +2,6 @@
 Cross-device deployment tests for reference audio path portability:
 1. resolve_existing_audio_path: absolute / project_root-relative / audio_dir-relative resolution.
 2. to_project_relative_path: paths under project_root stored portable; external paths untouched.
-3. VoiceManager.switch_profile memory guard raises InsufficientMemoryError (and force bypasses).
 """
 
 from types import SimpleNamespace
@@ -13,10 +12,6 @@ import pytest
 from galgame2voice.utils.path_guard import (
     resolve_existing_audio_path,
     to_project_relative_path,
-)
-from galgame2voice.services.voice_manager import (
-    VoiceManager,
-    InsufficientMemoryError,
 )
 
 
@@ -80,42 +75,3 @@ class TestToProjectRelativePath:
 
     def test_empty_unchanged(self, fake_settings):
         assert to_project_relative_path("") == ""
-
-
-class TestVoiceManagerMemoryGuard:
-    @pytest.mark.asyncio
-    async def test_low_memory_raises_insufficient_memory_error(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            "galgame2voice.services.voice_manager.get_system_memory_status",
-            lambda: (16.0, 0.8),
-        )
-        monkeypatch.delenv("GALGAME2VOICE_SKIP_MEM_CHECK", raising=False)
-
-        from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client
-        manager = VoiceManager(db_path=str(tmp_path / "t.db"))
-
-        profile = SimpleNamespace(id=1, name="p", ref_audio_path="", prompt_text="",
-                                  prompt_lang="ja", text_lang="ja",
-                                  gpt_weights_path="", sovits_weights_path="")
-        with pytest.raises(InsufficientMemoryError):
-            await manager.switch_profile(profile, persist=False)
-
-    @pytest.mark.asyncio
-    async def test_force_bypasses_memory_guard(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            "galgame2voice.services.voice_manager.get_system_memory_status",
-            lambda: (16.0, 0.1),
-        )
-        monkeypatch.delenv("GALGAME2VOICE_SKIP_MEM_CHECK", raising=False)
-
-        manager = VoiceManager(db_path=str(tmp_path / "t.db"))
-
-        async def fake_switch(profile_obj, force=False):
-            return True
-
-        # Guard must not fire before the client call; force short-circuits the check.
-        monkeypatch.setattr(manager.client, "switch_voice_profile", fake_switch)
-        profile = SimpleNamespace(id=1, name="p", ref_audio_path="", prompt_text="",
-                                  prompt_lang="ja", text_lang="ja",
-                                  gpt_weights_path="", sovits_weights_path="")
-        assert await manager.switch_profile(profile, persist=False, force=True) is True

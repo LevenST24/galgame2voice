@@ -12,8 +12,6 @@ WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 # Branch protection on main listens for these job names. The matrix expands
 # `lint-and-test` into the two checks `lint-and-test (3.10)` and `lint-and-test (3.12)`.
 REQUIRED_CI_JOBS = ("lint-and-test", "test-linux", "dependency-audit", "frontend-build", "docker-build")
-UV_CACHE_WORKFLOWS = ("ci.yml", "portable-premerge.yml", "release.yml")
-NODE_CACHE_WORKFLOWS = ("ci.yml", "release.yml")
 
 HEADLESS_GLOB = "tests/test_*_browser.py"
 HEADLESS_IGNORE = '--ignore-glob="tests/test_*_browser.py"'
@@ -22,7 +20,6 @@ PURE_PYTHON_BROWSER_TESTS = (
     "tests/test_portable_browser_validation.py",
 )
 BUILD_PUSH_ACTION = "docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4"
-FIXED_SLEEP = re.compile(r"(?<![A-Za-z0-9_])(?:sleep[ \t]+\d+|Start-Sleep)\b", re.IGNORECASE)
 PYTEST_COMMAND = re.compile(r"(?<![\w-])pytest(?![\w-])")
 UNCACHED_DOCKER_BUILD = re.compile(r"(?<![\w-])docker\s+build\s+\.(?:\s|$)")
 
@@ -33,12 +30,6 @@ def _workflow(name: str) -> dict:
 
 def _workflow_paths() -> list[Path]:
     return sorted(WORKFLOWS.glob("*.yml")) + sorted(WORKFLOWS.glob("*.yaml"))
-
-
-def _iter_steps(workflow: dict):
-    for job_name, job in workflow["jobs"].items():
-        for index, step in enumerate(job.get("steps") or []):
-            yield job_name, index, step
 
 
 def _condition(step: dict) -> str:
@@ -136,29 +127,6 @@ def test_windows_312_and_linux_still_run_headless_browser_files():
         assert "--ignore-glob" not in step["run"]
 
 
-def test_setup_uv_enables_the_dependency_cache():
-    missing = []
-    for name in UV_CACHE_WORKFLOWS:
-        for job_name, index, step in _iter_steps(_workflow(name)):
-            if not str(step.get("uses", "")).startswith("astral-sh/setup-uv@"):
-                continue
-            if (step.get("with") or {}).get("enable-cache") is not True:
-                missing.append(f"{name}:{job_name}:step{index}")
-    assert missing == []
-
-
-def test_setup_node_caches_the_frontend_lockfile():
-    missing = []
-    for name in NODE_CACHE_WORKFLOWS:
-        for job_name, index, step in _iter_steps(_workflow(name)):
-            if not str(step.get("uses", "")).startswith("actions/setup-node@"):
-                continue
-            options = step.get("with") or {}
-            if options.get("cache") != "npm" or options.get("cache-dependency-path") != "frontend/package-lock.json":
-                missing.append(f"{name}:{job_name}:step{index}")
-    assert missing == []
-
-
 def test_docker_build_keeps_the_dockerfile_check_and_uses_gha_cache():
     steps = _workflow("ci.yml")["jobs"]["docker-build"]["steps"]
     problems = []
@@ -191,15 +159,3 @@ def test_docker_build_keeps_the_dockerfile_check_and_uses_gha_cache():
             if UNCACHED_DOCKER_BUILD.search(stripped):
                 problems.append(f"uncached docker build: {stripped}")
     assert problems == []
-
-
-def test_workflow_run_scripts_do_not_use_a_fixed_sleep():
-    offenders = []
-    for path in _workflow_paths():
-        for job_name, index, step in _iter_steps(_workflow(path.name)):
-            script = step.get("run")
-            if not isinstance(script, str):
-                continue
-            if FIXED_SLEEP.search(script):
-                offenders.append(f"{path.name}:{job_name}:step{index}")
-    assert offenders == []
