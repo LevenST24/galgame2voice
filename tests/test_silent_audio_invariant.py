@@ -97,3 +97,118 @@ async def test_normal_audio_passes_through():
     client = GptSovitsClient(base_url="http://mock", server=SilentTtsStubServer(payload))
     result = await client.synthesize("テスト", options={"ref_audio_path": "mock.wav", "prompt_text": "mock"})
     assert result == payload
+
+
+def _build_extensible_wav(samples: bytes, subformat: int, bits: int, sample_rate: int = 32000, channels: int = 1) -> bytes:
+    """Builds a WAVE_FORMAT_EXTENSIBLE (0xFFFE) RIFF/WAVE payload."""
+    block_align = channels * (bits // 8)
+    # 16-byte base fmt + cbSize(22) + validBitsPerSample + dwChannelMask + SubFormat GUID (first 2 bytes = subformat)
+    subformat_guid = struct.pack("<H", subformat) + b"\x00\x00\x00\x00\x10\x00\x80\x00\x00\xaa\x00\x38\x9b\x71"
+    fmt = (
+        struct.pack("<HHIIHH", 0xFFFE, channels, sample_rate, sample_rate * block_align, block_align, bits)
+        + struct.pack("<HHI", 22, bits, 0)
+        + subformat_guid
+    )
+    chunk = b"fmt " + struct.pack("<I", len(fmt)) + fmt + b"data" + struct.pack("<I", len(samples)) + samples
+    if len(samples) % 2:
+        chunk += b"\x00"
+    return b"RIFF" + struct.pack("<I", 4 + len(chunk)) + b"WAVE" + chunk
+
+
+def test_wav_is_silent_leading_silence_then_audio():
+    wav = build_wav(b"\x00\x00" * 4000 + struct.pack("<h", 1) + b"\x00\x00" * 100)
+    assert wav_peak_amplitude(wav) > 0.0
+    assert wav_is_silent(wav) is False
+
+
+def test_wav_is_silent_float32_positive_and_negative_zero_and_subnormal():
+    # Mix of +0.0 and -0.0 must be flagged silent
+    mixed_zeros = struct.pack("<4f", 0.0, -0.0, 0.0, -0.0) * 100
+    wav_zeros = build_wav(mixed_zeros, bits=32, audio_format=3)
+    assert wav_peak_amplitude(wav_zeros) == 0.0
+    assert wav_is_silent(wav_zeros) is True
+
+    # Non-zero subnormal made exclusively of 0x00 and 0x80 bytes (\x80\x00\x00\x00 != 0.0)
+    wav_subnormal = build_wav(b"\x00\x00\x00\x80" * 10 + b"\x80\x00\x00\x00", bits=32, audio_format=3)
+    assert wav_peak_amplitude(wav_subnormal) > 0.0
+    assert wav_is_silent(wav_subnormal) is False
+
+
+def test_wav_is_silent_wave_format_extensible():
+    pcm_silent = _build_extensible_wav(b"\x00\x00" * 400, subformat=1, bits=16)
+    pcm_sound = _build_extensible_wav(b"\x00\x00" * 200 + struct.pack("<h", 42), subformat=1, bits=16)
+    f32_silent = _build_extensible_wav(struct.pack("<4f", 0.0, -0.0, 0.0, -0.0), subformat=3, bits=32)
+    f32_sound = _build_extensible_wav(struct.pack("<4f", 0.0, -0.0, 0.25, 0.0), subformat=3, bits=32)
+
+    assert wav_is_silent(pcm_silent) is True
+    assert wav_is_silent(pcm_sound) is False
+    assert wav_is_silent(f32_silent) is True
+    assert wav_is_silent(f32_sound) is False
+
+
+def test_wav_is_silent_empty_data_chunk_not_silent():
+    empty_wav = build_wav(b"")
+    assert wav_peak_amplitude(empty_wav) is None
+    assert wav_is_silent(empty_wav) is False
+
+
+def test_wav_is_silent_bypasses_python_sample_loop(monkeypatch):
+    """Normal audio silence check must not fall back to wav_peak_amplitude's per-sample loop."""
+    from galgame2voice.utils import audio_spec
+
+    def _forbid_peak(_audio: bytes):
+        raise AssertionError("wav_peak_amplitude must not be called by is_silent_audio")
+
+    monkeypatch.setattr(audio_spec, "wav_peak_amplitude", _forbid_peak)
+    wav = build_wav(b"\x00\x00" * 3200 + struct.pack("<h", 8000) * 3200)
+    assert audio_spec.is_silent_audio(wav) is False
+    assert audio_spec.is_silent_audio(build_wav(b"\x00\x00" * 3200)) is True
+
+@pytest.mark.asyncio
+async def test_tts_pipeline_surfaces_chinese_fp32_guidance_for_managed_and_external_engine(monkeypatch):
+    """When synthesis returns an all-zero WAV, the UI-facing error is Chinese FP32 guidance, not English."""
+    from types import SimpleNamespace
+
+    from galgame2voice.services.chat_pipelines.tts_pipeline import TtsStreamPipeline
+    from galgame2voice.services import engine_supervisor
+    from galgame2voice.utils.audio_spec import (
+        SILENT_AUDIO_USER_GUIDANCE_EXTERNAL,
+        SILENT_AUDIO_USER_GUIDANCE_MANAGED,
+    )
+
+    silent_wav = build_wav(b"\x00\x00" * 1600)
+    client = GptSovitsClient(base_url="http://127.0.0.1:9880", server=SilentTtsStubServer(silent_wav))
+
+    class _PipelineTtsService:
+        def __init__(self, inner_client):
+            self.client = inner_client
+
+        async def synthesize_to_file(self, text, options=None, **kwargs):
+            await self.client.synthesize(text, options=options)
+            raise AssertionError("Silent WAV must raise before writing an audio file")
+
+    pipe = TtsStreamPipeline(_PipelineTtsService(client), "gen-silent")
+    opts = {"ref_audio_path": "mock.wav", "prompt_text": "mock"}
+
+    # Case 1: app-managed live engine -> instruct switching in 语音服务 -> 计算方式 -> FP32 单精度 · 兼容模式
+    live_launch = SimpleNamespace(process=SimpleNamespace(poll=lambda: None))
+    monkeypatch.setattr(
+        engine_supervisor,
+        "get_engine_supervisor",
+        lambda request=None: SimpleNamespace(get_managed_launch=lambda ep: live_launch),
+    )
+    chunk_managed, err_managed = await pipe.synthesize_chunk("テスト", 0, dict(opts))
+    assert chunk_managed is None
+    assert err_managed == SILENT_AUDIO_USER_GUIDANCE_MANAGED
+    assert "语音服务" in err_managed and "计算方式" in err_managed and "FP32 单精度" in err_managed and "运行状态" in err_managed
+
+    # Case 2: user-started external engine -> instruct restarting with FP32 (is_half=False)
+    monkeypatch.setattr(
+        engine_supervisor,
+        "get_engine_supervisor",
+        lambda request=None: SimpleNamespace(get_managed_launch=lambda ep: None),
+    )
+    chunk_ext, err_ext = await pipe.synthesize_chunk("テスト", 1, dict(opts))
+    assert chunk_ext is None
+    assert err_ext == SILENT_AUDIO_USER_GUIDANCE_EXTERNAL
+    assert "FP32" in err_ext and "is_half=False" in err_ext
