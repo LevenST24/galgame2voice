@@ -208,9 +208,9 @@ _RE_REASONING_UNCLOSED = re.compile(
 _RE_REASONING_PREFIX_PENDING = re.compile(
     r"<\s*([a-zA-Z]{1,9})$",
 )
-_RE_REASONING_ORPHAN_CLOSE = re.compile(
-    r"</\s*(think(?:ing)?|thought|reasoning)\b[^>]*>",
-    flags=re.IGNORECASE,
+_RE_REASONING_ORPHAN_CLOSE_PREFIX = re.compile(
+    r"^.*</\s*(think(?:ing)?|thought|reasoning)\b[^>]*>",
+    flags=re.IGNORECASE | re.DOTALL,
 )
 
 
@@ -232,7 +232,7 @@ def strip_reasoning_tags(text: str) -> str:
         pfx = m_pfx.group(1).lower()
         if any(tag.startswith(pfx) for tag in ("think", "thinking", "thought", "reasoning")):
             cleaned = cleaned[: m_pfx.start()]
-    cleaned = _RE_REASONING_ORPHAN_CLOSE.sub("", cleaned)
+    cleaned = _RE_REASONING_ORPHAN_CLOSE_PREFIX.sub("", cleaned)
     return cleaned
 
 
