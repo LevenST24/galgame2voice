@@ -5,6 +5,7 @@ import { state, loadState, saveState, getStorageStatus, onStorageStatus, getDama
 import { deletePersistedSession, persistSession } from '../frontend/src/session_api.js';
 import { normalizeSnapshot } from '../frontend/src/session_data.js';
 import { initSessionBackup } from '../frontend/src/controllers/session_backup.js';
+import { fetchVoiceProfiles } from '../frontend/src/controllers/voice_settings.js';
 import { fakeDocument } from './helpers/adv_dom.mjs';
 
 const KEY = 'gal2voice.chat.v1';
@@ -830,6 +831,164 @@ function setupImportScenario() {
   assert.equal(openedBackup, 1);
   assert.equal(reloads, 0);
   for (const t of toasts) { clearTimeout(t._timer); t.remove(); }
+  passed++;
+}
+
+// Browser-only export records characterName from loaded profiles; import sends characterName, restores voiceProfileId, and shows 3 distinct toasts
+{
+  loadSessions([
+    makeSession('s_char_1', '夏目对话', { voiceProfileId: 9, temperature: 0.7 }, [{ id: 'm_c1', role: 'user', content: '你好夏目', ts: 1 }]),
+    makeSession('s_char_2', '未绑定对话', { voiceProfileId: null, temperature: 0.7 }, [{ id: 'm_c2', role: 'user', content: '你好', ts: 2 }]),
+  ], 's_char_1');
+
+  globalThis.fetch = async (url) => {
+    if (String(url) === '/api/voice/profiles') {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          profiles: [{ id: 9, name: '夏目' }, { id: 12, name: '芳乃' }],
+          active_profile_id: 9,
+        }),
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  await fetchVoiceProfiles({ silent: true });
+
+  const doc = fakeDocument();
+  const toasts = doc.createElement('div');
+  toasts.id = 'toastRoot';
+  const localExportBtn = doc.createElement('button');
+  localExportBtn.id = 'gExportLocalChats';
+  const input = doc.createElement('input');
+  input.id = 'gImportChatFile';
+  const importBtn = doc.createElement('button');
+  importBtn.id = 'gImportChats';
+  doc.body.append(toasts, localExportBtn, input, importBtn);
+  globalThis.document = doc;
+
+  let exportedBlobText = '';
+  const prevCreateObjectURL = URL.createObjectURL;
+  const prevRevokeObjectURL = URL.revokeObjectURL;
+  URL.createObjectURL = (blob) => {
+    blob.text().then((t) => { exportedBlobText = t; });
+    return 'blob:local-backup';
+  };
+  URL.revokeObjectURL = () => {};
+
+  try {
+    initSessionBackup({ isBusy: () => false });
+    localExportBtn.click();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const localBackup = JSON.parse(exportedBlobText);
+    assert.equal(localBackup.sessions[0].characterName, '夏目', '仅导出浏览器记录应按当前角色列表补上 characterName');
+    assert.equal(localBackup.sessions[1].characterName, undefined, '未绑定角色的会话不应带 characterName');
+
+    const clearToasts = () => {
+      for (const toast of toasts.querySelectorAll('.toast')) {
+        clearTimeout(toast._timer);
+        toast.remove();
+      }
+    };
+    const chooseBackup = async (text) => {
+      clearToasts();
+      input.files = [{ size: text.length, text: async () => text }];
+      const listeners = [...(input.listeners.get('change') || [])];
+      await Promise.all(listeners.map((listener) => listener({ type: 'change' })));
+      return toasts.querySelectorAll('.toast').map((t) => t.dataset.msg || t.textContent);
+    };
+
+    // 1) 全部找回：导入请求带上 characterName，按响应写回绑定，提示「角色已按名字自动选好」
+    const allMatchedBackup = backupOf([
+      makeSession('s_all_1', '夏目篇', { voiceProfileId: 99 }, [{ id: 'm1', role: 'user', content: '第一段', ts: 1 }], { characterName: '夏目' }),
+      makeSession('s_all_2', '芳乃篇', { voiceProfileId: 88 }, [{ id: 'm2', role: 'user', content: '第二段', ts: 2 }], { characterName: '芳乃' }),
+    ]);
+    let postedBody = null;
+    globalThis.fetch = async (url, options = {}) => {
+      if (String(url) === '/api/chat/import' && options.method === 'POST') {
+        postedBody = JSON.parse(options.body);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            status: 'ok',
+            count: 2,
+            restored_sessions: [
+              { id: postedBody.sessions[0].id, voice_profile_id: 31 },
+              { id: postedBody.sessions[1].id, voice_profile_id: 42 },
+            ],
+          }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    let seenToasts = await chooseBackup(allMatchedBackup);
+    assert.equal(postedBody.sessions[0].characterName, '夏目');
+    assert.equal(postedBody.sessions[1].characterName, '芳乃');
+    assert.equal(postedBody.sessions[0].settings.voiceProfileId, null);
+    assert.equal(state.sessions[0].settings.voiceProfileId, 31, '本地状态应写回恢复后的 voiceProfileId');
+    assert.equal(state.sessions[1].settings.voiceProfileId, 42, '本地状态应写回恢复后的 voiceProfileId');
+    const persistedAfterAll = JSON.parse(localStorage.getItem(KEY));
+    assert.equal(persistedAfterAll.sessions[0].settings.voiceProfileId, 31, 'localStorage 持久化状态也应保留恢复后的 voiceProfileId');
+    assert.equal(persistedAfterAll.sessions[1].settings.voiceProfileId, 42);
+    assert.ok(seenToasts.some((msg) => msg.includes('已导入 2 个会话') && msg.includes('角色已按名字自动选好')), `全部找回提示不符: ${seenToasts.join(' | ')}`);
+
+    // 2) 部分找回：提示找回了几个、其余去「角色与会话」重新选
+    const partialBackup = backupOf([
+      makeSession('s_part_1', '夏目续篇', { voiceProfileId: 99 }, [{ id: 'm3', role: 'user', content: '第三段', ts: 3 }], { characterName: '夏目' }),
+      makeSession('s_part_2', '未装角色篇', { voiceProfileId: 77 }, [{ id: 'm4', role: 'user', content: '第四段', ts: 4 }], { characterName: '未知角色' }),
+    ]);
+    globalThis.fetch = async (url, options = {}) => {
+      if (String(url) === '/api/chat/import' && options.method === 'POST') {
+        postedBody = JSON.parse(options.body);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            status: 'ok',
+            count: 2,
+            restored_sessions: [{ id: postedBody.sessions[0].id, voice_profile_id: 31 }],
+          }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    seenToasts = await chooseBackup(partialBackup);
+    assert.equal(state.sessions[0].settings.voiceProfileId, 31);
+    assert.equal(state.sessions[1].settings.voiceProfileId, null);
+    assert.ok(
+      seenToasts.some((msg) => msg.includes('已导入 2 个会话') && msg.includes('1 个') && msg.includes('角色与会话')),
+      `部分找回提示不符: ${seenToasts.join(' | ')}`,
+    );
+
+    // 3) 一个都没找回（如老备份无 characterName）：保持原文
+    const noneMatchedBackup = backupOf([
+      makeSession('s_none_1', '旧版备份会话', { voiceProfileId: 55 }, [{ id: 'm5', role: 'user', content: '老记录', ts: 5 }]),
+    ]);
+    globalThis.fetch = async (url, options = {}) => {
+      if (String(url) === '/api/chat/import' && options.method === 'POST') {
+        postedBody = JSON.parse(options.body);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ status: 'ok', count: 1, restored_sessions: [] }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    seenToasts = await chooseBackup(noneMatchedBackup);
+    assert.equal(postedBody.sessions[0].characterName, undefined);
+    assert.equal(state.sessions[0].settings.voiceProfileId, null);
+    assert.ok(
+      seenToasts.includes('已导入 1 个会话，原有会话保留。请在「角色与会话」中重新选择音色。'),
+      `未找回时应保持原文: ${seenToasts.join(' | ')}`,
+    );
+    clearToasts();
+  } finally {
+    URL.createObjectURL = prevCreateObjectURL;
+    URL.revokeObjectURL = prevRevokeObjectURL;
+  }
   passed++;
 }
 
