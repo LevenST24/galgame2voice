@@ -30,10 +30,12 @@ def test_missing_key_names_the_provider_and_the_settings_page():
 
 
 def test_private_endpoint_block_is_not_reported_as_a_dns_failure():
-    exc = PermissionError("SSRF/DNS-Rebinding 阻止: 目标地址解析到环回/私网……请在设置中开启「允许私网 LLM 端点」。")
+    exc = PermissionError(
+        "SSRF/DNS-Rebinding 阻止: 目标地址解析到环回/私网……请在「设置中心 → 对话模型」勾选「允许连接本机或局域网的模型服务」。"
+    )
     payload = chat_error_payload(exc, provider_id="custom", api_key_configured=True)
     assert payload["error_code"] == "PRIVATE_ENDPOINT_BLOCKED"
-    assert "允许私网 LLM 端点" in payload["error"]
+    assert "允许连接本机或局域网的模型服务" in payload["error"]
     assert "SSRF" not in payload["error"]
 
 
