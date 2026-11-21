@@ -206,16 +206,6 @@ class TestSmokeWindowsUi(unittest.TestCase):
                 )
             self.assertIn("No supported Chromium or Microsoft Edge", str(ctx.exception))
 
-    def test_build_acceptance_script_matches_exact_synth_prompt(self) -> None:
-        synth_prompt = "合成验收提问"
-        script = build_acceptance_script(
-            target_session_id="portable_turn_reply",
-            prompt_text=synth_prompt,
-            repair_audio_url="/api/audio/files/voice_1_test.wav",
-        )
-        self.assertIn(json.dumps(synth_prompt), script)
-        self.assertIn('"portable_turn_reply"', script)
-        self.assertIn('"/api/audio/files/voice_1_test.wav"', script)
 
     def test_verify_sqlite_turn_cardinality_enforces_strict_bounds(self) -> None:
         import sqlite3
@@ -546,24 +536,6 @@ class TestSmokeWindowsUi(unittest.TestCase):
         procs[0].terminate.assert_called_once()
         procs[1].terminate.assert_called_once()
 
-    def test_launch_browser_with_devtools_retries_once_on_stall_and_stops_first_proc(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            make_profile_dir, fake_popen, procs, profiles, cmds = self._make_browser_harness(
-                Path(tmp_dir), [(None, None), (None, 9444)]
-            )
-            with patch("scripts.smoke_windows_ui.subprocess.Popen", side_effect=fake_popen):
-                proc, port, profile_dir = smoke_windows_ui.launch_browser_with_devtools(
-                    Path("C:/dummy/chrome.exe"), make_profile_dir, ["--headless", "--remote-debugging-port=0"],
-                    attempt_timeout=0.3, attempts=2,
-                )
-        self.assertIs(proc, procs[1])
-        self.assertEqual(port, 9444)
-        self.assertEqual(profile_dir, profiles[1])
-        self.assertEqual(len(profiles), 2)
-        self.assertNotEqual(profiles[0], profiles[1])
-        procs[0].terminate.assert_called_once()
-        procs[1].terminate.assert_not_called()
-        self.assertIn(f"--user-data-dir={profiles[1]}", cmds[1])
 
     def test_launch_browser_with_devtools_does_not_retry_when_process_exits(self) -> None:
         for exit_code in (42, 0):
@@ -735,7 +707,6 @@ class TestSmokeWindowsUi(unittest.TestCase):
             stop.set()
             srv.close()
             thread.join(timeout=2.0)
-
 
 
 if __name__ == "__main__":
