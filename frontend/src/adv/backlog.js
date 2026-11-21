@@ -84,6 +84,9 @@ export function createBacklog(container, deps = {}) {
 
   let loadingOlder = false;
   let destroyed = false;
+  /** @type {any} */
+  let renderedMessages = null;
+  let renderRevision = 0;
   let replaySequence = 0;
   let activeReplayKey = null;
   let activeReplayButton = null;
@@ -132,6 +135,13 @@ export function createBacklog(container, deps = {}) {
     network: '音频加载失败，请稍后在「对话记录」里再点「语音」重试。',
   };
 
+  function refreshAllAudioStates() {
+    const storedMessages = new Set(deps.getSession?.()?.messages || []);
+    for (const entry of listEl.querySelectorAll('.adv-log-entry')) {
+      entry._refreshAudioState?.(storedMessages);
+    }
+  }
+
   /** @param {{ feedback?: any }} [opts] */
   function cancelRegeneration({ feedback } = {}) {
     if (!activeRegeneration) return;
@@ -140,7 +150,7 @@ export function createBacklog(container, deps = {}) {
     if (feedback) regenerationFeedback.set(pending.key, feedback);
     else regenerationFeedback.delete(pending.key);
     pending.controller.abort();
-    for (const entry of listEl.querySelectorAll('.adv-log-entry')) entry._refreshAudioState?.();
+    refreshAllAudioStates();
   }
 
   function stopReplay() {
@@ -176,8 +186,15 @@ export function createBacklog(container, deps = {}) {
     const msgTs = line?.audio?.generated_at ?? msg?.ts ?? now;
     const isExpired = (now - msgTs) > SEVEN_DAYS_MS;
 
-    const unavailable = line ? failedAudio.has(audioKey(line)) : false;
-    const retryText = unavailable ? '' : (line ? (loadNotes.get(audioKey(line)) || '') : '');
+    let unavailable = false;
+    let retryText = '';
+    if (line && (failedAudio.size > 0 || loadNotes.size > 0)) {
+      const key = audioKey(line);
+      unavailable = failedAudio.has(key);
+      if (!unavailable && loadNotes.size > 0) {
+        retryText = loadNotes.get(key) || '';
+      }
+    }
     const isPartialFailed = !unavailable && !retryText && status === 'failed' && hasPlayableChunks && voiceOn && !isExpired;
     statusSpan.hidden = !unavailable && !retryText && !isPartialFailed;
     statusSpan.textContent = unavailable
@@ -223,7 +240,8 @@ export function createBacklog(container, deps = {}) {
   }) {
     const lineKey = regenerationKey(msg.id, lineIndex);
 
-    function refreshRepairButton() {
+    /** @param {Set<any>} [storedMessages] */
+    function refreshRepairButton(storedMessages) {
       const generating = activeRegeneration?.key === lineKey;
       const isExplicitEmpty = Array.isArray(msg.lines) && msg.lines.length === 0;
       const needsRepair = !isExplicitEmpty && (replayBtn.disabled || getStatus() === 'failed') && isVoiceEnabled();
@@ -233,8 +251,11 @@ export function createBacklog(container, deps = {}) {
       regenerateBtn.title = generating ? '取消本次语音生成' : voice ? `使用「${voice.name}」重新生成这一句` : '先为当前会话选择音色';
       regenerateBtn.setAttribute('aria-label', regenerateBtn.title);
       const text = getText();
+      const inSession = () => (storedMessages
+        ? storedMessages.has(msg)
+        : Boolean(deps.getSession?.()?.messages?.includes(msg)));
       regenerateBtn.disabled = !generating && (isExplicitEmpty || Boolean(deps.controller?.busy)
-        || !(deps.getSession?.()?.messages || []).includes(msg)
+        || !inSession()
         || !text?.trim() || !/[\p{L}\p{N}]/u.test(text) || text.length > 2000);
       if (regenerateBtn.disabled && !generating) {
         regenerateBtn.title = deps.controller?.busy ? '请等待当前回复完成后再重新生成'
@@ -284,7 +305,7 @@ export function createBacklog(container, deps = {}) {
           activeRegeneration = null;
           if (feedback) regenerationFeedback.set(lineKey, feedback);
           else regenerationFeedback.delete(lineKey);
-          for (const entry of listEl.querySelectorAll('.adv-log-entry')) entry._refreshAudioState?.();
+          refreshAllAudioStates();
         }
       }
     };
@@ -292,7 +313,7 @@ export function createBacklog(container, deps = {}) {
     return { lineKey, refreshRepairButton };
   }
 
-  function renderAssistantLineEntry(line, msg, settings) {
+  function renderAssistantLineEntry(line, msg, settings, storedMessages) {
     const entryEl = doc.createElement('div');
     entryEl.className = 'adv-log-entry is-assistant';
     entryEl.dataset.lineIndex = String(line.index);
@@ -322,10 +343,11 @@ export function createBacklog(container, deps = {}) {
     regenerateBtn.className = 'adv-log-regenerate-btn';
     const hasVoice = !msg.noVoice && !line.noVoice;
 
-    function refreshAudioState() {
+    /** @param {Set<any>} [nextStoredMessages] */
+    function refreshAudioState(nextStoredMessages) {
       if (!hasVoice) return;
       updateReplayButtonState(replayBtn, line, msg, statusSpan);
-      refreshRepairButton();
+      refreshRepairButton(nextStoredMessages);
       const note = regenerationFeedback.get(lineKey);
       if (note) {
         statusSpan.hidden = false;
@@ -346,7 +368,7 @@ export function createBacklog(container, deps = {}) {
       },
     });
 
-    refreshAudioState();
+    refreshAudioState(storedMessages);
 
     if (hasVoice && (activeReplayKey === lineKey || (line.index === 0 && activeReplayKey === `legacy:${msg.id}`))) {
       activeReplayKey = lineKey;
@@ -361,7 +383,7 @@ export function createBacklog(container, deps = {}) {
       const hadRetryNote = loadNotes.delete(key);
       updateReplayButtonState(replayBtn, line, msg, statusSpan);
       if (hadRetryNote) {
-        for (const entry of listEl.querySelectorAll('.adv-log-entry')) entry._refreshAudioState?.();
+        refreshAllAudioStates();
       }
       if (replayBtn.disabled) return;
       stopReplay();
@@ -403,7 +425,7 @@ export function createBacklog(container, deps = {}) {
         }
         if (result === 'failed' || loadRetryText[result]) {
           updateReplayButtonState(currentBtn, line, msg, statusSpan);
-          for (const entry of listEl.querySelectorAll('.adv-log-entry')) entry._refreshAudioState?.();
+          refreshAllAudioStates();
         }
       }
     };
@@ -447,7 +469,7 @@ export function createBacklog(container, deps = {}) {
     return entryEl;
   }
 
-  function renderAssistantLegacyEntry(msg, settings) {
+  function renderAssistantLegacyEntry(msg, settings, storedMessages) {
     const entryEl = doc.createElement('div');
     entryEl.className = 'adv-log-entry is-assistant is-legacy';
     entryEl.dataset.msgId = String(msg.id || '');
@@ -516,7 +538,8 @@ export function createBacklog(container, deps = {}) {
       return null;
     }
 
-    function refreshAudioState() {
+    /** @param {Set<any>} [nextStoredMessages] */
+    function refreshAudioState(nextStoredMessages) {
       if (!hasVoice) return;
       if (!repairedLine && Array.isArray(msg.lines) && msg.lines.length > 0) {
         repairedLine = msg.lines[0];
@@ -524,7 +547,7 @@ export function createBacklog(container, deps = {}) {
       }
       const targetLine = getTargetLine();
       updateReplayButtonState(replayBtn, targetLine, msg, statusSpan);
-      refreshRepairButton();
+      refreshRepairButton(nextStoredMessages);
       const note = regenerationFeedback.get(lineKey);
       if (note) {
         statusSpan.hidden = false;
@@ -534,7 +557,7 @@ export function createBacklog(container, deps = {}) {
 
     const legacyReplayKey = `legacy:${msg.id}`;
 
-    refreshAudioState();
+    refreshAudioState(storedMessages);
 
     if (hasVoice && (activeReplayKey === legacyReplayKey || activeReplayKey === lineKey)) {
       replayBtn.classList.add('is-playing');
@@ -551,7 +574,7 @@ export function createBacklog(container, deps = {}) {
       const hadRetryNote = loadNotes.delete(key);
       updateReplayButtonState(replayBtn, targetLine, msg, statusSpan);
       if (hadRetryNote) {
-        for (const entry of listEl.querySelectorAll('.adv-log-entry')) entry._refreshAudioState?.();
+        refreshAllAudioStates();
       }
       if (replayBtn.disabled) return;
 
@@ -594,7 +617,7 @@ export function createBacklog(container, deps = {}) {
         }
         if (result === 'failed' || loadRetryText[result]) {
           updateReplayButtonState(currentBtn, targetLine, msg, statusSpan);
-          for (const entry of listEl.querySelectorAll('.adv-log-entry')) entry._refreshAudioState?.();
+          refreshAllAudioStates();
         }
       }
     };
@@ -726,7 +749,7 @@ export function createBacklog(container, deps = {}) {
     return entryEl;
   }
 
-  function buildEntriesForMessage(msg, settings) {
+  function buildEntriesForMessage(msg, settings, storedMessages) {
     if (msg.role === 'user') {
       return [renderUserEntry(msg, settings)];
     }
@@ -734,9 +757,9 @@ export function createBacklog(container, deps = {}) {
       if (Array.isArray(msg.lines) && msg.lines.length > 0) {
         return msg.lines
           .filter((line) => !isHiddenLine(msg, line))
-          .map((line) => renderAssistantLineEntry(line, msg, settings));
+          .map((line) => renderAssistantLineEntry(line, msg, settings, storedMessages));
       }
-      return msg.content || msg.japanese ? [renderAssistantLegacyEntry(msg, settings)] : [];
+      return msg.content || msg.japanese ? [renderAssistantLegacyEntry(msg, settings, storedMessages)] : [];
     }
     return [];
   }
@@ -747,6 +770,8 @@ export function createBacklog(container, deps = {}) {
     listEl.replaceChildren();
     const session = deps.getSession?.();
     const settings = deps.getSettings?.() || {};
+    renderedMessages = session?.messages;
+    renderRevision += 1;
 
     if (session?.hasMoreHistory) {
       moreBtn.hidden = false;
@@ -758,16 +783,26 @@ export function createBacklog(container, deps = {}) {
       moreBtn.hidden = true;
     }
 
-    const messages = [...session?.messages || []];
+    const sessionMessages = session?.messages || [];
+    const storedMessages = new Set(sessionMessages);
+    const messageIds = new Set();
+    for (const msg of sessionMessages) {
+      messageIds.add(msg?.id);
+    }
+    const messages = [...sessionMessages];
     const live = deps.getLiveMessage?.();
-    if (live && !messages.some(msg => msg.id === live.id)) messages.push(live);
+    if (live && !messageIds.has(live.id)) messages.push(live);
     for (const msg of messages) {
-      const entries = buildEntriesForMessage(msg, settings);
+      const entries = buildEntriesForMessage(msg, settings, storedMessages);
       for (const entry of entries) {
         listEl.appendChild(entry);
       }
     }
     if (hadFocus) closeBtn.focus();
+  }
+
+  function rendersMessages(messages) {
+    return messages === renderedMessages;
   }
 
   // Paging action
@@ -780,6 +815,7 @@ export function createBacklog(container, deps = {}) {
 
     const prevScrollHeight = listEl.scrollHeight;
     const prevScrollTop = listEl.scrollTop;
+    const revBeforeLoad = renderRevision;
 
     try {
       await deps.loadOlderHistory?.(session);
@@ -787,12 +823,15 @@ export function createBacklog(container, deps = {}) {
       console.warn('Failed to load older history:', err);
     } finally {
       loadingOlder = false;
-      moreBtn.disabled = false;
-      moreBtn.textContent = '加载更早的记录';
+      moreBtn.disabled = Boolean(session.loadingOlder || deps.controller?.busy);
+      moreBtn.textContent = session.loadingOlder ? '正在加载更早的记录…'
+        : deps.controller?.busy ? '回复完成后可查看更早的记录' : '加载更早的记录';
     }
 
     if (destroyed || deps.getSession?.() !== session) return;
-    renderAll();
+    if (renderRevision === revBeforeLoad || !rendersMessages(session.messages) || moreBtn.hidden !== !session.hasMoreHistory) {
+      renderAll();
+    }
     const delta = listEl.scrollHeight - prevScrollHeight;
     listEl.scrollTop = Math.max(0, prevScrollTop + delta);
   };
@@ -946,6 +985,7 @@ export function createBacklog(container, deps = {}) {
     closeButton: closeBtn,
     moreButton: moreBtn,
     renderAll,
+    rendersMessages,
     stopReplay,
     destroy() {
       if (destroyed) return;

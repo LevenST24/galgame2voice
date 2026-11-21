@@ -236,7 +236,10 @@ function setupApp(t, options = {}) {
   const done = (type = 'done', extra = {}) => {
     controller.busy = false;
     // Like the real controller, discard an empty streaming placeholder at settlement.
-    active.messages = active.messages.filter(m => m.role !== 'assistant' || m.content || m.lines?.length);
+    for (let i = active.messages.length - 1; i >= 0; i--) {
+      const m = active.messages[i];
+      if (m.role === 'assistant' && !m.content && !m.lines?.length) active.messages.splice(i, 1);
+    }
     emit(type, { originId: active.id, ...extra });
   };
 
@@ -2526,4 +2529,230 @@ test('LOG: user recording whose audio cache was evicted or missing resets .is-pl
   const newUserEntry = log.listElement.querySelector('.adv-log-entry.is-user');
   const newUserRecBtn = newUserEntry.querySelector('.adv-log-user-recording-btn');
   assert.equal(newUserRecBtn.classList.contains('is-playing'), false, 'reconstructed user recording button should not have .is-playing after renderAll()');
+});
+
+test('LOG: long history avoids O(N^2) message lookups, idle audioKey serialization, and duplicate renderAll rebuilds', async t => {
+  const regenerated = [];
+  let h;
+  h = setupApp(t, {
+    getRecoveryVoice: () => ({ id: 1, name: '测试角色' }),
+    regenerateLineAudio: async ({ messageId, lineIndex }) => {
+      regenerated.push({ messageId, lineIndex });
+      const targetMsg = h.active().messages.find(m => m.id === messageId);
+      const repairedAudio = {
+        status: 'ready',
+        generated_at: h.getWallTime(),
+        voice_profile_id: 1,
+        chunks: [{ index: 0, line: lineIndex, audio_url: `/audio/repaired_${messageId}_${lineIndex}.wav`, sentence: 'ターン0の2。' }],
+      };
+      if (targetMsg?.lines?.[lineIndex]) {
+        targetMsg.lines[lineIndex].audio = repairedAudio;
+      }
+      return { persisted: true, saved: true, audio: repairedAudio };
+    },
+    onLoadOlder: async s => {
+      // Mirror main.js loadOlderSessionHistory: updateControls() + fullRender() before and after fetch
+      s.loadingOlder = true;
+      h.app.update();
+      h.app.update();
+      s.messages = [
+        { id: 'm_u_older', role: 'user', content: '更早的提问', ts: h.getWallTime() - 500000 },
+        ...s.messages,
+      ];
+      s.hasMoreHistory = false;
+      s.loadingOlder = false;
+      h.app.update();
+      h.app.update();
+    },
+  });
+
+  // Mirror main.js turnstart and done/error/cancelled renderHeader() -> advApp.update()
+  h.controller.on('turnstart', () => h.app.update());
+  for (const kind of ['done', 'error', 'cancelled']) {
+    h.controller.on(kind, () => h.app.update());
+  }
+
+  const now = h.getWallTime();
+  const session = h.active();
+  session.hasMoreHistory = true;
+  session.settings.voiceProfileId = 1;
+  session.messages = [];
+  for (let turnIdx = 0; turnIdx < 50; turnIdx += 1) {
+    session.messages.push({
+      id: `m_u_${turnIdx}`,
+      role: 'user',
+      content: `第${turnIdx}轮提问`,
+      ts: now - (100 - turnIdx * 2) * 1000,
+    });
+    session.messages.push({
+      id: `m_a_${turnIdx}`,
+      role: 'assistant',
+      ts: now - (99 - turnIdx * 2) * 1000,
+      lines: [
+        makeLine(0, `第${turnIdx}轮第0句`, `ターン${turnIdx}の0。`, { url: `/audio/${turnIdx}_0.wav`, sentence: `ターン${turnIdx}の0。` }),
+        makeLine(1, `第${turnIdx}轮第1句`, `ターン${turnIdx}の1。`, { url: `/audio/${turnIdx}_1.wav`, sentence: `ターン${turnIdx}の1。` }),
+        makeLine(2, `第${turnIdx}轮第2句`, `ターン${turnIdx}の2。`, { status: 'failed' }),
+        makeLine(3, `第${turnIdx}轮第3句`, `ターン${turnIdx}の3。`, { url: `/audio/${turnIdx}_3.wav`, sentence: `ターン${turnIdx}の3。` }),
+      ],
+    });
+  }
+  assert.equal(session.messages.length, 100);
+
+  const origIncludes = Array.prototype.includes;
+  const origStringify = JSON.stringify;
+  let sessionIncludesCalls = 0;
+  let stringifyCalls = 0;
+  Array.prototype.includes = function (...args) {
+    if (this === session.messages) sessionIncludesCalls += 1;
+    return origIncludes.apply(this, args);
+  };
+  JSON.stringify = function (...args) {
+    stringifyCalls += 1;
+    return origStringify.apply(this, args);
+  };
+  t.after(() => {
+    Array.prototype.includes = origIncludes;
+    JSON.stringify = origStringify;
+  });
+
+  h.app.action('log');
+  const log = h.app.backlog;
+  assert.ok(log);
+  const openIncludes = sessionIncludesCalls;
+  const openStringify = stringifyCalls;
+
+  const failedEntries = [...log.listElement.querySelectorAll('.adv-log-entry.is-assistant')]
+    .filter(el => el.dataset.lineIndex === '2');
+  assert.equal(failedEntries.length, 50);
+  const firstFailedRegenBtn = failedEntries[0].querySelector('.adv-log-regenerate-btn');
+  assert.equal(firstFailedRegenBtn.hidden, false);
+  assert.equal(firstFailedRegenBtn.disabled, false, 'failed line regenerate button must remain enabled');
+  assert.equal(firstFailedRegenBtn.textContent, '用当前音色重新生成');
+
+  const listEl = log.listElement;
+  const origReplaceChildren = listEl.replaceChildren.bind(listEl);
+  let renderAllCount = 0;
+  listEl.replaceChildren = (...args) => {
+    renderAllCount += 1;
+    return origReplaceChildren(...args);
+  };
+
+  h.start('turn_50', '第50轮提问');
+  const afterTurnStart = renderAllCount;
+
+  h.line(0, { zh: '第50轮回复', ja: 'ターン50の0。' });
+  h.done('done');
+  const afterDone = renderAllCount;
+
+  const beforeLoadOlder = renderAllCount;
+  log.moreButton.click();
+  await microtasks();
+  const loadOlderRebuilds = renderAllCount - beforeLoadOlder;
+
+  const beforeVoiceToggle = renderAllCount;
+  h.app.action('voice_mode');
+  const voiceToggleRebuilds = renderAllCount - beforeVoiceToggle;
+
+  assert.deepEqual(
+    {
+      openIncludes,
+      openStringify,
+      afterTurnStart,
+      afterDone,
+      loadOlderRebuilds,
+      voiceToggleRebuilds,
+    },
+    {
+      openIncludes: 0,
+      openStringify: 0,
+      afterTurnStart: 1,
+      afterDone: 2,
+      loadOlderRebuilds: 1,
+      voiceToggleRebuilds: 1,
+    },
+  );
+
+  // Unrelated update() does not rebuild, whereas display-affecting setting change rebuilds once
+  const beforeNoopUpdate = renderAllCount;
+  session.settings.advWindowOpacity = 0.5;
+  h.app.update();
+  assert.equal(renderAllCount - beforeNoopUpdate, 0);
+
+  session.settings.advPlayerName = '阿明';
+  h.app.update();
+  assert.equal(renderAllCount - beforeNoopUpdate, 1);
+
+  // Re-enable voice and verify full-table refresh and live single-button checks
+  h.app.action('voice_mode');
+  sessionIncludesCalls = 0;
+  const refreshedFailedEntries = [...log.listElement.querySelectorAll('.adv-log-entry.is-assistant')]
+    .filter(el => el.dataset.lineIndex === '2');
+  await refreshedFailedEntries[0].querySelector('.adv-log-regenerate-btn').onclick({ stopPropagation() {} });
+  assert.deepEqual(regenerated, [{ messageId: 'm_a_0', lineIndex: 2 }]);
+  assert.equal(sessionIncludesCalls, 1, 'single button click checks live session.messages once while full-table refresh uses a Set');
+
+  // If a message is no longer in session.messages, single button click still checks live session.messages
+  const removedMsg = session.messages.find(m => m.id === 'm_a_1');
+  session.messages = session.messages.filter(m => m !== removedMsg);
+  sessionIncludesCalls = 0;
+  const staleBtn = refreshedFailedEntries[1].querySelector('.adv-log-regenerate-btn');
+  await staleBtn.onclick({ stopPropagation() {} });
+  assert.equal(sessionIncludesCalls, 1);
+  assert.equal(staleBtn.disabled, true);
+  assert.equal(regenerated.length, 1);
+
+  // When loadNotes is non-empty, updateReplayButtonState computes audioKey once per voiced line
+  const playableEntry = [...log.listElement.querySelectorAll('.adv-log-entry.is-assistant')]
+    .find(el => el.dataset.msgId === 'm_a_0' && el.dataset.lineIndex === '0');
+  const playableReplayBtn = playableEntry.querySelector('.adv-log-replay-btn');
+  const replayPending = playableReplayBtn.onclick({ stopPropagation() {} });
+  await microtasks();
+  stringifyCalls = 0;
+  h.endVoice('network');
+  await replayPending;
+  const voicedAssistantCount = log.listElement.querySelectorAll('.adv-log-replay-btn').length;
+  // 1 updateReplayButtonState(currentBtn) + 1 per entry in refreshAllAudioStates
+  assert.equal(stringifyCalls, voicedAssistantCount + 1);
+});
+
+test('LOG: replacing session.messages with a new array triggers one renderAll rebuild on update() and shows the new message', t => {
+  const h = setupApp(t);
+  const now = h.getWallTime();
+  const session = h.active();
+  session.messages = [
+    { id: 'm_u_0', role: 'user', content: '原有提问', ts: now - 2000 },
+    {
+      id: 'm_a_0',
+      role: 'assistant',
+      ts: now - 1000,
+      lines: [makeLine(0, '原有回复', '元の返答。', { url: '/audio/0.wav', sentence: '元の返答。' })],
+    },
+  ];
+
+  h.app.action('log');
+  const log = h.app.backlog;
+  assert.ok(log);
+
+  const listEl = log.listElement;
+  const origReplaceChildren = listEl.replaceChildren.bind(listEl);
+  let renderAllCount = 0;
+  listEl.replaceChildren = (...args) => {
+    renderAllCount += 1;
+    return origReplaceChildren(...args);
+  };
+
+  listEl.scrollTop = 42;
+  session.messages = [
+    ...session.messages,
+    { id: 'm_u_sync', role: 'user', content: '后台同步新增的消息', ts: now },
+  ];
+  h.app.update();
+
+  assert.equal(renderAllCount, 1, 'replacing session.messages must rebuild LOG once on update()');
+  assert.equal(listEl.scrollTop, 42, 'scroll position must be preserved on update() rebuild');
+  const texts = [...listEl.querySelectorAll('.adv-log-primary')].map(el => el.textContent);
+  assert.ok(texts.includes('后台同步新增的消息'), 'rebuilt LOG must display the newly synced message');
+
+  h.app.update();
+  assert.equal(renderAllCount, 1, 'subsequent update() with the same messages array must not rebuild again');
 });
