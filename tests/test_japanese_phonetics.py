@@ -174,3 +174,11 @@ class TestJapaneseParenthesesCleaner:
         pure = "先生、準備は完了しました！いつでも出発できます。"
         assert clean_japanese_parentheses(pure) == pure
 
+
+
+def test_furigana_preserves_kanji_on_stage_cues_and_long_compounds():
+    """Inline furigana must not replace preceding kanji with bracketed stage cues or partial readings."""
+    assert normalize_japanese_for_tts("先生（ふふっ）、今日もよろしくね。") == "先生、今日もよろしくね。"
+    assert normalize_japanese_for_tts("これは秘密（ウインク）だよ！") == "これは秘密だよ！"
+    assert normalize_japanese_for_tts("生徒会長白雪（しらゆき）です。") == "生徒会長白雪です。"
+    assert normalize_japanese_for_tts("乃愛（のあ）だよ") == "のあだよ"
