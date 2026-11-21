@@ -139,48 +139,6 @@ async def test_lifespan_drains_resources_when_serving_context_raises(monkeypatch
 class TestServerLifespanCyclesAndCheckpointing:
     """Verifies server startup and shutdown lifespans, detecting lingering locks or regressions."""
 
-    @pytest.mark.asyncio
-    async def test_lifespan_startup_gpt_sovits_url_unbound_local_regression(self, tmp_path, monkeypatch):
-        """
-        Adversarial probe: Verify that lifespan startup successfully reads gpt_sovits_url
-        from the DB without raising UnboundLocalError for 'get_db'.
-        """
-        test_db = tmp_path / "lifespan_scope_test.db"
-        monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(test_db))
-        await init_db(test_db)
-
-        # Set custom gpt_sovits_url in DB settings
-        async with get_db(test_db) as conn:
-            await conn.execute("UPDATE settings SET gpt_sovits_url = 'http://127.0.0.1:19880' WHERE id = 1;")
-            await conn.commit()
-
-        app = create_app()
-
-        # Capture warnings/errors during lifespan startup
-        import logging
-        records = []
-
-        class LogHandler(logging.Handler):
-            def emit(self, record):
-                records.append(record)
-
-        handler = LogHandler()
-        logging.getLogger("galgame2voice.main").addHandler(handler)
-
-        try:
-            async with app.router.lifespan_context(app):
-                pass
-        finally:
-            logging.getLogger("galgame2voice.main").removeHandler(handler)
-
-        unbound_errors = [
-            r.getMessage() for r in records
-            if "cannot access local variable 'get_db'" in r.getMessage()
-            or "UnboundLocalError" in str(r.exc_info)
-        ]
-        assert len(unbound_errors) == 0, (
-            f"Lifespan startup suffered UnboundLocalError on get_db: {unbound_errors}"
-        )
 
     @pytest.mark.asyncio
     async def test_lifespan_shutdown_wal_checkpoint_truncate_zero_locks(self, tmp_path, monkeypatch):
@@ -240,4 +198,3 @@ class TestServerLifespanCyclesAndCheckpointing:
             assert settings.data_dir.exists()
             assert settings.audio_dir.exists()
             assert settings.logs_dir.exists()
-

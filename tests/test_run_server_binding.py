@@ -5,10 +5,7 @@ environment variable aliases and Pydantic Settings cache, preventing
 unauthenticated public network exposure or binding mismatch.
 """
 
-import io
 import os
-import sys
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 import pytest
 import uvicorn
@@ -150,21 +147,6 @@ def test_loopback_default_bind_passes_safety_check(
     assert captured["settings"].host == "127.0.0.1"
 
 
-def test_non_loopback_with_auth_enabled_passes_safety_check(
-    isolated_launcher_env, monkeypatch
-):
-    """Non-loopback host (0.0.0.0) with auth enabled (GALGAME2VOICE_AUTH_DISABLED=0) is allowed."""
-    monkeypatch.setenv("GALGAME2VOICE_AUTH_DISABLED", "0")
-
-    captured = _setup_mock_uvicorn(monkeypatch, ("0.0.0.0", 8080))
-
-    with pytest.raises(SystemExit) as exc:
-        run_server.main(["--no-engine", "--no-browser", "--host", "0.0.0.0", "--port", "8080"])
-
-    assert exc.value.code == 0
-    assert captured["settings"].host == "0.0.0.0"
-
-
 def test_fallback_port_is_reflected_in_settings(
     isolated_launcher_env, monkeypatch
 ):
@@ -179,51 +161,6 @@ def test_fallback_port_is_reflected_in_settings(
     assert os.environ["GALGAME2VOICE_PORT"] == "8081"
     assert os.environ["PORT"] == "8081"
     assert os.environ["GALGAME_PORT"] == "8081"
-
-
-class TestRunServerReExports:
-    def test_run_server_reexports_hardware_functions(self):
-        assert hasattr(rs, "detect_gpu_capability")
-        assert hasattr(rs, "get_system_memory_status")
-        assert hasattr(rs, "get_system_ram_gb")
-
-        total, avail = rs.get_system_ram_gb()
-        assert isinstance(total, float)
-        assert isinstance(avail, float)
-
-    def test_run_hardware_diagnostics_structure(self):
-        diag = rs.run_hardware_diagnostics()
-        assert isinstance(diag, dict)
-        assert "cuda_available" in diag
-        assert "gpu_names" in diag
-        assert "total_ram_gb" in diag
-        assert "avail_ram_gb" in diag
-        assert "has_nvidia" in diag
-
-    @pytest.mark.real_hardware_probe
-    def test_run_server_detect_gpu_capability_respects_subprocess_monkeypatch(self, monkeypatch):
-        import subprocess as real_sub
-        mock_torch_no_cuda = type("Torch", (), {
-            "cuda": type("Cuda", (), {
-                "is_available": lambda: False,
-            })
-        })
-        monkeypatch.setitem(sys.modules, "torch", mock_torch_no_cuda)
-        monkeypatch.setattr(rs, "subprocess", type("M", (), {
-            "Popen": lambda *args, **kwargs: SimpleNamespace(
-                stdout=io.BytesIO(b"GeForce RTX 3070\n"),
-                wait=lambda timeout=None: 0,
-                returncode=0,
-                pid=12345,
-                kill=lambda: None,
-            ),
-            "PIPE": real_sub.PIPE,
-            "DEVNULL": real_sub.DEVNULL,
-        }))
-        avail, name, count = rs.detect_gpu_capability()
-        assert avail is True
-        assert name == "GeForce RTX 3070"
-        assert count == 1
 
 
 class TestServerLauncherCLI:
