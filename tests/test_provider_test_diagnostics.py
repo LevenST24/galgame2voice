@@ -124,7 +124,7 @@ async def test_provider_test_429_rate_limit_not_misclassified_by_28401(app_clien
     assert data["success"] is False
     assert data["status_code"] == 429
     assert data["error_code"] in ("OPENAI_RATE_LIMIT", "RATE_LIMIT", "OPENAI_QUOTA_EXCEEDED", "QUOTA_EXCEEDED")
-    assert data["error_title"] and "429" in data["error_title"]
+    assert data["error_title"] and "频率超限" in data["error_title"]
     assert "401" not in data["error_title"]
     assert "验证失败" not in data["error_title"]
     assert data["diagnostic"]
