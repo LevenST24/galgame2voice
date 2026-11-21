@@ -463,15 +463,22 @@ class AnthropicAdapter(BaseLLMAdapter):
         except Exception as exc:
             latency = (time.time() - t0) * 1000
             exc_status = getattr(exc, "status_code", None)
+            sanitized_exc = sanitize_error_detail(exc)
             diag = format_provider_error(
                 provider_id="anthropic",
                 status_code=exc_status,
                 raw_error=exc,
                 api_key_configured=bool(self.api_key),
             )
+            resolved_status = exc_status if exc_status is not None else diag.get("status_code")
+            logger.warning(
+                "Anthropic connectivity check failed (status=%s): %s",
+                resolved_status,
+                sanitized_exc,
+            )
             return TestResult(
                 success=False,
-                message=f"Anthropic connection failed: {sanitize_error_detail(exc)}",
+                message=f"Anthropic connection failed: {sanitized_exc}",
                 latency_ms=latency,
                 error_code=diag.get("error_code"),
                 error=diag.get("error"),

@@ -359,6 +359,13 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
             raw_error=raw_error,
             api_key_configured=api_key_configured,
         )
+        resolved_status = status_code if status_code is not None else diag.get("status_code")
+        logger.warning(
+            "Provider connectivity check failed (provider=%s, status=%s): %s",
+            provider_id or "openai",
+            resolved_status,
+            sanitize_error_detail(raw_error),
+        )
         return diag, diag.get("diagnostic", "")
 
     _MAX_TOKENS_KEY = "max_tokens"

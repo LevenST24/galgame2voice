@@ -577,12 +577,15 @@ def _clear_settings_cache():
     """
     from galgame2voice.config import get_settings
     from galgame2voice.services.character_manager import CharacterManager
+    from galgame2voice.services.chat_pipelines.context_builder import clear_acting_menu_cache
 
     get_settings.cache_clear()
     CharacterManager.reset_instance()
+    clear_acting_menu_cache()
     try:
         yield
     finally:
+        clear_acting_menu_cache()
         CharacterManager.reset_instance()
         get_settings.cache_clear()
 

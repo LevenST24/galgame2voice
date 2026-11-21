@@ -48,11 +48,11 @@ def test_model_not_found_versus_endpoint_404_and_overload_and_local_timeout():
     assert payload_missing["error_code"] == "MODEL_NOT_FOUND"
     assert "模型名称不存在" in payload_missing["error"]
 
-    # 2. 404 without model -> 接口地址 / Base URL 提示
+    # 2. 404 without model -> 接口地址提示
     html_404 = RuntimeError("API returned status 404: <html><body>404 Not Found</body></html>")
     payload_404 = chat_error_payload(html_404, provider_id="custom")
     assert payload_404["error_code"] == "ENDPOINT_NOT_FOUND"
-    assert "接口地址" in payload_404["error"] or "Base URL" in payload_404["error"]
+    assert "接口地址" in payload_404["error"] and "Base URL" not in payload_404["error"]
     assert "模型名称不存在" not in payload_404["error"]
 
     # 3. 503 overloaded -> 服务繁忙提示，不让用户修改配置
@@ -62,7 +62,7 @@ def test_model_not_found_versus_endpoint_404_and_overload_and_local_timeout():
     assert "繁忙" in payload_503["error"] or "过载" in payload_503["error"]
     assert "模型名称不存在" not in payload_503["error"]
     assert "404" not in payload_503["error"]
-    assert "503" in payload_503["error"]
+    assert payload_503["status_code"] == 503
 
     # 4. RuntimeError wrapping httpx.ReadTimeout pointing to 127.0.0.1 -> 本机模型超时提示
     mapped = httpx.ReadTimeout(str(httpcore.ReadTimeout()))
@@ -107,7 +107,7 @@ def test_connection_reset_and_transport_interruption_diagnosis(err, expect_in_ms
     assert result.error_code == "CONNECTION_RESET"
     assert result.status_code == 502
     assert "网络连接被中途断开或重置" in result.message
-    assert "请检查 Base URL 地址、API Key 凭据以及模型名称配置是否正确" not in result.guidance
+    assert "请打开「设置中心 → 对话模型」检查「接口地址」「API 密钥」与「模型名称」是否正确" not in result.guidance
     assert "无需修改 API Key 或模型名称" in result.guidance
     assert "重新发送重试" in result.guidance
     assert expect_in_msg.lower() in (result.raw_error or "").lower()
@@ -116,7 +116,7 @@ def test_connection_reset_and_transport_interruption_diagnosis(err, expect_in_ms
     assert payload["error_code"] == "CONNECTION_RESET"
     assert payload["status_code"] == 502
     assert "网络连接被中途断开或重置" in payload["error"]
-    assert "请检查 Base URL 地址、API Key 凭据以及模型名称配置是否正确" not in payload["error"]
+    assert "请打开「设置中心 → 对话模型」检查「接口地址」「API 密钥」与「模型名称」是否正确" not in payload["error"]
     assert "无需修改 API Key 或模型名称" in payload["error"]
 
     diag_dict = format_provider_error("openai", 502, err)
@@ -143,14 +143,14 @@ def test_streaming_runtime_error_wrapping_connection_reset(cause):
     result = diagnose_llm_error(streaming_err)
     assert result.error_code == "CONNECTION_RESET"
     assert result.status_code == 502
-    assert "请检查 Base URL 地址、API Key 凭据以及模型名称配置是否正确" not in result.guidance
+    assert "请打开「设置中心 → 对话模型」检查「接口地址」「API 密钥」与「模型名称」是否正确" not in result.guidance
     assert "无需修改 API Key 或模型名称" in result.guidance
 
     payload = chat_error_payload(streaming_err, provider_id="openai")
     assert payload["error_code"] == "CONNECTION_RESET"
     assert payload["status_code"] == 502
     assert "网络连接被中途断开或重置" in payload["error"]
-    assert "请检查 Base URL 地址、API Key 凭据以及模型名称配置是否正确" not in payload["error"]
+    assert "请打开「设置中心 → 对话模型」检查「接口地址」「API 密钥」与「模型名称」是否正确" not in payload["error"]
 
 
 @pytest.mark.parametrize(
@@ -361,21 +361,22 @@ class TestErrorDiagnosticsEngine:
         diag_refused = diagnose_llm_error(exc_or_msg=httpx.ConnectError("[WinError 10061] No connection could be made"), status_code=502)
         assert diag_refused.error_code == "CONNECTION_REFUSED"
         assert "被拒绝" in diag_refused.message
-        assert any(term in diag_refused.guidance for term in ("端口", "Base URL", "反向代理"))
+        assert any(term in diag_refused.guidance for term in ("端口", "接口地址", "反向代理"))
+        assert "Base URL" not in diag_refused.guidance
 
     def test_http_402_insufficient_balance(self):
-        """DeepSeek / Moonshot / SiliconFlow 402 Insufficient Balance must be diagnosed clearly without blaming API Key / Base URL."""
+        """DeepSeek / Moonshot / SiliconFlow 402 Insufficient Balance must be diagnosed clearly without blaming API key or endpoint URL."""
         raw_error = 'RuntimeError: Streaming endpoint returned HTTP 402: {"error": {"message": "Insufficient Balance"}}'
         diag = diagnose_llm_error(raw_error, provider_id="deepseek")
         assert diag.error_code == "QUOTA_EXCEEDED"
         assert "余额" in diag.message or "余额" in diag.guidance
-        assert "Base URL" not in diag.guidance
-        assert "API Key" not in diag.guidance
+        assert "接口地址" not in diag.guidance and "Base URL" not in diag.guidance
+        assert "API 密钥" not in diag.guidance and "API Key" not in diag.guidance
 
         diag_moonshot = format_provider_error("moonshot", 402, '{"error": {"message": "Insufficient Balance"}}')
         assert diag_moonshot["error_code"] == "QUOTA_EXCEEDED"
         assert "余额" in diag_moonshot["error"] or "余额" in diag_moonshot["diagnostic"]
-        assert "Base URL" not in diag_moonshot["diagnostic"]
+        assert "接口地址" not in diag_moonshot["diagnostic"] and "Base URL" not in diag_moonshot["diagnostic"]
 
         payload = chat_error_payload(RuntimeError('API returned status 402: {"message": "余额不足"}'), provider_id="siliconflow")
         assert payload["error_code"] == "QUOTA_EXCEEDED"

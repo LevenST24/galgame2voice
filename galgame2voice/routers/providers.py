@@ -432,7 +432,7 @@ async def test_provider(req: ProviderTestRequest):
             detail=str(exc.detail),
             diagnostic_code="CREDENTIAL_HOST_MISMATCH",
             summary_zh="已保存密钥不能直接发往新的接口地址",
-            action_zh="更换接口地址（Base URL）测试时，请重新输入完整的 API Key，避免将原服务商密钥泄露到新地址。",
+            action_zh="更换「接口地址」测试时，请在「API 密钥」处重新填入完整密钥，避免将已保存的原服务商密钥发往新地址。",
         )
 
     model, base_url = _resolve_provider_preset_defaults(provider_id, model, base_url)
@@ -458,7 +458,7 @@ async def test_provider(req: ProviderTestRequest):
             detail=detail_str,
             diagnostic_code="INVALID_BASE_URL",
             summary_zh="接口地址格式或协议无效",
-            action_zh=f"{detail_str}。请检查 Base URL 配置，填写合法的 http:// 或 https:// 接口地址后重试。",
+            action_zh=f"{detail_str}。请在「设置中心 → 对话模型」检查「接口地址」配置，填写合法的 http:// 或 https:// 接口地址后重试。",
         )
 
     # Instantiate adapter via factory
@@ -510,7 +510,6 @@ async def test_provider(req: ProviderTestRequest):
         )
     except Exception as exc:
         logger.error("Provider test failed for '%s': %s", provider_id, exc, exc_info=True)
-        safe_msg = sanitize_error_detail(exc)
         diag_info = format_provider_error(
             provider_id=provider_id,
             status_code=getattr(exc, "status_code", None),
@@ -519,7 +518,7 @@ async def test_provider(req: ProviderTestRequest):
         )
         return ProviderTestResponse(
             success=False,
-            message=f"连接测试异常: {safe_msg}",
+            message=diag_info["error"],
             latency_ms=0.0,
             models=[],
             error_code=diag_info["error_code"],
