@@ -1,17 +1,15 @@
 """
 Audio conversion utilities wrapping ffmpeg asynchronously for galgame2voice.
-Converts OGG (Opus) to WAV (16kHz mono 16-bit PCM) for STT, and WAV to OGG/Opus audio.
+Converts WAV audio to OGG/Opus audio.
 Includes persistent executable discovery, caching, process cleanup, and format short-circuiting.
 """
 
 import asyncio
-import io
 import logging
 import os
 import shutil
 import sys
 import tempfile
-import wave
 from pathlib import Path
 from typing import Callable
 
@@ -166,30 +164,6 @@ def _is_known_non_audio(data: bytes) -> bool:
     ))
 
 
-def is_target_wav_pcm(
-    data: bytes,
-    sample_rate: int = 16000,
-    channels: int = 1,
-    sample_width: int = 2,
-) -> bool:
-    """
-    Checks if audio bytes are already a valid uncompressed PCM WAV matching the target parameters.
-    Target format: 16-bit mono PCM WAV at target sample rate (default 16000 Hz, 1 channel, 16-bit).
-    """
-    if not data or len(data) < 44 or not data.startswith(b"RIFF"):
-        return False
-    try:
-        with wave.open(io.BytesIO(data), "rb") as wf:
-            return (
-                wf.getcomptype() == "NONE"
-                and wf.getnchannels() == channels
-                and wf.getframerate() == sample_rate
-                and wf.getsampwidth() == sample_width
-            )
-    except Exception:
-        return False
-
-
 async def _terminate_subprocess(proc: asyncio.subprocess.Process, timeout: float = 3.0) -> None:
     """Defensively terminates a subprocess and waits for exit."""
     try:
@@ -308,50 +282,6 @@ async def _run_ffmpeg_transcode(
         await _cleanup_temp_paths(in_path, out_path)
 
 
-async def convert_ogg_to_wav(
-    ogg_bytes: bytes,
-    sample_rate: int = 16000,
-    channels: int = 1,
-    ffmpeg_path: str | None = None,
-    timeout: float = 30.0,
-) -> bytes:
-    """
-    Converts OGG/Opus audio bytes to 16kHz mono 16-bit PCM WAV bytes for STT.
-    Raises ValueError if input bytes are invalid or corrupt.
-    """
-    if not ogg_bytes or len(ogg_bytes) < 12:
-        raise ValueError("Audio payload is empty or too short")
-
-    if _is_known_non_audio(ogg_bytes):
-        raise ValueError("Corrupted or unsupported audio format")
-
-    if not (
-        ogg_bytes.startswith((b"OggS", b"RIFF")) or len(ogg_bytes) > 44
-    ):
-        raise ValueError("Corrupted or unsupported audio format")
-
-    # Short-circuit transcoding when input is already in target format (16-bit mono PCM WAV at target sample rate)
-    if is_target_wav_pcm(ogg_bytes, sample_rate=sample_rate, channels=channels, sample_width=2):
-        return ogg_bytes
-
-    return await _run_ffmpeg_transcode(
-        input_bytes=ogg_bytes,
-        in_suffix=".ogg",
-        out_suffix=".wav",
-        build_args=lambda inp, outp: [
-            "-i", inp,
-            "-ar", str(sample_rate),
-            "-ac", str(channels),
-            "-f", "wav",
-            outp,
-        ],
-        expected_header=b"RIFF",
-        header_error="ffmpeg output is not valid WAV audio",
-        ffmpeg_path=ffmpeg_path,
-        timeout=timeout,
-    )
-
-
 async def convert_wav_to_ogg(
     wav_bytes: bytes,
     bitrate: str = "64k",
@@ -397,8 +327,6 @@ __all__ = [
     "find_ffmpeg",
     "reset_ffmpeg_cache",
     "is_ffmpeg_available",
-    "is_target_wav_pcm",
     "run_ffmpeg_command",
-    "convert_ogg_to_wav",
     "convert_wav_to_ogg",
 ]

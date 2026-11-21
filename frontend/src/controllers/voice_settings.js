@@ -41,6 +41,7 @@ let lastShownCatalogWarning = '';
 let isImporting = false;
 let isDeletingVoice = false;
 let redeemCode = '';
+let redeemQueryRevision = 0;
 let dragEnterDepth = 0;
 let cleanupDragListeners = null;
 
@@ -56,6 +57,7 @@ export function initVoiceSettings(dom, callbacks = {}) {
   isImporting = false;
   isDeletingVoice = false;
   redeemCode = '';
+  redeemQueryRevision += 1;
   dragEnterDepth = 0;
 
   _dom = dom;
@@ -629,6 +631,7 @@ export async function createCustomVoice() {
     if (origin && state.sessions.includes(origin)) {
       _callbacks.invalidateSessionSync?.();
       origin.settings.voiceProfileId = profileId;
+      origin.updatedAt = Math.max(Date.now(), (origin.updatedAt || 0) + 1);
       const version = (origin.unconfirmedSettingsVersion || 0) + 1;
       origin.unconfirmedSettingsVersion = version;
       saveState();
@@ -738,9 +741,16 @@ function confirmPackageOverwrite(data, filename) {
   return window.confirm(`已有同名角色包「${names}」，覆盖它吗？旧的会先备份。`);
 }
 
-function characterImportSuccessMessage(label, imported) {
+function isSessionModalOpen() {
+  const modal = _dom.sessionModal;
+  return Boolean(modal && !modal.hidden && !modal.classList?.contains('hidden'));
+}
+
+function characterImportSuccessMessage(label, imported, modalOpen = true) {
   const missing = imported.filter((item) => item.missing_voice_weights);
-  if (!missing.length) return `已导入${label}，点「保存」即可使用`;
+  if (!missing.length) {
+    return modalOpen ? `已导入${label}，点「保存」即可使用` : `已导入${label}，可在「角色与会话」中选用`;
+  }
   if (missing.length === imported.length) {
     return `已导入${label}，但还不能出声，需要补上模型权重`;
   }
@@ -750,14 +760,28 @@ function characterImportSuccessMessage(label, imported) {
 
 async function finishCharacterImport(data, filename) {
   invalidateScannedModels();
-  await loadSessionVoiceSelect(getActive(), { preserveDraft: true, syncCustomBox: false });
   const imported = Array.isArray(data?.imported) ? data.imported : [];
-  if (imported[0]?.profile_id != null && _dom.sVoice) {
-    _dom.sVoice.value = String(imported[0].profile_id);
-    handleVoiceSelectionChange();
-  } else syncCustomVoiceBox();
   const label = imported.length ? imported.map((item) => `「${item.name}」`).join('、') : `「${filename || '角色包'}」`;
-  showToast(characterImportSuccessMessage(label, imported), 'success');
+  if (!isSessionModalOpen()) {
+    await fetchVoiceProfiles({ silent: true }).catch(() => {});
+    const toastOpts = _callbacks.onOpenSessionSettings
+      ? { actionLabel: '去选用', onAction: () => _callbacks.onOpenSessionSettings() }
+      : null;
+    showToast(characterImportSuccessMessage(label, imported, false), 'success', toastOpts);
+    return;
+  }
+  await loadSessionVoiceSelect(getActive(), { preserveDraft: true, syncCustomBox: false });
+  if (isSessionModalOpen()) {
+    if (imported[0]?.profile_id != null && _dom.sVoice) {
+      _dom.sVoice.value = String(imported[0].profile_id);
+      handleVoiceSelectionChange();
+    } else syncCustomVoiceBox();
+  }
+  const modalOpen = isSessionModalOpen();
+  const toastOpts = !modalOpen && _callbacks.onOpenSessionSettings
+    ? { actionLabel: '去选用', onAction: () => _callbacks.onOpenSessionSettings() }
+    : null;
+  showToast(characterImportSuccessMessage(label, imported, modalOpen), 'success', toastOpts);
 }
 
 async function importCharacterArchive(blob, filename) {
@@ -851,19 +875,32 @@ function showRedeemPackages(packages) {
 }
 
 async function queryRedeemCode() {
+  if (isImporting) return;
   const input = _dom.sVoiceRedeemCode;
   const code = String(input?.value || '').trim();
-  if (!code) return showToast('请先粘贴兑换码', 'error');
-  if (isImporting) return;
+  if (!code) {
+    if (_dom.sVoiceRedeemStatus) {
+      _dom.sVoiceRedeemStatus.textContent = '请先粘贴兑换码（以 G2V1. 开头）。';
+    }
+    input?.focus?.();
+    return showToast('请先粘贴兑换码', 'error');
+  }
+  // A newer query or a download makes this one stale; querying again stays possible, so a wrong code can be fixed at once.
+  const revision = ++redeemQueryRevision;
+  if (_dom.sVoiceRedeemStatus) _dom.sVoiceRedeemStatus.textContent = '正在查询兑换码…';
   try {
     const packages = await fetchRedeemPackages(code);
+    if (revision !== redeemQueryRevision || isImporting) return;
     redeemCode = code;
     showRedeemPackages(packages);
     if (input) input.value = '';
   } catch (err) {
+    if (revision !== redeemQueryRevision || isImporting) return;
+    const message = err?.message || '查询兑换码失败，请重试。';
     redeemCode = '';
     renderRedeemList([]);
-    showToast(err?.message || '查询兑换码失败', 'error');
+    if (_dom.sVoiceRedeemStatus) _dom.sVoiceRedeemStatus.textContent = message;
+    showToast(message, 'error');
   }
 }
 
@@ -881,6 +918,7 @@ async function pollRedeemStatus() {
 async function downloadRedeemPackage(pkg) {
   if (isImporting || !redeemCode || !pkg.id) return;
   const code = redeemCode;
+  const revision = ++redeemQueryRevision;
   setImportBusy(true);
   if (_dom.sVoiceRedeemStatus) {
     _dom.sVoiceRedeemStatus.textContent = formatRedeemProgress({
@@ -919,7 +957,7 @@ async function downloadRedeemPackage(pkg) {
   // The server counts the download even when the import fails or the overwrite is declined, so ask it again.
   try {
     const packages = await fetchRedeemPackages(code);
-    if (redeemCode === code) showRedeemPackages(packages);
+    if (!isImporting && revision === redeemQueryRevision && redeemCode === code) showRedeemPackages(packages);
   } catch {
     // Keep the shown list; querying the code again shows the current numbers.
   }
@@ -1038,6 +1076,7 @@ export async function deleteVoiceProfile() {
     const sessionVersions = new Map();
     for (const sess of cleared) {
       sess.settings.voiceProfileId = null;
+      sess.updatedAt = Math.max(Date.now(), (sess.updatedAt || 0) + 1);
       const version = (sess.unconfirmedSettingsVersion || 0) + 1;
       sess.unconfirmedSettingsVersion = version;
       sessionVersions.set(sess, version);
@@ -1133,7 +1172,7 @@ async function handleSaveSessionSettings() {
       ttsTopP: Number(_dom.sTtsTopP.value),
       ttsTemperature: Number(_dom.sTtsTemp.value),
     };
-    s.updatedAt = Date.now();
+    s.updatedAt = Math.max(Date.now(), (s.updatedAt || 0) + 1);
     const version = (s.unconfirmedSettingsVersion || 0) + 1;
     s.unconfirmedSettingsVersion = version;
     saveState();

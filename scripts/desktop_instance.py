@@ -77,7 +77,11 @@ def open_existing_instance(root: Path, *, no_browser: bool, timeout: float = 8.0
                 raise ValueError("Unexpected service")
             print(f"[提示] Galgame2Voice 已在运行，访问地址：{url}")
             if not no_browser:
-                webbrowser.open(url)
+                try:
+                    if not webbrowser.open(url):
+                        print(f"[提示] 未能自动打开浏览器，请手动访问：{url}")
+                except Exception:
+                    print(f"[提示] 未能自动打开浏览器，请手动访问：{url}")
             return
         except (OSError, ValueError, KeyError, TypeError):
             sleep(0.2)

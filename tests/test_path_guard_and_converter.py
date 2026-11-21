@@ -35,11 +35,9 @@ from galgame2voice.utils.path_guard import (
     validate_voice_profile_paths,
 )
 from galgame2voice.utils.audio_converter import (
-    convert_ogg_to_wav,
     convert_wav_to_ogg,
     find_ffmpeg,
     is_ffmpeg_available,
-    is_target_wav_pcm,
     reset_ffmpeg_cache,
 )
 from galgame2voice.services.tts_cache_manager import TtsCacheManager
@@ -593,22 +591,16 @@ class TestFFmpegDiscoveryBundledFallback:
 
     @pytest.mark.requires_piped_subprocess
     @pytest.mark.asyncio
-    async def test_audio_converter_roundtrip_with_bundled_imageio(self, monkeypatch):
-        """Verifies convert_wav_to_ogg and convert_ogg_to_wav roundtrip without global ffmpeg on PATH."""
+    async def test_audio_converter_wav_to_ogg_with_bundled_imageio(self, monkeypatch):
+        """Verifies convert_wav_to_ogg works without global ffmpeg on PATH."""
         _clear_ffmpeg_env(monkeypatch)
 
         sample_wav = _create_wav(sample_rate=16000, channels=1, duration_s=0.2)
-        assert is_target_wav_pcm(sample_wav, sample_rate=16000, channels=1)
 
         # Transcode PCM WAV -> OGG Opus
         converted_ogg = await convert_wav_to_ogg(sample_wav)
         assert len(converted_ogg) > 0
         assert converted_ogg.startswith(b"OggS")
-
-        # Transcode OGG Opus -> PCM WAV (16kHz mono 16-bit)
-        roundtrip_wav = await convert_ogg_to_wav(converted_ogg, sample_rate=16000, channels=1)
-        assert roundtrip_wav.startswith(b"RIFF")
-        assert is_target_wav_pcm(roundtrip_wav, sample_rate=16000, channels=1)
 
 
     @pytest.mark.requires_piped_subprocess

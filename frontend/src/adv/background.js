@@ -118,6 +118,8 @@ export function createBackgroundView({
   let selection = { id: '', time: 'auto' };
   let front = -1;
   let shownUrl = null;
+  /** @type {string | null} */
+  let pendingUrl = null;
   let request = 0;
   let timer = null;
   let destroyed = false;
@@ -166,6 +168,7 @@ export function createBackgroundView({
 
   function showSky() {
     ++request;
+    pendingUrl = null;
     const instant = reducedMotion();
     for (const image of buffers) {
       image.classList.toggle('is-instant', instant);
@@ -178,6 +181,7 @@ export function createBackgroundView({
 
   function show(url) {
     const token = ++request;
+    pendingUrl = url;
     const backIndex = front === 0 ? 1 : 0;
     const incoming = buffers[backIndex];
     const outgoing = front >= 0 ? buffers[front] : null;
@@ -186,6 +190,7 @@ export function createBackgroundView({
     const settle = ok => {
       // A newer selection owns the buffers; an aborted decode must not touch them.
       if (destroyed || token !== request) return;
+      pendingUrl = null;
       if (!ok) {
         release(incoming);
         return;
@@ -217,10 +222,18 @@ export function createBackgroundView({
     sky.dataset.time = part();
     const found = target();
     if (!found) {
-      if (front !== -1 || shownUrl !== null) showSky();
+      if (front !== -1 || shownUrl !== null || pendingUrl !== null) showSky();
       return;
     }
-    if (found.url !== shownUrl) show(found.url);
+    if (found.url === shownUrl) {
+      if (pendingUrl !== null) {
+        ++request;
+        pendingUrl = null;
+        release(buffers[front === 0 ? 1 : 0]);
+      }
+      return;
+    }
+    if (found.url !== pendingUrl) show(found.url);
   }
 
   function schedule() {
@@ -254,6 +267,7 @@ export function createBackgroundView({
       if (destroyed) return;
       destroyed = true;
       ++request;
+      pendingUrl = null;
       if (timer !== null) {
         clearTimer(timer);
         timer = null;

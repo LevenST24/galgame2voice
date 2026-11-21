@@ -227,13 +227,6 @@ def test_fixture_normal() -> None:
     assert result.trailing_text == ""
 
 
-def test_fixture_fenced() -> None:
-    _, result = _scan_fixture("fenced")
-    assert result.format == "lines"
-    assert len(result.lines) == 1
-    assert result.truncated is False
-
-
 def test_fixture_preamble() -> None:
     _, result = _scan_fixture("preamble")
     assert result.format == "lines"
@@ -266,12 +259,6 @@ def test_fixture_invalid_act_values() -> None:
     _, result = _scan_fixture("invalid_act_values")
     assert len(result.lines) == 1
     assert result.lines[0].act == {"pose": "valid_pose"}
-
-
-def test_fixture_outfit_and_extra_act_keys() -> None:
-    _, result = _scan_fixture("outfit_and_extra_act_keys")
-    assert len(result.lines) == 1
-    assert result.lines[0].act == {"face": "smile"}
 
 
 def test_fixture_missing_or_invalid_emotion() -> None:

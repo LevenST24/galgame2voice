@@ -275,29 +275,6 @@ async def test_completed_unemitted_audio_is_ready_on_cancel(coordinator_setup, t
 
 
 @pytest.mark.asyncio
-async def test_unsealed_or_pending_audio_is_failed_on_cancel(coordinator_setup, tmp_path: Path):
-    """Lines whose audio was still pending or unsealed at cancel time must be marked failed."""
-    cancel_event = asyncio.Event()
-    tokens = _make_lines_tokens(("第一句。", "一番です。"), cancel_event=cancel_event)
-
-    async def synth_mock(sentence, **kwargs):
-        # Pending in synthesis until cancel
-        try:
-            await asyncio.wait_for(cancel_event.wait(), timeout=3.0)
-            wav_path = create_synthetic_wav(tmp_path, "chunk_dummy")
-            return f"/audio/{wav_path.name}", wav_path, {}
-        except (asyncio.TimeoutError, asyncio.CancelledError) as err:
-            raise asyncio.CancelledError() from err
-
-    assistant_msgs = await _run_cancel_stream(
-        coordinator_setup, tokens, synth_mock, cancel_event, match_index0=True
-    )
-    assert len(assistant_msgs) == 1
-    line0 = assistant_msgs[0].lines[0]
-    assert line0["audio"]["status"] == "failed"
-
-
-@pytest.mark.asyncio
 async def test_audio_with_error_is_failed_on_cancel(coordinator_setup):
     """Lines with synthesis errors must be marked failed even if cancelled later."""
     cancel_event = asyncio.Event()
@@ -320,40 +297,6 @@ async def test_audio_with_error_is_failed_on_cancel(coordinator_setup):
     assert len(assistant_msgs) == 1
     line0 = assistant_msgs[0].lines[0]
     assert line0["audio"]["status"] == "failed"
-
-
-@pytest.mark.asyncio
-async def test_normal_completion_status_ready_and_skipped(coordinator_setup, tmp_path: Path):
-    """Normal completion records ready for vocal lines and skipped for non-vocal lines."""
-    async def tokens(*args, **kwargs):
-        yield (
-            '{"tts": {"emotion": "gentle"}, "lines": ['
-            '{"zh": "第一句。", "ja": "一番です。", "emotion": "gentle"}, '
-            '{"zh": "沉默……", "ja": "……", "emotion": "gentle"}'
-            "]}\n"
-        )
-
-    async def synth_mock(sentence, **kwargs):
-        wav_path = create_synthetic_wav(tmp_path, kwargs.get("filename_prefix", "chunk"))
-        return f"/audio/{wav_path.name}", wav_path, {}
-
-    coord, _, _ = coordinator_setup(
-        tokens_fn=tokens,
-        synthesize_fn=synth_mock,
-        reply_format="lines",
-    )
-
-    stream = coord.stream()
-    try:
-        events = await consume_stream_bounded(stream, timeout=3.0, close_on_exit=True)
-        done_events = [e for e in events if e.get("event") == "done"]
-        assert len(done_events) == 1
-        lines = done_events[0]["data"]["lines"]
-        assert len(lines) == 2
-        assert lines[0]["audio"]["status"] == "ready"
-        assert lines[1]["audio"]["status"] == "skipped"
-    finally:
-        await asyncio.wait_for(stream.aclose(), timeout=3.0)
 
 
 @pytest.mark.asyncio

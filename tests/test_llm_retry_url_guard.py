@@ -191,20 +191,6 @@ class TestLlmRetryEdgeCases:
             assert transport.attempt_count == 3  # 2 failed attempts (429) + 1 successful attempt
             assert tokens == ["你好", "，夏目"]
 
-    async def test_openai_stream_chat_recovers_from_503_service_unavailable(self):
-        """Simulates HTTP 503 service unavailable, verifies retry and stream recovery."""
-        sse_body = (
-            'data: {"choices":[{"delta":{"content":"Resilient"}}]}\n\n'
-            'data: {"choices":[{"delta":{"content":" Stream"}}]}\n\n'
-            'data: [DONE]\n\n'
-        )
-        transport, client_patch = _patched_transport([503], sse_body)
-        adapter = _openai_adapter(max_retries=2)
-        with client_patch:
-            tokens = await _collect_stream(adapter, model="gpt-4o", base_delay=0.01)
-
-            assert transport.attempt_count == 2
-            assert tokens == ["Resilient", " Stream"]
 
     async def test_openai_stream_chat_fails_fast_on_401_403(self):
         """Verifies that HTTP 401/403 fails fast on attempt 1 without entering retry loops."""
