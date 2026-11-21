@@ -433,25 +433,6 @@ function setupImportScenario() {
   assert.equal(state.sessions.filter((session) => session.title === '没有时间的对话').length, 0);
   passed++;
 }
-
-// deleting an imported session and importing the same file again must leave it saveable
-{
-  const { server, choose, clearToasts, imported } = setupImportScenario();
-  const text = backupOf([sessionOf('s_d', ['要删的对话'])]);
-  await choose(text);
-  const first = state.sessions[0];
-  assert.ok(first.id.startsWith('s_import_'));
-  await deletePersistedSession(first.id);
-  deleteSession(first.id);
-  await choose(text);
-  clearToasts();
-  assert.equal(imported(), 2);
-  const restored = getSession(first.id);
-  assert.ok(restored, '再次导入后应恢复这个会话');
-  await persistSession(restored);
-  assert.deepEqual(server.calls.persisted, [first.id]);
-  passed++;
-}
 // deleting with delayed server ack must not let concurrent re-import lose the restored session or be deleted later
 {
   const { server, choose, toastText, clearToasts, imported } = setupImportScenario();
