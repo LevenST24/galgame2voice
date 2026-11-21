@@ -18,6 +18,9 @@ const nativeFetch=globalThis.fetch.bind(globalThis);
 const result={overflow:0,left:0,right:innerWidth,viewport:innerWidth};
 try {
   const tier=__TIER__;
+  // A fresh profile creates CacheStorage on its first open. On a loaded CI runner that can outlast cache.js's
+  // 1.5 s storage deadline and silently skip the setup writes below, so open it once before them.
+  await caches.open('gal2voice-audio-v1');
   const url='/audio/cache/native-recovery.wav';
   const broken=new Blob(['synthetic corrupt WAV'],{type:'audio/wav'});
   const buffer=new ArrayBuffer(44+800*2), view=new DataView(buffer);
@@ -36,6 +39,7 @@ try {
     await cache.put(request,new Response(broken,{headers:{'Content-Type':'audio/wav','X-Cached-At':'1700000000000'}}));
   }
   if(tier==='disk'||tier==='legacy-disk')clearMemAudioCache();
+  result.diskEntries=(await (await caches.open('gal2voice-audio-v1')).keys()).length;
   const calls=[],errors=[];
   globalThis.fetch=async (url,options={})=>{
     calls.push({url,method:options.method||'GET',cache:options.cache});return new Response(good);
@@ -129,6 +133,7 @@ def test_native_audio_decode_recovers_only_the_invalid_url(tmp_path, tier):
     (tmp_path / "browser.log").write_bytes(rendered.stderr)
     assert rendered.returncode == 0 and result, rendered.stderr.decode("utf-8", errors="replace")[-1000:]
     assert "error" not in result, result
+    assert result["diskEntries"] == 2, f"setup writes did not reach CacheStorage: {result}"
     assert result["playback"] == "ended"
     assert result["samples"] == result["sampleRate"] // 10 and result["channels"] == 1
     assert result["errors"] == ["EncodingError"]

@@ -4,7 +4,7 @@ import { showToast } from '../ui.js';
 import { exportCompleteChatBackup } from '../chat_backup.js';
 import { forgetDeletedSessions, reserveSessionImport } from '../session_api.js';
 import { exportSessionData, prepareSessionImport, applySessionImport, getStorageStatus,
-  onStorageStatus, getDamagedSessionData, resumeLocalSaving } from '../store.js';
+  onStorageStatus, getDamagedSessionData, resumeLocalSaving, storageChangedByAnotherPage } from '../store.js';
 
 function download(content, name) {
   const url = URL.createObjectURL(new Blob([content], { type: 'application/json;charset=utf-8' }));
@@ -26,10 +26,19 @@ export function initSessionBackup({ onImport, onOpenBackupTab, isBusy = () => fa
   const updateStatus = value => {
     if (status) status.textContent = value.ok ? '聊天记录已保存在当前浏览器。建议在更新或换浏览器前导出备份。' : value.message;
     if (original) original.hidden = !value.damaged;
-    if (!value.ok) showToast(value.message, 'error', onOpenBackupTab ? {
-      actionLabel: '打开备份设置',
-      onAction: () => onOpenBackupTab(),
-    } : null);
+    if (!value.ok) {
+      if (!value.damaged && storageChangedByAnotherPage()) {
+        showToast(value.message, 'error', {
+          actionLabel: '立即刷新',
+          onAction: () => window.location.reload(),
+        });
+      } else {
+        showToast(value.message, 'error', onOpenBackupTab ? {
+          actionLabel: '打开备份设置',
+          onAction: () => onOpenBackupTab(),
+        } : null);
+      }
+    }
   };
   onStorageStatus(updateStatus);
   updateStatus(getStorageStatus());

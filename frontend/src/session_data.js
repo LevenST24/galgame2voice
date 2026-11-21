@@ -83,6 +83,7 @@
  * @property {number} updatedAt
  * @property {SessionSettings} settings
  * @property {string} [lastLine]
+ * @property {boolean} [hasServerMessages]
  * @property {number} [unconfirmedSettingsVersion]
  * @property {boolean} [hasMoreHistory]
  * @property {number | null} [oldestMessageId]
@@ -277,6 +278,9 @@ export function normalizeSnapshot(data, sessionDefaults, globalDefaults) {
     if (typeof session.lastLine === 'string' && session.lastLine) {
       normalizedSession.lastLine = session.lastLine;
     }
+    if (session.hasServerMessages === true) {
+      normalizedSession.hasServerMessages = true;
+    }
     if (typeof session.unconfirmedSettingsVersion === 'number' && session.unconfirmedSettingsVersion > 0) {
       normalizedSession.unconfirmedSettingsVersion = session.unconfirmedSettingsVersion;
     }
@@ -299,7 +303,7 @@ export function portableSnapshot(snapshot) {
     // Generated audio is a separate cache. Browser recording blobs cannot be
     // restored from JSON, and URLs from other installations may be stale.
     sessions: snapshot.sessions.map(session => {
-      const { unconfirmedSettingsVersion: _dropped, lastLine: _droppedLastLine, ...rest } = session;
+      const { unconfirmedSettingsVersion: _dropped, lastLine: _droppedLastLine, hasServerMessages: _droppedServerMessages, ...rest } = session;
       return {
         ...rest,
         messages: session.messages.map(message => {
