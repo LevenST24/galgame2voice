@@ -214,3 +214,11 @@ def test_is_vocal_sentence_rejects_kaomoji_urls_and_laugh_w():
     assert TtsStreamPipeline.is_vocal_sentence("www") is False
     assert TtsStreamPipeline.is_vocal_sentence("ｗｗｗ") is False
     assert TtsStreamPipeline.is_vocal_sentence("ごめんね (´・ω・｀)") is True
+
+
+def test_is_vocal_sentence_accepts_fullwidth_alnum_zero_and_inner_voice_monologue():
+    assert TtsStreamPipeline.is_vocal_sentence("ＯＫ！") is True
+    assert TtsStreamPipeline.is_vocal_sentence("１２３！") is True
+    assert TtsStreamPipeline.is_vocal_sentence("〇") is True
+    assert TtsStreamPipeline.is_vocal_sentence("【心の声：顔が熱い……！】") is True
+    assert TtsStreamPipeline.is_vocal_sentence("www～") is False

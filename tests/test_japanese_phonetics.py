@@ -208,3 +208,30 @@ def test_tts_cleaner_strips_kaomoji_urls_markdown_laugh_w_and_inner_voice():
     )
     assert normalize_japanese_for_tts("（心声：其实我很开心）哼！") == "其实我很开心哼！"
     assert normalize_japanese_for_tts("心の声が聞こえる") == "心の声が聞こえる"
+
+
+def test_inner_voice_monologue_starting_with_action_word_is_preserved():
+    """Inner-voice monologues starting with action words like 顔/落ち着/看 must not be stripped as stage cues."""
+    assert normalize_japanese_for_tts("【心の声：顔が熱い……！】ふん。") == "顔が熱い……！ふん。"
+    assert normalize_japanese_for_tts("【心の声：落ち着け、私！】大丈夫。") == "落ち着け、私！大丈夫。"
+    assert normalize_japanese_for_tts("（心声：看他这么努力，真好）加油。") == "看他这么努力，真好加油。"
+    assert normalize_japanese_for_tts("【心の声：顔が熱い……！】") == "顔が熱い……！"
+    assert normalize_japanese_for_tts("（心の声）") == ""
+    assert normalize_japanese_for_tts("【心の声：……】") == ""
+
+
+def test_laugh_w_cleaning_runs_after_kaomoji_and_respects_boundaries():
+    """Laugh w cleaning handles trailing kaomoji, long vowel/punctuation boundaries, and preserves www domains."""
+    assert normalize_japanese_for_tts("やったね！www (≧ω≦)") == "やったね！"
+    assert normalize_japanese_for_tts("すげーwww マジで！") == "すげー マジで！"
+    assert normalize_japanese_for_tts("えっ！？www ちょっと待って！") == "えっ！？ ちょっと待って！"
+    assert normalize_japanese_for_tts("www～") == "～"
+    assert normalize_japanese_for_tts("詳しくは www.example.com を見てね") == "詳しくは www.example.com を見てね"
+    assert normalize_japanese_for_tts("awww!") == "awww!"
+    assert normalize_japanese_for_tts("www123") == "www123"
+
+
+def test_fullwidth_alphanumeric_and_ideographic_zero_inside_brackets_are_preserved():
+    assert normalize_japanese_for_tts("（ＯＫ！）") == "ＯＫ！"
+    assert normalize_japanese_for_tts("（１２３！）") == "１２３！"
+    assert normalize_japanese_for_tts("（〇）") == "〇"

@@ -139,16 +139,38 @@ _RE_EMOTION_CANDIDATE_PREFIX = re.compile(r'^(?:情绪|心情|状态|emotion|emo
 _RE_TERMINAL_PUNCT_CHECK = re.compile(r'[。！？!?…]')
 _RE_ACTION_ASTERISK = re.compile(r'(?<!\*)\*([^*]{1,35})\*(?!\*)')
 _RE_BRACKET_CUES = re.compile(r'[（\(\[【〖〔\*]([^）\)\]】〗〕\*]{1,30})[）\)\]】〗〕\*]')
-_RE_HAS_CJK_OR_KANA = re.compile(r'[\u3041-\u3096\u30a1-\u30fa\u3400-\u4dbf\u4e00-\u9fff]')
-_RE_LATIN_WORD_OR_NUM = re.compile(r'[A-Za-z0-9]{2,}')
+VOCAL_CHAR_PATTERN = re.compile(
+    r'[A-Za-z0-9\uff10-\uff19\uff21-\uff3a\uff41-\uff5a\u3007\u3041-\u3096\u30a1-\u30fa\u3400-\u4dbf\u4e00-\u9fff]'
+)
+_RE_HAS_CJK_OR_KANA = re.compile(r'[\u3007\u3041-\u3096\u30a1-\u30fa\u3400-\u4dbf\u4e00-\u9fff]')
+_RE_LATIN_WORD_OR_NUM = re.compile(r'[A-Za-z0-9\uff10-\uff19\uff21-\uff3a\uff41-\uff5a]{2,}')
 _RE_MARKDOWN_LINK = re.compile(r'\[([^\[\]]+)\]\(\s*https?://[^)\s]+\s*\)', re.IGNORECASE)
 _RE_URL = re.compile(r'https?://[^\s<>()（）\[\]【】「」『』、。，！？!?]+', re.IGNORECASE)
 _RE_MARKDOWN_DECORATION = re.compile(r'\*\*|__|'+r'`+')
 _RE_JAPANESE_LAUGH_W = re.compile(
-    r'(?:(?<=[\u3041-\u3096\u30a1-\u30fa\u3400-\u4dbf\u4e00-\u9fff])[ \t]*[wｗ]{2,}(?![A-Za-z])'
-    r'|(?<![A-Za-z])[ \t]*[wｗ]{2,}(?=[ \t]*(?:[。！？!?、，,…~〜」』"\'）\)]|$)))'
+    r'(?:(?<=[\u3041-\u3096\u30a1-\u30fa\u3400-\u4dbf\u4e00-\u9fff\u30fc\u3005\u3007。！？!?…～〜~、，,」』])|(?<=^))'
+    r'[ \t]*[wｗ]{2,}'
+    r'(?![A-Za-z0-9\uff10-\uff19\uff21-\uff3a\uff41-\uff5a.])'
+    r'(?=[ \t]*(?:[。！？!?、，,…～〜~」』"\'）\)】\]]|$)|[ \t]+)'
 )
 _RE_INNER_VOICE_LABEL = re.compile(r'(?:心の声|心声)\s*[:：]\s*')
+_RE_INNER_VOICE_LABEL_START = re.compile(r'^(?:心の声|心声)\s*[:：]\s*')
+
+
+def has_vocal_text(text: str | None) -> bool:
+    """Returns True if text contains at least one speakable alphanumeric, kana, or CJK character."""
+    if not text:
+        return False
+    return bool(VOCAL_CHAR_PATTERN.search(text))
+
+
+def _strip_japanese_laugh_w(text: str) -> str:
+    cleaned = text
+    while True:
+        updated = _RE_JAPANESE_LAUGH_W.sub('', cleaned)
+        if updated == cleaned:
+            return cleaned
+        cleaned = updated
 _RE_MULTI_SPACE = re.compile(r'[ \t]{2,}')
 
 BRACKET_REGEX_PAIRS = [
@@ -266,28 +288,33 @@ def clean_japanese_parentheses(text: str, max_passes: int = 5) -> str:
     if not cleaned:
         return ""
 
-    # 0. Clean Markdown links, bare URLs, Markdown wrappers, Japanese laugh w's, and inner-voice prefixes
+    # 0. Clean Markdown links, bare URLs, and Markdown decoration wrappers
     cleaned = _RE_MARKDOWN_LINK.sub(r'\1', cleaned)
     cleaned = _RE_URL.sub('', cleaned)
     cleaned = _RE_MARKDOWN_DECORATION.sub('', cleaned)
-    cleaned = _RE_JAPANESE_LAUGH_W.sub('', cleaned)
-    cleaned = _RE_INNER_VOICE_LABEL.sub('', cleaned)
 
     # 1. Clean Markdown action asterisks e.g. *sighs*, *blushes*, *叹气*, *脸红*, and unwrap *emphasis*
     def _replace_asterisk(m: re.Match) -> str:
         inside = m.group(1).strip()
+        if _RE_INNER_VOICE_LABEL_START.match(inside):
+            monologue = _RE_INNER_VOICE_LABEL_START.sub('', inside).strip()
+            return monologue if has_vocal_text(monologue) else ""
         if is_spoken_dialogue_inside_brackets(inside):
             return inside
         return ""
 
     cleaned = _RE_ACTION_ASTERISK.sub(_replace_asterisk, cleaned)
 
-    # 2. Clean parenthetical brackets
+    # 2. Clean parenthetical brackets (preserve inner-voice monologues before stage-cue heuristics)
     for _ in range(max_passes):
         prev = cleaned
         for pat in BRACKET_REGEX_PAIRS:
             def _replace_bracket(m: re.Match) -> str:
                 inside = m.group(1)
+                stripped = inside.strip()
+                if _RE_INNER_VOICE_LABEL_START.match(stripped):
+                    monologue = _RE_INNER_VOICE_LABEL_START.sub('', stripped).strip()
+                    return monologue if has_vocal_text(monologue) else ""
                 if is_spoken_dialogue_inside_brackets(inside):
                     return inside
                 return ""
@@ -296,7 +323,10 @@ def clean_japanese_parentheses(text: str, max_passes: int = 5) -> str:
         if cleaned == prev:
             break
 
+    # 3. Drop unbracketed inner-voice labels, stray brackets, and Japanese laugh w's after kaomoji removal
+    cleaned = _RE_INNER_VOICE_LABEL.sub('', cleaned)
     cleaned = cleaned.translate(str.maketrans('', '', '（）()【】[]〖〗〔〕'))
+    cleaned = _strip_japanese_laugh_w(cleaned)
     cleaned = _RE_MULTI_SPACE.sub(' ', cleaned)
     return cleaned.strip()
 
@@ -540,6 +570,8 @@ __all__ = [
     "CHINESE_STAGE_ACTION_PATTERN",
     "CHINESE_STAGE_MODIFIERS_PATTERN",
     "STAGE_CUE_EMOTION_MAP",
+    "VOCAL_CHAR_PATTERN",
+    "has_vocal_text",
     "is_spoken_dialogue_inside_brackets",
     "strip_reasoning_tags",
     "clean_japanese_parentheses",

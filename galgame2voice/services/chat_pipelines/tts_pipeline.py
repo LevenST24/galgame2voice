@@ -8,20 +8,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from typing import Any
 
 from galgame2voice.services.tts_options import resolve_default_text_split_method
 from galgame2voice.services.tts_service import TtsService
 from galgame2voice.utils.audio_spec import describe_silent_audio_error
+from galgame2voice.utils.japanese_phonetics import has_vocal_text
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.services.gpt_sovits_client import SWITCH_TIMEOUT, TTS_TIMEOUT, clean_japanese_parentheses
 from galgame2voice.utils.async_tasks import cancel_and_drain
 from galgame2voice.utils.profiler import ChatTurnProfiler
 
 logger = logging.getLogger("galgame2voice.services.chat_pipelines.tts_pipeline")
-
-_VOCAL_RE = re.compile(r'[A-Za-z0-9\u3041-\u3096\u30a1-\u30fa\u3400-\u4dbf\u4e00-\u9fff]')
 
 # Two model-weight switches, inference, and a minute for queue/IO overhead.
 # The same bound is advertised over HTTP; it is an end-to-end sentence budget.
@@ -50,9 +48,7 @@ class TtsStreamPipeline:
         if not sentence or not sentence.strip():
             return False
         cleaned = clean_japanese_parentheses(sentence).strip()
-        if not cleaned:
-            return False
-        return bool(_VOCAL_RE.search(cleaned))
+        return has_vocal_text(cleaned)
 
     def prepare_chunk_options(
         self,
