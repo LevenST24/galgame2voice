@@ -14,6 +14,7 @@ from galgame2voice.services.chat_pipelines.line_scanner import (
     MOTIONS,
     LineScanner,
     ScannedLine,
+    repair_line_quotes,
     validate_line,
 )
 
@@ -120,6 +121,9 @@ FIXTURES: dict[str, str] = {
         suffix="\n希望这个回答对您有帮助！如果有其他问题请随时问我。",
     ),
     "empty_lines_array": _lines_fixture(),
+    "unescaped_quotes": (
+        '{"lines": [{"zh": "他说"早上好"就走了。", "ja": "「おはよう」と言って行った。", "emotion": "happy"}]}'
+    ),
 }
 
 
@@ -394,3 +398,104 @@ def test_validate_line_normalizes_emotion_case_and_spacing() -> None:
     assert line is not None
     assert line.emotion == "happy"
     assert not issues
+
+
+def test_unescaped_quotes_in_zh_whole_and_chunked() -> None:
+    text = FIXTURES["unescaped_quotes"]
+
+    whole_scanner = LineScanner()
+    whole_emitted = whole_scanner.feed(text)
+    whole_result = whole_scanner.finish()
+
+    assert len(whole_emitted) == 1
+    assert len(whole_result.lines) == 1
+    assert whole_result.lines[0].zh == '他说"早上好"就走了。'
+    assert whole_result.lines[0].ja == "「おはよう」と言って行った。"
+    assert whole_result.lines[0].emotion == "happy"
+    assert whole_result.issues == []
+    assert whole_result.truncated is False
+
+    for step in (1, 7):
+        chunk_scanner = LineScanner()
+        chunk_emitted: list[ScannedLine] = []
+        for idx in range(0, len(text), step):
+            chunk_emitted.extend(chunk_scanner.feed(text[idx : idx + step]))
+        chunk_result = chunk_scanner.finish()
+        assert chunk_emitted == whole_emitted
+        assert chunk_result == whole_result
+
+    comma_scanner = LineScanner()
+    comma_scanner.feed(
+        '{"lines": [{"zh": "他说"早上好", 然后走了。", "ja": "「おはよう」と言って行った。", "emotion": "happy"}]}'
+    )
+    comma_result = comma_scanner.finish()
+    assert len(comma_result.lines) == 1
+    assert comma_result.lines[0].zh == '他说"早上好", 然后走了。'
+
+
+def test_unescaped_quotes_in_ja_preserves_act() -> None:
+    raw = (
+        '{"lines": [{"zh": "他说早上好。", '
+        '"ja": "彼は"おはよう"と言って行った。", '
+        '"emotion": "gentle", "act": {"face": "smile"}}]}'
+    )
+    scanner = LineScanner()
+    emitted = scanner.feed(raw)
+    result = scanner.finish()
+
+    assert len(emitted) == 1
+    assert len(result.lines) == 1
+    assert result.lines[0].zh == "他说早上好。"
+    assert result.lines[0].ja == '彼は"おはよう"と言って行った。'
+    assert result.lines[0].emotion == "gentle"
+    assert result.lines[0].act == {"face": "smile"}
+    assert result.issues == []
+
+
+def test_escaped_quotes_and_broken_json_unchanged() -> None:
+    emitted, escaped_res = _scan_fixture("escaped_quotes_and_backslashes")
+    assert len(emitted) == 1
+    assert len(escaped_res.lines) == 1
+    assert escaped_res.lines[0].zh == '她说："你好\\世界"！'
+    assert escaped_res.lines[0].act == {"face": "smile"}
+    assert escaped_res.issues == []
+
+    for broken in (
+        '{"lines": [{"zh" "他说\\"早上好\\"就走了。", "ja": "「おはよう」", "emotion": "happy"}]}',
+        '{"lines": [{"zh": "他说"早上好"就走了。", "ja" "「おはよう」", "emotion": "happy"}]}',
+    ):
+        scanner = LineScanner()
+        assert scanner.feed(broken) == []
+        res = scanner.finish()
+        assert res.format == "lines"
+        assert res.lines == []
+        assert any("JSON decode error in line 0" in issue for issue in res.issues)
+
+
+def test_repair_line_quotes_helper() -> None:
+    raw_zh = '{"zh": "他说"早上好"就走了。", "ja": "「おはよう」と言って行った。", "emotion": "happy"}'
+    repaired_zh = repair_line_quotes(raw_zh)
+    assert json.loads(repaired_zh) == {
+        "zh": '他说"早上好"就走了。',
+        "ja": "「おはよう」と言って行った。",
+        "emotion": "happy",
+    }
+
+    raw_ja_act = '{"zh": "早安。", "ja": "彼は"おはよう"と言った。", "act": {"face": "smile"}}'
+    repaired_ja_act = repair_line_quotes(raw_ja_act)
+    assert '"act": {"face": "smile"}' in repaired_ja_act
+    assert json.loads(repaired_ja_act) == {
+        "zh": "早安。",
+        "ja": '彼は"おはよう"と言った。',
+        "act": {"face": "smile"},
+    }
+
+    raw_emo = '{"zh": "早安。", "ja": "おはよう。", "emotion": ""happy""}'
+    assert json.loads(repair_line_quotes(raw_emo))["emotion"] == '"happy"'
+
+    valid = '{"zh": "她说：\\"你好\\"！", "ja": "こんにちは！", "emotion": "gentle"}'
+    assert repair_line_quotes(valid) == valid
+
+    broken = '{"zh": "他说"早上好"就走了。", "ja" "「おはよう」"}'
+    assert repair_line_quotes(broken) == broken
+
