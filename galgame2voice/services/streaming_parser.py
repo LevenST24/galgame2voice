@@ -512,6 +512,11 @@ class StreamingBilingualParser:
         self.japanese_extracted += "".join(line.ja for line in completed_lines)
         if self.line_scanner.tts is not None:
             self._apply_parsed_json_dict({"tts": self.line_scanner.tts})
+        elif not self.emotion_extracted:
+            for line in completed_lines:
+                if line.emotion:
+                    self.emotion_extracted = line.emotion
+                    break
         self.emitted_chinese_len = len(self.chinese_extracted)
         return delta, []
 
@@ -524,6 +529,7 @@ class StreamingBilingualParser:
         self._lines_started = False
         self.chinese_extracted = ""
         self.japanese_extracted = ""
+        self.emotion_extracted = ""
         self.emitted_chinese_len = 0
         self.emitted_japanese_len = 0
         self.first_sentence_emitted = False
@@ -832,6 +838,11 @@ class StreamingBilingualParser:
             self.chinese_extracted, self.japanese_extracted = aggregate(scanned.lines)
             if scanned.tts is not None:
                 self._apply_parsed_json_dict({"tts": scanned.tts})
+            elif not self.emotion_extracted:
+                for line in scanned.lines:
+                    if line.emotion:
+                        self.emotion_extracted = line.emotion
+                        break
             self.emotion_extracted = self.get_emotion()
             return self.chinese_extracted, self.japanese_extracted, []
         if is_inside_think or scanned.truncated:
