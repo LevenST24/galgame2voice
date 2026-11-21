@@ -493,6 +493,49 @@ async def test_disconnect_under_lines_backpressure(coordinator_factory, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_single_line_with_unescaped_quotes_streams_and_persists(coordinator_factory, mock_llm_server):
+    raw = (
+        '{"tts": {"emotion": "happy"}, "lines": ['
+        '{"zh": "他说"早上好"就走了。", "ja": "「おはよう」と言って行った。", '
+        '"emotion": "happy"}]}'
+    )
+
+    async def tokens(*args, **kwargs):
+        for event in mock_llm_server.generate_streaming_chunks(raw):
+            if event.startswith("data: [DONE]"):
+                break
+            payload = json.loads(event.removeprefix("data: "))
+            yield payload["choices"][0]["delta"].get("content", "")
+            await asyncio.sleep(0)
+
+    coordinator, _, database = coordinator_factory(tokens=tokens)
+    events = [event async for event in coordinator]
+    lines, audio = assert_lifecycle(events)
+
+    assert len(lines) == 1
+    assert lines[0] == {
+        "index": 0,
+        "zh": '他说"早上好"就走了。',
+        "ja": "「おはよう」と言って行った。",
+        "emotion": "happy",
+        "act": {},
+    }
+    assert audio[0]["status"] == "ready"
+    streamed_zh = "".join(e["data"]["delta_chinese"] for e in events if e["event"] == "text")
+    assert streamed_zh == '他说"早上好"就走了。'
+    assert events[-1]["data"]["chinese"] == '他说"早上好"就走了。'
+    assert events[-1]["data"]["japanese"] == "「おはよう」と言って行った。"
+
+    async with get_db(database) as conn:
+        history = await crud.get_recent_messages(conn, "lines")
+        assert [m.role for m in history] == ["user", "assistant"]
+        assert history[-1].content_chinese == '他说"早上好"就走了。'
+        assert history[-1].content_japanese == "「おはよう」と言って行った。"
+        assert history[-1].lines == events[-1]["data"]["lines"]
+
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("raw_reply", "expected_lines", "expected_zh", "expected_ja", "expected_voiced"),
     [

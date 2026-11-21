@@ -177,6 +177,120 @@ def aggregate(lines: list[ScannedLine]) -> tuple[str, str]:
     return "".join(line.zh for line in lines), "".join(line.ja for line in lines)
 
 
+_RE_LINE_STR_OPEN = re.compile(r'"(?:zh|ja|emotion)"\s*:\s*"')
+_RE_NEXT_KNOWN_FIELD = re.compile(r'\s*(?:\}\s*$|,\s*"(?:zh|ja|emotion|act)"\s*:)')
+_RE_NEXT_OTHER_FIELD = re.compile(r'\s*,\s*"[A-Za-z_][A-Za-z0-9_]*"\s*:\s*["{\[\dtfn-]')
+_RE_BROKEN_NEXT_FIELD = re.compile(
+    r'\s*(?:,\s*"(?:zh|ja|emotion|act)"\s*(?!:)|,\s*(?:zh|ja|emotion|act)\s*:|"(?:zh|ja|emotion|act)"\s*:|,\s*\}\s*$)'
+)
+
+
+def _escape_inner_quotes(inner: str) -> str:
+    out: list[str] = []
+    escaped = False
+    for ch in inner:
+        if escaped:
+            out.append(ch)
+            escaped = False
+        elif ch == "\\":
+            out.append(ch)
+            escaped = True
+        elif ch == '"':
+            out.append('\\"')
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def repair_line_quotes(raw_json: str) -> str:
+    """
+    Escapes unescaped ASCII double quotes inside top-level zh/ja/emotion string
+    fields of a single line JSON object while leaving act untouched.
+    """
+    pieces: list[str] = []
+    last_copied = 0
+    changed = False
+    depth = 0
+    expect_key = False
+    in_str = False
+    escaped = False
+    i = 0
+    n = len(raw_json)
+
+    while i < n:
+        ch = raw_json[i]
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+            i += 1
+            continue
+
+        if ch == "{":
+            if depth == 0:
+                expect_key = True
+            depth += 1
+            i += 1
+            continue
+        if ch == "}":
+            depth -= 1
+            i += 1
+            continue
+        if depth == 1 and ch == ",":
+            expect_key = True
+            i += 1
+            continue
+        if depth == 1 and ch == ":":
+            expect_key = False
+            i += 1
+            continue
+        if ch == '"':
+            if depth == 1 and expect_key:
+                m = _RE_LINE_STR_OPEN.match(raw_json, i)
+                if m is not None:
+                    val_start = m.end()
+                    val_esc = False
+                    inner_quotes = 0
+                    close_q: int | None = None
+                    for q in range(val_start, n):
+                        vc = raw_json[q]
+                        if val_esc:
+                            val_esc = False
+                        elif vc == "\\":
+                            val_esc = True
+                        elif vc == '"':
+                            if _RE_NEXT_KNOWN_FIELD.match(raw_json, q + 1) or (
+                                inner_quotes % 2 == 0 and _RE_NEXT_OTHER_FIELD.match(raw_json, q + 1)
+                            ):
+                                close_q = q
+                                break
+                            if inner_quotes % 2 == 0 and _RE_BROKEN_NEXT_FIELD.match(raw_json, q + 1):
+                                return raw_json
+                            inner_quotes += 1
+                    if close_q is None:
+                        return raw_json
+                    inner = raw_json[val_start:close_q]
+                    escaped_inner = _escape_inner_quotes(inner)
+                    if escaped_inner != inner:
+                        pieces.append(raw_json[last_copied:val_start])
+                        pieces.append(escaped_inner)
+                        last_copied = close_q
+                        changed = True
+                    expect_key = False
+                    i = close_q + 1
+                    continue
+            in_str = True
+        i += 1
+
+    if not changed:
+        return raw_json
+    pieces.append(raw_json[last_copied:])
+    return "".join(pieces)
+
+
 class LineScanner:
     """
     Incremental quote-, escape-, and nesting-aware scanner for extracting
@@ -539,12 +653,24 @@ class LineScanner:
                         raw_json = "".join(self._elem_chars)
                         self._in_line_elem = False
                         self._elem_chars = []
+                        parsed_ok = False
                         try:
                             obj = json.loads(raw_json)
-                            line, line_issues = validate_line(obj, ordinal=self._line_ordinal)
+                            parsed_ok = True
                         except Exception as e:
-                            line = None
-                            line_issues = [f"JSON decode error in line {self._line_ordinal}: {e}"]
+                            repaired = repair_line_quotes(raw_json)
+                            if repaired != raw_json:
+                                try:
+                                    obj = json.loads(repaired)
+                                    parsed_ok = True
+                                except Exception:
+                                    pass
+                            if not parsed_ok:
+                                line = None
+                                line_issues = [f"JSON decode error in line {self._line_ordinal}: {e}"]
+
+                        if parsed_ok:
+                            line, line_issues = validate_line(obj, ordinal=self._line_ordinal)
 
                         self._line_ordinal += 1
                         if line is not None:
