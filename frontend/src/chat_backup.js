@@ -36,7 +36,15 @@ export function mergeChatBackup(serverData, localData) {
       byId.set(session.id, session);
     } else if (containsLocalMessages(stored.messages, session.messages)) {
       // These lines are already in the database. Keep the settings saved later, including the voice binding.
-      if (session.updatedAt > stored.updatedAt) stored.settings = session.settings;
+      if (session.updatedAt > stored.updatedAt) {
+        const sameVoice = session.settings.voiceProfileId === stored.settings.voiceProfileId;
+        stored.settings = session.settings;
+        if (session.characterName) {
+          stored.characterName = session.characterName;
+        } else if (!sameVoice) {
+          delete stored.characterName;
+        }
+      }
       if (session.title && session.title !== '新对话') stored.title = session.title;
     } else {
       // A partial reply or an offline edit cannot safely replace database history.
@@ -64,7 +72,10 @@ export function mergeChatBackup(serverData, localData) {
   return { content, count: server.sessions.length, browserCopies };
 }
 
-export async function exportCompleteChatBackup() {
+/**
+ * @param {Array<{ id?: number | string | null, name?: string | null }>} [profiles]
+ */
+export async function exportCompleteChatBackup(profiles = []) {
   const server = await requestJson('/api/chat/export', {}, { timeoutMs: 60000 });
-  return mergeChatBackup(server, JSON.parse(exportSessionData()));
+  return mergeChatBackup(server, JSON.parse(exportSessionData(profiles)));
 }

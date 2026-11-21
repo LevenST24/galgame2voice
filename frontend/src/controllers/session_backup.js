@@ -5,6 +5,7 @@ import { exportCompleteChatBackup } from '../chat_backup.js';
 import { forgetDeletedSessions, reserveSessionImport } from '../session_api.js';
 import { exportSessionData, prepareSessionImport, applySessionImport, getStorageStatus,
   onStorageStatus, getDamagedSessionData, resumeLocalSaving, storageChangedByAnotherPage } from '../store.js';
+import { getVoiceProfiles as getLoadedVoiceProfiles } from './voice_settings.js';
 
 function download(content, name) {
   const url = URL.createObjectURL(new Blob([content], { type: 'application/json;charset=utf-8' }));
@@ -16,9 +17,19 @@ function download(content, name) {
 }
 
 /**
- * @param {{ onImport?: () => void, onOpenBackupTab?: () => void, isBusy?: () => boolean }} [options]
+ * @param {{
+ *   onImport?: () => void,
+ *   onOpenBackupTab?: () => void,
+ *   isBusy?: () => boolean,
+ *   getVoiceProfiles?: () => Array<{ id?: number | string | null, name?: string | null }>,
+ * }} [options]
  */
-export function initSessionBackup({ onImport, onOpenBackupTab, isBusy = () => false } = {}) {
+export function initSessionBackup({
+  onImport,
+  onOpenBackupTab,
+  isBusy = () => false,
+  getVoiceProfiles = getLoadedVoiceProfiles,
+} = {}) {
   const $ = id => document.getElementById(id);
   const status = $('gChatStorageStatus');
   const original = $('gExportDamagedChats');
@@ -48,7 +59,7 @@ export function initSessionBackup({ onImport, onOpenBackupTab, isBusy = () => fa
     exportButton.disabled = true;
     exportButton.textContent = '正在读取完整记录…';
     try {
-      const result = await exportCompleteChatBackup();
+      const result = await exportCompleteChatBackup(getVoiceProfiles());
       download(result.content, `galgame2voice-chat-${date()}.json`);
       const note = result.browserCopies ? ' 尚未同步的文字另存为「浏览器副本」。' : '';
       showToast(`已导出 ${result.count} 个会话。${note}${isBusy() ? '请在当前回复结束后再导出一次，以包含完整回复。' : ''}`, 'success');
@@ -61,7 +72,7 @@ export function initSessionBackup({ onImport, onOpenBackupTab, isBusy = () => fa
   });
   $('gExportLocalChats')?.addEventListener('click', () => {
     try {
-      download(exportSessionData(), `galgame2voice-browser-only-${date()}.json`);
+      download(exportSessionData(getVoiceProfiles()), `galgame2voice-browser-only-${date()}.json`);
       showToast('已导出浏览器记录；数据库中尚未加载的历史未包含。服务恢复后请再导出完整备份。', 'info');
     } catch (error) { showToast(error.message, 'error'); }
   });
@@ -92,15 +103,21 @@ export function initSessionBackup({ onImport, onOpenBackupTab, isBusy = () => fa
       if (isBusy()) throw new Error('当前回复正在生成，请停止或等待完成后再导入。');
       releaseImport = reserveSessionImport(incoming.sessions.map(session => session.id));
       const payload = { sessions: incoming.sessions.map(session => ({ id: session.id, title: session.title,
+        ...(session.characterName ? { characterName: session.characterName } : {}),
         settings: session.settings, created_at: session.createdAt, updated_at: session.updatedAt,
         messages: session.messages.map(message => ({ role: message.role,
           content: message.content, japanese: message.japanese || '', ts: message.ts, lines: message.lines })) })) };
-      await requestJson('/api/chat/import', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      const response = await requestJson('/api/chat/import', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload) }, { timeoutMs: 60000 });
       forgetDeletedSessions(incoming.sessions.map(session => session.id));
-      const result = applySessionImport(incoming);
+      const result = applySessionImport(incoming, response?.restored_sessions);
       onImport?.();
-      showToast(`已导入 ${result.count} 个会话，原有会话保留。请在「角色与会话」中重新选择音色。`, 'success');
+      const toastMessage = result.restoredCount === result.count
+        ? `已导入 ${result.count} 个会话，原有会话保留。角色已按名字自动选好。`
+        : result.restoredCount > 0
+          ? `已导入 ${result.count} 个会话，原有会话保留。其中 ${result.restoredCount} 个会话已按名字找回角色，其余请在「角色与会话」中重新选择。`
+          : `已导入 ${result.count} 个会话，原有会话保留。请在「角色与会话」中重新选择音色。`;
+      showToast(toastMessage, 'success');
       if (!result.saved) showToast('记录已存入本机数据库；浏览器保存失败，请保留备份并检查存储权限。', 'info', onOpenBackupTab ? {
         actionLabel: '打开备份设置',
         onAction: () => onOpenBackupTab(),

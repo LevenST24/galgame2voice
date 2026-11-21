@@ -260,6 +260,118 @@ def test_chat_import_rejects_invalid_and_duplicate_ids():
         import_request("s_import_duplicate", "s_import_duplicate")
 
 
+@pytest.mark.asyncio
+async def test_chat_backup_exports_character_name_and_restores_unique_match_on_import(tmp_path, monkeypatch):
+    from httpx import ASGITransport, AsyncClient
+    from galgame2voice.database.models import VoiceProfileCreate
+    from galgame2voice.main import create_app
+
+    source_db = tmp_path / "source.db"
+    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(source_db))
+    await init_db(source_db)
+    async with get_db(source_db) as conn:
+        source_profile = await crud.create_voice_profile(
+            conn,
+            VoiceProfileCreate(name="夏目", gpt_weights_path="a.ckpt", sovits_weights_path="a.pth"),
+        )
+        await crud.upsert_session(
+            conn,
+            session_id="s_bound",
+            title="夏目的对话",
+            voice_profile_id=source_profile.id,
+            settings_json=json.dumps({"temperature": 0.8, "voiceProfileId": source_profile.id}),
+        )
+        await crud.upsert_session(
+            conn,
+            session_id="s_unbound",
+            title="未绑定对话",
+            voice_profile_id=None,
+            settings_json=json.dumps({"temperature": 0.6, "voiceProfileId": None}),
+            update_voice_binding=True,
+        )
+
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
+        export_resp = await client.get("/api/chat/export")
+        assert export_resp.status_code == 200
+        exported_by_id = {item["id"]: item for item in export_resp.json()["sessions"]}
+        assert exported_by_id["s_bound"]["characterName"] == "夏目"
+        assert exported_by_id["s_unbound"].get("characterName") is None
+
+    target_db = tmp_path / "target.db"
+    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(target_db))
+    await init_db(target_db)
+    async with get_db(target_db) as conn:
+        other_profile = await crud.create_voice_profile(
+            conn,
+            VoiceProfileCreate(name="其他角色", gpt_weights_path="o.ckpt", sovits_weights_path="o.pth"),
+        )
+        target_natsume = await crud.create_voice_profile(
+            conn,
+            VoiceProfileCreate(name="夏目", gpt_weights_path="n.ckpt", sovits_weights_path="n.pth"),
+        )
+        await crud.create_voice_profile(
+            conn,
+            VoiceProfileCreate(name="Anna", gpt_weights_path="d1.ckpt", sovits_weights_path="d1.pth"),
+        )
+        await crud.create_voice_profile(
+            conn,
+            VoiceProfileCreate(name="ANNA", gpt_weights_path="d2.ckpt", sovits_weights_path="d2.pth"),
+        )
+        assert target_natsume.id != source_profile.id
+        assert other_profile.id == source_profile.id
+
+    payload = {
+        "sessions": [
+            {
+                "id": "s_import_matched",
+                "title": exported_by_id["s_bound"]["title"],
+                "characterName": exported_by_id["s_bound"]["characterName"],
+                "settings": {"temperature": 0.8, "voiceProfileId": None},
+                "messages": [{"role": "user", "content": "你好"}],
+            },
+            {
+                "id": "s_import_missing",
+                "title": "找不到同名角色",
+                "characterName": "不存在的角色",
+                "settings": {"temperature": 0.7, "voiceProfileId": None},
+                "messages": [{"role": "user", "content": "还在吗"}],
+            },
+            {
+                "id": "s_import_ambiguous",
+                "title": "有两个同名角色",
+                "characterName": "Anna",
+                "settings": {"temperature": 0.7, "voiceProfileId": None},
+                "messages": [{"role": "user", "content": "重名测试"}],
+            },
+            {
+                "id": "s_import_legacy",
+                "title": "老备份无角色名",
+                "settings": {"temperature": 0.7, "voiceProfileId": other_profile.id},
+                "messages": [{"role": "user", "content": "旧备份"}],
+            },
+        ]
+    }
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
+        import_resp = await client.post("/api/chat/import", json=payload)
+        assert import_resp.status_code == 200, import_resp.text
+        body = import_resp.json()
+        assert body["status"] == "ok"
+        assert body["count"] == 4
+        assert body["restored_sessions"] == [{"id": "s_import_matched", "voice_profile_id": target_natsume.id}]
+
+    with closing(sqlite3.connect(target_db)) as conn:
+        rows = {
+            sess_id: (profile_id, json.loads(settings_json)["voiceProfileId"])
+            for sess_id, profile_id, settings_json in conn.execute(
+                "SELECT id, voice_profile_id, settings_json FROM sessions WHERE id LIKE 's_import_%'"
+            ).fetchall()
+        }
+        assert rows["s_import_matched"] == (target_natsume.id, target_natsume.id)
+        assert rows["s_import_missing"] == (None, None)
+        assert rows["s_import_ambiguous"] == (None, None)
+        assert rows["s_import_legacy"] == (None, None)
+
+
 class TestDatabaseTimeoutsAndConcurrencySafety:
     """Tests SQLite connection configuration and dual-table cleanup safety."""
 
