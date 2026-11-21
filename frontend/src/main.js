@@ -66,6 +66,8 @@ import {
   toggleVoiceMode,
   getCurrentVoice,
   clearMicTimers,
+  disarmMicAutoSend,
+  takePendingVoice,
   toggleMic,
   cancelMic,
 } from './controllers/audio_player_ui.js';
@@ -77,7 +79,7 @@ const appDependencies = {
   state, getActive, getSession, addMessage, uid,
   saveState, persistSession, isSessionDeleting, audioStore, putCachedAudioBlob,
   fetchAndCacheAudio, streamAudioController, getCurrentVoice, stopCurrentVoice,
-  clearMicTimers, renderSessionList,
+  clearMicTimers, disarmMicAutoSend, takePendingVoice, renderSessionList,
   showToast, autoTitle, fetchSessionHistoryPage, earliestServerMessageId,
   getCurrentActiveProvider, getVoiceProfiles, haveProvidersLoaded, hasProviderReadError,
   ensureProvidersLoaded,
@@ -169,7 +171,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     state, getActive, getSession, addMessage, uid,
     saveState, persistSession, isSessionDeleting, audioStore, putCachedAudioBlob,
     fetchAndCacheAudio, streamAudioController, getCurrentVoice, stopCurrentVoice,
-    clearMicTimers, renderSessionList,
+    clearMicTimers, disarmMicAutoSend, takePendingVoice, renderSessionList,
     showToast, autoTitle, fetchSessionHistoryPage, earliestServerMessageId,
     getCurrentActiveProvider, getVoiceProfiles, haveProvidersLoaded, hasProviderReadError,
     ensureProvidersLoaded,
@@ -325,7 +327,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     state, getActive, getSession, addMessage, uid, saveState, persistSession,
     isSessionDeleting, audioStore, putCachedAudioBlob, fetchAndCacheAudio,
     audioPlayer: streamAudioController, getCurrentVoice, stopCurrentVoice,
-    clearMicTimers, beforeSend: () => { ++_syncSessionsGen; },
+    clearMicTimers, takePendingVoice, beforeSend: () => { ++_syncSessionsGen; },
     onBlocked: (message) => showToast(message, 'info'),
     fetch: callbacks.fetch || (/** @type {typeof fetch} */ ((...args) => globalThis.fetch(...args))),
   });
@@ -391,6 +393,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         toggleVoice: () => toggleVoiceMode(),
         stopOtherVoice: stopCurrentVoice,
         onMic: () => toggleMic(),
+        disarmMicAutoSend,
         cancelMic,
         onSettings: openSessionSettings,
         ...(document.getElementById('gp-experience') ? {
