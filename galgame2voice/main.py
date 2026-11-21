@@ -29,13 +29,7 @@ from galgame2voice.security.rate_limit import RateLimitMiddleware
 from galgame2voice.services.engine_supervisor import DefaultEngineSupervisor, EngineSupervisor
 from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client, close_gpt_sovits_client
 from galgame2voice.services.telemetry_jobs import TelemetryJobs
-from galgame2voice.services.audio_cleaner import (
-    CACHE_RETENTION_DAYS as _CACHE_RETENTION_DAYS,
-    _cache_scan_and_clean,
-    _scan_and_clean,
-    _audio_cleanup_loop,
-    AudioCleanerService,
-)
+from galgame2voice.services.audio_cleaner import _audio_cleanup_loop
 from galgame2voice.utils.logger import setup_logger
 
 __all__ = [
@@ -44,11 +38,7 @@ __all__ = [
     "lifespan",
     "run",
     "AudioStaticFiles",
-    "AudioCleanerService",
     "_audio_cleanup_loop",
-    "_scan_and_clean",
-    "_cache_scan_and_clean",
-    "_CACHE_RETENTION_DAYS",
 ]
 
 # Windows 注册表常把 .js 映射为 text/plain，ES module 会被浏览器 Strict MIME 拒载

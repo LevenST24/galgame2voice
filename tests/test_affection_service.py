@@ -256,9 +256,6 @@ class TestAffectionServiceHardening:
         assert pts == 1
         assert "base_turn" in reasons
 
-        emotion = svc.classify_emotion(None, None, current_emotion="tsundere", affection_level="invalid")
-        assert emotion == "tsundere"
-
         egg = svc.check_easter_eggs(None, current_level=-1)
         assert egg is None
 

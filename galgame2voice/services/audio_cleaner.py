@@ -273,29 +273,3 @@ async def _audio_cleanup_loop(audio_dir: Path, interval_seconds: int) -> None:
         except Exception as exc:
             logger.warning("Error in audio cleanup loop: %s", exc)
 
-
-class AudioCleanerService:
-    """Manages the background audio cleanup loop lifecycle."""
-
-    def __init__(self, audio_dir: Path, interval_seconds: int = 600) -> None:
-        self.audio_dir = audio_dir
-        self.interval_seconds = interval_seconds
-        self._task: asyncio.Task | None = None
-
-    def start(self) -> asyncio.Task:
-        """Starts the background audio cleanup task if not already running."""
-        if self._task is None or self._task.done():
-            self._task = asyncio.create_task(
-                _audio_cleanup_loop(self.audio_dir, self.interval_seconds)
-            )
-        return self._task
-
-    async def stop(self) -> None:
-        """Cancels and waits for the background cleanup task to terminate."""
-        if self._task and not self._task.done():
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None

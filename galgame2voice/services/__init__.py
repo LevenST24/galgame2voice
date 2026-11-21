@@ -9,7 +9,6 @@ from galgame2voice.services.gpt_sovits_client import (
     extract_stage_directions_and_emotion,
     normalize_japanese_for_tts,
     resolve_tts_options,
-    SLICING_METHODS,
     TTS_PRESETS,
 )
 from galgame2voice.services.tts_service import (
@@ -53,9 +52,6 @@ from galgame2voice.services.character_manager import (
     CharacterManager,
     get_character_manager,
 )
-from galgame2voice.services.audio_cleaner import (
-    AudioCleanerService,
-)
 
 __all__ = [
     "GptSovitsClient",
@@ -85,7 +81,6 @@ __all__ = [
     "extract_stage_directions_and_emotion",
     "normalize_japanese_for_tts",
     "resolve_tts_options",
-    "SLICING_METHODS",
     "TTS_PRESETS",
     "get_voice_manager",
     "set_voice_manager",
@@ -95,6 +90,5 @@ __all__ = [
     "get_batch_scheduler",
     "CharacterManager",
     "get_character_manager",
-    "AudioCleanerService",
 ]
 

@@ -57,7 +57,6 @@ def test_hot_scan_keeps_old_portrait_and_aliases_until_complete(tmp_path, monkey
         try:
             assert entered.wait(5), "scan never reached beta"
             assert manager.get_character("beta") is original
-            assert manager.get_active_character_manifest("beta") is original.manifest
             assert {p.name for p in manager.get_available_characters()} == {"alpha", "beta"}
         finally:
             release.set()

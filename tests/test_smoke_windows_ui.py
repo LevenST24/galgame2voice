@@ -537,7 +537,7 @@ class TestSmokeWindowsUi(unittest.TestCase):
         procs[1].terminate.assert_called_once()
 
 
-    def test_launch_browser_with_devtools_does_not_retry_when_process_exits(self) -> None:
+    def test_launch_browser_with_devtools_fails_immediately_when_process_exits(self) -> None:
         for exit_code in (42, 0):
             with self.subTest(exit_code=exit_code), tempfile.TemporaryDirectory() as tmp_dir:
                 make_profile_dir, fake_popen, procs, profiles, _ = self._make_browser_harness(
@@ -547,33 +547,31 @@ class TestSmokeWindowsUi(unittest.TestCase):
                     with self.assertRaises(RuntimeError) as ctx:
                         smoke_windows_ui.launch_browser_with_devtools(
                             Path("C:/dummy/chrome.exe"), make_profile_dir, ["--headless"],
-                            attempt_timeout=0.3, attempts=2,
+                            attempt_timeout=0.3,
                         )
                 self.assertEqual(popen_mock.call_count, 1)
                 self.assertEqual(len(profiles), 1)
                 procs[0].terminate.assert_not_called()
                 self.assertIn(f"exit code: {exit_code}", str(ctx.exception))
 
-    def test_launch_browser_with_devtools_fails_with_attempt_durations_and_exit_codes(self) -> None:
+    def test_launch_browser_with_devtools_fails_with_duration_and_exit_code(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             make_profile_dir, fake_popen, procs, profiles, _ = self._make_browser_harness(
-                Path(tmp_dir), [(None, None), (None, None)]
+                Path(tmp_dir), [(None, None)]
             )
             with patch("scripts.smoke_windows_ui.subprocess.Popen", side_effect=fake_popen) as popen_mock:
                 with self.assertRaises(RuntimeError) as ctx:
                     smoke_windows_ui.launch_browser_with_devtools(
                         Path("C:/dummy/chrome.exe"), make_profile_dir, ["--headless"],
-                        attempt_timeout=0.2, attempts=2,
+                        attempt_timeout=0.2,
                     )
-        self.assertEqual(popen_mock.call_count, 2)
-        self.assertEqual(len(profiles), 2)
+        self.assertEqual(popen_mock.call_count, 1)
+        self.assertEqual(len(profiles), 1)
         procs[0].terminate.assert_called_once()
-        procs[1].terminate.assert_called_once()
         msg = str(ctx.exception)
-        self.assertGreaterEqual(len(re.findall(r"\d+\.\d+s", msg)), 2, msg)
-        self.assertIn("attempt 1", msg)
-        self.assertIn("attempt 2", msg)
-        self.assertEqual(msg.count("exit code: None"), 2)
+        self.assertRegex(msg, r"\d+\.\d+s")
+        self.assertIn("did not expose DevToolsActivePort", msg)
+        self.assertIn("exit code: None", msg)
 
     def _run_mocked_acceptance(
         self, outcomes: list[Any], payloads: list[Any], *, client_factory: Any = None, timeout: float = 0.3

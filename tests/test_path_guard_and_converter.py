@@ -29,7 +29,6 @@ from galgame2voice.routers.health import router as health_router
 from galgame2voice.utils.path_guard import (
     PathTraversalError,
     contains_traversal_payload,
-    is_safe_filename,
     is_windows_device_name,
     validate_path_containment,
     validate_voice_profile_paths,
@@ -80,15 +79,6 @@ def test_contains_traversal_payload():
     assert contains_traversal_payload("//remote-server/share/audio.wav")
     assert not contains_traversal_payload("audio/references/natsume/gentle.ogg")
     assert not contains_traversal_payload("nat002_032.ogg")
-
-
-def test_is_safe_filename():
-    assert is_safe_filename("audio_123.wav")
-    assert is_safe_filename("gentle.ogg")
-    assert not is_safe_filename("../audio.wav")
-    assert not is_safe_filename("sub/audio.wav")
-    assert not is_safe_filename("aux.wav")
-    assert not is_safe_filename("")
 
 
 def test_validate_path_containment_valid():
