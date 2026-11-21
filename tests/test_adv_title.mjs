@@ -860,7 +860,9 @@ test('title holds 开始聊天 and checklist until /api/providers settles, then 
   const active = { id: 'deepseek', name: 'DeepSeek', chat_model: 'deepseek-chat', api_key: 'sk-****', is_active: true };
   providerReplies.shift()(Response.json({ providers: [active], presets: [] }));
   await tick();
-  assert.equal(label('.home-first-title'), null);
+  // Step 1 is done, so 开始聊天 is offered while the checklist stays visible for unfinished steps 2 & 3.
+  assert.equal(label('.home-first-title'), '先做三件小事，就能开始聊天');
+  assert.equal(title.element.querySelectorAll('.home-step.is-done').length, 1);
   assert.equal(label('.home-continue'), '开始聊天');
 });
 
@@ -899,4 +901,44 @@ test('home voice settings jumps to dashboard when engine directory is already co
   pills[1].click();
   h.q('.home-popover').querySelector('button').click();
   assert.deepEqual(h.calls.at(-1), ['settings', 'dashboard']);
+});
+
+
+test('onboarding checklist stays visible after step 1 until all 3 steps are done or any session has messages', async t => {
+  const status = { modelLoaded: true, hasModel: false, model: { state: 'error', label: '未配置对话模型' }, engine: { state: 'unavailable' } };
+  const emptySession = { ...snapshot('empty'), hasUserMessages: false, settings: { voiceProfileId: null, advBackground: '', advBgTime: 'auto' } };
+  const h = await fixture(t, { status, sessions: [emptySession], active: 'empty' });
+  assert.ok(h.q('.home-first-title'));
+  assert.equal(h.ui.element.querySelectorAll('.home-step.is-done').length, 0);
+  assert.equal(h.q('.home-continue'), null);
+
+  // Finishing step 1 (chat model) keeps the 3-step checklist visible because steps 2 & 3 are incomplete and no session has sent messages.
+  h.setStatus({ ...status, hasModel: true, model: { state: 'ok', label: 'DeepSeek · deepseek-chat' } });
+  h.notify(); await microtasks();
+  assert.ok(h.q('.home-first-title'), 'checklist must stay visible after step 1 when steps 2 & 3 are pending');
+  assert.equal(h.ui.element.querySelectorAll('.home-step.is-done').length, 1);
+  assert.equal(textTree(h.q('.home-continue')), '开始聊天');
+
+  // Finishing step 2 (via text-only) checks step 2; checklist remains because step 3 is still pending.
+  h.q('.home-text-only').click();
+  assert.ok(h.q('.home-first-title'), 'checklist must stay visible while step 3 is pending');
+  assert.equal(h.ui.element.querySelectorAll('.home-step.is-done').length, 2);
+  assert.equal(textTree(h.q('.home-continue')), '开始聊天');
+
+  // Finishing step 3 (choosing an installed character) completes all 3 steps and reveals the continue pane.
+  emptySession.settings.voiceProfileId = 7;
+  h.notify(); await microtasks();
+  assert.equal(h.q('.home-first-title'), null);
+  assert.equal(textTree(h.q('.home-continue')), '开始聊天');
+
+  // Returning user who creates a brand-new empty session must NOT see the checklist again because another session already has messages.
+  const olderSent = { ...snapshot('a'), hasUserMessages: true };
+  const brandNew = { ...snapshot('fresh'), hasUserMessages: false, settings: { voiceProfileId: null, advBackground: '', advBgTime: 'auto' } };
+  const hReturning = await fixture(t, {
+    status: { modelLoaded: true, hasModel: true, model: { state: 'ok' }, engine: { state: 'unavailable' } },
+    sessions: [brandNew, olderSent],
+    active: 'fresh',
+  });
+  assert.equal(hReturning.q('.home-first-title'), null, 'returning user with a new empty session must not see onboarding checklist');
+  assert.equal(textTree(hReturning.q('.home-continue')), '开始聊天');
 });

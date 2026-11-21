@@ -172,10 +172,15 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
   }
   function renderPane(force = false) {
     const session = main();
-    const firstUse = status.modelLoaded && !status.model?.readFailed && !chatOK();
-    const characters = firstUse ? actions.listCharacters?.() || [] : [];
-    const signature = JSON.stringify([mode, session, status.modelLoaded, firstUse, status.engine?.state, isTextOnly(),
-      characters.length > 0, characters.some(p => p.id === session?.settings?.voiceProfileId),
+    const characters = actions.listCharacters?.() || [];
+    const modelReady = chatOK();
+    const voiceStepDone = status.engine?.state === 'ready' || isTextOnly();
+    const characterStepDone = characters.some(p => p.id === session?.settings?.voiceProfileId);
+    const anySessionHasMessages = sessions.some(s => Boolean(s?.hasUserMessages));
+    const firstUse = status.modelLoaded && !status.model?.readFailed
+      && (!modelReady || (!anySessionHasMessages && (!voiceStepDone || !characterStepDone)));
+    const signature = JSON.stringify([mode, session, status.modelLoaded, firstUse, modelReady, status.engine?.state,
+      isTextOnly(), anySessionHasMessages, characters.length > 0, characterStepDone,
       canReplayLine(session?.excerpt?.line, session?.excerpt, actions.voiceEnabled?.() ?? true, now().getTime())]);
     if (!force && rendered === signature) return;
     rendered = signature;
@@ -247,6 +252,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     const labels = ['连接对话模型', '连接语音引擎', '选一个角色'];
     const descriptions = ['让她能用文字回答你', '让她用自己的声音念出日语台词',
       installed ? '从已安装的角色里挑一位' : '还没有角色，先导入一个角色包或新建音色'];
+    const stepsWrap = el('div', 'home-steps');
     labels.forEach((label, i) => {
       const row = el('div', `home-step${done[i] ? ' is-done' : ''}`);
       const copy = el('div', 'home-step-copy');
@@ -264,9 +270,15 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
         stopListen();
         if (i === 2) actions.openCharacters?.(); else actions.openSettings?.(i === 0 ? 'models' : voiceSettingsTab());
       }));
-      pane.appendChild(row);
+      stepsWrap.appendChild(row);
     });
+    pane.appendChild(stepsWrap);
     // Optional voice/character steps never block entry once the model is ready.
+    if (chatOK()) {
+      const row = el('div', 'home-actions');
+      row.appendChild(btn('home-primary home-continue', '开始聊天', () => enter()));
+      pane.appendChild(row);
+    }
   }
   function openNew() {
     closePopup(); stopListen(); mode = 'new';
