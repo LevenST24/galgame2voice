@@ -2367,3 +2367,90 @@ test('entering a session from home with voice turned off still loads its charact
   for (let i = 0; i < 20 && !switches.length; i += 1) await tick();
   assert.deepEqual(switches, [3]);
 });
+
+test('newChat inherits chat experience settings even without a bound character', async t => {
+  const s0 = {
+    id: 's_exp_unbound',
+    title: '未选角对话',
+    messages: [],
+    settings: {
+      ...DEFAULT_SESSION_SETTINGS,
+      voiceProfileId: null,
+      advPlayerName: '旅人',
+      advPrimaryLanguage: 'ja',
+      advSubtitleLanguage: 'zh',
+      advWindowOpacity: 65,
+      advTextIntervalMs: 12,
+      advAutoBaseMs: 900,
+      advAutoPerCharMs: 40,
+      advAutoMode: true,
+      advInterruptVoice: false,
+      advBlink: false,
+      advLipSync: false,
+      advOutfit: 'uniform',
+    },
+  };
+  storedState.sessions = [s0];
+  storedState.activeId = s0.id;
+  const h = setup(t, {
+    callbacks: { state: storedState, getActive: storedActive, getSession: storedSession, getVoiceProfiles },
+    fetch: async (url) => {
+      if (url === '/api/voice/profiles') return Response.json({ profiles: [], active_profile_id: null });
+      return Response.json({ backgrounds: [] });
+    },
+  });
+  const created = h.app.actions.startNew();
+  assert.equal(created.settings.advPlayerName, '旅人');
+  assert.equal(created.settings.advPrimaryLanguage, 'ja');
+  assert.equal(created.settings.advSubtitleLanguage, 'zh');
+  assert.equal(created.settings.advWindowOpacity, 65);
+  assert.equal(created.settings.advTextIntervalMs, 12);
+  assert.equal(created.settings.advAutoBaseMs, 900);
+  assert.equal(created.settings.advAutoPerCharMs, 40);
+  assert.equal(created.settings.advAutoMode, true);
+  assert.equal(created.settings.advInterruptVoice, false);
+  assert.equal(created.settings.advBlink, false);
+  assert.equal(created.settings.advLipSync, false);
+  assert.equal(created.settings.advOutfit, '', 'unbound session must not inherit advOutfit');
+});
+
+test('newChat inherits advOutfit only when keeping the same character', async t => {
+  const s0 = {
+    id: 's_exp_char',
+    title: '同角色对话',
+    messages: [],
+    settings: {
+      ...DEFAULT_SESSION_SETTINGS,
+      voiceProfileId: 7,
+      advPlayerName: '指挥官',
+      advTextIntervalMs: 18,
+      advOutfit: 'summer',
+    },
+  };
+  storedState.sessions = [s0];
+  storedState.activeId = s0.id;
+  const h = setup(t, {
+    callbacks: { state: storedState, getActive: storedActive, getSession: storedSession, getVoiceProfiles },
+    fetch: async (url) => {
+      if (url === '/api/voice/profiles') {
+        return Response.json({
+          profiles: [{ id: 7, name: '甲' }, { id: 8, name: '乙' }],
+          active_profile_id: 7,
+        });
+      }
+      return Response.json({ backgrounds: [] });
+    },
+  });
+  await tick();
+  const sameChar = h.app.actions.startNew();
+  assert.equal(sameChar.settings.voiceProfileId, 7);
+  assert.equal(sameChar.settings.advPlayerName, '指挥官');
+  assert.equal(sameChar.settings.advTextIntervalMs, 18);
+  assert.equal(sameChar.settings.advOutfit, 'summer', 'same character should inherit advOutfit');
+
+  const otherChar = h.app.actions.startNewWith({ voiceProfileId: 8, advBackground: 'fake/park', advBgTime: 'day' });
+  assert.equal(otherChar.settings.voiceProfileId, 8);
+  assert.equal(otherChar.settings.advPlayerName, '指挥官');
+  assert.equal(otherChar.settings.advTextIntervalMs, 18);
+  assert.equal(otherChar.settings.advOutfit, '', 'switching to another character must not inherit previous advOutfit');
+});

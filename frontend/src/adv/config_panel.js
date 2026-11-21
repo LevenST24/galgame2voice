@@ -17,7 +17,7 @@ import { pickSettings, validAdvSetting } from '../session_data.js';
 import { DEFAULT_SESSION_SETTINGS } from '../store.js';
 import { splitGraphemes } from './graphemes.js';
 
-const CONFIG_PANEL_FIELDS = [
+export const CONFIG_PANEL_FIELDS = [
   'advPlayerName',
   'advPrimaryLanguage',
   'advSubtitleLanguage',

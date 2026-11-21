@@ -40,12 +40,12 @@ export function startListening({ onInterim, onText, onRecorded, onError, onEnd }
 
   const myGen = ++listenGen;
   let recogOk = false;
-  let recorderActive = hasRecorder;
   let ended = false;
-  const notifyEnd = () => {
+  const finishRecognition = () => {
     if (ended || !listening || myGen !== listenGen) return;
     ended = true;
     listening = false;
+    stopRecorder();
     if (typeof onEnd === 'function') onEnd();
   };
 
@@ -82,16 +82,15 @@ export function startListening({ onInterim, onText, onRecorded, onError, onEnd }
           if (recorder === myRecorder) {
             cleanupRecorder();
           }
-          if (blob && typeof onRecorded === 'function') onRecorded(blob, dur);
+          if (blob && myGen === listenGen && typeof onRecorded === 'function') onRecorded(blob, dur);
         };
         myRecorder.start();
       })
       .catch(() => {
-        recorderActive = false;
         if (myGen !== listenGen) return;
         if (!recogOk) {
           if (typeof onError === 'function') onError('无法访问麦克风，请在浏览器中允许麦克风权限');
-          notifyEnd();
+          finishRecognition();
         }
       });
   }
@@ -128,19 +127,18 @@ export function startListening({ onInterim, onText, onRecorded, onError, onEnd }
       } else if (e.error === 'no-speech') {
         if (typeof onError === 'function') onError('没有听到说话，请再试一次');
       }
-      //其他错误静默：由停止流程兜底
-      if (!recorderActive) notifyEnd();
+      finishRecognition();
     };
     myRecog.onend = () => {
       if (myGen !== listenGen) return;
       recogOk = false;
-      if (!recorderActive) notifyEnd();
+      finishRecognition();
     };
     try {
       myRecog.start();
       recogOk = true;
     } catch {
-      if (!recorderActive) listening = false;
+      listening = false;
       recog = null;
     }
   }
@@ -170,6 +168,10 @@ export function stopListening() {
       /* 忽略未启动时的停止 */
     }
   }
+  stopRecorder();
+}
+
+function stopRecorder() {
   if (recorder && recorder.state !== 'inactive') {
     try {
       recorder.stop();

@@ -168,7 +168,12 @@ function writeState({ allowDamaged = false } = {}) {
   }
   try {
     if (storageChangedByAnotherPage()) {
-      reportStorage(false, '另一网页已修改聊天记录。为避免覆盖，当前网页暂停保存；请先导出当前聊天备份，再刷新后导入需要保留的记录。');
+      reportStorage(
+        false,
+        damagedRaw === null
+          ? '另一个页面改动了聊天记录，当前页面已暂停保存。刷新本页即可看到最新记录。'
+          : '另一网页已修改聊天记录。为避免覆盖，当前网页暂停保存；请先导出当前聊天备份，再刷新后导入需要保留的记录。',
+      );
       return false;
     }
     const previous = localStorage.getItem(STORAGE_KEY);

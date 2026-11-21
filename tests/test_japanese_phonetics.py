@@ -235,3 +235,11 @@ def test_fullwidth_alphanumeric_and_ideographic_zero_inside_brackets_are_preserv
     assert normalize_japanese_for_tts("（ＯＫ！）") == "ＯＫ！"
     assert normalize_japanese_for_tts("（１２３！）") == "１２３！"
     assert normalize_japanese_for_tts("（〇）") == "〇"
+
+
+def test_furigana_preserves_kanji_on_stage_cues_and_long_compounds():
+    """Inline furigana must not replace preceding kanji with bracketed stage cues or partial readings."""
+    assert normalize_japanese_for_tts("先生（ふふっ）、今日もよろしくね。") == "先生、今日もよろしくね。"
+    assert normalize_japanese_for_tts("これは秘密（ウインク）だよ！") == "これは秘密だよ！"
+    assert normalize_japanese_for_tts("生徒会長白雪（しらゆき）です。") == "生徒会長白雪です。"
+    assert normalize_japanese_for_tts("乃愛（のあ）だよ") == "のあだよ"

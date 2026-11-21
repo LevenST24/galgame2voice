@@ -23,6 +23,22 @@ function statusMessage(status) {
   return '此次操作未完成，请稍后重试；若仍失败，请打开「运行状态」检查服务。';
 }
 
+const TECHNICAL_ERROR_MARKER = /(?:Traceback\b|File\s*"|\[WinError\b|\[Errno\b|\bstatus\s+\d{3}\b|TTS synthesis failed)/i;
+
+/**
+ * Strip trailing technical diagnostics (tracebacks, OS error codes, raw HTTP/TTS failures)
+ * and return only a user-facing Chinese prefix if one remains.
+ * @param {string} message
+ * @returns {string | null}
+ */
+function extractChineseUserMessage(message) {
+  const match = TECHNICAL_ERROR_MARKER.exec(message);
+  const candidate = (match ? message.slice(0, match.index) : message)
+    .trim()
+    .replace(/[：:\-—(（\s]+$/, '');
+  return /[\u3400-\u9fff]/.test(candidate) ? candidate : null;
+}
+
 /**
  * @param {any} data
  * @param {string} [fallback]
@@ -32,7 +48,10 @@ export function getErrorMessage(data, fallback = '请求失败') {
   const detail = data?.detail ?? data?.message ?? data?.error;
   const message = typeof detail === 'string' ? detail
     : (!Array.isArray(detail) && detail && (detail.message || detail.error));
-  if (typeof message === 'string' && /[\u3400-\u9fff]/.test(message)) return message;
+  if (typeof message === 'string') {
+    const userMessage = extractChineseUserMessage(message);
+    if (userMessage) return userMessage;
+  }
   if (Array.isArray(detail)) {
     const promptItem = detail.find(err => Array.isArray(err?.loc) && err.loc.includes('prompt'));
     if (promptItem?.type === 'string_too_long') return '单次发送内容不能超过 4000 字，请删减后再发送。';

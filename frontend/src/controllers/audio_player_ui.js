@@ -32,16 +32,21 @@ let micSecs = 0;
 let micBase = '';
 /** @type {{ text: string | null, audio: string | null, dur: number, blob: Blob | null }} */
 let pendingVoice = { text: null, audio: null, dur: 0, blob: null };
+const DEFAULT_INPUT_PLACEHOLDER = '说点什么，或点麦克风用语音输入…';
 let micFinalizeTimers = [];
 let micRevision = 0;
+let micAutoEnded = false;
+let micDiscardRecording = false;
 
 export function cancelMic() {
+  const wasListening = isListening() || micTimer !== null;
   ++micRevision;
   clearInterval(micTimer); micTimer = null;
   clearMicTimers();
   if (pendingVoice.audio) { try { URL.revokeObjectURL(pendingVoice.audio); } catch {} }
   pendingVoice = { text: null, audio: null, dur: 0, blob: null };
   stopListening(); updateMicUI(false);
+  if (wasListening && inputDom()) inputDom().placeholder = DEFAULT_INPUT_PLACEHOLDER;
 }
 
 export function getCurrentVoice() {
@@ -67,6 +72,8 @@ export function initAudioPlayerUi(dom, callbacks = {}) {
 export function clearMicTimers() {
   micFinalizeTimers.forEach((t) => clearTimeout(t));
   micFinalizeTimers = [];
+  micAutoEnded = false;
+  micDiscardRecording = true;
 }
 
 export function stopCurrentVoice() {
@@ -282,8 +289,11 @@ export function finalizeVoice() {
     } catch (_) {}
   }
   if (text) {
-    if (_callbacks.sendMessage) {
-      _callbacks.sendMessage(text, audio ? { url: audio, dur, blob } : undefined);
+    const sent = _callbacks.sendMessage?.(text, audio ? { url: audio, dur, blob } : undefined);
+    if (sent === false && audio) {
+      try {
+        URL.revokeObjectURL(audio);
+      } catch (_) {}
     }
   } else {
     showToast('没有识别到语音内容，请靠近麦克风再试', 'error');
@@ -294,8 +304,9 @@ export function stopMic() {
   clearInterval(micTimer);
   micTimer = null;
   clearMicTimers();
+  micDiscardRecording = false;
   updateMicUI(false);
-  if (inputDom()) inputDom().placeholder = '说点什么，或点麦克风用语音输入…';
+  if (inputDom()) inputDom().placeholder = DEFAULT_INPUT_PLACEHOLDER;
   stopListening();
   micFinalizeTimers.push(
     setTimeout(() => {
@@ -317,6 +328,8 @@ export function toggleMic() {
   }
   if (_callbacks.isBusy && _callbacks.isBusy()) return;
   const revision = ++micRevision;
+  micAutoEnded = false;
+  micDiscardRecording = false;
   const handle = startListening({
     onInterim: (t) => {
       if (revision !== micRevision) return;
@@ -334,7 +347,7 @@ export function toggleMic() {
       if (_callbacks.autoGrow) _callbacks.autoGrow();
     },
     onRecorded: (blob, dur) => {
-      if (revision !== micRevision) return;
+      if (revision !== micRevision || micDiscardRecording) return;
       if (pendingVoice.audio) {
         try {
           URL.revokeObjectURL(pendingVoice.audio);
@@ -343,6 +356,11 @@ export function toggleMic() {
       pendingVoice.audio = URL.createObjectURL(blob);
       pendingVoice.dur = dur;
       pendingVoice.blob = blob;
+      if (micAutoEnded && pendingVoice.text) {
+        micAutoEnded = false;
+        micDiscardRecording = true;
+        finalizeVoice();
+      }
     },
     onError: (msg) => {
       if (revision !== micRevision) return;
@@ -352,8 +370,30 @@ export function toggleMic() {
       if (revision !== micRevision) return;
       clearInterval(micTimer);
       micTimer = null;
+      clearMicTimers();
       updateMicUI(false);
-      if (inputDom()) inputDom().placeholder = '说点什么，或点麦克风用语音输入…';
+      if (inputDom()) inputDom().placeholder = DEFAULT_INPUT_PLACEHOLDER;
+      if (!pendingVoice.text) {
+        micDiscardRecording = true;
+        if (pendingVoice.audio) {
+          try {
+            URL.revokeObjectURL(pendingVoice.audio);
+          } catch (_) {}
+        }
+        pendingVoice = { text: null, audio: null, dur: 0, blob: null };
+        return;
+      }
+      micAutoEnded = true;
+      micDiscardRecording = false;
+      const delayMs = pendingVoice.audio ? 0 : 600;
+      micFinalizeTimers.push(
+        setTimeout(() => {
+          if (revision !== micRevision || !micAutoEnded) return;
+          micAutoEnded = false;
+          micDiscardRecording = true;
+          if (!isListening() && pendingVoice.text !== null) finalizeVoice();
+        }, delayMs)
+      );
     },
   });
   if (!handle.ok) {
@@ -373,10 +413,10 @@ export function toggleMic() {
   micTimer = setInterval(() => {
     micSecs += 1;
     if (inputDom()) {
-      inputDom().placeholder = `正在聆听… ${micSecs} 秒（再次点击麦克风结束）`;
+      inputDom().placeholder = `正在聆听… ${micSecs} 秒（停顿后自动发送，也可再次点击麦克风结束）`;
     }
   }, 1000);
-  if (inputDom()) inputDom().placeholder = '正在聆听…（再次点击麦克风结束）';
+  if (inputDom()) inputDom().placeholder = '正在聆听…（停顿后自动发送，也可再次点击麦克风结束）';
   if (!recorderSupported() && !voiceSupported()) {
     showToast('当前浏览器不支持语音输入，建议使用 Chrome / Edge', 'error');
   }
