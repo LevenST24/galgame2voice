@@ -2454,3 +2454,55 @@ test('newChat inherits advOutfit only when keeping the same character', async t 
   assert.equal(otherChar.settings.advTextIntervalMs, 18);
   assert.equal(otherChar.settings.advOutfit, '', 'switching to another character must not inherit previous advOutfit');
 });
+
+test('startup sync adopts renamed title from server when local title is 早上好 and has no unconfirmed settings', async t => {
+  const session = {
+    id: 's_renamed_remote',
+    title: '早上好',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_100_000,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+    messages: [{ id: 'm_1', serverMessageId: 1, role: 'user', content: '早上好', ts: 1_700_000_050_000 }],
+  };
+  const server = {
+    id: session.id,
+    title: '放学后的天台',
+    voice_profile_id: null,
+    created_at: '2024-06-01 00:00:00',
+    updated_at: '2024-06-01 00:00:05',
+    message_count: 1,
+    last_message: '早上好',
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+  };
+  const { live, stored, saves } = await bootSessionSync(t, { session, server });
+  assert.equal(live.title, '放学后的天台', '启动同步应采用另一页面保存到服务端的新会话名');
+  assert.equal(stored.title, '放学后的天台', 'localStorage 中也应同步为服务端的新会话名');
+  assert.equal(saves.length, 0);
+});
+
+test('startup sync preserves unconfirmed local rename and posts it instead of overwriting with older server title', async t => {
+  const session = {
+    id: 's_renamed_local_unconfirmed',
+    title: '本地刚改的新名字',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_800_000_000_000,
+    unconfirmedSettingsVersion: 1,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+    messages: [{ id: 'm_1', serverMessageId: 1, role: 'user', content: '早上好', ts: 1_700_000_050_000 }],
+  };
+  const server = {
+    id: session.id,
+    title: '早上好',
+    voice_profile_id: null,
+    created_at: '2024-06-01 00:00:00',
+    updated_at: '2024-06-01 00:00:01',
+    message_count: 1,
+    last_message: '早上好',
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+  };
+  const { live, stored, saves } = await bootSessionSync(t, { session, server });
+  assert.equal(live.title, '本地刚改的新名字');
+  assert.equal(stored.title, '本地刚改的新名字');
+  assert.equal(saves.length, 1);
+  assert.equal(saves[0].title, '本地刚改的新名字');
+});
