@@ -190,7 +190,7 @@ async def test_provider_test_ssrf_and_credential_mismatch_return_structured_diag
     resp_ssrf = await _post_provider_test(app_client, "custom", "dummy-local-key", "http://127.0.0.1:11434/v1")
     assert resp_ssrf.status_code == 400
     data_ssrf = resp_ssrf.json()
-    assert "detail" in data_ssrf and "允许私网 LLM 端点" in data_ssrf["detail"]
+    assert "detail" in data_ssrf and "允许连接本机或局域网的模型服务" in data_ssrf["detail"]
     assert data_ssrf.get("success") is False
     assert data_ssrf.get("status_code") == 400
     assert data_ssrf.get("diagnostic_code") == "PRIVATE_ENDPOINT_BLOCKED"

@@ -10,8 +10,10 @@ Policy:
 - When `allow_private` is disabled (default), the resolved IPs may not be
   loopback/private/link-local/reserved/multicast or otherwise non-global
   (blocks 127.0.0.0/8, 10/8, 172.16/12, 192.168/16, 169.254/16 including
-  cloud metadata, 100.64/10 CGNAT such as Tailscale, ::1, fc00::/7, the
-  NAT64 prefix 64:ff9b::/96 inside the reserved ::/8, etc.).
+  cloud metadata, 100.64/10 CGNAT such as Tailscale, ::1, fd00::/8 ULA, the
+  NAT64 prefix 64:ff9b::/96 inside the reserved ::/8, etc.). Proxy TUN Fake-IP
+  ranges (198.18.0.0/15 and fc00::/18) are exempted so Clash/Mihomo/sing-box
+  TUN users can reach public endpoints without disabling SSRF checks.
 - When `allow_private` is enabled the address is trusted as-is (operator
   explicitly runs a local Ollama/vLLM or a LAN relay).
 """
@@ -38,7 +40,14 @@ OFFICIAL_LLM_HOSTS = {
 
 _PRIVATE_REASONS = (
     "目标地址解析到环回/私网/链路本地/保留网段（含云元数据地址 169.254.169.254）。"
-    "如确需连接本地或局域网模型服务，请在设置中开启「允许私网 LLM 端点」。"
+    "如确需连接本地或局域网模型服务，或正在使用代理软件的 TUN 模式，"
+    "请在「设置中心 → 对话模型」勾选「允许连接本机或局域网的模型服务」。"
+)
+
+# Proxy TUN Fake-IP pools (Clash/Mihomo/sing-box default IPv4 & sing-box default IPv6).
+_PROXY_FAKE_IP_NETWORKS = (
+    ipaddress.ip_network("198.18.0.0/15"),
+    ipaddress.ip_network("fc00::/18"),
 )
 
 
@@ -51,6 +60,8 @@ def _is_blocked_ip(addr: ipaddress._BaseAddress) -> bool:
             for teredo_ip in addr.teredo:
                 if _is_blocked_ip(teredo_ip):
                     return True
+    if any(addr.version == net.version and addr in net for net in _PROXY_FAKE_IP_NETWORKS):
+        return False
     return (
         addr.is_loopback
         or addr.is_private
