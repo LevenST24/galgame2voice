@@ -780,3 +780,107 @@ class TestActingMenuV3:
         menu = build_acting_menu(v2_payload)
         assert menu["poses"] == []
         assert sanitize_act({"pose": "a", "face": "平常"}, menu, line_index=0, character="测试") == {"face": "平常"}
+
+
+def test_v3_load_portrait_manifest_resolves_root_once_outside_layer_loop(tmp_path, monkeypatch):
+    root, data = make_valid_v3(tmp_path)
+    canvas_b_dir = root / "layers" / "B"
+    canvas_b_dir.mkdir(parents=True, exist_ok=True)
+    data["canvases"]["B"] = {"width": 1875, "height": 2656}
+    data["poses"]["b"]["canvas"] = "B"
+
+    for idx, fid in enumerate(("1601", "1602", "1603", "1604"), start=30):
+        (root / "layers" / "A" / f"{fid}.webp").write_bytes(TINY_WEBP)
+        data["layers"][f"A/{fid}"] = _v3_layer(fid, 650, 950, 100, 100, idx)
+
+    for idx, fid in enumerate(("2001", "2002", "2003")):
+        (canvas_b_dir / f"{fid}.webp").write_bytes(TINY_WEBP)
+        data["layers"][f"B/{fid}"] = {
+            "canvas": "B",
+            "file": f"layers/B/{fid}.webp",
+            "rect": {"x": 600, "y": 900, "width": 300, "height": 400},
+            "z": idx,
+            "opacity": 1,
+        }
+
+    data["looks"]["b/uniform"] = _v3_look(
+        "b",
+        "uniform",
+        "20",
+        {"20": {"layers": ["B/2002", "B/2003"], "eyesClosed": False}},
+        body=("B/2001",),
+    )
+    (root / "layers.json").write_text(json.dumps(data), encoding="utf-8")
+
+    num_layers = len(data["layers"])
+    num_canvases = len(data["canvases"])
+    assert num_layers == 16
+    assert num_canvases == 2
+
+    resolve_calls = 0
+    original_resolve = Path.resolve
+
+    def counting_resolve(self, *args, **kwargs):
+        nonlocal resolve_calls
+        resolve_calls += 1
+        return original_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", counting_resolve)
+    loaded = load_portrait_manifest(root)
+
+    assert loaded is not None
+    assert loaded["version"] == 3
+    assert len(loaded["layers"]) == num_layers
+    assert num_layers <= resolve_calls <= num_layers + num_canvases + 1
+
+
+def test_v2_load_portrait_manifest_resolves_root_once_outside_sprite_loop(tmp_path, monkeypatch):
+    root = tmp_path / "portrait_v2"
+    (root / "uniform").mkdir(parents=True)
+    (root / "casual").mkdir(parents=True)
+
+    uniform_sprites = {}
+    casual_sprites = {}
+    faces = {}
+    for idx in range(1, 9):
+        fid = f"{idx:02d}"
+        fname = f"{fid}.png"
+        (root / "uniform" / fname).write_bytes(TINY_PNG)
+        uniform_sprites[fid] = {"file": fname, "width": 1, "height": 1}
+        faces[fid] = {"label": f"表情{fid}", "primary": "gentle"}
+    for idx in range(9, 15):
+        fid = f"{idx:02d}"
+        fname = f"{fid}.png"
+        (root / "casual" / fname).write_bytes(TINY_PNG)
+        casual_sprites[fid] = {"file": fname, "width": 1, "height": 1}
+        faces[fid] = {"label": f"表情{fid}", "primary": "gentle"}
+
+    v2_data = {
+        "version": 2,
+        "default_costume": "uniform",
+        "costumes": {
+            "uniform": {"name": "校服", "sprites": uniform_sprites},
+            "casual": {"name": "便服", "sprites": casual_sprites},
+        },
+        "faces": faces,
+        "expression_sets": {"gentle": [{"id": "01", "strength": 3}]},
+    }
+    (root / "expressions.json").write_text(json.dumps(v2_data), encoding="utf-8")
+
+    num_sprites = len(uniform_sprites) + len(casual_sprites)
+    assert num_sprites == 14
+
+    resolve_calls = 0
+    original_resolve = Path.resolve
+
+    def counting_resolve(self, *args, **kwargs):
+        nonlocal resolve_calls
+        resolve_calls += 1
+        return original_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", counting_resolve)
+    loaded = load_portrait_manifest(root)
+
+    assert loaded is not None
+    assert num_sprites <= resolve_calls <= num_sprites + 1
+

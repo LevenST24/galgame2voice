@@ -155,11 +155,22 @@ def _read_object(path: Path) -> dict[str, Any] | None:
         return None
 
 
-def _available_sprites(root: Path, costume: str, entries: Any) -> dict[str, Any]:
+def _available_sprites(
+    root: Path,
+    costume: str,
+    entries: Any,
+    *,
+    resolved_root: Path | None = None,
+) -> dict[str, Any]:
     if not costume or any(char in costume for char in ("/", "\\")) or costume in (".", ".."):
         return {}
     if not isinstance(entries, dict):
         return {}
+    if resolved_root is None:
+        try:
+            resolved_root = root.resolve()
+        except (OSError, ValueError):
+            return {}
     available = {}
     for face_id, sprite in entries.items():
         if not isinstance(sprite, dict) or not isinstance(sprite.get("file"), str):
@@ -170,7 +181,7 @@ def _available_sprites(root: Path, costume: str, entries: Any) -> dict[str, Any]
         if path.suffix.lower() not in {".png", ".webp", ".jpg", ".jpeg"}:
             continue
         try:
-            valid_file = path.resolve().is_relative_to(root.resolve()) and path.is_file()
+            valid_file = path.resolve().is_relative_to(resolved_root) and path.is_file()
         except (OSError, ValueError):
             valid_file = False
         if not valid_file:
@@ -179,7 +190,13 @@ def _available_sprites(root: Path, costume: str, entries: Any) -> dict[str, Any]
     return available
 
 
-def _normalize(root: Path, data: dict[str, Any], *, legacy: bool) -> dict[str, Any] | None:
+def _normalize(
+    root: Path,
+    data: dict[str, Any],
+    *,
+    legacy: bool,
+    resolved_root: Path | None = None,
+) -> dict[str, Any] | None:
     raw_costumes = data.get("costumes")
     if legacy:
         if not isinstance(raw_costumes, list) or not isinstance(data.get("sprites"), dict):
@@ -190,6 +207,14 @@ def _normalize(root: Path, data: dict[str, Any], *, legacy: bool) -> dict[str, A
             return None
         costumes = [{**c, "id": cid} for cid, c in raw_costumes.items() if isinstance(c, dict)]
 
+    if not costumes:
+        return None
+    if resolved_root is None:
+        try:
+            resolved_root = root.resolve()
+        except (OSError, ValueError):
+            return None
+
     sprites = {}
     metadata = []
     for costume in costumes:
@@ -197,7 +222,7 @@ def _normalize(root: Path, data: dict[str, Any], *, legacy: bool) -> dict[str, A
         if not isinstance(cid, str):
             continue
         entries = data["sprites"].get(cid) if legacy else costume.get("sprites")
-        available = _available_sprites(root, cid, entries)
+        available = _available_sprites(root, cid, entries, resolved_root=resolved_root)
         if not available:
             continue
         sprites[cid] = available
@@ -275,7 +300,12 @@ VALID_EMOTIONS = frozenset({
 })
 
 
-def _validate_v3(root: Path, data: dict[str, Any]) -> tuple[bool, str]:
+def _validate_v3(
+    root: Path,
+    data: dict[str, Any],
+    *,
+    resolved_root: Path | None = None,
+) -> tuple[bool, str]:
     if not isinstance(data, dict):
         return False, "layers.json must be a JSON object"
 
@@ -350,6 +380,13 @@ def _validate_v3(root: Path, data: dict[str, Any]) -> tuple[bool, str]:
                     return False, f"face '{fid}' weights entry '{w_emo}' is invalid"
 
     # 5. Layers
+    if resolved_root is None:
+        try:
+            resolved_root = root.resolve()
+        except (ValueError, OSError):
+            return False, "portrait root path resolution failed"
+    canvas_roots = {cid: resolved_root / "layers" / cid for cid in data["canvases"]}
+
     for lid, layer in data["layers"].items():
         if not isinstance(layer, dict):
             return False, f"layer '{lid}' must be an object"
@@ -388,7 +425,7 @@ def _validate_v3(root: Path, data: dict[str, Any]) -> tuple[bool, str]:
             return False, f"layer '{lid}' file must match layers/{l_canvas}/<name>.webp or .png"
         try:
             resolved_file = (root / file_path).resolve()
-            if not resolved_file.is_relative_to(root.resolve() / "layers" / l_canvas):
+            if not resolved_file.is_relative_to(canvas_roots[l_canvas]):
                 return False, f"layer '{lid}' file '{file_path}' escapes layer canvas folder"
         except (ValueError, OSError):
             return False, f"layer '{lid}' file '{file_path}' path resolution failed"
@@ -695,28 +732,43 @@ def _normalize_v3(root: Path, data: dict[str, Any]) -> dict[str, Any]:
 
 def load_portrait_manifest(root: Path) -> dict[str, Any] | None:
     """Prefer layered portrait packs (v3), then numbered differentials (v2), then legacy packs (v1)."""
+    resolved_root: Path | None = None
     raw_v3 = _read_object(root / "layers.json")
     if raw_v3 is not None:
-        valid, reason = _validate_v3(root, raw_v3)
+        try:
+            resolved_root = root.resolve()
+        except (OSError, ValueError):
+            logger.warning("Invalid layers.json in %s: portrait root path resolution failed", root)
+            return None
+        valid, reason = _validate_v3(root, raw_v3, resolved_root=resolved_root)
         if valid:
             payload = _normalize_v3(root, raw_v3)
             if payload is not None:
-                legacy = _load_whole_image_manifest(root)
+                legacy = _load_whole_image_manifest(root, resolved_root=resolved_root)
                 if legacy is not None:
                     payload["legacy"] = legacy
                 return payload
         else:
             logger.warning("Invalid layers.json in %s: %s", root, reason)
 
-    return _load_whole_image_manifest(root)
+    return _load_whole_image_manifest(root, resolved_root=resolved_root)
 
 
-def _load_whole_image_manifest(root: Path) -> dict[str, Any] | None:
+def _load_whole_image_manifest(
+    root: Path,
+    *,
+    resolved_root: Path | None = None,
+) -> dict[str, Any] | None:
     """Load the whole-image payload for fallback and the legacy chat UI."""
     for filename, legacy in (("expressions.json", False), ("manifest.json", True)):
         raw = _read_object(root / filename)
         if raw is not None:
-            payload = _normalize(root, raw, legacy=legacy)
+            if resolved_root is None:
+                try:
+                    resolved_root = root.resolve()
+                except (OSError, ValueError):
+                    return None
+            payload = _normalize(root, raw, legacy=legacy, resolved_root=resolved_root)
             if payload is not None:
                 return payload
     return None
