@@ -447,7 +447,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       showToast(error, 'error', needsModelSettings(error, code) ? {
         actionLabel: '配置对话模型', onAction: () => openGlobalSettings('models'),
       } : null);
-    } else if (meta.audioError && !meta.cancelled) {
+    } else if (meta.audioError && !meta.cancelled && state.global.voiceMode) {
       const needsCharacter = typeof meta.audioError === 'string'
         && meta.audioError.includes('角色与会话')
         && !meta.audioError.includes('运行状态');
@@ -786,6 +786,12 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       return { ...sampleModel(), engine };
     },
     voiceEnabled: () => state.global.voiceMode,
+    setVoiceEnabled: enabled => {
+      state.global.voiceMode = Boolean(enabled);
+      saveState();
+      if (!state.global.voiceMode) stopCurrentVoice();
+      syncAdv();
+    },
     playExcerpt: excerpt => {
       stopCurrentVoice();
       return streamAudioController.playLine(excerpt.line.index, excerpt.line.audio.chunks, { msgId: excerpt.messageId });
@@ -824,6 +830,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     onOpenSessionSettings: openSessionSettings,
     onOpenEngineStatus: () => openGlobalSettings('dashboard'),
     isHomeOpen: () => homeStarting || Boolean(advApp?.stage.stage.classList.contains('is-home')),
+    isVoiceEnabled: () => state.global.voiceMode,
     invalidateSessionSync: () => { ++_syncSessionsGen; },
   });
   initGlobalSettings(dom, {

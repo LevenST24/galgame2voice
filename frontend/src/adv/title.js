@@ -74,6 +74,8 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
   let opened = false, destroyed = false, mode = 'home', page = 0, sessions = [], mainId = null;
   let recentOrder = [];
   let status = createInitialStatus(), textOnly = false, draft = null;
+  const isTextOnly = () => (typeof actions.setVoiceEnabled === 'function' && typeof actions.voiceEnabled === 'function'
+    ? !actions.voiceEnabled() : textOnly);
   let popup = null, popupButton = null, dropdown = null, dropdownButton = null;
   let timer = null, unsubscribe = null, revision = 0, previewRevision = 0, polling = null;
   let playing = false, playRevision = 0, listenButton = null, rendered = '';
@@ -172,7 +174,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     const session = main();
     const firstUse = status.modelLoaded && !status.model?.readFailed && !chatOK();
     const characters = firstUse ? actions.listCharacters?.() || [] : [];
-    const signature = JSON.stringify([mode, session, status.modelLoaded, firstUse, status.engine?.state, textOnly,
+    const signature = JSON.stringify([mode, session, status.modelLoaded, firstUse, status.engine?.state, isTextOnly(),
       characters.length > 0, characters.some(p => p.id === session?.settings?.voiceProfileId),
       canReplayLine(session?.excerpt?.line, session?.excerpt, actions.voiceEnabled?.() ?? true, now().getTime())]);
     if (!force && rendered === signature) return;
@@ -241,7 +243,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     const installed = characters.length > 0;
     // A character id the browser kept from an earlier install counts only once that character is installed here.
     const chosen = characters.some(p => p.id === main()?.settings?.voiceProfileId);
-    const done = [chatOK(), status.engine?.state === 'ready' || textOnly, chosen];
+    const done = [chatOK(), status.engine?.state === 'ready' || isTextOnly(), chosen];
     const labels = ['连接对话模型', '连接语音引擎', '选一个角色'];
     const descriptions = ['让她能用文字回答你', '让她用自己的声音念出日语台词',
       installed ? '从已安装的角色里挑一位' : '还没有角色，先导入一个角色包或新建音色'];
@@ -250,9 +252,12 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
       const copy = el('div', 'home-step-copy');
       add(copy, el('b', '', label), el('p', '', descriptions[i]));
       add(row, el('span', 'home-step-mark', done[i] ? '✓' : ''), copy);
-      if (i === 1 && status.engine?.state !== 'ready') row.appendChild(
-        btn('home-link home-text-only', textOnly ? '✓ 暂时只用文字' : '暂时只用文字', () => {
-          textOnly = true;
+      // Stays visible while text only is on, even once the engine is ready: a second click turns voice back on.
+      if (i === 1 && (status.engine?.state !== 'ready' || isTextOnly())) row.appendChild(
+        btn('home-link home-text-only', isTextOnly() ? '✓ 暂时只用文字' : '暂时只用文字', () => {
+          const next = !isTextOnly();
+          textOnly = next;
+          actions.setVoiceEnabled?.(!next);
           renderPane(true);
         }));
       row.appendChild(btn(`home-step-button${done[i] ? '' : ' home-step-pending'}`, i === 2 ? (installed ? '选择' : '去导入') : '去设置', () => {

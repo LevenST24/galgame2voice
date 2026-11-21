@@ -2296,3 +2296,74 @@ for (const [name, engineReply] of [
     assert.equal(status.engine.directory_configured, undefined);
   });
 }
+
+test('title screen text-only choice persists voiceMode=false and suppresses audioError toasts', async t => {
+  const toasts = [];
+  let saved = 0;
+  const h = setup(t, {
+    callbacks: {
+      showToast: (msg, type, opts) => toasts.push({ msg, type, opts }),
+      saveState: () => { saved += 1; },
+    },
+  });
+  const home = createTitleScreen(h.app.adv.stage.overlay, {
+    documentObj: document,
+    actions: {
+      ...h.app.actions,
+      getStatus: async () => ({
+        modelLoaded: true,
+        hasModel: false,
+        model: { state: 'error', label: '未配置对话模型' },
+        engine: { state: 'unavailable' },
+      }),
+    },
+  });
+  t.after(() => home.destroy());
+  home.open();
+  await tick();
+
+  assert.equal(h.state.global.voiceMode, true);
+  home.element.querySelector('.home-text-only').click();
+  assert.equal(h.state.global.voiceMode, false, '点击「暂时只用文字」应关闭全局语音模式');
+  assert.ok(saved >= 1, '关闭语音模式后应持久化保存状态');
+
+  home.close();
+  home.open();
+  await tick();
+  assert.equal(
+    home.element.querySelector('.home-text-only').children[0].textContent,
+    '✓ 暂时只用文字',
+    '重新打开首页后应记住只用文字选择',
+  );
+  home.close();
+
+  const turn = h.app.sendMessage('你好');
+  await tick();
+  const req = h.stream.requests.at(-1);
+  await req.event('audio_chunk_error', {
+    error: '语音引擎尚未启动，请在「设置中心 → 运行状态」启动引擎。',
+  });
+  await req.onEnd('你好！');
+  await turn;
+
+  assert.equal(toasts.length, 0, '关闭语音模式后收到回复不应再弹出语音错误提示');
+});
+
+test('entering a session from home with voice turned off still loads its character voice', async t => {
+  storedState.sessions = [2, 3].map(id => ({ id: `home_${id}`, title: '角色', messages: [],
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: id } }));
+  storedState.activeId = 'home_2';
+  storedState.global.voiceMode = false;
+  t.after(() => { storedState.global.voiceMode = true; });
+  const switches = [];
+  const h = setup(t, { callbacks: { state: storedState, getActive: storedActive, getSession: storedSession, getVoiceProfiles },
+    fetch: async (url, options = {}) => {
+      if (url === '/api/voice/profiles') return Response.json({ profiles: [{ id: 2, name: '甲' }, { id: 3, name: '乙' }], active_profile_id: null });
+      if (url === '/api/voice/switch') { switches.push(JSON.parse(options.body).profile_id); return Response.json({ profile: '乙' }); }
+      return Response.json({ backgrounds: [] });
+    } });
+  initVoiceSettings({});
+  await h.app.actions.loadSession('home_3');
+  for (let i = 0; i < 20 && !switches.length; i += 1) await tick();
+  assert.deepEqual(switches, [3]);
+});

@@ -171,7 +171,7 @@ test('title actions delegate; continue uses newest or creates a first session; h
   const sessions = [{ id: 'old', updatedAt: 1 }, { id: 'latest', updatedAt: 2 }];
   const { api, calls } = actions(sessions);
   assert.deepEqual(api.listCharacters(), [{ id: 7, name: '角色甲', work: 'cafe_stella' }]);
-  assert.deepEqual(Object.keys(api).sort(), ['continueLatest', 'listSessions', 'loadSession', 'openCharacters', 'openSettings', 'startNew', 'startNewWith', 'previewSession', 'getActiveId', 'getStatus', 'getBackgrounds', 'listCharacters', 'getAvatar', 'playExcerpt', 'stopExcerpt', 'subscribeSettings', 'voiceEnabled'].sort());
+  assert.deepEqual(Object.keys(api).sort(), ['continueLatest', 'listSessions', 'loadSession', 'openCharacters', 'openSettings', 'startNew', 'startNewWith', 'previewSession', 'getActiveId', 'getStatus', 'getBackgrounds', 'listCharacters', 'getAvatar', 'playExcerpt', 'stopExcerpt', 'subscribeSettings', 'voiceEnabled', 'setVoiceEnabled'].sort());
   assert.equal(showTitle(api, { documentObj: { querySelector: () => null } }), null); assert.deepEqual(calls, []);
   api.startNew(); api.continueLatest(); api.loadSession('old'); api.openCharacters(); api.openSettings();
   assert.deepEqual(calls, ['new', 'latest', 'old', 'characters', 'settings']);
