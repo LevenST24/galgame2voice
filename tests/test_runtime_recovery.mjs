@@ -19,6 +19,31 @@ for (const [data, fallback, expected] of [
 ]) {
   assert.ok(getErrorMessage(data, fallback).includes(expected)); passed++;
 }
+// Technical errors containing localized Chinese text must not leak raw internals to users.
+assert.equal(
+  getErrorMessage({ detail: '[WinError 10061] 由于目标计算机积极拒绝，无法连接。' }, '无法连接对话模型，请检查模型设置。'),
+  '无法连接对话模型，请检查模型设置。',
+);
+assert.equal(
+  getErrorMessage(
+    { detail: 'Traceback (most recent call last):\n  File "C:\\用户\\语音\\app.py", line 12\nRuntimeError: boom' },
+    'HTTP 500',
+  ),
+  '此次操作未完成，请稍后重试；若仍失败，请打开「运行状态」检查服务。',
+);
+assert.equal(
+  getErrorMessage({ detail: 'TTS synthesis failed with status 500: 内部错误' }, '语音合成暂时失败，请稍后重试。'),
+  '语音合成暂时失败，请稍后重试。',
+);
+assert.equal(
+  getErrorMessage({ detail: '磁盘空间不足，请清理后重试：[Errno 28] No space left on device' }, '请求失败'),
+  '磁盘空间不足，请清理后重试',
+);
+assert.equal(
+  getErrorMessage({ detail: '模型密钥无效，请在设置中重新填写。' }, '请求失败'),
+  '模型密钥无效，请在设置中重新填写。',
+);
+passed += 5;
 {
   let count = 0;
   globalThis.fetch = async () => { count++; throw new TypeError('Failed to fetch'); };
