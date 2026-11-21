@@ -705,6 +705,7 @@ async def isolate_runtime_services(monkeypatch, isolate_test_database):
         voice_manager,
         voice_resolver,
     )
+    from galgame2voice.utils import http_client
     owners = set()
     spawn = voice_manager.VoiceManager._spawn_background
     def track_background_owner(manager, coro):
@@ -734,6 +735,7 @@ async def isolate_runtime_services(monkeypatch, isolate_test_database):
             await scheduler.aclose()
         await tts_cache_manager.close_tts_cache_managers()
         await gpt_sovits_client.close_gpt_sovits_client()
+        await http_client.close_shared_async_clients()
         character_manager.CharacterManager.reset_instance()
 
 

@@ -172,8 +172,10 @@ async def test_consecutive_stream_chat_reuses_one_open_shared_client(monkeypatch
     clients = []
     responses = []
     captured_limits = []
+    request_timeouts = []
 
     def handle(request):
+        request_timeouts.append(request.extensions.get("timeout"))
         if kind == "openai":
             body = 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'
         else:
@@ -213,6 +215,8 @@ async def test_consecutive_stream_chat_reuses_one_open_shared_client(monkeypatch
         assert captured_limits[0].keepalive_expiry >= 300
         assert len(responses) == 2
         assert all(resp.is_closed for resp in responses)
+        # The shared client has no client-level timeout, so each request must carry the caller's.
+        assert request_timeouts == [httpx.Timeout(42.0).as_dict()] * 2
     finally:
         await close_shared_async_clients()
     assert clients[0].is_closed

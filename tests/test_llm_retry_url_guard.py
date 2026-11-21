@@ -3,6 +3,8 @@
 import email.utils
 import socket
 import time
+import weakref
+from contextlib import contextmanager
 from typing import List
 from unittest.mock import patch
 
@@ -19,6 +21,7 @@ from galgame2voice.adapters.llm import anthropic_adapter, openai_adapter
 from galgame2voice.adapters.llm.anthropic_adapter import AnthropicAdapter
 from galgame2voice.adapters.llm.openai_adapter import OpenAICompatibleLLMAdapter
 from galgame2voice.security import url_guard
+from galgame2voice.utils import http_client
 
 
 # Chat turns stream; only the Anthropic connection test still makes a non-streaming call.
@@ -174,7 +177,13 @@ def _patched_transport(
         clean_kwargs = {k: v for k, v in kwargs.items() if k != "transport"}
         return _ORIG_HTTPX_ASYNC_CLIENT(transport=transport, **clean_kwargs)
 
-    return transport, patch("httpx.AsyncClient", _client_factory)
+    @contextmanager
+    def _scenario():
+        # Adapters reuse one shared client per event loop; an empty cache makes this scenario build its own on this transport.
+        with patch("httpx.AsyncClient", _client_factory),                 patch.object(http_client, "_shared_clients_by_loop", weakref.WeakKeyDictionary()):
+            yield
+
+    return transport, _scenario()
 
 
 async def _collect_stream(adapter, prompt: str = "hello", **stream_kwargs):
