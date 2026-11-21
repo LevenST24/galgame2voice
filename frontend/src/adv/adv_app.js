@@ -794,6 +794,7 @@ export function mountAdv(dom, deps) {
   disposers.push(controller.on('turnstart', event => {
     update();
     if (event.originId !== sessionId) return;
+    deps.cancelMic?.();
     liveMessage = { ...event.assistantMessage, lines: [...event.assistantMessage.lines || []] };
     turnLines = liveMessage.lines;
     failedUser = event.userMessage; turnId = event.assistantMessage.id; storedTurnId = null; currentLine = null;
