@@ -23,8 +23,15 @@ import ssl
 import httpx
 import pytest
 
+import urllib.request
+
+from galgame2voice.adapters.base import ChatMessage
+from galgame2voice.adapters.llm import anthropic_adapter, openai_adapter
 from galgame2voice.utils.http_client import (
+    SHARED_CLIENT_KEEPALIVE_EXPIRY,
+    close_shared_async_clients,
     create_async_client,
+    get_shared_async_client,
     proxy_environment_is_usable,
 )
 
@@ -112,3 +119,104 @@ def test_proxy_environment_is_usable_false_under_broken_environment(broken_proxy
 
 def test_proxy_environment_is_usable_true_without_proxy_variables(clean_proxy_environment):
     assert proxy_environment_is_usable() is True
+
+
+async def test_shared_async_client_configures_long_keepalive_without_client_timeout(clean_proxy_environment):
+    """Shared LLM client uses keepalive_expiry >= 300s, shared SSL, and no client-level timeout."""
+    captured_kwargs = []
+    real_create = create_async_client
+
+    def spy_factory(**kwargs):
+        captured_kwargs.append(kwargs)
+        return real_create(**kwargs)
+
+    try:
+        c1 = get_shared_async_client(factory=spy_factory)
+        c2 = get_shared_async_client(factory=spy_factory)
+        assert c1 is c2
+        assert not c1.is_closed
+        assert len(captured_kwargs) == 1
+        assert "timeout" not in captured_kwargs[0]
+        limits = captured_kwargs[0]["limits"]
+        assert limits.keepalive_expiry >= 300
+        assert SHARED_CLIENT_KEEPALIVE_EXPIRY >= 300
+    finally:
+        await close_shared_async_clients()
+    assert c1.is_closed
+
+
+async def test_shared_async_client_recreates_when_proxy_settings_change(clean_proxy_environment, monkeypatch):
+    """Toggling ambient/system proxy settings invalidates the cached client on the next call."""
+    proxies = {}
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: dict(proxies))
+    try:
+        c1 = get_shared_async_client()
+        assert get_shared_async_client() is c1
+        proxies["https"] = "http://127.0.0.1:7890"
+        c2 = get_shared_async_client()
+        assert c2 is not c1
+        assert get_shared_async_client() is c2
+        proxies.clear()
+        c3 = get_shared_async_client()
+        assert c3 is not c2
+    finally:
+        await close_shared_async_clients()
+    assert c1.is_closed and c2.is_closed and c3.is_closed
+
+
+@pytest.mark.parametrize("kind", ["openai", "anthropic"])
+async def test_consecutive_stream_chat_reuses_one_open_shared_client(monkeypatch, kind):
+    """Two back-to-back stream_chat turns reuse one open client while closing every response."""
+    module = openai_adapter if kind == "openai" else anthropic_adapter
+    adapter_cls = module.OpenAICompatibleLLMAdapter if kind == "openai" else module.AnthropicAdapter
+    clients = []
+    responses = []
+    captured_limits = []
+    request_timeouts = []
+
+    def handle(request):
+        request_timeouts.append(request.extensions.get("timeout"))
+        if kind == "openai":
+            body = 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'
+        else:
+            body = (
+                'event: content_block_delta\n'
+                'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}\n\n'
+                'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+            )
+        resp = httpx.Response(200, text=body, headers={"Content-Type": "text/event-stream"}, request=request)
+        responses.append(resp)
+        return resp
+
+    def fake_create(**kwargs):
+        captured_limits.append(kwargs.get("limits"))
+        assert "timeout" not in kwargs
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handle), trust_env=False)
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(module, "create_async_client", fake_create)
+    adapter = adapter_cls(
+        api_key="synthetic-key",
+        base_url="https://synthetic.invalid/v1",
+        allow_private=True,
+    )
+    msg = [ChatMessage(role="user", content="hello")]
+    try:
+        out1 = "".join([chunk async for chunk in adapter.stream_chat(msg, model="m", timeout_s=42.0)])
+        assert out1 == "ok"
+        assert len(clients) == 1
+        assert not clients[0].is_closed
+
+        out2 = "".join([chunk async for chunk in adapter.stream_chat(msg, model="m", timeout_s=42.0)])
+        assert out2 == "ok"
+        assert len(clients) == 1
+        assert not clients[0].is_closed
+        assert captured_limits[0].keepalive_expiry >= 300
+        assert len(responses) == 2
+        assert all(resp.is_closed for resp in responses)
+        # The shared client has no client-level timeout, so each request must carry the caller's.
+        assert request_timeouts == [httpx.Timeout(42.0).as_dict()] * 2
+    finally:
+        await close_shared_async_clients()
+    assert clients[0].is_closed
