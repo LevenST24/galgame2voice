@@ -59,7 +59,8 @@ def test_long_preamble_is_followed_by_the_whole_reply(chunk_size):
     preamble = "好的，我会按照你要求的格式来回复："
     shown, chinese, _, _ = _stream(preamble + "\n" + REPLY_JSON, chunk_size)
     assert chinese == "你好呀，今天过得怎么样？"
-    assert shown == preamble + "\n" + chinese
+    assert shown == chinese
+    assert preamble not in shown
     assert "{" not in shown
 
 

@@ -405,3 +405,181 @@ def test_think_block_shortcut_gives_the_same_output_as_rescanning(monkeypatch, t
             m.setattr(streaming_parser, "_strip_think_buffer", never_frozen)
             rescanned = feed(step)
         assert shortcut == rescanned, step
+
+
+@pytest.mark.parametrize("chunk_size", (1, 2, 3, 5))
+def test_unmatched_close_think_with_draft_json_before_real_lines(chunk_size):
+    raw = (
+        '用户夸我可爱，按格式选动作 {"face": "害羞", "blush": true}，用害羞的语气回一句。\n'
+        '</think>\n'
+        '{"tts": {"speed": 0.9, "temp": 0.8, "emotion": "shy"}, '
+        '"lines": [{"zh": "笨、笨蛋，别突然说这种话啦！", "ja": "ば、ばか、急にそんなこと言わないでよ！", "emotion": "shy"}]}'
+    )
+    chunks = [raw[i : i + chunk_size] for i in range(0, len(raw), chunk_size)]
+
+    scanned = _scan_reply(*chunks)
+    assert scanned.format == "lines"
+    assert scanned.truncated is False
+    assert len(scanned.lines) == 1
+    assert scanned.lines[0].zh == "笨、笨蛋，别突然说这种话啦！"
+    assert scanned.lines[0].ja == "ば、ばか、急にそんなこと言わないでよ！"
+    assert scanned.lines[0].emotion == "shy"
+    assert scanned.tts == {"speed": 0.9, "temp": 0.8, "emotion": "shy"}
+
+    emitted, zh, ja, parser = _stream_reply(*chunks)
+    assert "用户夸我可爱" not in emitted
+    assert "害羞" not in emitted
+    assert "{" not in emitted
+    assert emitted == "笨、笨蛋，别突然说这种话啦！"
+    assert zh == "笨、笨蛋，别突然说这种话啦！"
+    assert ja == "ば、ばか、急にそんなこと言わないでよ！"
+    assert parser.line_scanner.format == "lines"
+    assert parser.lines_truncated is False
+
+
+@pytest.mark.parametrize("chunk_size", (1, 2, 3, 5))
+def test_unmatched_close_think_with_plain_prose_reply(chunk_size):
+    raw = "用户想听安慰的话，温柔一点回答吧。</think>没关系，有我在呢。"
+    chunks = [raw[i : i + chunk_size] for i in range(0, len(raw), chunk_size)]
+
+    emitted, zh, ja, parser = _stream_reply(*chunks)
+    assert "用户想听安慰的话" not in emitted
+    assert "温柔一点回答吧" not in emitted
+    assert "</think>" not in emitted
+    assert zh == "没关系，有我在呢。"
+    assert ja == "没关系，有我在呢。"
+    assert parser.lines_truncated is False
+
+
+@pytest.mark.parametrize("chunk_size", (1, 3, 5))
+def test_multiple_unmatched_close_think_tags_strip_to_last(chunk_size):
+    raw = "第一段思考</think>第二段思考</think>正式回复。"
+    chunks = [raw[i : i + chunk_size] for i in range(0, len(raw), chunk_size)]
+
+    emitted, zh, ja, parser = _stream_reply(*chunks)
+    assert "第一段思考" not in emitted
+    assert "第二段思考" not in emitted
+    assert zh == "正式回复。"
+    assert ja == "正式回复。"
+    assert strip_reasoning_tags(raw) == "正式回复。"
+
+
+@pytest.mark.parametrize("chunk_size", (1, 3, 5))
+def test_close_think_tag_inside_json_string_is_preserved(chunk_size):
+    raw = '{"lines": [{"zh": "不要写</think>", "ja": "テスト</think>だよ", "emotion": "gentle"}]}'
+    chunks = [raw[i : i + chunk_size] for i in range(0, len(raw), chunk_size)]
+
+    scanned = _scan_reply(*chunks)
+    assert scanned.format == "lines"
+    assert scanned.truncated is False
+    assert len(scanned.lines) == 1
+    assert scanned.lines[0].zh == "不要写</think>"
+    assert scanned.lines[0].ja == "テスト</think>だよ"
+
+    emitted, zh, ja, parser = _stream_reply(*chunks)
+    assert emitted == "不要写</think>"
+    assert zh == "不要写</think>"
+    assert ja == "テスト</think>だよ"
+
+
+def test_strip_reasoning_tags_drops_text_before_unmatched_close_tag():
+    assert strip_reasoning_tags("先想想怎么回答。</think>こんにちは") == "こんにちは"
+    assert strip_reasoning_tags("一段</think>二段</thought>おはよう") == "おはよう"
+    assert strip_reasoning_tags("思考中</reasoning>ありがとう") == "ありがとう"
+    assert strip_reasoning_tags("你好<thinking>草稿</thinking>世界") == "你好世界"
+
+
+def test_implicit_thinking_sets_is_thinking_flag_until_close_tag():
+    parser = StreamingBilingualParser()
+    d1, s1 = parser.feed_chunk("先想想怎么回复用户的这个问题，")
+    assert d1 == ""
+    assert s1 == []
+    assert parser.is_thinking is True
+
+    d2, s2 = parser.feed_chunk("用温柔一点的语气吧。")
+    assert d2 == ""
+    assert s2 == []
+    assert parser.is_thinking is True
+
+    d3, s3 = parser.feed_chunk('</think>\n{"lines": [{"zh": "没关系，有我在。", "ja": "大丈夫だよ。", "emotion": "gentle"}]}')
+    assert d3 == "没关系，有我在。"
+    assert s3 == []
+    assert parser.is_thinking is False
+    zh, ja, rem = parser.finalize()
+    assert zh == "没关系，有我在。"
+    assert ja == "大丈夫だよ。"
+    assert rem == []
+
+
+@pytest.mark.asyncio
+async def test_stream_coordinator_emits_thinking_progress_for_unmatched_close_think(tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from galgame2voice.database import crud
+    from galgame2voice.database.models import MessageCreate
+    from galgame2voice.database.session import get_db, init_db
+    from galgame2voice.services.chat_pipelines.stream_coordinator import StreamCoordinator
+
+    db_file = tmp_path / "implicit_think.db"
+    await init_db(db_file)
+    async with get_db(db_file) as conn:
+        user_msg = await crud.add_message(
+            conn,
+            MessageCreate(session_id="implicit-think", role="user", content_chinese="你真可爱"),
+        )
+
+    chunks = (
+        '用户夸我可爱，按格式选动作 {"face": "害羞", "blush": true}，',
+        '用害羞的语气回一句。\n',
+        '</think>\n',
+        '{"tts": {"speed": 0.9, "temp": 0.8, "emotion": "shy"}, '
+        '"lines": [{"zh": "笨、笨蛋，别突然说这种话啦！", "ja": "ば、ばか、急にそんなこと言わないでよ！", "emotion": "shy"}]}',
+    )
+
+    async def stream_tokens(*args, **kwargs):
+        for c in chunks:
+            yield c
+
+    spoken: list[str] = []
+
+    async def fake_synth(text, options=None, filename_prefix="chunk"):
+        spoken.append(text)
+        wav_path = tmp_path / f"{filename_prefix}.wav"
+        wav_path.write_bytes(b"RIFF")
+        return f"/audio/{filename_prefix}.wav", wav_path, {}
+
+    coord = StreamCoordinator(
+        adapter=SimpleNamespace(stream_chat=stream_tokens, api_key="synthetic"),
+        messages=[],
+        model_name="deepseek-r1-local",
+        actual_provider_id="custom",
+        session_id="implicit-think",
+        prompt="你真可爱",
+        user_msg=user_msg,
+        tts_service=SimpleNamespace(audio_dir=tmp_path, synthesize_to_file=AsyncMock(side_effect=fake_synth)),
+        db_path=str(db_file),
+        metrics_collector=SimpleNamespace(record_chat_turn=AsyncMock(return_value={})),
+        affection_service=SimpleNamespace(handle_turn_affection=AsyncMock(return_value={"emotion": "shy"})),
+        concat_wav_fn=lambda *args: True,
+        reply_format="lines",
+    )
+
+    events = [ev async for ev in coord.stream()]
+    progress_stages = [
+        ev["data"]["stage"]
+        for ev in events
+        if isinstance(ev, dict) and ev.get("event") == "progress"
+    ]
+    assert "thinking" in progress_stages
+
+    text_deltas = "".join(
+        ev["data"]["delta_chinese"]
+        for ev in events
+        if isinstance(ev, dict) and ev.get("event") == "text"
+    )
+    assert "用户夸我可爱" not in text_deltas
+    assert "{" not in text_deltas
+    assert text_deltas == "笨、笨蛋，别突然说这种话啦！"
+
+    assert spoken == ["ば、ばか、急にそんなこと言わないでよ！"]

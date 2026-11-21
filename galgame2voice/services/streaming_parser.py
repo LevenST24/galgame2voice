@@ -80,6 +80,14 @@ _RE_THINK_TAG_ORPHAN_CLOSE = re.compile(
     r"</\s*(think(?:ing)?|thought|reasoning)\b[^>]*>",
     flags=re.IGNORECASE,
 )
+_RE_THINK_TAG_ORPHAN_CLOSE_PREFIX = re.compile(
+    r"^.*</\s*(think(?:ing)?|thought|reasoning)\b[^>]*>",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+_RE_MD_FENCE_PREFIX = re.compile(r"^`{1,3}(?:j(?:s(?:o(?:n)?)?)?)?$", flags=re.IGNORECASE)
+_RE_LEADING_MD_FENCE = re.compile(r"^```(?:json)?\s*", flags=re.IGNORECASE)
+_RE_LEADING_CHINESE_LABEL = re.compile(r"^(?:中文|Chinese)[:：]", flags=re.IGNORECASE)
+_CHINESE_FALLBACK_LABELS = ("中文:", "中文：", "chinese:", "chinese：")
 
 
 def _strip_and_check_think_buffer(buffer: str, is_final: bool = False) -> tuple[str, bool]:
@@ -110,7 +118,7 @@ def _strip_think_buffer(buffer: str, is_final: bool = False) -> tuple[str, bool,
     # 2. Check for unclosed think block (opening tag started, with or without '>')
     m_unclosed = _RE_THINK_BLOCK_UNCLOSED.search(cleaned)
     if m_unclosed:
-        effective = _RE_THINK_TAG_ORPHAN_CLOSE.sub("", cleaned[: m_unclosed.start()])
+        effective = _RE_THINK_TAG_ORPHAN_CLOSE_PREFIX.sub("", cleaned[: m_unclosed.start()])
         return effective, True, ">" in cleaned[m_unclosed.start() :]
 
     # 3. Check for partial prefix at the tail (e.g. "<", "<th", "<thought")
@@ -120,11 +128,11 @@ def _strip_think_buffer(buffer: str, is_final: bool = False) -> tuple[str, bool,
         if (pfx == "" and not is_final) or (
             pfx and any(tag.startswith(pfx) for tag in ("think", "thinking", "thought", "reasoning"))
         ):
-            effective = _RE_THINK_TAG_ORPHAN_CLOSE.sub("", cleaned[: m_pfx.start()])
+            effective = _RE_THINK_TAG_ORPHAN_CLOSE_PREFIX.sub("", cleaned[: m_pfx.start()])
             return effective, True, False
 
-    # 4. Strip orphaned closing tags if any
-    cleaned = _RE_THINK_TAG_ORPHAN_CLOSE.sub("", cleaned)
+    # 4. Strip orphaned closing tags and all thinking text preceding them
+    cleaned = _RE_THINK_TAG_ORPHAN_CLOSE_PREFIX.sub("", cleaned)
 
     return cleaned, False, False
 
@@ -221,6 +229,11 @@ class StreamingBilingualParser:
         self.buffer: str = ""
         # Strip result kept while the buffer is inside a think block with a complete opening tag (see feed_chunk).
         self._think_frozen: tuple[str, bool] | None = None
+        # Hold back non-JSON text until a closing reasoning tag or finalize(), because local
+        # inference servers often pre-fill <think> in the prompt template and stream only </think>.
+        self._seen_think_close: bool = False
+        self._scanner_deferred: bool = False
+        self.is_thinking: bool = False
         self.chinese_extracted: str = ""
         self.japanese_extracted: str = ""
         self.emotion_extracted: str = ""
@@ -440,6 +453,20 @@ class StreamingBilingualParser:
             if norm_emo:
                 self.emotion_extracted = norm_emo
 
+    def _consume_completed_lines(self, completed_lines: list[Any]) -> tuple[str, list[str]]:
+        if not self._lines_started:
+            self._lines_started = True
+            self.chinese_extracted = ""
+            self.japanese_extracted = ""
+            self.is_plain_text_fallback = False
+        delta = "".join(line.zh for line in completed_lines)
+        self.chinese_extracted += delta
+        self.japanese_extracted += "".join(line.ja for line in completed_lines)
+        if self.line_scanner.tts is not None:
+            self._apply_parsed_json_dict({"tts": self.line_scanner.tts})
+        self.emitted_chinese_len = len(self.chinese_extracted)
+        return delta, []
+
     def feed_chunk(self, chunk: str) -> tuple[str, list[str]]:
         """
         Feeds an incoming stream token chunk.
@@ -450,20 +477,25 @@ class StreamingBilingualParser:
             return "", []
 
         self.buffer += chunk
-        completed_lines = self.line_scanner.feed(chunk)
-        if self.line_scanner.format == "lines":
-            if not self._lines_started:
-                self._lines_started = True
-                self.chinese_extracted = ""
-                self.japanese_extracted = ""
-                self.is_plain_text_fallback = False
-            delta = "".join(line.zh for line in completed_lines)
-            self.chinese_extracted += delta
-            self.japanese_extracted += "".join(line.ja for line in completed_lines)
-            if self.line_scanner.tts is not None:
-                self._apply_parsed_json_dict({"tts": self.line_scanner.tts})
-            self.emitted_chinese_len = len(self.chinese_extracted)
-            return delta, []
+
+        if not self._seen_think_close and ">" in chunk and _RE_THINK_TAG_ORPHAN_CLOSE.search(self.buffer):
+            self._seen_think_close = True
+
+        # Fast path while holding back potential un-prefixed thinking before </think>.
+        if self._scanner_deferred and not self._seen_think_close:
+            self.is_thinking = True
+            return "", []
+
+        if self._lines_started and self.line_scanner.format == "lines":
+            completed_lines = self.line_scanner.feed(chunk)
+            if self.line_scanner.format == "lines":
+                self.is_thinking = False
+                return self._consume_completed_lines(completed_lines)
+            # An orphan closing reasoning tag reset line_scanner after draft lines.
+            self._lines_started = False
+            self.chinese_extracted = ""
+            self.japanese_extracted = ""
+            self.emitted_chinese_len = 0
 
         if self._think_frozen is not None and ">" not in chunk:
             # Inside a think block whose opening tag is complete, a chunk without '>' cannot finish a closing tag,
@@ -472,8 +504,41 @@ class StreamingBilingualParser:
         else:
             effective_buffer, is_inside_think, frozen = _strip_think_buffer(self.buffer)
             self._think_frozen = (effective_buffer, is_inside_think) if frozen else None
+
         if is_inside_think and not effective_buffer.strip():
+            self.is_thinking = True
+            if not self._scanner_deferred:
+                self.line_scanner.feed(chunk)
             return "", []
+
+        if not self._seen_think_close:
+            leading = effective_buffer.lstrip()
+            if not leading or _RE_MD_FENCE_PREFIX.match(leading):
+                self.is_thinking = False
+                return "", []
+            after_fence = _RE_LEADING_MD_FENCE.sub("", leading).lstrip()
+            if not after_fence:
+                self.is_thinking = False
+                return "", []
+            if after_fence[0] not in ("{", "[") and not _RE_LEADING_CHINESE_LABEL.match(after_fence):
+                low = after_fence.lower()
+                if len(low) < 8 and any(label.startswith(low) for label in _CHINESE_FALLBACK_LABELS):
+                    self.is_thinking = False
+                    return "", []
+                self._scanner_deferred = True
+                self.is_thinking = True
+                return "", []
+
+        self.is_thinking = False
+        if self._scanner_deferred:
+            self._scanner_deferred = False
+            self.line_scanner._reset_state()
+            completed_lines = self.line_scanner.feed(effective_buffer)
+        else:
+            completed_lines = self.line_scanner.feed(chunk)
+
+        if self.line_scanner.format == "lines":
+            return self._consume_completed_lines(completed_lines)
 
         sanitized = self.clean_markdown_delimiters(effective_buffer)
 
@@ -687,6 +752,13 @@ class StreamingBilingualParser:
         Returns:
             (full_chinese, full_japanese, remaining_unemitted_sentences)
         """
+        self.is_thinking = False
+        effective_buffer, is_inside_think = _strip_and_check_think_buffer(self.buffer, is_final=True)
+        if self._scanner_deferred:
+            self._scanner_deferred = False
+            self.line_scanner._reset_state()
+            self.line_scanner.feed(effective_buffer)
+
         scanned = self.line_scanner.finish()
         if scanned.format == "lines":
             from galgame2voice.services.chat_pipelines.line_scanner import aggregate
@@ -697,8 +769,6 @@ class StreamingBilingualParser:
                 self._apply_parsed_json_dict({"tts": scanned.tts})
             self.emotion_extracted = self.get_emotion()
             return self.chinese_extracted, self.japanese_extracted, []
-
-        effective_buffer, is_inside_think = _strip_and_check_think_buffer(self.buffer, is_final=True)
         if is_inside_think or scanned.truncated:
             self.lines_truncated = True
 
