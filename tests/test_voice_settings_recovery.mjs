@@ -1065,4 +1065,18 @@ await withToastEnv(async ({ first, toastRoot }) => {
 
   passed++;
 }
+// With voice off (「暂时只用文字」), a switch that fails because the engine is down stays quiet;
+// with voice on, the same failure still tells the user where to look.
+for (const voiceOn of [false, true]) {
+  await withToastEnv(async ({ first, toastRoot }) => {
+    globalThis.fetch = async url => (String(url).includes('/switch')
+      ? response({ detail: 'GPT-SoVITS 未启动' }, 503)
+      : response({ profiles: [{ id: 1, name: 'A' }], active_profile_id: null }));
+    first.settings.voiceProfileId = 1;
+    await ensureSessionVoice(first);
+    const notReady = toastRoot.children.filter(toast => String(toast.dataset.msg).startsWith('语音引擎还没准备好'));
+    assert.equal(notReady.length, voiceOn ? 1 : 0);
+    passed++;
+  }, { captureError: true, callbacks: { isVoiceEnabled: () => voiceOn } });
+}
 console.log(`Voice settings recovery: ${passed} scenarios passed`);
