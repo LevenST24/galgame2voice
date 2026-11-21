@@ -47,6 +47,8 @@ export function mountAdv(dom, deps) {
   let pendingOutfit = null;
   let portraitRevision = 0, portraitRequest = null, refreshTimer = null, refreshAttempted = false;
   let drawer = null, backlog = null, externalOverlay = false, savedFocus = null, temporarySkip = false;
+  /** @type {string | null} */
+  let backlogRenderKey = null;
   let voiceSequence = 0;
   let turnSeq = 0, activeTurn = null;
   const recentTurnTimelines = [];
@@ -458,10 +460,29 @@ export function mountAdv(dom, deps) {
     stage.textbox.inert = true; stage.quickmenu.inert = true; tools.inert = true;
     syncControls(); close.focus();
   }
+  function computeBacklogRenderKey(session = deps.getSession?.(), character = deps.getCharacter?.()) {
+    const recoveryVoice = deps.getRecoveryVoice?.();
+    return [
+      session?.id ?? '',
+      settings.advPrimaryLanguage ?? '',
+      settings.advSubtitleLanguage ?? '',
+      settings.advPlayerName ?? '',
+      character?.id ?? '',
+      character?.name ?? '',
+      deps.voiceEnabled?.() ? '1' : '0',
+      recoveryVoice ? '1' : '0',
+      recoveryVoice?.id ?? '',
+      recoveryVoice?.name ?? '',
+    ].map(value => {
+      const part = String(value);
+      return `${part.length}:${part}`;
+    }).join('|');
+  }
   function closeLog() {
     if (!backlog) return;
     backlog.destroy();
     backlog = null;
+    backlogRenderKey = null;
     stage.textbox.inert = false; stage.quickmenu.inert = false; tools.inert = false;
     player.resume('overlay');
     if (!externalOverlay && !drawer) restoreSprite();
@@ -518,6 +539,7 @@ export function mountAdv(dom, deps) {
       onSettings: openErrorSettings,
       onClose: closeLog,
     });
+    backlogRenderKey = computeBacklogRenderKey();
     stage.textbox.inert = true; stage.quickmenu.inert = true; tools.inert = true;
     syncControls();
   }
@@ -773,9 +795,13 @@ export function mountAdv(dom, deps) {
     }
     textbox.refreshSettings();
     if (backlog) {
-      const top = backlog.listElement.scrollTop;
-      backlog.renderAll();
-      backlog.listElement.scrollTop = top;
+      const nextBacklogKey = computeBacklogRenderKey(session, character);
+      if (nextBacklogKey !== backlogRenderKey || !backlog.rendersMessages(session?.messages)) {
+        backlogRenderKey = nextBacklogKey;
+        const top = backlog.listElement.scrollTop;
+        backlog.renderAll();
+        backlog.listElement.scrollTop = top;
+      }
     }
     if (drawer || backlog) player.suspend('overlay');
     if (externalOverlay || configPanel?.isOpen) player.suspend('dialog');

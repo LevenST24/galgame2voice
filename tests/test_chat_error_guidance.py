@@ -1,6 +1,8 @@
 """Failed replies explain the next step in Chinese and carry a stable error code."""
 
 import asyncio
+import logging
+import re
 from unittest.mock import patch
 
 import httpx
@@ -8,6 +10,7 @@ from httpx import ASGITransport, AsyncClient
 import pytest
 
 from galgame2voice.adapters.base import BaseLLMAdapter, ChatMessage, LLMResponse, MissingApiKeyError, TestResult
+from galgame2voice.adapters.llm.openai_adapter import OpenAICompatibleLLMAdapter
 from galgame2voice.adapters.registry import get_llm_adapter
 from galgame2voice.main import create_app
 from galgame2voice.routers.chat import set_chat_service
@@ -75,7 +78,8 @@ def test_timeouts_and_unknown_failures_stay_readable():
     timeout = chat_error_payload(httpx.ReadTimeout("Upstream LLM timed out"), "openai", api_key_configured=True)
     assert timeout["error_code"] == "NETWORK_TIMEOUT" and "超时" in timeout["error"]
     unknown = chat_error_payload(RuntimeError("Simulated adapter failure"), "custom", api_key_configured=True)
-    assert unknown["error_code"] == "PROVIDER_ERROR" and "Simulated adapter failure" in unknown["error"]
+    assert unknown["error_code"] == "PROVIDER_ERROR"
+    assert "模型服务返回异常" in unknown["error"] and "Simulated adapter failure" not in unknown["error"]
 
 
 @pytest.mark.asyncio
@@ -183,7 +187,8 @@ async def test_cross_module_provider_failover_and_error_recovery(
         assert events[0]["data"]["session_id"] == "recovery_session"
         assert isinstance(events[0]["data"]["user_message_id"], int) and events[0]["data"]["user_message_id"] > 0
         assert events[1]["event"] == "error"
-        assert "Simulated adapter failure" in events[1]["data"]["error"]
+        assert "模型服务返回异常" in events[1]["data"]["error"]
+        assert "Simulated adapter failure" not in events[1]["data"]["error"]
 
     working_adapter = _FailoverMockAdapter(custom_tokens=[
         '{"chinese": "已成功恢复！", "japanese": "無事に回復しました！"}'
@@ -204,13 +209,191 @@ def test_credit_balance_and_arrearage_400_report_chinese_quota_guidance():
     )
     anthropic = format_provider_error("anthropic", 400, anthropic_raw)
     assert anthropic["error_code"] == "QUOTA_EXCEEDED"
-    assert "余额不足" in anthropic["summary_zh"]
+    assert anthropic["summary_zh"] == "账户可用余额不足"
     assert "充值或检查账单" in anthropic["action_zh"]
-    assert "（402）" not in anthropic["action_zh"]
+    assert "（402）" not in anthropic["action_zh"] and "（400）" not in anthropic["summary_zh"]
     assert "credit balance" not in anthropic["error"].lower()
 
     qwen_raw = '{"code":"Arrearage","message":"Access denied, please make sure your account is in good standing."}'
     qwen = format_provider_error("qwen", 400, qwen_raw)
     assert qwen["error_code"] == "QUOTA_EXCEEDED"
-    assert "余额不足" in qwen["summary_zh"]
+    assert qwen["summary_zh"] == "账户可用余额不足"
     assert "充值或检查账单" in qwen["action_zh"]
+
+
+_STATUS_PAREN_RE = re.compile(r"[（(]\d{3}(?:/\d{3})?[）)]")
+
+
+@pytest.mark.asyncio
+async def test_error_copy_uses_real_ui_labels_without_raw_english_or_status_codes(monkeypatch, caplog):
+    # 1. Context length exceeded points to real UI controls and omits stale setting names.
+    ctx = chat_error_payload(
+        RuntimeError("API returned status 400: This model's maximum context length is 32768 tokens."),
+        provider_id="openai",
+        api_key_configured=True,
+    )
+    assert ctx["error_code"] == "CONTEXT_LENGTH_EXCEEDED"
+    assert "角色与会话 → 对话高级参数" in ctx["action_zh"]
+    assert "携带上下文条数" in ctx["action_zh"] and "新建会话" in ctx["action_zh"]
+    assert "携带上下文条数" in ctx["error"] and "新建会话" in ctx["error"]
+    for stale in ("会话设置", "最大上下文轮数", "清理历史记录"):
+        for field in ("summary_zh", "action_zh", "error"):
+            assert stale not in ctx[field]
+
+    # 2. HTTP 400 unsupported parameter and unclassified RuntimeError omit raw English, Base URL, and status parens.
+    unsupported = chat_error_payload(
+        RuntimeError("API returned status 400: Invalid parameter 'reasoning_effort' is not supported by this model"),
+        provider_id="openai",
+        api_key_configured=True,
+    )
+    assert unsupported["error_code"] == "PARAMETER_NOT_SUPPORTED"
+    assert unsupported["summary_zh"] == "模型参数不受支持"
+    assert "设置中心 → 对话模型" in unsupported["action_zh"]
+    assert "默认（由模型决定）" in unsupported["action_zh"] and "关闭" in unsupported["action_zh"]
+    for field in ("summary_zh", "action_zh", "error"):
+        assert "原始信息" not in unsupported[field]
+        assert "Invalid parameter" not in unsupported[field]
+        assert "not supported" not in unsupported[field]
+        assert "Base URL" not in unsupported[field]
+        assert not _STATUS_PAREN_RE.search(unsupported[field])
+
+    unclassified = chat_error_payload(
+        RuntimeError("Unexpected upstream WireProtocol explosion"),
+        provider_id="custom",
+        api_key_configured=True,
+    )
+    assert unclassified["error_code"] == "PROVIDER_ERROR"
+    assert unclassified["summary_zh"] == "模型服务返回异常"
+    for label in ("设置中心 → 对话模型", "接口地址", "API 密钥", "模型名称"):
+        assert label in unclassified["action_zh"]
+    for field in ("summary_zh", "action_zh", "error"):
+        assert "原始信息" not in unclassified[field]
+        assert "Unexpected upstream" not in unclassified[field]
+        assert "WireProtocol" not in unclassified[field]
+        assert "Base URL" not in unclassified[field]
+        assert not _STATUS_PAREN_RE.search(unclassified[field])
+
+    # 3. Route-level POST /api/providers/test for 429, 402, ftp:// preflight, and warning logs.
+    app = create_app()
+    orig_get = httpx.AsyncClient.get
+    orig_post = httpx.AsyncClient.post
+    upstream_state = {"status": 429, "body": '{"error":{"message":"Rate limit reached on tokens per min (TPM)"}}'}
+
+    def _is_internal(url_str: str) -> bool:
+        return (
+            not url_str.startswith("http://") and not url_str.startswith("https://")
+        ) or url_str.startswith("http://127.0.0.1:8080")
+
+    async def mocked_get(self_client, url, *args, **kwargs):
+        url_str = str(url)
+        if _is_internal(url_str):
+            return await orig_get(self_client, url, *args, **kwargs)
+        return httpx.Response(
+            upstream_state["status"],
+            text=upstream_state["body"],
+            request=httpx.Request("GET", url_str),
+        )
+
+    async def mocked_post(self_client, url, *args, **kwargs):
+        url_str = str(url)
+        if _is_internal(url_str):
+            return await orig_post(self_client, url, *args, **kwargs)
+        return httpx.Response(
+            upstream_state["status"],
+            text=upstream_state["body"],
+            request=httpx.Request("POST", url_str),
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mocked_get)
+    monkeypatch.setattr(httpx.AsyncClient, "post", mocked_post)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+        # 429 rate limit
+        resp_429 = await client.post(
+            "/api/providers/test",
+            json={"id": "openai", "api_key": "sk-openai-429-key-12345", "base_url": "https://api.openai.com/v1"},
+        )
+        assert resp_429.status_code == 200
+        d429 = resp_429.json()
+        assert d429["status_code"] == 429 and d429["error_code"] == "OPENAI_RATE_LIMIT"
+        assert "角色与会话 → 对话高级参数" in d429["action_zh"] and "最大生成长度" in d429["action_zh"]
+
+        # 402 insufficient balance
+        upstream_state.update(status=402, body='{"error":{"message":"Insufficient Balance"}}')
+        resp_402 = await client.post(
+            "/api/providers/test",
+            json={"id": "deepseek", "api_key": "sk-deepseek-402-key-12345", "base_url": "https://api.deepseek.com"},
+        )
+        assert resp_402.status_code == 200
+        d402 = resp_402.json()
+        assert d402["status_code"] == 402 and d402["error_code"] == "QUOTA_EXCEEDED"
+        assert d402["summary_zh"] == "账户可用余额不足"
+
+        # ftp:// invalid scheme preflight
+        resp_ftp = await client.post(
+            "/api/providers/test",
+            json={"id": "custom", "api_key": "sk-ftp-test-key-12345", "base_url": "ftp://api.example.com/v1"},
+        )
+        assert resp_ftp.status_code == 400
+        dftp = resp_ftp.json()
+        assert dftp["diagnostic_code"] == "INVALID_BASE_URL"
+        assert "设置中心 → 对话模型" in dftp["action_zh"] and "接口地址" in dftp["action_zh"]
+
+        for payload in (d429, d402, dftp):
+            for field in ("summary_zh", "action_zh", "error", "error_title", "diagnostic"):
+                for forbidden in ("RPM/TPM", "会话设置", "Base URL"):
+                    assert forbidden not in payload[field]
+                assert not _STATUS_PAREN_RE.search(payload[field])
+
+        # Unclassified 500 + Anthropic 400 keep sanitized raw error & status code in warning logs, not user copy
+        with caplog.at_level(logging.WARNING, logger="galgame2voice.adapters.llm"):
+            upstream_state.update(status=500, body="Upstream 500 failure with secret sk-secretleak1234567890abcd")
+            resp_500 = await client.post(
+                "/api/providers/test",
+                json={"id": "openai", "api_key": "sk-openai-500-key-12345", "base_url": "https://api.openai.com/v1"},
+            )
+            d500 = resp_500.json()
+            assert d500["error_code"] == "PROVIDER_ERROR"
+            assert d500["summary_zh"] == "模型服务返回异常"
+            for field in ("summary_zh", "action_zh", "error", "error_title", "diagnostic"):
+                assert "Upstream 500 failure" not in d500[field]
+                assert "原始信息" not in d500[field]
+                assert "Base URL" not in d500[field]
+                assert not _STATUS_PAREN_RE.search(d500[field])
+
+            upstream_state.update(
+                status=400,
+                body='{"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}',
+            )
+            resp_ant = await client.post(
+                "/api/providers/test",
+                json={"id": "anthropic", "api_key": "sk-ant-test-key-1234567890", "base_url": "https://api.anthropic.com/v1"},
+            )
+            dant = resp_ant.json()
+            assert dant["error_code"] == "QUOTA_EXCEEDED" and dant["status_code"] == 400
+            assert dant["summary_zh"] == "账户可用余额不足"
+
+        assert "Upstream 500 failure" in caplog.text and "status=500" in caplog.text
+        assert "sk-secretleak1234567890abcd" not in caplog.text
+        assert "credit balance is too low" in caplog.text and "status=400" in caplog.text
+
+        # Router-level exception fallback uses diag_info["error"] without raw English
+        with patch.object(
+            OpenAICompatibleLLMAdapter,
+            "test_connection",
+            side_effect=RuntimeError("Unexpected adapter crash"),
+        ):
+            resp_crash = await client.post(
+                "/api/providers/test",
+                json={"id": "openai", "api_key": "sk-crash-test-12345", "base_url": "https://api.openai.com/v1"},
+            )
+        dcrash = resp_crash.json()
+        assert dcrash["error_code"] == "PROVIDER_ERROR"
+        assert dcrash["message"] == "模型服务返回异常"
+        for field in ("message", "summary_zh", "action_zh", "error", "error_title", "diagnostic"):
+            assert "Unexpected adapter crash" not in dcrash[field]
+            assert "连接测试异常" not in dcrash[field]
+            assert "Base URL" not in dcrash[field]
+            assert not _STATUS_PAREN_RE.search(dcrash[field])
+
