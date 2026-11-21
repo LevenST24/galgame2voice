@@ -3,7 +3,7 @@
 import { requestJson } from '../api.js';
 import { waitForEngine } from './engine_recovery.js';
 import { runSettingsMutation, saveConfirmedConfig } from './config_recovery.js';
-import { clearMemAudioCache } from '../cache.js';
+import { clearMemAudioCache, clearGeneratedAudioCacheStorage } from '../cache.js';
 
 export const UNCONFIRMED_RESTART_MESSAGE = '重启请求结果未确认；当前引擎已在线。计算方式以「启动计算方式」显示的状态为准。';
 
@@ -279,9 +279,7 @@ class EngineSettingsController {
       if (this.coordinator.revokeAllCachedAudioUrls) {
         this.coordinator.revokeAllCachedAudioUrls();
       }
-      if (typeof window !== 'undefined' && 'caches' in window) {
-        await caches.delete('gal2voice-audio-v1').catch(() => {});
-      }
+      await clearGeneratedAudioCacheStorage();
       const data = await requestJson('/api/cache/clear', { method: 'POST' });
       if (this.disposed) return;
       this.coordinator.showToast?.(`缓存已清空：删除 ${data.deleted_files || 0} 个文件，释放 ${data.freed_mb || 0} MB`, 'success');
