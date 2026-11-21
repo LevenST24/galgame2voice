@@ -7,6 +7,8 @@ into model-ready ChatMessage lists.
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 from typing import Any
 import aiosqlite
 
@@ -50,6 +52,31 @@ async def _resolve_context_voice_profile(
     return active_profile
 
 
+_ACTING_MENU_CACHE: dict[tuple[Any, ...], dict | None] = {}
+_ACTING_MENU_CACHE_MAX = 256
+_MISSING = object()
+
+
+def clear_acting_menu_cache() -> None:
+    """Clears cached acting menus."""
+    _ACTING_MENU_CACHE.clear()
+
+
+def _portrait_menu_cache_key(portrait_dir: Path, outfit: str | None) -> tuple[Any, ...] | None:
+    """Key on the folder, the outfit and each top-level manifest's name, mtime and size; None if unreadable."""
+    try:
+        json_files: list[tuple[str, int, int]] = []
+        with os.scandir(portrait_dir) as entries:
+            for entry in entries:
+                if entry.name.lower().endswith(".json") and entry.is_file():
+                    stat = entry.stat()
+                    json_files.append((entry.name, stat.st_mtime_ns, stat.st_size))
+    except OSError:
+        return None
+    json_files.sort()
+    return (os.fspath(portrait_dir), outfit, tuple(json_files))
+
+
 def _build_acting_menu(character_name: str | None, outfit: str | None = None) -> dict | None:
     """Builds the acting menu from the active character's portrait pack, if any."""
     if not character_name:
@@ -58,11 +85,22 @@ def _build_acting_menu(character_name: str | None, outfit: str | None = None) ->
         package = get_character_manager().get_character(character_name)
         if package is None:
             return None
-        portrait = load_portrait_manifest(package.folder / "portrait")
+        portrait_dir = package.folder / "portrait"
+        cache_key = _portrait_menu_cache_key(portrait_dir, outfit)
+        if cache_key is not None:
+            cached = _ACTING_MENU_CACHE.get(cache_key, _MISSING)
+            if cached is not _MISSING:
+                return cached
+        portrait = load_portrait_manifest(portrait_dir)
     except Exception as exc:
         logger.warning("Failed to build acting menu for %s: %s", character_name, exc)
         return None
-    return build_acting_menu(portrait, outfit)
+    menu = build_acting_menu(portrait, outfit)
+    if cache_key is not None:
+        if len(_ACTING_MENU_CACHE) >= _ACTING_MENU_CACHE_MAX:
+            _ACTING_MENU_CACHE.pop(next(iter(_ACTING_MENU_CACHE)))
+        _ACTING_MENU_CACHE[cache_key] = menu
+    return menu
 
 
 async def _build_memory_prompt_block(

@@ -1,6 +1,7 @@
 """P2b reply contract, old-format stripping, history replay and old-mode compatibility."""
 
 import json
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -363,3 +364,154 @@ class TestLinesModeWiring:
         assert payload["lines"] == [
             {"zh": "你好。", "ja": "こんにちは。", "emotion": "happy", "act": {"face": "微笑"}}
         ]
+
+    @pytest.mark.asyncio
+    async def test_build_chat_context_caches_acting_menu_until_layers_json_changes(
+        self, temp_db_path, tmp_path, monkeypatch
+    ):
+        tiny_webp = b"RIFF\x18\x00\x00\x00WEBPVP8L\x0c\x00\x00\x00/\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+        pkg_dir = tmp_path / "cached-pack"
+        layers_dir = pkg_dir / "portrait" / "layers" / "A"
+        layers_dir.mkdir(parents=True)
+        for name in ("body.webp", "face01.webp", "face02.webp"):
+            (layers_dir / name).write_bytes(tiny_webp)
+
+        layers_data = {
+            "version": 3,
+            "defaultOutfit": "uniform",
+            "defaultPose": "a",
+            "canvases": {"A": {"width": 1000, "height": 1000}},
+            "outfits": {
+                "uniform": {"name": "校服", "icon": "🎒"},
+                "casual": {"name": "便服", "icon": "👗"},
+            },
+            "poses": {"a": {"name": "站姿", "canvas": "A"}},
+            "faces": {
+                "01": {"label": "平常", "emotion": "gentle", "weights": {"gentle": 3}},
+                "02": {"label": "微笑", "emotion": "happy", "weights": {"happy": 3}},
+            },
+            "looks": {
+                "a/uniform": {
+                    "pose": "a",
+                    "outfit": "uniform",
+                    "crop": {"left": 0, "top": 0, "width": 500, "height": 800},
+                    "faceRect": {"x": 50, "y": 20, "width": 200, "height": 200},
+                    "headAnchor": {"x": 150, "y": 20},
+                    "body": ["A/body"],
+                    "defaultFace": "01",
+                    "faces": {
+                        "01": {"layers": ["A/face01"], "eyesClosed": False},
+                    },
+                },
+                "a/casual": {
+                    "pose": "a",
+                    "outfit": "casual",
+                    "crop": {"left": 0, "top": 0, "width": 500, "height": 800},
+                    "faceRect": {"x": 50, "y": 20, "width": 200, "height": 200},
+                    "headAnchor": {"x": 150, "y": 20},
+                    "body": ["A/body"],
+                    "defaultFace": "02",
+                    "faces": {
+                        "02": {"layers": ["A/face02"], "eyesClosed": False},
+                    },
+                },
+            },
+            "layers": {
+                "A/body": {
+                    "canvas": "A",
+                    "file": "layers/A/body.webp",
+                    "rect": {"x": 0, "y": 0, "width": 500, "height": 800},
+                    "z": 0,
+                    "opacity": 1,
+                },
+                "A/face01": {
+                    "canvas": "A",
+                    "file": "layers/A/face01.webp",
+                    "rect": {"x": 50, "y": 20, "width": 200, "height": 200},
+                    "z": 10,
+                    "opacity": 1,
+                },
+                "A/face02": {
+                    "canvas": "A",
+                    "file": "layers/A/face02.webp",
+                    "rect": {"x": 50, "y": 20, "width": 200, "height": 200},
+                    "z": 10,
+                    "opacity": 1,
+                },
+            },
+        }
+        layers_json = pkg_dir / "portrait" / "layers.json"
+        layers_json.write_text(json.dumps(layers_data), encoding="utf-8")
+
+        package = SimpleNamespace(folder=pkg_dir)
+        missing_package = SimpleNamespace(folder=tmp_path / "missing-portrait-pack")
+        manager = SimpleNamespace(
+            get_character=lambda name: (
+                package if name == "测试角色" else (missing_package if name == "无立绘角色" else None)
+            )
+        )
+        monkeypatch.setattr(context_builder, "get_character_manager", lambda: manager)
+
+        load_calls = 0
+        real_load = context_builder.load_portrait_manifest
+
+        def counting_load(folder):
+            nonlocal load_calls
+            load_calls += 1
+            return real_load(folder)
+
+        monkeypatch.setattr(context_builder, "load_portrait_manifest", counting_load)
+
+        profile = SimpleNamespace(id=1, name="测试角色", system_prompt="你是测试角色。")
+        session = SimpleNamespace(user_id="user-1")
+
+        # Missing portrait directory returns None and is not cached.
+        no_portrait_profile = SimpleNamespace(id=2, name="无立绘角色", system_prompt="你是无立绘角色。")
+        missing_ctx = await _build_ctx(
+            temp_db_path, "cache-missing", active_profile=no_portrait_profile, session=session
+        )
+        assert missing_ctx.menu is None
+        assert load_calls == 1
+        assert len(context_builder._ACTING_MENU_CACHE) == 0
+
+        # Consecutive context builds for the same character and outfit load manifest once.
+        first = await _build_ctx(
+            temp_db_path, "cache-s1", active_profile=profile, session=session, outfit="uniform"
+        )
+        second = await _build_ctx(
+            temp_db_path, "cache-s2", active_profile=profile, session=session, outfit="uniform"
+        )
+        assert load_calls == 2
+        assert first.menu["faces"] == ["平常"]
+        assert second.menu == first.menu
+
+        # Different outfit has its own cache entry.
+        casual_first = await _build_ctx(
+            temp_db_path, "cache-s3", active_profile=profile, session=session, outfit="casual"
+        )
+        casual_second = await _build_ctx(
+            temp_db_path, "cache-s4", active_profile=profile, session=session, outfit="casual"
+        )
+        assert load_calls == 3
+        assert casual_first.menu["faces"] == ["微笑"]
+        assert casual_second.menu == casual_first.menu
+
+        # Rewriting layers.json invalidates the cached menu and reloads.
+        layers_data["faces"]["01"]["label"] = "温柔微笑"
+        layers_data["looks"]["a/uniform"]["faces"]["02"] = {"layers": ["A/face02"], "eyesClosed": False}
+        layers_json.write_text(json.dumps(layers_data, ensure_ascii=False), encoding="utf-8")
+
+        updated = await _build_ctx(
+            temp_db_path, "cache-s5", active_profile=profile, session=session, outfit="uniform"
+        )
+        assert load_calls == 4
+        assert updated.menu["faces"] == ["温柔微笑", "微笑"]
+        assert "温柔微笑、微笑" in updated[0].content
+
+        # Deleting the portrait directory stops returning the cached menu.
+        shutil.rmtree(pkg_dir / "portrait")
+        removed = await _build_ctx(
+            temp_db_path, "cache-s6", active_profile=profile, session=session, outfit="uniform"
+        )
+        assert removed.menu is None
+
