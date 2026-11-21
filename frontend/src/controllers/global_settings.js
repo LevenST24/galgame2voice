@@ -111,8 +111,12 @@ function goToInferenceTab() {
 }
 
 function goToDashboardTab({ focusRestart = false } = {}) {
-  const tabBtn = _dom.gTabs ? _dom.gTabs.querySelector('[data-gtab="dashboard"]') : null;
-  if (tabBtn) tabBtn.click();
+  // The toast that offers this outlives the settings window: reopen it instead of switching a hidden tab.
+  if (!settingsVisible()) openGlobalSettings('dashboard');
+  else {
+    const tabBtn = _dom.gTabs ? _dom.gTabs.querySelector('[data-gtab="dashboard"]') : null;
+    if (tabBtn) tabBtn.click();
+  }
   if (focusRestart) _dom.gBtnRestartSovits?.focus?.();
 }
 

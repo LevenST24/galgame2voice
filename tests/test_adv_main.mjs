@@ -2268,7 +2268,7 @@ test('audio error toast points to character settings when message instructs 角�
 test('title getStatus includes directory_configured from sovits-directory when engine is not ready', async t => {
   const h = setup(t, {
     fetch: async url => {
-      if (url === '/api/system/engine-status') return Response.json({ state: 'unavailable', ready: false, message: '未启动' });
+      if (url === '/api/system/engine-status') return Response.json({ state: 'unavailable', ready: false, message: '未启动', base_url: 'http://127.0.0.1:9880', source: 'default' });
       if (url === '/api/system/sovits-directory') return Response.json({ directory: 'D:/GPT-SoVITS', valid: true, runtime_available: true });
       return Response.json({});
     },
@@ -2277,3 +2277,22 @@ test('title getStatus includes directory_configured from sovits-directory when e
   assert.equal(status.engine.state, 'unavailable');
   assert.equal(status.engine.directory_configured, true);
 });
+
+for (const [name, engineReply] of [
+  ['a remote engine address', () => Response.json({ state: 'unavailable', ready: false, message: '连不上', base_url: 'http://192.168.1.50:9880', source: 'db' })],
+  ['an engine status the server rejects', () => Response.json({ detail: '语音引擎服务地址无效。请在「语音服务」检查并保存服务地址。' }, { status: 400 })],
+]) {
+  test(`title getStatus does not read the local engine folder for ${name}`, async t => {
+    let folderReads = 0;
+    const h = setup(t, {
+      fetch: async url => {
+        if (url === '/api/system/engine-status') return engineReply();
+        if (url === '/api/system/sovits-directory') { folderReads += 1; return Response.json({ directory: 'D:/GPT-SoVITS', valid: true }); }
+        return Response.json({});
+      },
+    });
+    const status = await h.app.actions.getStatus();
+    assert.equal(folderReads, 0);
+    assert.equal(status.engine.directory_configured, undefined);
+  });
+}

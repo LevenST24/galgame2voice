@@ -624,6 +624,27 @@ async function inspectOtherProviderAndSaveVoicePage(dom, toastRoot, requests) {
   return { configPosts, providerWrites, toasts };
 }
 
+test('engine folder toast opens 运行状态 even after the settings window was closed', async t => {
+  const { dom, toastRoot, requests } = await setupVoiceFooterSaveFixture(t, {
+    secondProvider: secondOpenAiProvider(''),
+  });
+  dom.gTabs.querySelector('[data-gtab="inference"]').click();
+  dom.gSovitsDirectory.value = 'D:/GPT-SoVITS';
+  dom.gSaveSovitsDirectory.click();
+  for (let i = 0; i < 5; i += 1) await new Promise(resolve => setImmediate(resolve));
+  const toast = [...toastRoot.children].find(el => String(el.dataset.msg || '').startsWith('引擎目录已保存'));
+  assert.ok(toast, 'expected the folder-saved toast');
+
+  closeModal(dom.globalModal);
+  assert.equal(dom.globalModal.hidden, true);
+  toast.querySelector('button').click();
+
+  assert.equal(dom.globalModal.hidden, false, 'the toast button must reopen the settings window');
+  assert.equal(dom.gTabs.querySelector('.active')?.dataset.gtab, 'dashboard');
+  assert.equal(globalThis.document.activeElement, dom.gBtnRestartSovits);
+  assert.equal(requests.some(r => r.url.includes('restart')), false, 'opening 运行状态 must not restart the engine');
+});
+
 test('footer saveGlobalConfig saves only voice service page when user inspected unconfigured OpenAI in models tab', async t => {
   const { dom, toastRoot, requests } = await setupVoiceFooterSaveFixture(t, {
     secondProvider: secondOpenAiProvider(''),
