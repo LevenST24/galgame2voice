@@ -467,10 +467,22 @@ def normalize_japanese_furigana(text: str) -> str:
     Substitutes inline furigana bracket patterns with the target kana pronunciation.
     e.g., "乃愛（のあ）" -> "のあ"
           "李空(りく)" -> "りく"
+    Preserves preceding kanji when the bracketed kana is a stage cue (e.g. 先生（ふふっ）)
+    or is shorter than the preceding kanji run (e.g. 生徒会長白雪（しらゆき）).
     """
     if not text:
         return ""
-    return INLINE_FURIGANA_PATTERN.sub(r'\2', text)
+
+    def _replace_furigana(match: re.Match) -> str:
+        kanji = match.group(1)
+        kana = match.group(2)
+        if kana in STAGE_CUE_EXACT_SET or not is_spoken_dialogue_inside_brackets(kana):
+            return kanji
+        if len(kanji) <= len(kana):
+            return kana
+        return kanji
+
+    return INLINE_FURIGANA_PATTERN.sub(_replace_furigana, text)
 
 
 def normalize_galgame_names_and_readings(text: str) -> str:
