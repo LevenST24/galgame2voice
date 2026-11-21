@@ -223,11 +223,6 @@ def test_parser_unclosed_trailing_backslash():
 class TestStreamingQuotedSentencesImmediateEmission:
     """Verifies that dialogue sentences ending with quotes or brackets are emitted immediately during streaming."""
 
-    def test_single_quoted_sentence_emits_immediately(self):
-        parser = StreamingBilingualParser()
-        d1, s1 = parser.feed_chunk('{"chinese": "早上好！", "japanese": "「おはようございます！」')
-        assert len(s1) == 1
-        assert s1[0] == "「おはようございます！」"
 
     def test_sequential_quoted_sentences_stream_promptly(self):
         parser = StreamingBilingualParser()

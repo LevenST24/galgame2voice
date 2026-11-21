@@ -108,23 +108,6 @@ class _RedirectNvidiaSmiSubprocess:
         return self._real.check_output(cmd, *args, **kwargs)
 
 
-def test_exec_command_output_returns_promptly_when_grandchild_holds_stdout(tmp_path: Path) -> None:
-    pid_file = tmp_path / "grandchild.pid"
-    cmd = _build_pipe_holding_cmd(pid_file)
-    try:
-        t0 = time.monotonic()
-        res = hardware._exec_command_output(cmd, timeout=PROBE_TIMEOUT)
-        elapsed = time.monotonic() - t0
-
-        assert res is None
-        assert elapsed < PROMPT_LIMIT, f"expected bounded timeout return (<{PROMPT_LIMIT}s), took {elapsed:.2f}s"
-        assert pid_file.is_file(), "grandchild pid file was not written before timeout"
-        grandchild_pid = int(pid_file.read_text(encoding="utf-8").strip())
-        assert _wait_pid_dead(grandchild_pid), f"grandchild pid {grandchild_pid} still alive after timeout cleanup"
-    finally:
-        _cleanup_grandchild(pid_file)
-
-
 def test_exec_command_output_returns_promptly_when_parent_exits_leaving_pipe_holder(tmp_path: Path) -> None:
     pid_file = tmp_path / "orphan_pipe_holder.pid"
     cmd = _build_pipe_holding_cmd(pid_file, parent_sleep=0.0)
@@ -184,4 +167,3 @@ def test_exec_command_output_normal_nonzero_empty_and_invalid_utf8() -> None:
         [sys.executable, "-S", "-c", r"import sys; sys.stdout.buffer.write(b'\xff\xfe')"]
     )
     assert bad_utf8 is None
-

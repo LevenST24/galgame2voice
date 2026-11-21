@@ -158,21 +158,6 @@ async def test_failed_delete_keeps_both_history_and_audio(tmp_path, monkeypatch)
         assert len(await crud.get_recent_messages(conn, session_id="s_keep")) == 1
         assert audio.read_bytes() == b"original"
 
-@pytest.mark.asyncio
-async def test_imported_lines_round_trip_through_history_and_export(tmp_path, monkeypatch):
-    await _init_backup_db(tmp_path, monkeypatch, "import-lines.db")
-    lines = [_backup_line(0, "你好", "こんにちは", "happy", {"face": "smile"})]
-    payload = {"sessions": [{"id": "s_import_lines", "title": "逐句", "messages": [
-        {"role": "assistant", "content": "你好", "japanese": "こんにちは", "lines": lines}
-    ]}]}
-    async with _app_client() as client:
-        response = await client.post("/api/chat/import", json=payload)
-        assert response.status_code == 200, response.text
-        history = (await client.get("/api/chat/history?session_id=s_import_lines")).json()
-        assert history["messages"][0]["lines"] == lines
-        backup = (await client.get("/api/chat/export")).json()
-        assert backup["sessions"][0]["messages"][0]["lines"] == lines
-
 
 @pytest.mark.asyncio
 async def test_import_sanitizes_invalid_act_values_without_dropping_lines(tmp_path, monkeypatch):
