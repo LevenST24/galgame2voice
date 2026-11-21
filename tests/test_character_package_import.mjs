@@ -91,10 +91,14 @@ const { dom, session, toastRoot, getOpenedSettings, cleanup } = setupEnv();
 let profiles = [], confirmResult = false;
 let confirmCalls = 0;
 globalThis.window = { confirm: () => { confirmCalls += 1; return confirmResult; } };
-globalThis.fetch = async (url) => ({
-  ok: true, status: 200,
-  json: async () => (String(url).endsWith('/profiles') ? { profiles, active_profile_id: profiles[0]?.id ?? null } : {}),
-});
+const fetchCalls = [];
+globalThis.fetch = async (url, init = {}) => {
+  fetchCalls.push({ url: String(url), method: init.method || 'GET' });
+  return {
+    ok: true, status: 200,
+    json: async () => (String(url).endsWith('/profiles') ? { profiles, active_profile_id: profiles[0]?.id ?? null } : {}),
+  };
+};
 
 try {
   // First-use hint when empty
@@ -135,6 +139,11 @@ try {
   assert.equal(dom.sSystem.value, '你是爱丽丝');
   assert.equal(dom.sVoiceImport.classList.contains('primary'), false);
   assert.equal(dom.sVoiceActive.textContent, '当前加载：爱丽丝');
+  // Session had no character bound (voiceProfileId === null), so import must bind & persist immediately.
+  assert.equal(session.settings.voiceProfileId, 8);
+  assert.equal(toastRoot.children.at(-1)?.dataset.msg, '已导入并选用「爱丽丝」，现在可以直接开始聊天');
+  assert.ok(fetchCalls.some((c) => c.url.includes('/api/chat/sessions') && c.method === 'POST'), 'must persist session binding');
+  assert.ok(fetchCalls.some((c) => c.url.includes('/api/voice/switch') && c.method === 'POST'), 'must trigger ensureSessionVoice');
 
   // Failure response -> error toast
   dom.sVoiceImportZipInput.files = [z1];
@@ -176,6 +185,8 @@ try {
   });
   readyXhr.onload();
   await pReady;
+  assert.equal(session.settings.voiceProfileId, 8, 'already-bound session must not be overwritten on import');
+  assert.equal(dom.sVoice.value, '10');
   assert.equal(toastRoot.children.at(-1)?.dataset.msg, '已导入「爱丽丝」，点「保存」即可使用');
   assert.match(toastRoot.children.at(-1)?.className || '', /toast-success/);
 
@@ -225,6 +236,7 @@ try {
   closedXhr.onload();
   await pClosed;
   assert.equal(confirmCalls, 0);
+  assert.equal(session.settings.voiceProfileId, 8);
   assert.equal(dom.sVoice.value, '11');
   assert.equal(dom.sSystem.value, '用户手写的未保存人设');
   const closedToast = toastRoot.children.at(-1);
