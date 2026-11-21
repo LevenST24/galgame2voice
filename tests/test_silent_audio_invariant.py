@@ -97,3 +97,53 @@ async def test_normal_audio_passes_through():
     client = GptSovitsClient(base_url="http://mock", server=SilentTtsStubServer(payload))
     result = await client.synthesize("テスト", options={"ref_audio_path": "mock.wav", "prompt_text": "mock"})
     assert result == payload
+
+
+@pytest.mark.asyncio
+async def test_tts_pipeline_surfaces_chinese_fp32_guidance_for_managed_and_external_engine(monkeypatch):
+    """When synthesis returns an all-zero WAV, the UI-facing error is Chinese FP32 guidance, not English."""
+    from types import SimpleNamespace
+
+    from galgame2voice.services.chat_pipelines.tts_pipeline import TtsStreamPipeline
+    from galgame2voice.services import engine_supervisor
+    from galgame2voice.utils.audio_spec import (
+        SILENT_AUDIO_USER_GUIDANCE_EXTERNAL,
+        SILENT_AUDIO_USER_GUIDANCE_MANAGED,
+    )
+
+    silent_wav = build_wav(b"\x00\x00" * 1600)
+    client = GptSovitsClient(base_url="http://127.0.0.1:9880", server=SilentTtsStubServer(silent_wav))
+
+    class _PipelineTtsService:
+        def __init__(self, inner_client):
+            self.client = inner_client
+
+        async def synthesize_to_file(self, text, options=None, **kwargs):
+            await self.client.synthesize(text, options=options)
+            raise AssertionError("Silent WAV must raise before writing an audio file")
+
+    pipe = TtsStreamPipeline(_PipelineTtsService(client), "gen-silent")
+    opts = {"ref_audio_path": "mock.wav", "prompt_text": "mock"}
+
+    # Case 1: app-managed live engine -> instruct switching in 语音服务 -> 计算方式 -> FP32 单精度 · 兼容模式
+    live_launch = SimpleNamespace(process=SimpleNamespace(poll=lambda: None))
+    monkeypatch.setattr(
+        engine_supervisor,
+        "get_engine_supervisor",
+        lambda request=None: SimpleNamespace(get_managed_launch=lambda ep: live_launch),
+    )
+    chunk_managed, err_managed = await pipe.synthesize_chunk("テスト", 0, dict(opts))
+    assert chunk_managed is None
+    assert err_managed == SILENT_AUDIO_USER_GUIDANCE_MANAGED
+    assert "语音服务" in err_managed and "计算方式" in err_managed and "FP32 单精度" in err_managed and "运行状态" in err_managed
+
+    # Case 2: user-started external engine -> instruct restarting with FP32 (is_half=False)
+    monkeypatch.setattr(
+        engine_supervisor,
+        "get_engine_supervisor",
+        lambda request=None: SimpleNamespace(get_managed_launch=lambda ep: None),
+    )
+    chunk_ext, err_ext = await pipe.synthesize_chunk("テスト", 1, dict(opts))
+    assert chunk_ext is None
+    assert err_ext == SILENT_AUDIO_USER_GUIDANCE_EXTERNAL
+    assert "FP32" in err_ext and "is_half=False" in err_ext
