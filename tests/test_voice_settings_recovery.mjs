@@ -22,7 +22,9 @@ function element(value = '') {
     addEventListener: (name, handler) => { (listeners[name] ||= []).push(handler); },
     async fire(name) { for (const handler of listeners[name] || []) await handler(); },
     async click() { if (!this.disabled) await this.fire('click'); },
-    appendChild(child) { this.children.push(child); }, querySelectorAll: () => [],
+    appendChild(child) { this.children.push(child); },
+    append(...nodes) { this.children.push(...nodes); },
+    querySelectorAll: () => [],
     remove() {},
     classList: { contains: () => false, toggle() {}, add() {}, remove() {} } };
 }
@@ -105,7 +107,10 @@ try {
   }
   {
     const { dom } = setup(); let signal;
-    globalThis.fetch = async (_url, options) => { signal = options.signal; return new Promise(() => {}); };
+    globalThis.fetch = async (url, options) => {
+      if (url === '/api/chat/sessions') { signal = options.signal; return new Promise(() => {}); }
+      return response({});
+    };
     await dom.sSave.click();
     assert.equal(signal.aborted, true); assert.equal(dom.sSave.disabled, false); passed++;
   }
@@ -1303,4 +1308,117 @@ for (const voiceOn of [false, true]) {
   }
   passed++;
 }
+
+async function testSaveUnlocksWhileVoiceSwitchPending() {
+  let modalOpen = false;
+  let closed = 0;
+  await withToastEnv(async ({ first, dom, toastRoot }) => {
+    let hiddenClass = true;
+    dom.sessionModal = element();
+    dom.sessionModal.hidden = true;
+    dom.sessionModal.classList = {
+      contains: cls => cls === 'hidden' && hiddenClass,
+      toggle: (cls, force) => { if (cls === 'hidden') hiddenClass = Boolean(force); },
+      add: cls => { if (cls === 'hidden') hiddenClass = true; },
+      remove: cls => { if (cls === 'hidden') hiddenClass = false; },
+    };
+
+    first.settings.voiceProfileId = 1;
+    const saves = [];
+    const switches = [];
+    let resolveHungSwitch = null;
+    globalThis.fetch = async (url, options = {}) => {
+      if (url === '/api/voice/profiles') return response({ profiles: cnProfiles, active_profile_id: 1 });
+      if (url === '/api/chat/sessions' && options.method === 'POST') {
+        saves.push(JSON.parse(options.body));
+        return response({ status: 'ok' });
+      }
+      if (url === '/api/voice/switch' && options.method === 'POST') {
+        const id = JSON.parse(options.body).profile_id;
+        switches.push(id);
+        if (id === 2) {
+          return new Promise(resolve => {
+            resolveHungSwitch = () => resolve(response({ status: 'switched', profile: '角色2', profile_id: 2 }));
+          });
+        }
+        return response({ status: 'switched', profile: `角色${id}`, profile_id: id });
+      }
+      return response({});
+    };
+
+    let pendingSave = null;
+    try {
+      await openSessionSettings();
+      await tick();
+      assert.equal(modalOpen, true);
+
+      dom.sVoice.value = '2';
+      await dom.sVoice.fire('change');
+
+      pendingSave = dom.sSave.click();
+      for (let i = 0; i < 5; i++) await tick();
+
+      assert.equal(saves.length, 1);
+      assert.equal(saves[0].voice_profile_id, 2);
+      assert.deepEqual(switches, [2]);
+      assert.equal(closed, 1, 'modal must close as soon as session persistence completes');
+      assert.equal(modalOpen, false);
+      assert.equal(dom.sSave.disabled, false, '#sSave must be re-enabled without waiting for /api/voice/switch');
+      assert.deepEqual(
+        toastRoot.children.map(t => [t.className, t.dataset.msg]),
+        [['toast toast-success', '已换上「角色2」。']],
+        'save toast must appear immediately without waiting for /api/voice/switch',
+      );
+
+      // Reopen panel while /api/voice/switch is still pending, adjust settings / switch back to 角色1, and save
+      await openSessionSettings();
+      await tick();
+      assert.equal(modalOpen, true);
+      assert.equal(dom.sSave.disabled, false, 'reopened panel must have an enabled Save button');
+
+      dom.sTemp.value = '0.9';
+      dom.sVoice.value = '1';
+      await dom.sVoice.fire('change');
+      await dom.sSave.click();
+
+      assert.equal(saves.length, 2, 'saving from reopened panel must succeed while previous switch is pending');
+      assert.equal(first.settings.temperature, 0.9);
+      assert.equal(first.settings.voiceProfileId, 1);
+      assert.equal(closed, 2);
+      assert.equal(modalOpen, false);
+      assert.equal(dom.sSave.disabled, false);
+    } finally {
+      resolveHungSwitch?.();
+      await pendingSave;
+      for (let i = 0; i < 5; i++) await tick();
+    }
+    assert.deepEqual(switches, [2, 1], 'queued voice switch to 角色1 runs after the in-flight switch settles');
+    assert.equal(getActiveProfileId(), 1);
+    assert.deepEqual(
+      toastRoot.children.map(t => t.dataset.msg).filter(msg => msg.startsWith('已切换音色')),
+      [],
+      'the background switch must not add a second success toast',
+    );
+    passed++;
+  }, {
+    callbacks: {
+      openModal(el) {
+        modalOpen = true;
+        el.hidden = false;
+        el.classList.remove('hidden');
+      },
+      closeModal(el) {
+        closed++;
+        modalOpen = false;
+        el.hidden = true;
+        el.classList.add('hidden');
+      },
+      isHomeOpen: () => false,
+      isVoiceEnabled: () => true,
+    },
+  });
+}
+
+await testSaveUnlocksWhileVoiceSwitchPending();
+
 console.log(`Voice settings recovery: ${passed} scenarios passed`);
