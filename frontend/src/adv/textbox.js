@@ -388,19 +388,34 @@ export function createTextbox(container, opts = {}) {
   // Player input IME composition state
   let isComposing = false;
   let justComposed = false;
+  let justComposedTimerId = null;
+
+  function clearJustComposed() {
+    justComposed = false;
+    if (justComposedTimerId !== null) {
+      clock.clearTimeout(justComposedTimerId);
+      justComposedTimerId = null;
+    }
+  }
 
   listen(textareaEl, 'compositionstart', () => {
     isComposing = true;
+    clearJustComposed();
     opts.onAction?.('player_edit');
   });
 
   listen(textareaEl, 'compositionend', () => {
     isComposing = false;
+    clearJustComposed();
     justComposed = true;
+    justComposedTimerId = clock.setTimeout(() => {
+      justComposedTimerId = null;
+      justComposed = false;
+    }, 0);
   });
 
   listen(textareaEl, 'keyup', () => {
-    justComposed = false;
+    clearJustComposed();
   });
 
   listen(textareaEl, 'focus', () => {
@@ -416,6 +431,7 @@ export function createTextbox(container, opts = {}) {
     const text = textareaEl.value.trim();
     if (!text) return;
     if (opts.onSend?.(text) !== true) return;
+    clearJustComposed();
     opts.onAction?.('send', text);
     textareaEl.value = '';
   }
@@ -440,6 +456,7 @@ export function createTextbox(container, opts = {}) {
 
   listen(sendBtn, 'click', (e) => {
     e.stopPropagation();
+    clearJustComposed();
     trySend();
   });
 
@@ -811,6 +828,7 @@ export function createTextbox(container, opts = {}) {
     clearError();
     for (const off of eventDisposers.splice(0)) off();
     clearTypewriter();
+    clearJustComposed();
     if (mql && mqlHandler) {
       if (typeof mql.removeEventListener === 'function') {
         mql.removeEventListener('change', mqlHandler);

@@ -1280,11 +1280,11 @@ async function handleSaveSessionSettings() {
     }
     if (_callbacks.renderSidebar) _callbacks.renderSidebar();
     if (_callbacks.renderHeader) _callbacks.renderHeader();
-          if (getActive() === s) await ensureSessionVoice(s);
     const draftNote = sameEditor() && !editorUnchanged ? '；保存期间新增的修改已保留在面板中，请再次保存' : '';
     const nextName = voiceProfiles.find((p) => p.id === profileId)?.name;
     const lead = nextName && profileId !== previousProfileId ? `已换上「${nextName}」。` : '设置已保存。';
     showToast(`${lead}${promptNote}${syncNote}${draftNote}`, promptNote || syncNote || draftNote ? 'info' : 'success');
+    if (getActive() === s) ensureSessionVoice(s, { silent: true });
   } finally {
     if (_dom.sSave) _dom.sSave.disabled = false;
   }
