@@ -81,8 +81,13 @@ export function decide(event, context = {}) {
       return null;
     }
 
-    // Ctrl+K: new session outside composition
+    // Ctrl+K: new session outside composition. A held key or an open overlay only swallows it,
+    // so neither starts another session nor falls through to the browser's search shortcut.
     if ((event.ctrlKey || event.metaKey) && (event.key === 'k' || event.key === 'K')) {
+      if (event.repeat || overlayOpen) {
+        event.preventDefault?.();
+        return null;
+      }
       return 'new_session';
     }
 
