@@ -5,6 +5,8 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [3.2.10] - 2026-11-22
 ### Added
 - 会话可以改名了：「角色与会话」面板最上面新增「会话名称」，改完后会话列表和首页卡片都显示新名字，其他页面刷新后也会同步，之后发消息也不会被自动标题覆盖；清空后保存则保留原名字。
 ### Fixed
@@ -205,7 +207,8 @@ All notable changes to galgame2voice are documented here. The format follows
 - 修复聊天输入框超过 4000 字发送时清空草稿且报错失真，以及打开设置中心时未立即停止首页正在播放的试听语音的问题。
 - 修复在输入框使用中文/日文输入法组字时按 Esc 取消候选词会直接关闭弹窗，以及在背景选择对话框按 Tab 或 Shift+Tab 时焦点跳出对话框的问题。
 
-[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.9...HEAD
+[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.10...HEAD
+[3.2.10]: https://github.com/LevenST24/galgame2voice/compare/v3.2.9...v3.2.10
 [3.2.9]: https://github.com/LevenST24/galgame2voice/compare/v3.2.8...v3.2.9
 [3.2.8]: https://github.com/LevenST24/galgame2voice/compare/v3.2.7...v3.2.8
 [3.2.7]: https://github.com/LevenST24/galgame2voice/compare/v3.2.6...v3.2.7

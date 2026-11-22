@@ -15,9 +15,9 @@ npm --prefix frontend run deploy
 uv run --frozen --extra dev pytest -q
 uv run --frozen --extra dev ruff check galgame2voice scripts
 uv run --frozen --extra desktop python scripts/build_windows_portable.py
-uv run --frozen --extra desktop python scripts/verify_windows_portable.py dist/galgame2voice-v3.2.9-windows-x64.zip
-uv run --frozen --extra desktop python scripts/smoke_windows_portable.py dist/galgame2voice-v3.2.9-windows-x64.zip
-uv run --frozen --extra desktop python scripts/smoke_windows_turn_reply.py --archive dist/galgame2voice-v3.2.9-windows-x64.zip --expected-sha <sha256> --scratch .local/smoke-turn-reply --with-browser-ui
+uv run --frozen --extra desktop python scripts/verify_windows_portable.py dist/galgame2voice-v3.2.10-windows-x64.zip
+uv run --frozen --extra desktop python scripts/smoke_windows_portable.py dist/galgame2voice-v3.2.10-windows-x64.zip
+uv run --frozen --extra desktop python scripts/smoke_windows_turn_reply.py --archive dist/galgame2voice-v3.2.10-windows-x64.zip --expected-sha <sha256> --scratch .local/smoke-turn-reply --with-browser-ui
 ```
 
 `verify_windows_portable.py` 检查校验和、必需运行文件、空用户目录、模型和凭据排除，以及 ZIP、已部署网页和 Vite 产物的一致性。
