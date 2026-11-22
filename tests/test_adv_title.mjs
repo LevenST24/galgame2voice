@@ -1386,3 +1386,95 @@ test('typing in input or switching session during startup sync keeps chat open a
   assert.equal(providerCalls2, 1);
   envSwitch.cleanup();
 });
+
+async function pendingPreviewFixture(t, result = true) {
+  let finish, active = 'a';
+  const sessions = ['a', 'b', 'c', 'd'].map((id, n) => ({ ...snapshot(id, n), hasUserMessages: true }));
+  const h = await fixture(t, {
+    sessions,
+    actions: {
+      getActiveId: () => active,
+      previewSession: id => {
+        if (id !== 'b') { active = id; return; }
+        if (result !== false) active = id;
+        return new Promise(resolve => {
+          finish = (out = result) => {
+            if (out !== false) sessions[1].excerpt = { zh: '加载完的台词b', ja: '読み込み完了。' };
+            resolve(out);
+          };
+        });
+      },
+    },
+  });
+  return { ...h, finish: out => finish?.(out) };
+}
+
+test('clicking continue while a recent session preview is still loading enters the clicked session', async t => {
+  const h = await pendingPreviewFixture(t);
+  h.q('.home-recent').click();
+  const titleWhilePending = h.q('.home-meta').children[0].textContent;
+  const busyWhilePending = h.ui.element.getAttribute('aria-busy');
+  h.q('.home-continue').click();
+  assert.deepEqual(h.calls.at(-1), ['load', 'b']);
+  assert.equal(titleWhilePending, '角色b');
+  assert.equal(busyWhilePending, 'true');
+  assert.equal(h.ui.isOpen, false);
+  assert.equal(h.ui.element.getAttribute('aria-busy'), null);
+  h.finish();
+  await microtasks();
+  assert.equal(h.ui.isOpen, false);
+});
+
+test('opening new-chat draft while a recent preview is pending keeps the draft when preview settles', async t => {
+  const h = await pendingPreviewFixture(t);
+  h.q('.home-recent').click();
+  h.q('.home-new').click();
+  const busyAfterNew = h.ui.element.getAttribute('aria-busy');
+  h.q('.home-pick-voiceProfileId').click();
+  h.ui.element.querySelectorAll('.home-option')[1].click();
+  h.q('.home-pick-advBackground').click();
+  h.ui.element.querySelectorAll('.home-option')[2].click();
+  h.finish();
+  await microtasks();
+  assert.ok(h.q('.home-start'), 'new-chat draft view must stay open after stale preview resolves');
+  assert.equal(h.q('.home-continue'), null);
+  assert.equal(busyAfterNew, null);
+  assert.equal(textTree(h.q('.home-pick-voiceProfileId')), '角色乙 ▾');
+  assert.equal(textTree(h.q('.home-pick-advBackground')), '房间 ▾');
+  h.q('.home-start').click();
+  assert.deepEqual(h.calls.at(-1), ['newWith', { voiceProfileId: 8, advBackground: 'w/room', advBgTime: 'night' }]);
+});
+
+test('opening all sessions while a recent preview is pending keeps all-sessions view and Escape returns home', async t => {
+  const h = await pendingPreviewFixture(t);
+  h.q('.home-recent').click();
+  h.q('.home-all').click();
+  const busyAfterAll = h.ui.element.getAttribute('aria-busy');
+  h.finish();
+  await microtasks();
+  assert.equal(h.ui.loadScreen.hidden, false);
+  assert.equal(h.q('.home-excerpt').hidden, true);
+  assert.equal(h.q('.home-recents').hidden, true, 'recents must not reappear over all-sessions view');
+  assert.equal(busyAfterAll, null);
+  escape(h.q('.adv-title-back'));
+  assert.equal(h.ui.loadScreen.hidden, true, 'Escape must exit all-sessions view back to home');
+  assert.equal(h.q('.home-excerpt').hidden, false);
+  assert.equal(h.q('.home-recents').hidden, false);
+  assert.equal(h.q('.home-quote').textContent, '「加载完的台词b」');
+});
+
+test('failed recent session preview rolls back main session and recent order', async t => {
+  const h = await pendingPreviewFixture(t, false);
+  const recents = () => h.ui.element.querySelectorAll('.home-recent').map(n => n.dataset.session);
+  assert.deepEqual(recents(), ['b', 'c', 'd']);
+  h.q('.home-recent').click();
+  assert.equal(h.q('.home-meta').children[0].textContent, '角色b');
+  assert.deepEqual(recents(), ['a', 'c', 'd']);
+  h.finish(false);
+  await microtasks();
+  assert.equal(h.ui.element.getAttribute('aria-busy'), null);
+  assert.equal(h.q('.home-meta').children[0].textContent, '角色a');
+  assert.deepEqual(recents(), ['b', 'c', 'd']);
+  h.q('.home-continue').click();
+  assert.deepEqual(h.calls.at(-1), ['load', 'a']);
+});
