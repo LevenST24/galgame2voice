@@ -2,6 +2,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import { setup } from './helpers/adv_main.mjs';
+import { initApp } from '../frontend/src/main.js';
+import {
+  initVoiceSettings,
+  openSessionSettings,
+} from '../frontend/src/controllers/voice_settings.js';
 import {
   initGlobalSettings,
   openGlobalSettings,
@@ -674,4 +679,280 @@ test('footer saveGlobalConfig saves only voice service page when user inspected 
   assert.equal(toasts.some(toast => toast.isError), false, `unexpected error toast: ${JSON.stringify(toasts)}`);
   assert.equal(getCurrentActiveProvider().id, 'deepseek', 'active provider must remain deepseek');
   assert.equal(dom.gProvider.value, 'openai', 'unactivated provider draft must remain in dropdown');
+});
+
+function bindHtmlSelect(doc, sel) {
+  if (!sel || sel.tagName !== 'SELECT') return;
+  let selectedIndex = sel.children.length > 0 ? 0 : -1;
+  const origAppend = sel.appendChild.bind(sel);
+  sel.appendChild = child => {
+    const res = origAppend(child);
+    if (selectedIndex < 0 && sel.children.length > 0) selectedIndex = 0;
+    return res;
+  };
+  Object.defineProperty(sel, 'options', {
+    get: () => sel.children,
+    configurable: true,
+  });
+  Object.defineProperty(sel, 'innerHTML', {
+    get: () => sel.html || '',
+    set(html) {
+      sel.children.forEach(c => { c.parentNode = null; });
+      sel.children = [];
+      sel.html = String(html);
+      selectedIndex = -1;
+      for (const m of String(html).matchAll(/<option\s+value="([^"]*)"[^>]*>([\s\S]*?)<\/option>/gi)) {
+        const opt = doc.createElement('option');
+        opt.value = m[1];
+        opt.textContent = m[2];
+        sel.appendChild(opt);
+      }
+    },
+    configurable: true,
+  });
+  Object.defineProperty(sel, 'value', {
+    get: () => (selectedIndex >= 0 && sel.children[selectedIndex] ? String(sel.children[selectedIndex].value) : ''),
+    set(v) {
+      selectedIndex = sel.children.findIndex(c => String(c.value) === String(v));
+    },
+    configurable: true,
+  });
+}
+
+test('leaving 角色与会话 before character list arrives and switching back populates all characters while preserving persona draft', async t => {
+  const origDocument = globalThis.document;
+  const origWindow = globalThis.window;
+  const origLocation = globalThis.location;
+  const origFetch = globalThis.fetch;
+  const origLocalStorage = globalThis.localStorage;
+
+  const { doc, dom } = mountRealIndexDom();
+  doc.querySelectorAll = s => doc.body.querySelectorAll(s);
+  const advRoot = doc.getElementById('advRoot');
+  dom.advRoot = advRoot;
+  for (const el of Object.values(dom)) {
+    if (!el) continue;
+    if (el.tagName === 'SELECT') bindHtmlSelect(doc, el);
+    el.select ??= () => {};
+  }
+  const modalInner = dom.globalModal.querySelector('.modal');
+  dom.globalModal.querySelector = selector => {
+    if (selector.includes('modal-foot')) return modalInner.children.find(c => c.classList.contains('modal-foot'));
+    return doc.body.querySelector(selector);
+  };
+
+  const storage = new Map();
+  globalThis.document = doc;
+  globalThis.location = { origin: 'http://127.0.0.1:8080', search: '', hash: '' };
+  globalThis.localStorage = {
+    getItem: k => storage.get(k) ?? null,
+    setItem: (k, v) => storage.set(k, String(v)),
+    removeItem: k => storage.delete(k),
+  };
+  globalThis.window = {
+    innerWidth: 1280,
+    location: globalThis.location,
+    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
+    fetch: (...args) => globalThis.fetch(...args),
+    confirm: () => true,
+    addEventListener() {},
+    removeEventListener() {},
+  };
+
+  const catalog = [
+    { id: 1, name: '角色A', system_prompt: '角色A初始人设' },
+    { id: 2, name: '角色B', system_prompt: '角色B初始人设' },
+    { id: 3, name: '角色C', system_prompt: '角色C初始人设' },
+  ];
+  const backendSessions = [
+    {
+      id: 's_bound',
+      title: '绑定会话',
+      created_at: '2026-11-22T00:00:00Z',
+      updated_at: '2026-11-22T00:00:00Z',
+      message_count: 0,
+      last_message: '',
+      voice_profile_id: 1,
+      settings: {},
+    },
+    {
+      id: 's_unbound',
+      title: '空会话',
+      created_at: '2026-11-22T00:00:00Z',
+      updated_at: '2026-11-22T00:00:00Z',
+      message_count: 0,
+      last_message: '',
+      voice_profile_id: null,
+      settings: {},
+    },
+  ];
+
+  let interceptProfiles = false;
+  const pendingProfileResolvers = [];
+  let profileFetchCount = 0;
+  const savedPrompts = [];
+  const savedSessions = [];
+
+  globalThis.fetch = async (url, options = {}) => {
+    const method = options.method || 'GET';
+    const path = String(url);
+    if (path === '/api/voice/profiles' && method === 'GET') {
+      profileFetchCount += 1;
+      if (interceptProfiles) {
+        return new Promise(resolve => {
+          pendingProfileResolvers.push(() => resolve(okJson({ profiles: catalog, active_profile_id: 1 })));
+        });
+      }
+      return okJson({ profiles: catalog, active_profile_id: 1 });
+    }
+    if (path === '/api/voice/switch' && method === 'POST') {
+      const body = JSON.parse(options.body);
+      return okJson({ profile_id: body.profile_id, profile: catalog.find(p => p.id === body.profile_id)?.name || '' });
+    }
+    if (path.startsWith('/api/characters/') && path.endsWith('/system-prompt') && method === 'PUT') {
+      savedPrompts.push({ url: path, body: JSON.parse(options.body) });
+      return okJson({ status: 'ok' });
+    }
+    if (path === '/api/chat/sessions' && method === 'POST') {
+      savedSessions.push(JSON.parse(options.body));
+      return okJson({ status: 'ok' });
+    }
+    if (path.startsWith('/api/chat/sessions?')) {
+      return okJson({ sessions: backendSessions, has_more: false });
+    }
+    if (path.includes('/messages')) {
+      return okJson({ messages: [], has_more: false });
+    }
+    if (path === '/api/config') {
+      return okJson({ status: 'ok', settings: { gpt_sovits_url: 'http://127.0.0.1:9880' }, active_provider: null });
+    }
+    if (path === '/api/providers') {
+      return okJson({ providers: [], presets: BUILTIN_PRESETS });
+    }
+    if (path.includes('/api/system/engine-status')) {
+      return okJson({ state: 'ready', ready: true, message: '已就绪' });
+    }
+    if (path.includes('/api/system/sovits-directory')) {
+      return okJson({ directory: '', valid: false, message: '' });
+    }
+    return okJson({});
+  };
+
+  const flush = async () => {
+    for (let i = 0; i < 8; i += 1) await new Promise(resolve => setImmediate(resolve));
+  };
+
+  const toastRoot = doc.getElementById('toastRoot');
+  const app = initApp({ dom, renderSessionList: () => {}, showTitle: () => {} });
+  t.after(async () => {
+    app.conversation.stop();
+    app.adv?.unmount();
+    if (toastRoot) for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
+    settingsUi.closeAllModals();
+    closeModal(dom.globalModal);
+    initGlobalSettings({});
+    initVoiceSettings({});
+    await flush();
+    if (origDocument !== undefined) globalThis.document = origDocument; else delete globalThis.document;
+    if (origWindow !== undefined) globalThis.window = origWindow; else delete globalThis.window;
+    if (origLocation !== undefined) globalThis.location = origLocation; else delete globalThis.location;
+    if (origFetch !== undefined) globalThis.fetch = origFetch; else delete globalThis.fetch;
+    if (origLocalStorage !== undefined) globalThis.localStorage = origLocalStorage; else delete globalThis.localStorage;
+  });
+
+  await app.ready;
+  await flush();
+
+  // Memory already holds the cached catalog (normal state after startup), while #sVoice has not been opened yet.
+  assert.equal(dom.sVoice.options.length, 0);
+
+  // 1. Bound session: open 「角色与会话」, switch to another tab before dropdown data arrives,
+  //    edit persona draft, let earlier request finish, and switch back.
+  interceptProfiles = true;
+  await openSessionSettings();
+
+  assert.equal(dom.globalModal.hidden, false, 'settings center should open synchronously when catalog is cached');
+  assert.equal(dom.sessionModal.hidden, false, 'session editor should be visible');
+  assert.deepEqual(
+    dom.sVoice.options.map(o => String(o.value)),
+    ['1'],
+    'only the bound placeholder option exists before GET /api/voice/profiles returns',
+  );
+  assert.equal(dom.sSystem.value, '角色A初始人设');
+
+  // User edits persona draft before switching away (and/or across tab switches)
+  dom.sSystem.value = '切分页期间改过的角色A人设草稿';
+  dom.sTitle.value = '新会话标题草稿';
+
+  // Switch to another tab before dropdown request returns
+  dom.gTabs.querySelector('[data-gtab="models"]').click();
+  assert.equal(dom.sessionModal.hidden, true);
+
+  // Let in-flight /api/voice/profiles request(s) finish while on the other tab
+  interceptProfiles = false;
+  while (pendingProfileResolvers.length) pendingProfileResolvers.shift()();
+  await flush();
+
+  // Switch back to 「角色与会话」
+  const countBeforeReturn = profileFetchCount;
+  dom.gTabs.querySelector('[data-gtab="session"]').click();
+  await flush();
+
+  assert.equal(dom.sessionModal.hidden, false);
+  assert.deepEqual(
+    dom.sVoice.options.map(o => String(o.value)),
+    ['', '1', '2', '3', '__custom__'],
+    'switching back to 角色与会话 must populate all characters in #sVoice',
+  );
+  assert.equal(dom.sVoice.value, '1', 'bound character selection must remain 1');
+  assert.equal(dom.sSystem.value, '切分页期间改过的角色A人设草稿', 'unsaved persona draft must be preserved');
+  assert.equal(dom.sTitle.value, '新会话标题草稿', 'unsaved title draft must be preserved');
+  assert.ok(profileFetchCount > countBeforeReturn, 'returning with unpopulated dropdown should fetch once');
+
+  // Once populated for the active session, switching tabs again does not redundantly re-fetch
+  const countAfterPopulated = profileFetchCount;
+  dom.gTabs.querySelector('[data-gtab="models"]').click();
+  dom.gTabs.querySelector('[data-gtab="session"]').click();
+  await flush();
+  assert.equal(profileFetchCount, countAfterPopulated, 'already populated dropdown should not re-fetch on subsequent tab switches');
+
+  // Saving writes the preserved persona draft cleanly without mismatch error
+  dom.sSave.click();
+  await flush();
+  assert.equal(savedPrompts.length, 1);
+  assert.deepEqual(savedPrompts[0], {
+    url: '/api/characters/1/system-prompt',
+    body: { system_prompt: '切分页期间改过的角色A人设草稿' },
+  });
+  assert.equal(savedSessions.at(-1)?.title, '新会话标题草稿');
+  assert.equal(dom.globalModal.hidden, true, 'clean save should close settings center');
+
+  // 2. Unbound session with empty #sVoice: open Settings Center on dashboard, click 角色与会话,
+  //    switch away before dropdown returns, let request finish, and switch back.
+  await app.switchSession('s_unbound');
+  await flush();
+  dom.sVoice.innerHTML = '';
+  assert.equal(dom.sVoice.options.length, 0);
+
+  openGlobalSettings('dashboard');
+  await flush();
+
+  interceptProfiles = true;
+  dom.gTabs.querySelector('[data-gtab="session"]').click();
+  assert.equal(dom.sVoice.options.length, 0, 'unbound session starts with empty #sVoice while fetch is pending');
+
+  dom.gTabs.querySelector('[data-gtab="dashboard"]').click();
+  interceptProfiles = false;
+  while (pendingProfileResolvers.length) pendingProfileResolvers.shift()();
+  await flush();
+
+  dom.gTabs.querySelector('[data-gtab="session"]').click();
+  await flush();
+
+  assert.deepEqual(
+    dom.sVoice.options.map(o => String(o.value)),
+    ['', '1', '2', '3', '__custom__'],
+    'unbound session dropdown must also populate all characters when switching back',
+  );
+  assert.equal(dom.sVoice.value, '', 'unbound session keeps empty selection');
 });
