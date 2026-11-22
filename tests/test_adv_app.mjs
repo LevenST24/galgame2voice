@@ -1063,16 +1063,17 @@ test('temporary hold-skip is cleared when playback stops skip or player toggles 
 function mountConversationAdv(t, options = {}) {
   const doc = fakeDocument(); globalThis.document = doc;
   const clock = fakeClock(), requests = [], voiceEnabled = options.voiceEnabled ?? true;
-  let seq = 0, setOverlay = () => {};
+  let seq = 0, setOverlay = () => {}, voiceEnd = null;
   const session = { id: options.sessionId || 's_replay', title: '对话',
     settings: { ...DEFAULT_SESSION_SETTINGS, advEnabled: true, voiceProfileId: 1, ...options.settings },
     messages: [...(options.messages || [])] };
   const audio = { played: [], stopped: [],
     playLine(index, chunks, opts) {
       this.played.push({ index, urls: (chunks || []).map(chunk => chunk?.audio_url || chunk), opts });
+      if (options.holdAudio) return new Promise(resolve => { voiceEnd = resolve; });
       return Promise.resolve('ended');
     },
-    stopLine(opts) { this.stopped.push(opts || {}); } };
+    stopLine(opts) { this.stopped.push(opts || {}); voiceEnd?.('interrupted'); } };
   const controller = createConversation({
     state: { global: { voiceMode: voiceEnabled, voiceOut: voiceEnabled } },
     getActive: () => session, getSession: id => (id === session.id ? session : null),
@@ -1111,7 +1112,8 @@ function mountConversationAdv(t, options = {}) {
     subscribeOverlay: fn => { setOverlay = fn; return () => {}; }, regenerateLineAudio,
   });
   t.after(() => { controller.stop(); app.unmount(); delete globalThis.document; });
-  return { app, controller, audio, clock, session, requests, setOverlay: open => setOverlay(open) };
+  return { app, controller, audio, clock, session, requests,
+    endVoice: outcome => voiceEnd?.(outcome), setOverlay: open => setOverlay(open) };
 }
 
 // One delivered line, then the real chat stream stalls or closes. The stage
@@ -1322,3 +1324,99 @@ test('line 1 repaired in LOG plays when the stage reaches it', async t => {
     ['/audio/repair_line1_abcdef12.wav'],
   ]);
 });
+
+for (const trigger of ['button', 'Escape']) {
+  test(`stop via ${trigger} interrupts a settled multi-line turn on line 0, keeps all 3 lines in history, and still aborts an open stream`, async t => {
+    const stream = fakeChatStream();
+    const { app, controller, audio, clock, session } = mountConversationAdv(t, {
+      holdAudio: true,
+      settings: { advTextIntervalMs: 0, advAutoBaseMs: 0, advAutoPerCharMs: 0, advInterruptVoice: false },
+      fetch: stream.fetch,
+    });
+    const stage = app.stage.stage;
+    const stopButton = stage.querySelector('.adv-app-tools').children.find(btn => btn.dataset.action === 'stop');
+    const triggerStop = () => {
+      if (trigger === 'button') stopButton.click();
+      else stage.dispatchEvent({ type: 'keydown', key: 'Escape' });
+    };
+
+    // 1. Stream finishes all 3 lines while line 0 is still playing on stage
+    assert.equal(controller.send('讲三句话'), true);
+    await tick();
+    const finishedTurn = stream.requests[0];
+    const threeLines = [0, 1, 2].map(index => ({
+      index,
+      zh: `第${index + 1}句。`,
+      ja: `文${index + 1}。`,
+      emotion: 'gentle',
+      act: {},
+      audio: { status: 'ready', chunks: [{ index, line: index, audio_url: `/audio/turn1_${index}.wav`, sentence: `文${index + 1}。` }] },
+    }));
+    for (const item of threeLines) {
+      await finishedTurn.event('line', { index: item.index, zh: item.zh, ja: item.ja, emotion: item.emotion, act: item.act });
+      await finishedTurn.event('line_audio', { line: item.index, status: 'ready', chunks: item.audio.chunks });
+    }
+    await finishedTurn.onEnd('第1句。第2句。第3句。', {
+      message_id: 201,
+      japanese: '文1。文2。文3。',
+      lines: threeLines,
+    });
+    for (let i = 0; i < 10 && controller.busy; i++) await tick();
+    assert.equal(controller.busy, false, 'stream has already settled');
+    stage.querySelector('.adv-qm-btn-auto').click();
+    assert.equal(app.player.currentIndex, 0);
+    assert.equal(app.player.isPresenting(), true);
+    assert.equal(audio.played.length, 1);
+    assert.equal(stage.querySelector('.adv-voice-display').classList.contains('is-hidden'), false);
+
+    triggerStop();
+    await microtasks();
+
+    assert.equal(audio.stopped.length, 1, 'current line voice stops immediately');
+    assert.equal(stage.querySelector('.adv-voice-display').classList.contains('is-hidden'), true);
+    assert.equal(app.player.state, 'input');
+    assert.equal(app.player.isPresenting(), false);
+    assert.equal(app.player.auto, false);
+    assert.equal(stage.querySelector('.adv-player-input-wrap').classList.contains('is-hidden'), false);
+    assert.equal(stage.querySelector('.adv-player-send-btn').disabled, false);
+
+    clock.tick(10000);
+    await microtasks();
+    assert.deepEqual(audio.played.map(item => item.index), [0], 'lines 1 and 2 never play after stop');
+
+    const storedAssistant = session.messages.find(msg => msg.role === 'assistant');
+    assert.deepEqual(storedAssistant?.lines?.map(l => l.zh), ['第1句。', '第2句。', '第3句。']);
+    app.action('log');
+    const logAssistantTexts = [...app.backlog.element.querySelectorAll('.adv-log-entry.is-assistant')]
+      .map(el => el.querySelector('.adv-log-primary').textContent);
+    assert.deepEqual(logAssistantTexts, ['第1句。', '第2句。', '第3句。']);
+    app.action('close_overlay');
+
+    // 2. When stream is still open, stop still cancels the live stream and stops playback
+    assert.equal(controller.send('再来一轮'), true);
+    await tick();
+    const openTurn = stream.requests[1];
+    await openTurn.event('line', { index: 0, zh: '未完第一句。', ja: '途中1。', emotion: 'gentle', act: {} });
+    await openTurn.event('line_audio', {
+      line: 0,
+      status: 'ready',
+      chunks: [{ index: 0, line: 0, audio_url: '/audio/turn2_0.wav', sentence: '途中1。' }],
+    });
+    assert.equal(controller.busy, true);
+    assert.equal(openTurn.options.signal.aborted, false);
+    assert.equal(audio.played.length, 2);
+    const stoppedBeforeOpenStop = audio.stopped.length;
+
+    triggerStop();
+    await microtasks();
+
+    assert.equal(openTurn.options.signal.aborted, true, 'open stream is cancelled');
+    assert.equal(controller.busy, false);
+    assert.equal(audio.stopped.length, stoppedBeforeOpenStop + 1);
+    assert.equal(app.player.state, 'input');
+    assert.equal(stage.querySelector('.adv-player-send-btn').disabled, false);
+    const assistantReplies = session.messages.filter(msg => msg.role === 'assistant');
+    assert.equal(assistantReplies.length, 2);
+    assert.deepEqual(assistantReplies[1].lines?.map(l => l.zh), ['未完第一句。']);
+  });
+}
