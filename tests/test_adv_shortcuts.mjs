@@ -159,6 +159,22 @@ test('shortcuts decide: Ctrl+K starts new session outside composition', () => {
   assert.equal(decide({ type: 'keydown', key: 'k', ctrlKey: true }, { composing: true }), null);
 });
 
+test('shortcuts decide: a held Ctrl+K or one under an overlay is swallowed without a new session', () => {
+  const press = (event, context = {}) => {
+    let prevented = false;
+    const action = decide(
+      { type: 'keydown', key: 'k', ctrlKey: true, preventDefault() { prevented = true; }, ...event },
+      { composing: false, overlayOpen: false, ...context },
+    );
+    return [action, prevented];
+  };
+  assert.deepEqual(press({ repeat: true }), [null, true]);
+  assert.deepEqual(press({ key: 'K', ctrlKey: false, metaKey: true, repeat: true }), [null, true]);
+  assert.deepEqual(press({}, { overlayOpen: true }), [null, true]);
+  assert.deepEqual(press({}), ['new_session', false]);
+  assert.deepEqual(press({}, { inInput: true }), ['new_session', false]);
+});
+
 test('shortcuts decide: swap language X disabled when subtitle is none', () => {
   assert.equal(decide({ type: 'keydown', key: 'x' }, { subtitleNone: true }), null);
   assert.equal(decide({ type: 'keydown', key: 'x' }, { subtitleNone: false }), 'swap_languages');
