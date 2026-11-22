@@ -43,6 +43,7 @@ import { initUpdateManager, loadSystemVersionInfo } from './controllers/update_m
 import {
   initVoiceSettings,
   openSessionSettings,
+  ensureSessionVoiceSelect,
   cancelSessionSettingsLoad,
   fetchVoiceProfiles,
   ensureSessionVoice,
@@ -862,7 +863,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   initUpdateManager(dom);
   settingsCenter = createSettingsCenter({ dom, openCenter: openGlobalSettings,
     getExperience: () => advApp?.configPanel, getSession: getActive, loadSession: openSessionSettings,
-    cancelSession: cancelSessionSettingsLoad });
+    ensureSessionVoiceSelect, cancelSession: cancelSessionSettingsLoad });
   const settingsOpen = el => settingsCenter ? settingsCenter.open(el) : openModal(el);
   const settingsClose = el => settingsCenter ? settingsCenter.close(el) : closeModal(el);
   initVoiceSettings(dom, {

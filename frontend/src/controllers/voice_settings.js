@@ -30,6 +30,8 @@ let sessionVoiceRevision = 0;
 let voiceSwitchTail = Promise.resolve();
 let activeProfileRevision = 0;
 let voiceSelectRevision = 0;
+/** @type {string | number | null} */
+let voiceSelectLoadedFor = null;
 
 // 服务端响应里带中文说明时直接显示它（规则同 getErrorMessage）；否则返回空串，由调用处用默认文案。
 const serverMessage = e => (e?.data ? getErrorMessage(e.data, '') : '');
@@ -74,6 +76,7 @@ export function initVoiceSettings(dom, callbacks = {}) {
   sessionVoiceRevision += 1;
   profilesRevision += 1;
   activeProfileRevision += 1;
+  voiceSelectLoadedFor = null;
 
   _dom.sVoice?.addEventListener('change', handleVoiceSelectionChange);
   _dom.sVoiceImport?.addEventListener('click', () => !isImporting && _dom.sVoiceImportZipInput?.click());
@@ -152,6 +155,12 @@ export function cancelSessionSettingsLoad() {
   _dom.sVoiceDropOverlay?.classList?.add('hidden');
 }
 
+export function ensureSessionVoiceSelect() {
+  const s = getActive();
+  if (!s || (s.id != null && voiceSelectLoadedFor === s.id)) return;
+  return loadSessionVoiceSelect(s, { keepEdits: true });
+}
+
 function syncInitialSessionVoiceSelection(session) {
   if (!_dom.sVoice) return;
   const initialVoiceId = session.settings?.voiceProfileId ? String(session.settings.voiceProfileId) : '';
@@ -168,6 +177,7 @@ function syncInitialSessionVoiceSelection(session) {
 }
 
 export async function openSessionSettings() {
+  voiceSelectLoadedFor = null;
   const s = getActive();
   if (!s) return;
   const revision = ++editorRevision;
@@ -411,7 +421,7 @@ async function applySessionVoice(session, { silent = false }, want, isCurrent) {
   }
 }
 
-export async function loadSessionVoiceSelect(session, { preserveDraft = false, syncCustomBox = true } = {}) {
+export async function loadSessionVoiceSelect(session, { preserveDraft = false, syncCustomBox = true, keepEdits = false } = {}) {
   if (!_dom.sVoice) return;
   const revision = ++voiceSelectRevision;
   const editor = editorRevision;
@@ -424,7 +434,14 @@ export async function loadSessionVoiceSelect(session, { preserveDraft = false, s
     if (!isCurrent()) return;
     // Read the latest selection after the request: the user may keep editing
     // while a rescan is running. Refresh options without changing its owner.
-    const keepDraft = preserveDraft || _dom.sSystem?.value !== promptAtStart || _promptOwnerId !== ownerAtStart;
+    const initialVoice = session?.settings?.voiceProfileId ? String(session.settings.voiceProfileId) : '';
+    const currentVoice = _dom.sVoice.value === VOICE_LIST_UNAVAILABLE ? initialVoice : String(_dom.sVoice.value || '');
+    const hasPriorEdit = keepEdits && (
+      (_dom.sSystem != null && _dom.sSystem.value !== _promptBaseline)
+      || currentVoice !== initialVoice
+      || _promptOwnerId !== (session?.settings?.voiceProfileId ?? null)
+    );
+    const keepDraft = preserveDraft || hasPriorEdit || _dom.sSystem?.value !== promptAtStart || _promptOwnerId !== ownerAtStart;
     let draftSelection = keepDraft ? String(_dom.sVoice.value || '') : null;
     // A placeholder left by an earlier failed load is not a user choice.
     if (draftSelection === VOICE_LIST_UNAVAILABLE) draftSelection = String(session?.settings?.voiceProfileId || '');
@@ -470,9 +487,11 @@ export async function loadSessionVoiceSelect(session, { preserveDraft = false, s
         { isCustomNew: selVal === '__custom__' }
       );
     }
+    voiceSelectLoadedFor = session?.id ?? null;
   } catch (e) {
     if (!isCurrent()) return;
     if (!preserveDraft) {
+      voiceSelectLoadedFor = null;
       _dom.sVoice.innerHTML = `<option value="${VOICE_LIST_UNAVAILABLE}">加载失败，请先启动程序后重新打开此面板</option>`;
       _dom.sVoice.value = VOICE_LIST_UNAVAILABLE;
     } else {

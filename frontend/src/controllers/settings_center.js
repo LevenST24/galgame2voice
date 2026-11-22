@@ -3,7 +3,9 @@
 // validation and persistence. Switching pages discards experience previews only.
 import { openModal, closeModal, onModalChange } from '../settings_ui.js';
 
-export function createSettingsCenter({ dom, openCenter, getExperience, getSession, loadSession, cancelSession }) {
+export function createSettingsCenter({
+  dom, openCenter, getExperience, getSession, loadSession, cancelSession, ensureSessionVoiceSelect,
+}) {
   const root = dom.globalModal;
   const sessionHost = document.getElementById('gp-session');
   if (!root || !sessionHost || !dom.sessionModal) return null;
@@ -74,7 +76,10 @@ export function createSettingsCenter({ dom, openCenter, getExperience, getSessio
       dom.gResetBtn.hidden = name !== 'inference';
       dom.gTgSave.hidden = name !== 'inference';
       if (name === 'experience') getExperience()?.open();
-      if (name === 'session' && !loadedSession && sessionLoadedFor !== getSession()?.id) loadSession();
+      if (name === 'session' && !loadedSession) {
+        if (sessionLoadedFor !== getSession()?.id) loadSession();
+        else ensureSessionVoiceSelect?.();
+      }
       switching = false;
     },
     open(el) {
