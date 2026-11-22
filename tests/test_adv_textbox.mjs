@@ -295,6 +295,53 @@ test('textbox: player input behavior (Enter sends, Shift+Enter newline, IME guar
   assert.equal(textarea.value, '', 'Textarea should be cleared after send');
 });
 
+test('textbox: Send click right after compositionend sends without a keyup', () => {
+  const clock = createFakeClock();
+  const container = new FakeElement();
+  const sent = [];
+  const tb = createTextbox(container, { clock, onSend: (text) => { sent.push(text); return true; } });
+  tb.enterInput({ canSend: true });
+  const textarea = container.querySelector('.adv-player-textarea');
+
+  // Picking a candidate with the mouse, or clicking Send mid-composition, ends the composition with no keyup.
+  textarea.dispatchEvent({ type: 'compositionstart' });
+  textarea.value = '你好世界';
+  textarea.dispatchEvent({ type: 'compositionend' });
+  container.querySelector('.adv-player-send-btn').dispatchEvent({ type: 'click', stopPropagation() {} });
+
+  assert.deepEqual(sent, ['你好世界']);
+  assert.equal(textarea.value, '');
+  assert.equal(clock.activeTimerCount, 0);
+});
+
+test('textbox: Enter one task after compositionend sends and blocks the newline', () => {
+  const clock = createFakeClock();
+  const container = new FakeElement();
+  const sent = [];
+  const tb = createTextbox(container, { clock, onSend: (text) => { sent.push(text); return true; } });
+  tb.enterInput({ canSend: true });
+  const textarea = container.querySelector('.adv-player-textarea');
+  const enter = () => {
+    let prevented = false;
+    textarea.dispatchEvent({ type: 'keydown', key: 'Enter', keyCode: 13, isComposing: false, shiftKey: false, preventDefault() { prevented = true; } });
+    return prevented;
+  };
+
+  textarea.dispatchEvent({ type: 'compositionstart' });
+  textarea.value = '你好';
+  textarea.dispatchEvent({ type: 'compositionend' });
+  enter();
+  assert.deepEqual(sent, [], 'an Enter in the same task as compositionend only commits the candidate');
+
+  clock.tick(0);
+  assert.equal(enter(), true, 'the next Enter must not insert a newline');
+  assert.deepEqual(sent, ['你好']);
+
+  textarea.dispatchEvent({ type: 'compositionend' });
+  tb.destroy();
+  assert.equal(clock.activeTimerCount, 0);
+});
+
 test('textbox: aria-live region announces full text exactly once on activate', () => {
   const container = new FakeElement();
   const tb = createTextbox(container, {

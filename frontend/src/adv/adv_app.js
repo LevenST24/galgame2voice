@@ -630,7 +630,11 @@ export function mountAdv(dom, deps) {
       case 'model_status': deps.onModelSettings?.(); break;
       case 'swap_languages': textbox.swapLanguages(); break;
       case 'new_session': deps.onNewSession?.(); break;
-      case 'stop': stopStageReplay(); controller.stop(); break;
+      case 'stop':
+        stopStageReplay();
+        controller.stop();
+        if (player.isPresenting()) player.beginPlayerEdit();
+        break;
       case 'input': textbox.prepareInput({ canSend: !controller.busy }); break;
       case 'voice_mode': deps.toggleVoice?.(); if (!deps.voiceEnabled?.()) stopStageReplay(); backlog?.stopReplay(); update(); break;
       case 'replay_voice': {
