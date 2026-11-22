@@ -289,6 +289,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     }
   }
   function openNew() {
+    ++previewRevision; screen.removeAttribute('aria-busy');
     closePopup(); stopListen(); mode = 'new';
     const s = main()?.settings || {};
     draft = { voiceProfileId: s.voiceProfileId ?? null, advBackground: s.advBackground || '', advBgTime: s.advBgTime || 'auto' };
@@ -354,6 +355,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
       updateAvatar(avatar, session);
     }
     recents.appendChild(btn('home-link home-all', '全部会话 →', () => {
+      ++previewRevision; screen.removeAttribute('aria-busy');
       stopListen(); closePopup(); closeDropdown(); mode = 'all'; page = 0;
       pane.hidden = true; recents.hidden = true; load.hidden = false; renderGrid(); focus(grid.querySelector('button'));
     }));
@@ -381,17 +383,31 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     }).catch(() => {});
   }
   async function preview(id) {
-    const token = ++previewRevision, previous = mainId; stopListen(); closePopup();
-    screen.setAttribute('aria-busy', 'true');
-    try {
-      const result = await actions.previewSession?.(id);
-      if (!opened || token !== previewRevision || result === false) return;
+    if (!sessions.some(s => s.id === id)) return;
+    const token = ++previewRevision, previous = mainId, previousOrder = [...recentOrder];
+    stopListen(); closePopup(); closeDropdown();
+    if (id !== previous || mode !== 'home') {
       const order = recentOrder.length ? [...recentOrder] : sessions.filter(s => s.id !== previous).map(s => s.id);
       const slot = order.indexOf(id);
       if (slot >= 0) order[slot] = previous; else order.unshift(previous);
-      readSessions(); mainId = id; mode = 'home';
+      mainId = id; mode = 'home'; pane.hidden = false; load.hidden = true;
       recentOrder = order.filter(other => other != null && other !== mainId);
       setStageHome(true); renderPane(true); renderRecents(); focusPrimary();
+    }
+    screen.setAttribute('aria-busy', 'true');
+    try {
+      const result = await actions.previewSession?.(id);
+      if (!opened || token !== previewRevision) return;
+      if (result === false) {
+        readSessions();
+        if (sessions.some(s => s.id === previous)) mainId = previous;
+        recentOrder = previousOrder.filter(other => other != null && other !== mainId);
+        setStageHome(true); renderPane(true); renderRecents(); focusPrimary();
+        return;
+      }
+      readSessions();
+      if (sessions.some(s => s.id === id)) mainId = id;
+      setStageHome(true); renderPane(true); renderRecents();
     } finally { if (token === previewRevision) screen.removeAttribute('aria-busy'); }
   }
   function returnHome() {
@@ -506,7 +522,8 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
   }
   function close() {
     if (!opened) return;
-    opened = false; ++revision; ++previewRevision; closePopup(); closeDropdown(); stopListen();
+    opened = false; ++revision; ++previewRevision; screen.removeAttribute('aria-busy');
+    closePopup(); closeDropdown(); stopListen();
     clock.clearTimeout(timer); timer = null; unsubscribe?.(); unsubscribe = null;
     pendingFocus = null;
     screen.hidden = true; setStageHome(false);
