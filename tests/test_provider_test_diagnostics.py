@@ -631,3 +631,42 @@ async def test_pasted_chat_completions_suffix_is_dropped(monkeypatch):
     tokens = [t async for t in adapter.stream_chat([{"role": "user", "content": "hi"}], model="deepseek-chat")]
     assert tokens == ["ok"]
     assert set(seen) == {"https://api.deepseek.com/v1/models", "https://api.deepseek.com/v1/chat/completions"}
+
+
+@pytest.mark.asyncio
+async def test_provider_test_fails_for_webpage_or_error_json(app_client, monkeypatch):
+    """接口地址填成网页，或中转站用 200 返回错误 JSON 时，「测试连通性」不再显示通过。"""
+    from galgame2voice.utils.error_diagnostics import WEBPAGE_ENDPOINT_ACTION_ZH
+
+    monkeypatch.setattr("galgame2voice.security.url_guard.validate_llm_base_url", lambda *_a, **_kw: (True, ""))
+    monkeypatch.setattr("galgame2voice.security.url_guard.assert_llm_url_safe", AsyncMock())
+    page = "<!doctype html><html><body>Console</body></html>"
+    _patch_upstream_response(monkeypatch, 200, text=page, headers={"Content-Type": "text/html; charset=utf-8"})
+    for provider_id, base_url in (("deepseek", "https://chat.deepseek.com"), ("anthropic", "https://claude.ai")):
+        data = (await _post_provider_test(app_client, provider_id, "sk-test-webpage-key-12345", base_url)).json()
+        assert (data["success"], data["error_code"], data["action_zh"]) == (
+            False, "INVALID_BASE_URL", WEBPAGE_ENDPOINT_ACTION_ZH
+        ), provider_id
+
+    _patch_upstream_response(monkeypatch, 200, json={"code": 401, "msg": "Invalid token"})
+    data = (await _post_provider_test(app_client, "custom", "sk-test-key-12345", "https://relay.example.com/v1")).json()
+    assert data["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_provider_test_passes_when_only_models_is_a_webpage(app_client, monkeypatch):
+    """中转站的 /models 是网页、/chat/completions 能用时，「测试连通性」照样通过。"""
+    monkeypatch.setattr("galgame2voice.security.url_guard.validate_llm_base_url", lambda *_a, **_kw: (True, ""))
+    monkeypatch.setattr("galgame2voice.security.url_guard.assert_llm_url_safe", AsyncMock())
+
+    async def relay(method, url, _kwargs):
+        if method == "GET" and url.endswith("/models"):
+            return httpx.Response(
+                200, text="<!doctype html><html></html>", headers={"Content-Type": "text/html"},
+                request=httpx.Request(method, url),
+            )
+        return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]}, request=httpx.Request(method, url))
+
+    _patch_upstream(monkeypatch, relay)
+    data = (await _post_provider_test(app_client, "custom", "sk-relay-valid-key-12345", "https://relay.example.com/v1")).json()
+    assert data["success"] is True

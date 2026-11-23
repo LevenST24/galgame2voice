@@ -22,7 +22,9 @@ from galgame2voice.adapters.base import (
     parse_sse_lines,
     aclose_stream_context,
     validate_stream_completion,
+    is_html_response,
 )
+from galgame2voice.utils.error_diagnostics import WebpageEndpointError
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.http_client import create_async_client, get_shared_async_client
 
@@ -290,6 +292,8 @@ class AnthropicAdapter(BaseLLMAdapter):
             if resp.status_code != 200:
                 raise RuntimeError(f"Anthropic API error ({resp.status_code}): {resp.text}")
 
+            if is_html_response(resp):
+                raise WebpageEndpointError(url)
             data = resp.json()
             self._record_finish_reason(data)
             return LLMResponse(content=_extract_content_text(data), usage=None)
@@ -397,6 +401,10 @@ class AnthropicAdapter(BaseLLMAdapter):
                 finally:
                     await aclose_stream_context(stream_ctx)
                 raise RuntimeError(f"Anthropic API error ({response.status_code}): {err_body.decode('utf-8', errors='ignore')}")
+
+            if is_html_response(response):
+                await aclose_stream_context(stream_ctx)
+                raise WebpageEndpointError(url)
 
             yielded_any = False
             try:
