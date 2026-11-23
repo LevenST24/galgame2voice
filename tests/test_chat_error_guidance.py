@@ -20,7 +20,7 @@ from galgame2voice.services.gpt_sovits_client import GptSovitsClient
 from galgame2voice.services import gpt_sovits_client as gpt_sovits_client_module
 from galgame2voice.services.tts_service import TtsService
 from galgame2voice.services.voice_manager import VoiceManager
-from galgame2voice.utils.error_diagnostics import chat_error_payload, format_provider_error
+from galgame2voice.utils.error_diagnostics import chat_error_payload, diagnose_llm_error, format_provider_error
 
 
 def test_missing_key_names_the_provider_and_the_settings_page():
@@ -397,3 +397,17 @@ async def test_error_copy_uses_real_ui_labels_without_raw_english_or_status_code
             assert "Base URL" not in dcrash[field]
             assert not _STATUS_PAREN_RE.search(dcrash[field])
 
+
+@pytest.mark.parametrize("raw", [
+    "max_tokens is too large: 32768. This model supports at most 4096 completion tokens, whereas you provided 32768.",
+    "Invalid max_tokens value, the valid range of max_tokens is [1, 8192]",
+    "Range of max_tokens should be [1, 8192]",
+    "Invalid 'max_completion_tokens': integer above maximum value. Expected a value <= 16384, but got 32768 instead.",
+    "max_tokens: 100000 > 64000, which is the maximum allowed number of output tokens for claude-opus-4-1",
+])
+def test_max_tokens_too_large_points_at_output_length(raw):
+    """「最大生成长度」超过模型上限时，提示去调小它，而不是调小上下文或只说「模型服务返回异常」。"""
+    result = diagnose_llm_error(raw, status_code=400)
+    assert result.error_code == "MAX_TOKENS_TOO_LARGE"
+    assert "「角色与会话 → 对话高级参数」" in result.guidance
+    assert "携带上下文条数" not in result.guidance
