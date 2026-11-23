@@ -603,3 +603,31 @@ class TestOpenAICompatibleTestConnection:
             result = await adapter.test_connection(model="bad-model")
 
         assert result.success is False
+
+
+@pytest.mark.asyncio
+async def test_pasted_chat_completions_suffix_is_dropped(monkeypatch):
+    """接口地址照教程粘成完整的 …/v1/chat/completions 时，测试连通性和聊天都请求到正确的地址。"""
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": "deepseek-chat"}]})
+        return httpx.Response(
+            200,
+            text='data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    monkeypatch.setattr(
+        "galgame2voice.adapters.llm.openai_adapter.create_async_client",
+        lambda **_: httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False),
+    )
+    adapter = OpenAICompatibleLLMAdapter(
+        api_key="sk-test", base_url="https://api.deepseek.com/v1/Chat/Completions/", default_model="deepseek-chat"
+    )
+    assert (await adapter.test_connection()).success is True
+    tokens = [t async for t in adapter.stream_chat([{"role": "user", "content": "hi"}], model="deepseek-chat")]
+    assert tokens == ["ok"]
+    assert set(seen) == {"https://api.deepseek.com/v1/models", "https://api.deepseek.com/v1/chat/completions"}
