@@ -2,9 +2,11 @@
 
 import socket
 import time
+from urllib.parse import urlparse
 
 import pytest
 
+from galgame2voice.adapters.registry import PROVIDER_PRESETS
 from galgame2voice.security.url_guard import clear_dns_cache, validate_llm_base_url
 
 
@@ -60,9 +62,12 @@ class TestPrivateAddressBlocking:
 
 class TestOfficialHosts:
     def test_official_host_http_rejected(self):
-        ok, reason = validate_llm_base_url("http://api.openai.com/v1")
-        assert ok is False
-        assert "https" in reason
+        for preset_id, preset in PROVIDER_PRESETS.items():
+            if preset_id == "custom":
+                continue
+            host = urlparse(preset["default_base_url"]).hostname
+            ok, reason = validate_llm_base_url(f"http://{host}/v1")
+            assert ok is False and "https" in reason, preset_id
 
     def test_official_host_https_accepted_with_allow_private(self):
         ok, _ = validate_llm_base_url("https://api.openai.com/v1", allow_private=True)
