@@ -36,6 +36,8 @@ OFFICIAL_LLM_HOSTS = {
     "open.bigmodel.cn",
     "dashscope.aliyuncs.com",
     "generativelanguage.googleapis.com",
+    "api.siliconflow.cn",
+    "api.moonshot.cn",
 }
 
 _PRIVATE_REASONS = (

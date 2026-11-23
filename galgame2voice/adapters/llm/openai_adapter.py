@@ -49,6 +49,17 @@ _AUTH_ERROR_KEYWORDS: tuple[str, ...] = (
 )
 
 
+_CHAT_COMPLETIONS_SUFFIX = "/chat/completions"
+
+
+def _strip_chat_completions_suffix(base_url: str) -> str:
+    """Drop a pasted trailing /chat/completions, as the Anthropic adapter drops /messages."""
+    url = base_url.rstrip("/")
+    if url.lower().endswith(_CHAT_COMPLETIONS_SUFFIX):
+        url = url[: -len(_CHAT_COMPLETIONS_SUFFIX)]
+    return url
+
+
 async def _mock_lines_iter(text: str) -> AsyncIterator[str]:
     for line in text.split("\n"):
         yield line
@@ -80,6 +91,9 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         self.mock_server = client_override
         self.last_finish_reason: str | None = None
         self.default_model = default_model or kwargs.get("chat_model") or kwargs.get("model")
+
+    def _endpoint_base_url(self) -> str:
+        return _strip_chat_completions_suffix(self.base_url)
 
     def _record_finish_reason(self, chunk: dict[str, Any]) -> None:
         choices = chunk.get("choices")
@@ -218,7 +232,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         if client is not None:
             # Client provided by caller (e.g. test mock); execute directly without retry loop
             resp = await client.post(
-                f"{self.base_url}/chat/completions",
+                f"{self._endpoint_base_url()}/chat/completions",
                 json=self._build_payload(messages, model, temperature=temperature, stream=True, extra=kwargs),
                 headers={"Authorization": f"Bearer {self.api_key}"},
             )
@@ -251,7 +265,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 yield token
             return
 
-        url = f"{self.base_url}/chat/completions"
+        url = f"{self._endpoint_base_url()}/chat/completions"
         payload = self._build_payload(messages, model, temperature=temperature, stream=True, extra=kwargs)
 
         timeout_s = float(self.extra_config.get("timeout_s", kwargs.get("timeout_s", 60.0)))
@@ -394,7 +408,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         t0: float,
     ) -> TestResult:
         """Fallback connectivity probe via 1-token chat completion when /models is unsupported."""
-        chat_url = f"{self.base_url}/chat/completions"
+        chat_url = f"{self._endpoint_base_url()}/chat/completions"
         chat_resp = await client.post(
             chat_url,
             json={
@@ -472,7 +486,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
 
         t0 = time.perf_counter()
         test_model = self._resolve_test_model(model)
-        url = f"{self.base_url}/models"
+        url = f"{self._endpoint_base_url()}/models"
         from galgame2voice.security.url_guard import assert_llm_url_safe
         await assert_llm_url_safe(url, allow_private=bool(self.extra_config.get("allow_private", False)))
         headers = self._get_headers()
@@ -555,7 +569,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
             data = resp.json()
             return [m["id"] for m in data.get("data", []) if "id" in m]
 
-        url = f"{self.base_url}/models"
+        url = f"{self._endpoint_base_url()}/models"
         from galgame2voice.security.url_guard import assert_llm_url_safe
         await assert_llm_url_safe(url, allow_private=bool(self.extra_config.get("allow_private", False)))
         headers = self._get_headers()
