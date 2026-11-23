@@ -698,6 +698,37 @@ def _diagnose_endpoint_not_found(
     )
 
 
+# Provider wording for an output length above the model's limit (lowercased).
+_MAX_TOKENS_TOO_LARGE_MARKERS = (
+    "max_tokens is too large",  # OpenAI
+    "invalid max_tokens value",  # DeepSeek
+    "range of max_tokens",  # DeepSeek, Qwen (DashScope)
+    "tokens': integer above maximum value",  # OpenAI max_tokens / max_completion_tokens
+    "maximum allowed number of output tokens",  # Anthropic
+)
+
+
+def _diagnose_max_tokens_exceeded(
+    raw_lower: str,
+    status_code: int | None,
+    sanitized_raw: str,
+) -> DiagnosticResult | None:
+    if status_code is not None and status_code not in (400, 422):
+        return None
+    if any(marker in raw_lower for marker in _MAX_TOKENS_TOO_LARGE_MARKERS):
+        return DiagnosticResult(
+            error_code="MAX_TOKENS_TOO_LARGE",
+            message="「最大生成长度」超出当前模型上限",
+            guidance=(
+                "「最大生成长度」超过了当前模型单次能输出的上限。"
+                "请在「角色与会话 → 对话高级参数」中把「最大生成长度」调小（例如 4096）后重试。"
+            ),
+            status_code=status_code or 400,
+            raw_error=sanitized_raw,
+        )
+    return None
+
+
 def _diagnose_context_length_exceeded(
     raw_lower: str,
     status_code: int | None,
@@ -714,7 +745,6 @@ def _diagnose_context_length_exceeded(
         "exceeds the maximum token",
         "exceeds maximum token",
         "token count exceeds",
-        "max_tokens is too large",
         "token limit exceeded",
     )
     is_context_exceeded = (
@@ -1074,6 +1104,7 @@ def diagnose_llm_error(
         or _diagnose_overload(raw_lower, status_code, sanitized_raw)
         or _diagnose_model_not_found(raw_lower, status_code, sanitized_raw)
         or _diagnose_endpoint_not_found(raw_lower, status_code, sanitized_raw)
+        or _diagnose_max_tokens_exceeded(raw_lower, status_code, sanitized_raw)
         or _diagnose_context_length_exceeded(raw_lower, status_code, sanitized_raw)
         or _diagnose_insufficient_balance(raw_lower, status_code, sanitized_raw)
         or _diagnose_provider_specific(p_id, raw_lower, status_code, sanitized_raw)

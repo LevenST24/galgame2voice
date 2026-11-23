@@ -166,9 +166,22 @@ const TRANSIENT_DIAGNOSTIC_CODES = new Set([
   'STREAM_IDLE_TIMEOUT',
 ]);
 
+const SESSION_SETTING_DIAGNOSTIC_CODES = new Set([
+  'CONTEXT_LENGTH_EXCEEDED',
+  'MAX_TOKENS_TOO_LARGE',
+]);
+
+/** 失败是否需要去「角色与会话」调整会话级对话参数。只看错误码。 */
+export function needsSessionSettings(code = null) {
+  const normalized = String(code ?? '').trim().toUpperCase();
+  return SESSION_SETTING_DIAGNOSTIC_CODES.has(normalized);
+}
+
 /** 失败是否需要去「对话模型」处理。只看错误码，不根据错误原文猜测。 */
 export function needsModelSettings(_error, code = null) {
   const normalized = String(code ?? '').trim().toUpperCase();
-  if (!normalized || normalized.startsWith('VOICE_PROFILE_')) return false;
+  if (!normalized || normalized.startsWith('VOICE_PROFILE_') || SESSION_SETTING_DIAGNOSTIC_CODES.has(normalized)) {
+    return false;
+  }
   return !TRANSIENT_DIAGNOSTIC_CODES.has(normalized) && !normalized.endsWith('RATE_LIMIT');
 }

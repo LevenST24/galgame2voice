@@ -5,6 +5,8 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fixed
+- 修复触发「对话上下文超出模型最大限制」时点击「去设置」或提示条按钮误跳到没有该选项的「对话模型」页，以及将「最大生成长度」调得超过模型单次输出上限时被误报成上下文超长或只显示「模型服务返回异常」的问题；现在单次生成长度超限会单独提示在「角色与会话 → 对话高级参数」中调小「最大生成长度」，且这两类错误的「去设置」与提示条按钮都会直接打开「角色与会话」。
 
 ## [3.2.10] - 2026-11-22
 ### Added

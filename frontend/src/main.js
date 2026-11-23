@@ -25,7 +25,7 @@ import { getModelStatus } from './model_badge.js';
 import { audioStore } from './voice.js';
 import { fetchAndCacheAudio, putCachedAudioBlob } from './cache.js';
 import { streamAudioController } from './audio_player.js';
-import { renderSessionList, showToast, needsModelSettings } from './ui.js';
+import { renderSessionList, showToast, needsModelSettings, needsSessionSettings } from './ui.js';
 import { advActions, createTitleActions } from './adv/actions.js';
 import { showTitle } from './adv/title_hook.js';
 import { createPortraitCache } from './adv/portrait_cache.js';
@@ -467,9 +467,12 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   for (const kind of ['done', 'error', 'cancelled']) conversation.on(kind, event => {
     const { error, kind: code, failedInline, originId, meta = {} } = event;
     if (error && !(failedInline && originId === state.activeId)) {
-      showToast(error, 'error', needsModelSettings(error, code) ? {
-        actionLabel: '配置对话模型', onAction: () => openGlobalSettings('models'),
-      } : null);
+      const toastAction = needsModelSettings(error, code)
+        ? { actionLabel: '配置对话模型', onAction: () => openGlobalSettings('models') }
+        : needsSessionSettings(code)
+          ? { actionLabel: '去调整参数', onAction: () => openSessionSettings() }
+          : null;
+      showToast(error, 'error', toastAction);
     } else if (meta.audioError && !meta.cancelled && state.global.voiceMode) {
       const needsCharacter = typeof meta.audioError === 'string'
         && meta.audioError.includes('角色与会话')

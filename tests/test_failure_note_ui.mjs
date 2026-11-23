@@ -74,3 +74,62 @@ test('partial-reply disconnect keeps received lines and guides user to continue 
   assert.equal(h.getActive().messages.length, 2);
   assert.equal(h.getActive().messages[1].content, '前半句台词');
 });
+
+test('CONTEXT_LENGTH_EXCEEDED and MAX_TOKENS_TOO_LARGE open 角色与会话 from the stage and the toast', async t => {
+  const toasts = [];
+  const calls = [];
+  const h = setup(t, {
+    callbacks: {
+      showToast: (msg, type, opts) => toasts.push({ msg, type, opts }),
+      openGlobalSettings: tab => calls.push(['global', tab]),
+      openSessionSettings: () => calls.push(['session']),
+    },
+  });
+
+  for (const [code, summary_zh, action_zh] of [
+    [
+      'CONTEXT_LENGTH_EXCEEDED',
+      '对话上下文超出模型最大限制',
+      '对话上下文超出当前模型的长度限制。请在「角色与会话 → 对话高级参数」中调小「携带上下文条数」，或点击「新建会话」开启新对话。',
+    ],
+    [
+      'MAX_TOKENS_TOO_LARGE',
+      '「最大生成长度」超出当前模型上限',
+      '「最大生成长度」超过了当前模型单次能输出的上限。请在「角色与会话 → 对话高级参数」中把「最大生成长度」调小（例如 4096）后重试。',
+    ],
+  ]) {
+    calls.length = 0;
+    h.app.sendMessage(`提问-${code}`);
+    await h.stream.requests.at(-1).event('error', {
+      error_code: code,
+      diagnostic_code: code,
+      retryable: false,
+      summary_zh,
+      action_zh,
+    });
+
+    const stageBtns = h.dom.advRoot.querySelectorAll('.adv-error-btn');
+    assert.deepEqual(stageBtns.map(b => b.textContent), ['重新发送', '去设置']);
+    stageBtns[1].click();
+    assert.deepEqual(calls, [['session']], `${code} stage 去设置 should open session settings`);
+
+
+    toasts.length = 0;
+    calls.length = 0;
+    h.app.sendMessage(`半截提问-${code}`);
+    const toastReq = h.stream.requests.at(-1);
+    await toastReq.event('line', { index: 0, zh: '半句台词', ja: '半分', emotion: 'calm' });
+    await toastReq.event('error', {
+      error_code: code,
+      diagnostic_code: code,
+      retryable: false,
+      summary_zh,
+      action_zh,
+    });
+    assert.equal(toasts.length, 1, `${code} non-inline failure should emit toast`);
+    assert.ok(toasts[0].opts?.onAction, `${code} toast should provide an action button`);
+    assert.notEqual(toasts[0].opts.actionLabel, '配置对话模型');
+    toasts[0].opts.onAction();
+    assert.deepEqual(calls, [['session']], `${code} toast action should open session settings`);
+  }
+});
