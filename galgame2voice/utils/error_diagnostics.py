@@ -145,6 +145,22 @@ class ConfigurationSelectionError(ValueError):
         self.status_code = status_code
 
 
+WEBPAGE_ENDPOINT_SUMMARY_ZH = "当前「接口地址」返回的是网页，不是模型接口"
+WEBPAGE_ENDPOINT_ACTION_ZH = (
+    "可能填成了官网首页或控制台页面；请在「设置中心 → 对话模型」把「接口地址」改成服务商文档里的 API 地址（通常以 /v1 结尾）。"
+)
+
+
+class WebpageEndpointError(ValueError):
+    """Raised when an LLM endpoint returns an HTML webpage instead of an API response."""
+
+    def __init__(self, url: str = "") -> None:
+        detail = f" ({url})" if url else ""
+        super().__init__(f"{WEBPAGE_ENDPOINT_SUMMARY_ZH}{detail}：{WEBPAGE_ENDPOINT_ACTION_ZH}")
+        self.url = url
+        self.status_code = 200
+
+
 _CONFIGURATION_SELECTION_GUIDANCE: dict[str, tuple[str, str]] = {
     "PROVIDER_NOT_FOUND": (
         "指定的模型服务配置不存在",
@@ -1064,6 +1080,17 @@ def diagnose_llm_error(
             if isinstance(code, int) and 100 <= code <= 599:
                 status_code = code
                 break
+
+    if any(isinstance(e, WebpageEndpointError) for e in exc_chain) or (
+        WEBPAGE_ENDPOINT_SUMMARY_ZH in raw_combined
+    ):
+        return DiagnosticResult(
+            error_code="INVALID_BASE_URL",
+            message=WEBPAGE_ENDPOINT_SUMMARY_ZH,
+            guidance=WEBPAGE_ENDPOINT_ACTION_ZH,
+            status_code=200,
+            raw_error=sanitized_raw,
+        )
 
     status_code = _extract_status_code(status_code, raw_lower)
 

@@ -21,7 +21,9 @@ from galgame2voice.adapters.base import (
     parse_sse_lines,
     aclose_stream_context,
     validate_stream_completion,
+    is_html_response,
 )
+from galgame2voice.utils.error_diagnostics import WebpageEndpointError
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.http_client import create_async_client, get_shared_async_client
 
@@ -50,6 +52,15 @@ _AUTH_ERROR_KEYWORDS: tuple[str, ...] = (
 async def _mock_lines_iter(text: str) -> AsyncIterator[str]:
     for line in text.split("\n"):
         yield line
+
+
+def _has_choices(resp: httpx.Response) -> bool:
+    """A real chat completion: a JSON object with choices and no error."""
+    try:
+        data = resp.json()
+    except ValueError:
+        return False
+    return isinstance(data, dict) and bool(data.get("choices")) and not data.get("error")
 
 
 class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
@@ -306,6 +317,10 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                     await aclose_stream_context(stream_ctx)
                 raise RuntimeError(f"API returned status {response.status_code}: {error_body.decode('utf-8', errors='ignore')}")
 
+            if is_html_response(response):
+                await aclose_stream_context(stream_ctx)
+                raise WebpageEndpointError(url)
+
             yielded_any = False
             saw_done = False
             local_finish_reason: str | None = None
@@ -390,7 +405,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         )
         latency_ms = round((time.perf_counter() - t0) * 1000, 2)
         chat_text = chat_resp.text or ""
-        if chat_resp.status_code == 200:
+        if chat_resp.status_code == 200 and _has_choices(chat_resp):
             return TestResult(
                 success=True,
                 message=f"Connected successfully to {self.base_url}",
@@ -398,10 +413,11 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 models=[test_model] if test_model else None,
             )
 
+        webpage = chat_resp.status_code == 200 and is_html_response(chat_resp)
         diag, diag_guide = self._diagnose_failure(
             provider_id,
             chat_resp.status_code,
-            chat_text,
+            WebpageEndpointError(chat_url) if webpage else chat_text,
             api_key_configured=bool(self.api_key),
         )
         return TestResult(

@@ -19,7 +19,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import aiosqlite
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport, AsyncClient, Response
 from pydantic import ValidationError
 import pytest
 
@@ -506,7 +506,7 @@ def test_diagnostics_do_not_reclassify_unrelated_errors(text, status, provider):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("effort", [None, "low"])
 async def test_connectivity_probe_forwards_effort(effort):
-    response = SimpleNamespace(status_code=200, text="")
+    response = Response(200, json={"choices": [{"message": {"content": "ok"}}]})
     adapter = GeminiLLMAdapter(api_key="synthetic", reasoning_effort=effort)
     client = SimpleNamespace(post=AsyncMock(return_value=response))
     await adapter._probe_chat_fallback(client, "test", {}, "gemini", time.perf_counter())

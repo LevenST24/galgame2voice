@@ -307,6 +307,12 @@ async def aclose_stream_context(stream_ctx: Any = None, client: Any = None) -> N
             logger.debug("Failed closing client: %s", exc)
 
 
+def is_html_response(response: Any) -> bool:
+    """True when the endpoint answered with a web page (Content-Type text/html) instead of an API reply."""
+    content_type = response.headers.get("content-type", "")
+    return content_type.split(";", 1)[0].strip().lower() == "text/html"
+
+
 def validate_stream_completion(
     *,
     yielded_any: bool,

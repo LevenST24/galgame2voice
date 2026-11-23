@@ -344,3 +344,30 @@ class TestStreamingSSEParser:
 
         tokens = await self._collect_sse_tokens(lines)
         assert "".join(tokens) == "MultiFragmentTriplet"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["openai", "anthropic"])
+async def test_stream_chat_webpage_response_points_at_base_url(coordinator_factory, monkeypatch, kind):
+    """接口地址填成网页时，发消息提示去改「接口地址」，不再说「无需修改配置，可直接重新发送」。"""
+    from galgame2voice.adapters.llm.anthropic_adapter import AnthropicAdapter
+    from galgame2voice.utils.error_diagnostics import WEBPAGE_ENDPOINT_ACTION_ZH
+
+    def page(request):
+        return httpx.Response(
+            200,
+            text="<!doctype html><html><body>Console</body></html>",
+            headers={"Content-Type": "text/html; charset=utf-8"},
+            request=request,
+        )
+
+    _, _, events = await drive_stream_completion(
+        coordinator_factory,
+        monkeypatch,
+        adapter_cls=OpenAICompatibleLLMAdapter if kind == "openai" else AnthropicAdapter,
+        client_patch=_OPENAI_CLIENT_PATCH if kind == "openai" else "galgame2voice.adapters.llm.anthropic_adapter.create_async_client",
+        response_factory=page,
+    )
+    errors = [e["data"] for e in events if e.get("event") == "error"]
+    assert [(e["error_code"], e["action_zh"]) for e in errors] == [("INVALID_BASE_URL", WEBPAGE_ENDPOINT_ACTION_ZH)]
+    assert "无需修改配置" not in errors[0]["error"]
