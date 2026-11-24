@@ -1,6 +1,6 @@
 # Voice still generating after the reply text is complete (r67 R6)
 
-Status: proposal, 2026-11-24. Not implemented. Needs a decision on the open question below.
+Status: option A implemented, 2026-11-24. Option B (send skips the remaining voice) is not done.
 
 ## Problem
 
@@ -38,16 +38,19 @@ Keep #566's quiet style: no modal, no spinner, no countdown.
    it as plain progress. `adv-ui.md` says protocol changes need a spec revision, so
    this note is that revision for the `progress` stage values.
 2. **Frontend: carry it to the player.** `ai.js` passes the frame through `onEvent`;
-   the controller emits `text_complete` for the turn; `adv_app` calls a new
+   the controller (`conversation.js`) emits `text_complete` for the turn instead of a
+   plain `progress` event; `adv_app` calls a new
    `player.textComplete(turnId)`.
 3. **Frontend: open the input in the voice tail.** In `waiting_line` with
    `textComplete` set and every line shown, the player enters `input` with
    `canSend: false` instead of the dots, and the textbox shows the muted note
-   「语音还在准备，可以先写下一句」 in the existing `adv-wait-hint` slot.
+   「语音还在准备，可以先写下一句」 as the textarea placeholder (the `adv-wait-hint`
+   slot lives in the speech view, which input mode hides). The send button's title
+   says 「语音准备好后可发送」.
    A late `line_audio` still lands in LOG for replay. When `done` arrives,
    `setCanSend(true)` enables the send button and the draft stays as typed.
 
-## Open question (needs a decision)
+## Open question (decided: A)
 
 What should pressing Send do while only voice is left?
 
@@ -59,10 +62,15 @@ What should pressing Send do while only voice is left?
   message goes out. This removes the wait but needs a new "skip voice" cancel mode in
   the stream coordinator and persist policy, plus tests for the lock hand-over.
 
-Recommendation: ship A first; it is low risk and fixes "nothing tells me what is
-happening". Do B as its own PR if the wait still bites.
+Decision (2026-11-24): A. Do B as its own PR if the wait still bites.
 
-## Tests to add with the implementation
+The backend sends the frame only when at least one voice job is still unsettled at that
+point, and never after a model error or a cancel.
+
+## Tests
+
+Added in `tests/test_voice_tail_progress.py`, `tests/test_line_player.mjs`,
+`tests/test_adv_textbox.mjs`, `tests/test_conversation.mjs` and `tests/test_adv_app.mjs`:
 
 - Backend: a stream whose last TTS job hangs emits `progress` `voice` after the last
   `line` and before `done`; a stream that fails in the model does not.

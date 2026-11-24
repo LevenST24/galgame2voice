@@ -214,6 +214,9 @@ export function createConversation({
             }
           }
           emit('audio_chunk', payload);
+        } else if (type === 'progress' && payload?.stage === 'voice') {
+          // The reply text is final; only its voice is still being made.
+          emit('text_complete', { messageId: assistantMessage.id });
         } else {
           emit(type, payload);
         }

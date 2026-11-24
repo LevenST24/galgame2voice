@@ -580,3 +580,20 @@ test('send: takes pendingVoice only after validation passes and skips it for ret
 });
 
 
+
+test('a voice progress frame tells the stage that the reply text is final', async () => {
+  const app = setup();
+  const received = [];
+  app.conversation.on('text_complete', event => received.push(event));
+  const progress = [];
+  app.conversation.on('progress', event => progress.push(event));
+  app.conversation.send('说完再配音');
+  const request = app.stream.requests[0];
+  await request.event('progress', { stage: 'thinking' });
+  await request.event('line', { index: 0, zh: '说完了', ja: '終わり', emotion: 'gentle', act: {} });
+  await request.event('progress', { stage: 'voice' });
+  assert.equal(received.length, 1);
+  assert.ok(received[0].messageId, 'the event names the reply it belongs to');
+  assert.deepEqual(progress, [{ stage: 'thinking' }]);
+  await request.onEnd('说完了');
+});

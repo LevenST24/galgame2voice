@@ -578,6 +578,26 @@ class StreamCoordinator:
             return
         run.last_progress_at = now
 
+    async def _note_voice_tail(self, run: _StreamRun) -> None:
+        """Tells the client once that the text is final and only voice is left.
+
+        The client may then let the player write the next message while the
+        last lines are still synthesizing. Unlike the thinking frames this one
+        is not throttled: it is sent at most once per reply.
+        """
+        if run.cancel_event and run.cancel_event.is_set():
+            return
+        async with run.line_audio_lock:
+            waiting = any(not result["settled"] for result in run.chunk_results.values())
+        if not waiting:
+            return
+        await self._put_with_cancel(
+            run.event_queue,
+            {"event": "progress", "data": {"stage": "voice"}},
+            run.cancel_event,
+            run.shutdown_event,
+        )
+
     async def _llm_producer(self, run: _StreamRun) -> None:
         """Producer task streaming LLM tokens, extracting sentences, and feeding TTS and event queues."""
         cancel_event = run.cancel_event
@@ -638,6 +658,7 @@ class StreamCoordinator:
                         async with run.line_audio_lock:
                             self._line_audio_state(run, 0)["sealed"] = True
                         await self._try_emit_line_audio(run)
+                await self._note_voice_tail(run)
         except Exception as exc:
             if getattr(exc, "is_truncation", False):
                 run.truncation_error = exc
