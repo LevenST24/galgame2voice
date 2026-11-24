@@ -460,7 +460,10 @@ const settingsDraftStore = createSettingsDraftStore({
   readConfigPayload: () => ({
     gpt_sovits_url: _dom.gParamSovitsUrl ? _dom.gParamSovitsUrl.value.trim() || 'http://127.0.0.1:9880' : undefined,
     inference_precision: _dom.gPrecision ? _dom.gPrecision.value : undefined,
-    audio_retention_minutes: _dom.gAudioRetention ? Math.max(1, Number(_dom.gAudioRetention.value) || 30) : 30,
+    // Whole minutes within the box's own 1 to 10080 range: the server takes integers only,
+    // and a typed 2.5 would otherwise fail the whole save.
+    audio_retention_minutes: _dom.gAudioRetention
+      ? Math.min(10080, Math.max(1, Math.round(Number(_dom.gAudioRetention.value) || 30))) : 30,
   }),
   runSettingsMutation,
   clearConfigDirtyIfUnchanged: (savedRevision) => {

@@ -472,3 +472,21 @@ test('checking gAllowPrivateEndpoints dismisses interception box and allows requ
   assert.equal(localActivated, true, 'activate proceeds after user enables private endpoints');
   assert.equal(requests.filter(r => r.kind === 'save_provider').length, 1);
 });
+
+test('footer save sends whole retention minutes within 1 to 10080', async t => {
+  for (const [typed, sent] of [['2.5', 3], ['99999', 10080], ['0.4', 1], ['', 30]]) {
+    const writeRequests = [];
+    installPrivateFetch({
+      onPost: (url, options) => {
+        writeRequests.push({ url, body: JSON.parse(options.body) });
+        return response({ status: 'ok', settings: { allow_private_llm_endpoints: false, audio_retention_minutes: sent } });
+      },
+      configSettings: { allow_private_llm_endpoints: false, audio_retention_minutes: 30 },
+    });
+    const { dom } = await openLoadedSettings(t, { loadConfig: true });
+    dom.gAudioRetention.value = typed;
+    await dom.gAudioRetention.dispatch('input');
+    await saveGlobalConfig();
+    assert.equal(writeRequests.at(-1).body.audio_retention_minutes, sent, `typed ${JSON.stringify(typed)}`);
+  }
+});
