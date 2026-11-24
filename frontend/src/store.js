@@ -124,6 +124,15 @@ export const LEGACY_GREETINGS = [
 ];
 
 /**
+ * The how-to line a new session opens with. It lives only in the browser, never in the database.
+ * @param {{ role?: string, content?: string, noVoice?: boolean } | null | undefined} message
+ */
+export function isStarterGreeting(message) {
+  return Boolean(message && message.noVoice && message.role === 'assistant'
+    && (message.content === GREETING || LEGACY_GREETINGS.includes(/** @type {string} */ (message.content))));
+}
+
+/**
  * @template {ChatSession | null | undefined} T
  * @param {T} session
  * @returns {T}
