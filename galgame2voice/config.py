@@ -3,14 +3,41 @@ Configuration module for galgame2voice.
 Provides type-safe environment and runtime settings via Pydantic V2.
 """
 
+import codecs
 from functools import lru_cache
 from pathlib import Path
 
 from pydantic import AliasChoices, Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    DotEnvSettingsSource,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
 from galgame2voice import __version__
 from galgame2voice.runtime_paths import get_install_root
+
+
+def detect_env_file_encoding(path: Path) -> str:
+    """The encoding a Windows editor most likely saved .env in.
+
+    PowerShell 5.1's `>` writes UTF-16, and Notepad on Chinese Windows may save
+    as ANSI (GBK). Reading those as UTF-8 crashed startup.
+    """
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return "utf-8"
+    if raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return "utf-16"
+    for encoding in ("utf-8-sig", "gb18030"):
+        try:
+            raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        return encoding
+    return "latin-1"
 
 
 class Settings(BaseSettings):
@@ -152,12 +179,34 @@ class Settings(BaseSettings):
     )
 
     # Pydantic Settings Config
+    # ".env" means the one in the program folder, wherever the console was
+    # opened from (see settings_customise_sources).
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        env_file = getattr(dotenv_settings, "env_file", None)
+        if env_file == ".env":
+            env_file = get_install_root() / ".env"
+        if isinstance(env_file, (str, Path)) and Path(env_file).is_file():
+            dotenv_settings = DotEnvSettingsSource(
+                settings_cls,
+                env_file=env_file,
+                env_file_encoding=detect_env_file_encoding(Path(env_file)),
+            )
+        return init_settings, env_settings, dotenv_settings, file_secret_settings
 
     @property
     def data_dir(self) -> Path:
