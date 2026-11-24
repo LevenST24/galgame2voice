@@ -554,10 +554,36 @@ class CharacterManager:
     ) -> Any | None:
         """Queries an existing voice_profile row by character name or configured aliases."""
         cursor = await conn.execute("SELECT * FROM voice_profiles ORDER BY id;")
-        rows = await cursor.fetchall()
-        if index is not None and package is not None:
-            rows = [row for row in rows if index.resolve(row["name"]) is package]
-        return select_profile(rows, char_name, aliases or ())
+        all_rows = await cursor.fetchall()
+        if index is None or package is None:
+            return select_profile(all_rows, char_name, aliases or ())
+        rows = [row for row in all_rows if index.resolve(row["name"]) is package]
+        found = select_profile(rows, char_name, aliases or ())
+        if found is not None:
+            return found
+        # A package renamed in its manifest without listing the old name as an alias:
+        # its row no longer matches any package by name, but still plays this package's
+        # reference audio. Keep that row (sessions, affection, memories) instead of
+        # adding a second voice. Two such rows are ambiguous, so neither is taken.
+        orphans = [
+            row for row in all_rows
+            if index.resolve(row["name"]) is None and CharacterManager._row_uses_package_audio(row, package)
+        ]
+        return orphans[0] if len(orphans) == 1 else None
+
+    @staticmethod
+    def _row_uses_package_audio(row: Any, package: CharacterPackage) -> bool:
+        """True when the row's reference audio lives inside the package folder."""
+        raw = str(row["ref_audio_path"] or "").strip().strip("\"'").replace("\\", "/")
+        if not raw:
+            return False
+        path = Path(raw)
+        if not path.is_absolute():
+            path = get_settings().project_root / path
+        try:
+            return path.resolve().is_relative_to(package.folder.resolve())
+        except (OSError, ValueError):
+            return False
 
     @classmethod
     def _resolve_package_profile_defaults(cls, pkg: CharacterPackage) -> dict[str, Any]:
