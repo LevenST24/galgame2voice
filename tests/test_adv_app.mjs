@@ -533,7 +533,7 @@ for (const trigger of ['click', 'Enter']) test(`hidden queued line survives done
   h.app.action('advance'); assert.equal(h.app.player.state, 'input');
 });
 
-for (const overlay of ['log', 'dialog', 'hidden']) test(`replay completion retains ${overlay} pause ownership`, async t => {
+for (const overlay of ['log', 'dialog']) test(`replay completion retains ${overlay} pause ownership`, async t => {
   const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0, advAutoBaseMs: 0, advAutoPerCharMs: 0 } });
   h.start(); h.line(); h.line(1); h.audioEvent(); h.done();
   h.app.action('auto'); h.app.action('replay_voice');
@@ -682,7 +682,6 @@ test('opening panels or overlays during stage replay stops replay and closing do
     ['log', () => stage.querySelector('.adv-qm-btn-log').click(), () => stage.querySelector('.adv-log-close-btn').click()],
     ['dialog', () => h.overlay(true), () => h.overlay(false)],
     ['sessions', () => toolButton('sessions').click(), () => stage.dispatchEvent({ type: 'keydown', key: 'Escape' })],
-    ['hide', () => stage.querySelector('.adv-qm-btn-hide').click(), () => stage.click()],
   ];
 
   for (const [label, openPanel, closePanel] of cases) {
@@ -1420,3 +1419,26 @@ for (const trigger of ['button', 'Escape']) {
     assert.deepEqual(assistantReplies[1].lines?.map(l => l.zh), ['未完第一句。']);
   });
 }
+
+test('hiding the window lets a replay finish, then holds AUTO until it is shown again', async t => {
+  const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0, advAutoBaseMs: 0, advAutoPerCharMs: 0 } });
+  h.start(); h.line(); h.line(1); h.audioEvent(); h.done();
+  h.app.action('auto'); h.app.action('replay_voice');
+  const stopped = h.audio.stopped.length;
+  h.app.action('hide');
+  assert.equal(h.audio.stopped.length, stopped, 'hiding does not stop the replay');
+  h.endVoice('ended'); await microtasks(); h.clock.tick(5000);
+  assert.equal(h.app.player.currentIndex, 0, 'AUTO waits while the window is hidden');
+  h.app.action('unhide');
+  h.clock.tick(1200); assert.equal(h.app.player.currentIndex, 1);
+});
+
+test('hiding the window does not stop the line that is being voiced', t => {
+  const h = setup(t, { settings: { advTextIntervalMs: 0 } });
+  h.start(); h.line(0); h.audioEvent(0);
+  assert.equal(h.audio.played.length, 1);
+  const stopped = h.audio.stopped.length;
+  h.app.action('hide');
+  assert.equal(h.audio.stopped.length, stopped);
+  assert.notEqual(h.app.player.state, 'suspended');
+});

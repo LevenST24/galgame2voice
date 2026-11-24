@@ -598,7 +598,8 @@ export function mountAdv(dom, deps) {
       case 'toggle_hide':
       case 'hide':
         if (player.hidden) unhide();
-        else { player.hide(); player.suspend('hidden'); stopStageReplay(); sprite.suspend(); }
+        // Hiding pauses AUTO and the next line, but a voice already playing (or replaying) finishes.
+        else { player.hide(); sprite.suspend(); }
         break;
       case 'unhide': unhide(); break;
       case 'log': openLog(); break;
@@ -658,7 +659,6 @@ export function mountAdv(dom, deps) {
     syncControls();
   }
   function unhide() {
-    player.resume('hidden');
     player.unhide();
     restoreSprite();
   }
