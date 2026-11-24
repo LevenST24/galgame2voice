@@ -49,6 +49,12 @@ def _extract_content_text(data: dict[str, Any]) -> str:
     )
 
 
+def _with_tested_model(models: list[str], tested_model: str) -> list[str]:
+    if tested_model and tested_model not in models:
+        return [tested_model, *models]
+    return models
+
+
 class AnthropicAdapter(BaseLLMAdapter):
     """
     Adapter for Anthropic Claude native /v1/messages API.
@@ -454,6 +460,7 @@ class AnthropicAdapter(BaseLLMAdapter):
                 status_code=diag.get("status_code"),
             )
         t0 = time.time()
+        tested_model = (model or self.default_model or "").strip()
         try:
             resp = await self.chat(
                 messages=[ChatMessage(role="user", content="Hi")],
@@ -466,7 +473,9 @@ class AnthropicAdapter(BaseLLMAdapter):
                 success=True,
                 message=f"Anthropic connection successful. Response: {resp.content[:30]}...",
                 latency_ms=latency,
-                models=await self.list_models(),
+                # The list is a fixed sample, not what the account offers; the model that just
+                # answered is available, so the settings page must not call it missing.
+                models=_with_tested_model(await self.list_models(), tested_model),
             )
         except Exception as exc:
             latency = (time.time() - t0) * 1000

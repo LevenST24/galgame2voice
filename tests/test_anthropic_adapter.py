@@ -219,6 +219,13 @@ class TestAnthropicPayloadInvariance:
         assert probe.success is True
         assert sent["max_tokens"] == 64
         assert sent["output_config"] == {"effort": "low"}
+        assert probe.models.count("claude-opus-5-5") == 1
+
+        # A model outside the built-in sample that just answered is listed, so the settings page
+        # does not report 「模型列表里没有」 for a working model name.
+        other = await adapter.test_connection(model="claude-opus-4-1")
+        assert other.success is True
+        assert "claude-opus-4-1" in other.models
 
 
 class TestAnthropicEmptyApiKeyFastFail:
