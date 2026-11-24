@@ -453,12 +453,21 @@ export function createSession(title = '新对话') {
 }
 
 /**
+ * A copy of the sessions with the most recently used first, the order home uses.
+ * @param {ChatSession[]} sessions
+ * @returns {ChatSession[]}
+ */
+export function sessionsByRecent(sessions) {
+  return [...sessions].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+}
+
+/**
  * @param {string} id
  * @returns {void}
  */
 export function deleteSession(id) {
   state.sessions = state.sessions.filter((s) => s.id !== id);
-  if (state.activeId === id) state.activeId = state.sessions[0]?.id ?? null;
+  if (state.activeId === id) state.activeId = sessionsByRecent(state.sessions)[0]?.id ?? null;
   if (!state.sessions.length) makeStarterSession();
   saveState();
 }
