@@ -120,7 +120,14 @@ class EngineSettingsController {
         fp32: 'FP32 单精度',
         cpu: 'CPU 稳定模式 (免显存)',
       };
-      this.coordinator.showToast?.(`已保存计算方式：${labelMap[val] || val}。请点击【重启语音引擎】应用。`, 'info');
+      const saved = `已保存计算方式：${labelMap[val] || val}。`;
+      const apply = '在「运行状态」启动或重启 SoVITS 引擎后生效。';
+      if ((val === 'fp16' || val === 'fp32') && this.coordinator.isGpuAvailable?.() === false) {
+        // These modes force the engine onto CUDA; without a card it fails to load.
+        this.coordinator.showToast?.(`${saved}本机未检测到 NVIDIA 显卡，FP16/FP32 可能无法启动引擎；没有独立显卡请改选「CPU 模式」或「自动选择」。`, 'warning');
+      } else {
+        this.coordinator.showToast?.(`${saved}${apply}`, 'info');
+      }
       this.coordinator.fetchSystemTelemetry?.();
     } catch (err) {
       if (this.disposed || revision !== this.precisionRevision) return;
