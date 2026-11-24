@@ -616,12 +616,18 @@ def _engine_state(endpoint: SovitsEndpoint, state: str, message: str) -> dict[st
             "base_url": endpoint.base_url, "source": endpoint.source}
 
 
+# The launch whose engine last answered a probe. A launch that has answered once is
+# loaded, so a later silence means it is busy or hung, not still loading models.
+_ready_launch: Any = None
+
+
 def _restarting_endpoint(endpoint: SovitsEndpoint) -> bool:
     return _engine_restart_lock.locked() and _engine_restart_target == endpoint.base_url
 
 
 @router.get("/api/system/engine-status", dependencies=[Depends(require_auth)])
 async def engine_status_endpoint(request: Request = None) -> dict[str, Any]:  # type: ignore[assignment]
+    global _ready_launch
     supervisor = get_engine_supervisor(request)
     try:
         endpoint = await supervisor.resolve_endpoint()
@@ -637,6 +643,8 @@ async def engine_status_endpoint(request: Request = None) -> dict[str, Any]:  # 
     if launch is not before_launch:
         return _engine_state(endpoint, "checking", "引擎进程已变更，正在重新核对服务状态。请稍候，无需再次重启。")
     if reachable:
+        if launch is not None:
+            _ready_launch = launch
         return _engine_state(endpoint, "ready", "语音引擎已就绪。可在“角色与会话”中选择音色。")
     if launch is not None and launch.process.poll() is not None:
         message = await asyncio.to_thread(engine_failure_message, supervisor.engine_log_path())
@@ -645,6 +653,9 @@ async def engine_status_endpoint(request: Request = None) -> dict[str, Any]:  # 
         if launch is not supervisor.get_managed_launch(endpoint):
             return _engine_state(endpoint, "checking", "引擎进程已变更，正在重新核对服务状态。请稍候，无需再次重启。")
         return _engine_state(endpoint, "failed", message)
+    if launch is not None and launch is _ready_launch:
+        return _engine_state(endpoint, "checking",
+                             "语音引擎此前已就绪，现在暂时没有响应，可能正在合成较长的语音。请稍后点击「刷新状态」；若一直没有响应，可重启引擎。文字聊天可继续使用。")
     if launch is not None:
         started_at = launch.started_at
         if started_at is not None and supervisor.monotonic() - started_at >= 180:

@@ -126,6 +126,19 @@ async def test_engine_status_loading_slow_after_three_minutes_unresponsive():
     assert "logs/gpt_sovits.log" in body["message"]
 
 
+async def test_engine_that_was_ready_and_stops_answering_is_not_called_loading():
+    # An hour after it became ready, a busy or hung engine used to read 「加载较慢」.
+    supervisor = FakeEngineSupervisor(launch=_local_launch(started_at=100.0), reachable=True, now=3700.0)
+    assert (await _get_engine_status(supervisor)).json()["state"] == "ready"
+    supervisor.reachable = False
+    body = (await _get_engine_status(supervisor)).json()
+    assert body["state"] == "checking" and body["ready"] is False
+    assert "加载" not in body["message"] and "此前已就绪" in body["message"]
+
+    # A new launch of the engine is loading again, so the old answer must not carry over.
+    supervisor.launch = _local_launch(started_at=3700.0)
+    assert (await _get_engine_status(supervisor)).json()["state"] == "starting"
+
 async def test_engine_status_failed_extracts_diagnosis_from_engine_log(tmp_path: Path):
     log_file = tmp_path / "gpt_sovits.log"
     log_file.write_text(f"{ENGINE_LOG_START}\nRuntimeError: CUDA out of memory\n", encoding="utf-8")
