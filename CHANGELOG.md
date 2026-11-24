@@ -89,6 +89,7 @@ All notable changes to galgame2voice are documented here. The format follows
 - 修复背景包的 manifest.json 用记事本保存成带 BOM 的 UTF-8 后，背景面板里整个背景包消失的问题。
 - 修复在 Windows 上编写、清单里用反斜杠写路径（如 refs\gentle.wav）的角色包，在 Linux 或 Docker 上导入失败的问题。
 - 修复日文 Windows 压缩的角色包解压后文件名乱码，以及在 Windows 上带「黒」「ソ」等字的文件名被拆成错误文件夹的问题。
+- 修复 Mac 上设过自定义图标的角色包文件夹导入失败的问题；导入时也不再把 __MACOSX、.DS_Store 这类系统文件复制进角色包。
 
 ## [3.2.11] - 2026-11-24
 ### Fixed
