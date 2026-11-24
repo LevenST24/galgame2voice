@@ -98,7 +98,8 @@ def cmd_pack(character_dir: Path, output_zip: Path, force: bool = False) -> int:
             for file in files:
                 full_path = Path(root) / file
                 rel_path = full_path.relative_to(char_dir)
-                if should_ignore(rel_path):
+                # An output zip inside the package folder must not pack itself.
+                if should_ignore(rel_path) or full_path.resolve() == out_path:
                     continue
                 zf.write(full_path, arcname=str(rel_path))
                 file_count += 1
