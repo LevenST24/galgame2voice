@@ -702,6 +702,24 @@
     </div>
   </div>
 
+  <div class="modal-backdrop" id="ownVoiceClashModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="ownVoiceClashTitle" aria-describedby="ownVoiceClashText" style="max-width: 440px;">
+      <header class="modal-head">
+        <h3 id="ownVoiceClashTitle">角色包和你的音色同名</h3>
+        <button class="icon-btn" data-close aria-label="关闭">✕</button>
+      </header>
+      <div class="modal-body">
+        <p id="ownVoiceClashText"></p>
+      </div>
+      <footer class="modal-foot">
+        <span class="foot-spacer"></span>
+        <button class="btn ghost" data-close>取消</button>
+        <button class="btn" id="ownVoiceClashReplace">用角色包替换</button>
+        <button class="btn primary" id="ownVoiceClashKeep">两个都保留</button>
+      </footer>
+    </div>
+  </div>
+
   <div class="toast-root" id="toastRoot" aria-live="polite" aria-atomic="false"></div>
 
   <script type="module" src="/src/main.js"></script>

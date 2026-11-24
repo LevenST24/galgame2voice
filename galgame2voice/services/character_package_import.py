@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 import json
+import logging
 import os
 from pathlib import Path
 import re
 import shutil
+import sqlite3
 import stat
 import sys
 import tarfile
@@ -22,7 +24,7 @@ from fastapi.responses import JSONResponse
 
 from galgame2voice.config import get_settings
 from galgame2voice.database.session import get_db
-from galgame2voice.services.character_identity import DuplicateCharacterId
+from galgame2voice.services.character_identity import AmbiguousProfileName, DuplicateCharacterId, identity_key, select_profile
 from galgame2voice.services.character_manager import (
     CharacterManager,
     CharacterPackage,
@@ -40,6 +42,8 @@ MAX_PACKAGE_DISCOVERY_DEPTH = 3
 
 NO_PACKAGE_FOUND_DETAIL = "没有找到角色包：需要包含 manifest.json 的文件夹"
 SIZE_LIMIT_EXCEEDED_DETAIL = "角色包文件过大（上限 8 GiB），请精简无关文件后重试。"
+
+logger = logging.getLogger("galgame2voice.services.character_package_import")
 
 
 def _package_missing_voice_weights(pkg: CharacterPackage) -> bool:
@@ -346,6 +350,84 @@ async def _rollback_and_rescan(
         pass
 
 
+# Appended to the user's own voice when a character package with the same name is kept beside it.
+OWN_VOICE_SUFFIX = "（自建）"
+
+
+def _staged_identities(staged: list[tuple[str, Path]]) -> list[tuple[str, list[str]]]:
+    """Name, id and aliases from each staged manifest; a broken manifest is left to validation."""
+    found: list[tuple[str, list[str]]] = []
+    for _folder, src_dir in staged:
+        try:
+            data = json.loads((src_dir / "manifest.json").read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict) or not isinstance(data.get("name"), str) or not data["name"].strip():
+            continue
+        aliases = [a for a in data.get("aliases") or [] if isinstance(a, str) and a.strip()]
+        package_id = data.get("id") if isinstance(data.get("id"), str) else ""
+        found.append((data["name"].strip(), [x for x in (package_id, *aliases) if x]))
+    return found
+
+
+async def _own_voice_clashes(staged: list[tuple[str, Path]], char_mgr: Any) -> list[dict[str, Any]]:
+    """Voices the user made that a new package would take over: same name or alias, no package behind them."""
+    identities = await asyncio.to_thread(_staged_identities, staged)
+    if not identities:
+        return []
+    async with get_db() as conn:
+        cursor = await conn.execute("SELECT id, name FROM voice_profiles ORDER BY id;")
+        rows = await cursor.fetchall()
+    own_rows = [row for row in rows if char_mgr.get_character(row["name"]) is None]
+    clashes: list[dict[str, Any]] = []
+    for name, aliases in identities:
+        if char_mgr.get_character(name) is not None:
+            continue  # An update of an installed package keeps its own voice.
+        try:
+            row = select_profile(own_rows, name, aliases)
+        except AmbiguousProfileName:
+            continue  # Sync already refuses to touch an ambiguous name.
+        if row is not None and all(c["profile_id"] != row["id"] for c in clashes):
+            clashes.append({"package": name, "profile_id": row["id"], "profile_name": row["name"]})
+    return clashes
+
+
+async def _rename_own_voices(clashes: list[dict[str, Any]]) -> list[tuple[int, str]]:
+    """Move each clashing voice out of the package's way; returns (id, old name) to undo."""
+    renamed: list[tuple[int, str]] = []
+    async with get_db() as conn:
+        cursor = await conn.execute("SELECT name FROM voice_profiles;")
+        taken = {identity_key(row["name"]) for row in await cursor.fetchall()}
+        taken.update(identity_key(c["package"]) for c in clashes)
+        for clash in clashes:
+            base = f"{clash['profile_name']}{OWN_VOICE_SUFFIX}"
+            new_name, n = base, 2
+            while identity_key(new_name) in taken:
+                new_name, n = f"{clash['profile_name']}（自建{n}）", n + 1
+            taken.add(identity_key(new_name))
+            await conn.execute(
+                "UPDATE voice_profiles SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
+                (new_name, clash["profile_id"]),
+            )
+            renamed.append((clash["profile_id"], clash["profile_name"]))
+            clash["renamed_to"] = new_name
+        await conn.commit()
+    return renamed
+
+
+async def _restore_own_voice_names(renamed: list[tuple[int, str]]) -> None:
+    if not renamed:
+        return
+    async with get_db() as conn:
+        for profile_id, old_name in renamed:
+            try:
+                await conn.execute("UPDATE voice_profiles SET name = ? WHERE id = ?;", (old_name, profile_id))
+            except sqlite3.IntegrityError:
+                # A row the failed import already made holds the name; the voice keeps its new one.
+                logger.warning("导入失败后无法恢复音色原名：%s", old_name)
+        await conn.commit()
+
+
 def _validate_placed_packages(mgr: Any, placed: list[Path], out_pkgs: list[CharacterPackage]) -> None:
     with mgr._catalog_lock:
         by_folder = {pkg.folder.resolve(): pkg for pkg in mgr._packages.values()}
@@ -369,7 +451,7 @@ def _validate_placed_packages(mgr: Any, placed: list[Path], out_pkgs: list[Chara
 
 
 async def import_character_archive_file(
-    request: Request, archive_path: Path, *, filename: str = "", overwrite: bool = False
+    request: Request, archive_path: Path, *, filename: str = "", overwrite: bool = False, same_name: str = ""
 ) -> dict[str, Any] | JSONResponse:
     """Safely unpacks, validates, and installs character package(s) from a local archive file."""
     settings = get_settings()
@@ -404,14 +486,36 @@ async def import_character_archive_file(
                     },
                 )
 
+            # A voice the user made under the same name would silently get the package's persona and files.
+            clashes = await _own_voice_clashes(staged, char_mgr)
+            if clashes and same_name not in ("replace", "keep_both"):
+                names = [c["profile_name"] for c in clashes]
+                return JSONResponse(
+                    status_code=status.HTTP_409_CONFLICT,
+                    content={
+                        "code": "own_voice_same_name",
+                        "names": names,
+                        "suffix": OWN_VOICE_SUFFIX,
+                        "detail": f"你自己建的音色和角色包同名：{'、'.join(names)}",
+                    },
+                )
+
             placed: list[Path] = []
             backups: list[tuple[Path, Path]] = []
+            renamed: list[tuple[int, str]] = []
+
+            async def _undo() -> None:
+                await _restore_own_voice_names(renamed)
+                await _rollback_and_rescan(placed, backups, catalog, char_mgr)
+
             try:
+                if clashes and same_name == "keep_both":
+                    renamed.extend(await _rename_own_voices(clashes))
                 await asyncio.to_thread(
                     _place_packages, staged, chars_dir, settings.data_dir / "replaced_characters", placed, backups
                 )
             except BaseException as exc:
-                await await_protected(_rollback_and_rescan(placed, backups, catalog, char_mgr))
+                await await_protected(_undo())
                 if not isinstance(exc, Exception):
                     raise
                 raise HTTPException(500, f"移动角色包失败：{sanitize_error_detail(exc)}") from exc
@@ -441,10 +545,10 @@ async def import_character_archive_file(
                             }
                         )
             except (_ImportValidationError, DuplicateCharacterId, HTTPException) as exc:
-                await await_protected(_rollback_and_rescan(placed, backups, catalog, char_mgr))
+                await await_protected(_undo())
                 raise HTTPException(422, str(getattr(exc, "detail", exc))) from exc
             except BaseException:
-                await await_protected(_rollback_and_rescan(placed, backups, catalog, char_mgr))
+                await await_protected(_undo())
                 raise
 
             return {
@@ -453,13 +557,16 @@ async def import_character_archive_file(
                 "active_profile_id": rescan_res["active_profile_id"],
                 "total_profiles": rescan_res["total_profiles"],
                 "catalog_warning": rescan_res["catalog_warning"],
+                "kept_own_voices": [
+                    {"name": c["profile_name"], "renamed_to": c["renamed_to"]} for c in clashes if "renamed_to" in c
+                ],
             }
     finally:
         await asyncio.to_thread(_rmtree_force, staging_dir)
 
 
 async def import_character_archive(
-    request: Request, *, filename: str = "", overwrite: bool = False
+    request: Request, *, filename: str = "", overwrite: bool = False, same_name: str = ""
 ) -> dict[str, Any] | JSONResponse:
     """Streams, safely unpacks, validates, and installs character package(s)."""
     temp_root = get_settings().data_dir / "character_import"
@@ -469,6 +576,8 @@ async def import_character_archive(
     upload_path = Path(raw_upload)
     try:
         await _stream_request_to_file(request, upload_path, MAX_IMPORT_BYTES)
-        return await import_character_archive_file(request, upload_path, filename=filename, overwrite=overwrite)
+        return await import_character_archive_file(
+            request, upload_path, filename=filename, overwrite=overwrite, same_name=same_name
+        )
     finally:
         await asyncio.to_thread(upload_path.unlink, missing_ok=True)
