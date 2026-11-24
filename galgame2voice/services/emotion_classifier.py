@@ -18,13 +18,23 @@ EMOTION_KEYWORDS: dict[str, list[str]] = {
             "那、那个", "别看我", "言わないで", "見ないで", "ずるい", "心臓に悪い"],
     "happy": ["开心", "高兴", "嬉し", "わーい", "やった", "笑", "喜ぶ", "大好き", "太好了", "ありがとう", "耶", "哈哈", "好棒",
               "うれしい", "最高", "好开心", "嘿嘿"],
-    "cool": ["冷淡", "高冷", "无聊", "くだらない", "別に", "静かに", "冷静", "ふん", "无所谓", "随你便", "关我什么事", "随便你"],
-    "sad": ["难过", "伤心", "悲し", "泣く", "寂しい", "抱歉", "ごめん", "辛い", "对不起", "呜呜", "痛い", "舍不得", "一个人"],
+    "cool": ["冷笑", "冷淡", "高冷", "无聊", "くだらない", "別に", "静かに", "冷静", "ふん", "无所谓", "随你便", "关我什么事", "随便你"],
+    "sad": ["不开心", "不高兴", "难过", "伤心", "悲し", "泣く", "寂しい", "抱歉", "ごめん", "辛い", "对不起", "呜呜", "痛い", "舍不得", "一个人"],
     "angry": ["生气", "愤怒", "气愤", "怒り", "怒る", "怒", "恼怒", "烦人", "讨厌死了", "吵死了", "うるさい", "ふざけるな", "怒りますよ"],
     "gentle": ["温柔", "ふふ", "大丈夫", "よしよし", "微笑", "慢点", "摸摸头", "乖", "優しい", "好的", "没关系", "请放心"],
 }
 
 VALID_EMOTIONS = {"gentle", "shy", "happy", "tsundere", "cool", "sad", "angry"}
+
+# A keyword right after a negator says the opposite: 不开心 / 别难过 / 一点也不高兴.
+# Up to two degree words may sit in between (很不高兴 already ends in 不, 不太开心 needs 太).
+_RE_NEGATED_TAIL = re.compile(r"(?:不|没|没有|别|不要|别再|并不)(?:太|很|那么|怎么|是很|再)?$")
+# Japanese negates after the stem: 嬉しくない / 悲しくなかった.
+_JA_NEGATION_SUFFIXES = ("くない", "くなかった", "くなく")
+# 笑 alone reads as happy, but 苦笑 / 冷笑 / 嘲笑 do not, and 微笑 belongs to gentle.
+_KEYWORD_EXCLUDED_PREFIXES: dict[str, tuple[str, ...]] = {
+    "笑": ("苦", "冷", "嘲", "讥", "干", "假", "奸", "坏", "微"),
+}
 
 EMOTION_NAME_MAP: dict[str, str] = {
     # Tsundere
@@ -207,7 +217,21 @@ def detect_emotion_cue(chinese: str = "", japanese: str = "") -> str | None:
 
     combined = f"{chinese or ''} {japanese or ''}".strip()
     for emo, keywords in EMOTION_KEYWORDS.items():
-        if any(kw in combined for kw in keywords):
+        if any(_has_affirmed_keyword(combined, kw) for kw in keywords):
             return emo
 
     return None
+
+
+def _has_affirmed_keyword(text: str, keyword: str) -> bool:
+    """True when keyword occurs at least once without a negator or a prefix that flips it."""
+    excluded = _KEYWORD_EXCLUDED_PREFIXES.get(keyword, ())
+    start = text.find(keyword)
+    while start != -1:
+        before = text[max(0, start - 6):start]
+        after = text[start + len(keyword):]
+        negated = bool(_RE_NEGATED_TAIL.search(before)) or after.startswith(_JA_NEGATION_SUFFIXES)
+        if not negated and not (excluded and before.endswith(excluded)):
+            return True
+        start = text.find(keyword, start + 1)
+    return False
