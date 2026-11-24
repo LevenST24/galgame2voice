@@ -280,7 +280,7 @@ _NATIVE_FILE_PICKER_CONFIG: dict[str, tuple[str, list[tuple[str, str]]]] = {
     description="Opens native OS file dialog to let the user select a file (.ckpt, .pth, audio).",
 )
 async def open_native_file_dialog(req: BrowseFileRequest) -> dict[str, Any]:
-    def _run_picker() -> str:
+    def _run_picker() -> str | None:
         root = None
         try:
             import tkinter as tk
@@ -302,7 +302,7 @@ async def open_native_file_dialog(req: BrowseFileRequest) -> dict[str, Any]:
             return selected or ""
         except Exception as err:
             logger.warning("Native file dialog failed or unavailable: %s", err)
-            return ""
+            return None
         finally:
             if root is not None:
                 try:
@@ -314,6 +314,9 @@ async def open_native_file_dialog(req: BrowseFileRequest) -> dict[str, Any]:
             # Drop the interpreter reference on the owning thread immediately.
 
     path = await asyncio.wrap_future(_NATIVE_PICKER_EXECUTOR.submit(_run_picker))
+    if path is None:
+        # Tell a dialog that could not open apart from one the user cancelled.
+        return {"selected_path": "", "picker_unavailable": True}
     return {"selected_path": path}
 
 
