@@ -47,6 +47,7 @@ function setup(t, options = {}) {
     toggleVoice: () => { voiceEnabled = !voiceEnabled; },
     getCharacter: () => character, ImageClass: Image,
     loadPortrait: options.loadPortrait || (async () => options.art ? portrait() : null),
+    ...(options.loadAffection ? { loadAffection: options.loadAffection } : {}),
     raf: fn => { frames.set(++frameId, fn); return frameId; }, cancelRaf: id => frames.delete(id),
     matchMedia: () => mql, viewport,
     saveSettings: patch => { Object.assign(active.settings, patch); },
@@ -1420,3 +1421,26 @@ for (const trigger of ['button', 'Escape']) {
     assert.deepEqual(assistantReplies[1].lines?.map(l => l.zh), ['未完第一句。']);
   });
 }
+
+test('higher affection makes the portrait blush more readily, from the saved level and after each turn', async t => {
+  const payload = portrait();
+  payload.faces.smile.blush = 'smile_blush';
+  payload.sprites.uniform.smile_blush = { file: '/blush.png', width: 800, height: 1600 };
+  const asked = [];
+  const h = setup(t, { voice: false, loadPortrait: async () => payload, loadAffection: async id => { asked.push(id); return 2; } });
+  await microtasks(); h.loads.forEach(load => load.resolve()); await microtasks(); h.flush();
+  assert.deepEqual(asked, [1], 'the saved level is read for the shown character');
+  const shown = async () => { h.loads.forEach(load => load.resolve()); await microtasks(); h.flush(); return h.app.sprite.getLastCommitted(); };
+
+  h.start('turn_0'); h.line(0, { emotion: 'shy' });
+  assert.equal((await shown()).faceUrl, '/blush.png', 'level 2 already blushes on a shy line');
+  h.line(1, { emotion: 'gentle' });
+  h.app.action('advance'); h.app.action('advance');
+  assert.equal((await shown()).faceUrl, '/art.png', 'a gentle line needs level 3');
+  h.controller.busy = false;
+  h.emit('done', { originId: h.sessions[0].id, message: { id: 'turn_0', content: '你好' },
+    meta: { affection: { score: 45, level: 3, points_earned: 2 } } });
+
+  h.start('turn_1'); h.line(0, { emotion: 'gentle' });
+  assert.equal((await shown()).faceUrl, '/blush.png', 'the level the turn reached applies to the next reply');
+});

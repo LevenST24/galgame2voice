@@ -24,9 +24,13 @@ export function formatTurnTimelineEntry(entry) {
   return `#${entry.turn_seq} 首字: ${fmt(entry.llm_first_token_ms)} | 首句切出: ${fmt(entry.first_sentence_parsed_ms)} | 首音就绪: ${fmt(entry.first_tts_ready_ms)} | 首音播放: ${fmt(entry.first_audio_play_ms)}`;
 }
 
+function validAffectionLevel(value) {
+  return Number.isInteger(value) && value >= 1 && value <= 5 ? value : null;
+}
+
 /** Mount one disposable renderer. Controller remains the sole history writer.
  * dom: { root, sidebar? }
- * deps: { controller, audio, getSession, voiceEnabled, loadPortrait, getCharacter,
+ * deps: { controller, audio, getSession, voiceEnabled, loadPortrait, loadAffection?, getCharacter,
  *   clock?, raf?, cancelRaf?, matchMedia?, subscribe?, subscribeOverlay?, ...actions }
  */
 export function mountAdv(dom, deps) {
@@ -46,6 +50,9 @@ export function mountAdv(dom, deps) {
   let turnLines = [];
   let pendingOutfit = null;
   let portraitRevision = 0, portraitRequest = null, refreshTimer = null, refreshAttempted = false;
+  // The shown character's affection level (1-5). Higher levels let lines blush
+  // without an explicit act.blush, as the resolver's affection fallback says.
+  let affectionLevel = 1;
   let drawer = null, backlog = null, externalOverlay = false, savedFocus = null, temporarySkip = false;
   /** @type {string | null} */
   let backlogRenderKey = null;
@@ -387,7 +394,7 @@ export function mountAdv(dom, deps) {
   function paint(line = currentLine || { emotion: 'gentle', act: {} }, options = {}) {
     if (!line || !model) return;
     const costume = options.costume !== undefined ? options.costume : (settings.advOutfit || model.defaultCostume);
-    const next = resolveSpriteState(model, resolved, line, { costume });
+    const next = resolveSpriteState(model, resolved, line, { costume, affectionLevel });
     if (pendingOutfit && pendingOutfit !== next?.state.outfit) {
       spriteTransition.abort(); pendingOutfit = null;
     }
@@ -408,7 +415,7 @@ export function mountAdv(dom, deps) {
     const next = turnLines.filter(line => line.index > currentLine.index)
       .sort((a, b) => a.index - b.index)[0];
     if (!next) return;
-    const preview = resolveSpriteState(model, resolved, next, { costume: settings.advOutfit || model.defaultCostume });
+    const preview = resolveSpriteState(model, resolved, next, { costume: settings.advOutfit || model.defaultCostume, affectionLevel });
     sprite.preloadState(preview);
   }
   function restoreSprite() {
@@ -723,6 +730,13 @@ export function mountAdv(dom, deps) {
     if (!character?.id || !deps.loadPortrait) {
       model = null; sprite.setModel(null); status.hidden = false; status.textContent = '此角色暂无立绘'; return;
     }
+    if (!refresh) {
+      // Read the saved level beside the art; a slow or failed read never holds the portrait back.
+      affectionLevel = 1;
+      Promise.resolve().then(() => deps.loadAffection?.(character.id)).then(level => {
+        if (!destroyed && revision === portraitRevision) affectionLevel = validAffectionLevel(level) ?? 1;
+      }, () => {});
+    }
     try {
       let painted;
       const payload = await deps.loadPortrait(character.id, { signal: portraitRequest.signal, refresh });
@@ -891,6 +905,13 @@ export function mountAdv(dom, deps) {
   }));
   for (const kind of ['done', 'error', 'cancelled']) disposers.push(controller.on(kind, event => {
     if (event.originId !== sessionId || deps.getSession()?.id !== sessionId) return;
+    if (kind === 'done') {
+      // The turn's affection result is the level the next reply plays at. A failed
+      // update reports a neutral level 1 with nothing earned; keep the known level then.
+      const affection = event.meta?.affection;
+      const level = validAffectionLevel(affection?.level);
+      if (level !== null && !(level === 1 && !affection.score && !affection.points_earned)) affectionLevel = level;
+    }
     if (!turnId) { textbox.enterInput({ canSend: !controller.busy }); syncControls(); return; }
     storedTurnId = event.message?.id ?? null;
     const hasContent = msg => Boolean(msg?.content?.trim() || msg?.japanese?.trim() ||
