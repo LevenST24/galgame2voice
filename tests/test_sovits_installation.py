@@ -93,6 +93,30 @@ async def test_nested_engine_directory_names_the_only_child(tmp_path, monkeypatc
     assert installation.read_sovits_directory(root) is None
 
 
+@pytest.mark.asyncio
+async def test_engine_subdirectory_points_to_parent_without_saving(tmp_path, monkeypatch):
+    root = tmp_path / "app"
+    root.mkdir()
+    monkeypatch.setattr(get_settings(), "project_root", root)
+    engine = make_engine(tmp_path / "GPT-SoVITS")
+    subdir = engine / "GPT_SoVITS"
+    subdir.mkdir()
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
+        sub_res = await client.put("/api/system/sovits-directory", json={"directory": str(subdir)})
+        assert installation.read_sovits_directory(root) is None
+        other_res = await client.put("/api/system/sovits-directory", json={"directory": str(unrelated)})
+        assert installation.read_sovits_directory(root) is None
+        ok_res = await client.put("/api/system/sovits-directory", json={"directory": str(engine)})
+    assert sub_res.status_code == 400
+    assert sub_res.json()["detail"] == f"你选的是引擎里面的“GPT_SoVITS”，请改选它的上一级文件夹“{engine.resolve()}”。"
+    assert other_res.status_code == 400
+    assert other_res.json()["detail"] == "所选文件夹需包含 api_v2.py。请先完整解压 GPT-SoVITS，再选择引擎目录。"
+    assert ok_res.status_code == 200 and ok_res.json()["directory"] == str(engine.resolve())
+    assert installation.read_sovits_directory(root) == engine.resolve()
+
+
 def test_valid_directory_message_names_the_tab_that_starts_the_engine(tmp_path):
     # The tab was renamed from 状态诊断 to 运行状态; this message kept the old name.
     make_engine(tmp_path / "engine")

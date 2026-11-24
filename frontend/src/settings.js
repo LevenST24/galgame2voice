@@ -15,7 +15,7 @@ export function formatProviderDiagnostic(data = {}) {
 
 /**
  * 对照填写的模型名和连通性测试返回的模型列表，决定这次要不要算通过。
- * 某一项与名字相同（不分大小写），或以 /名字 结尾，都算列表里有这个名字。
+ * 完全一致（或仅带 Gemini 的 models/ 前缀且大小写一致）才算就绪；仅忽略大小写或去掉前缀对得上时提示正确写法。
  *
  * @param {string} chatModel 输入框里的模型名
  * @param {string[] | null | undefined} models 测试响应里的模型列表
@@ -30,12 +30,7 @@ export function describeProviderModelCheck(chatModel, models) {
     const found = list.length > 0 ? ` (发现 ${list.length} 个可用模型)` : '';
     return { ok: true, title: '连通性测试通过', body: `已成功连接至目标端点。${found}` };
   }
-  const needle = name.toLowerCase();
-  const known = list.some((item) => {
-    const value = item.toLowerCase();
-    return value === needle || value.endsWith(`/${needle}`);
-  });
-  if (known) {
+  if (list.some((item) => item === name || item === `models/${name}`)) {
     return {
       ok: true,
       title: '连通性测试通过',
@@ -47,6 +42,17 @@ export function describeProviderModelCheck(chatModel, models) {
       ok: false,
       title: '地址和密钥可用',
       body: `对方没有返回模型列表，还不能确认「${name}」这个名字。`,
+    };
+  }
+  const needle = name.toLowerCase();
+  const matched =
+    list.find((item) => item.toLowerCase() === needle) ||
+    list.find((item) => item.toLowerCase().endsWith(`/${needle}`));
+  if (matched) {
+    return {
+      ok: false,
+      title: `模型名称应写成「${matched}」`,
+      body: `地址和密钥可用，但列表里的写法是「${matched}」（大小写和前缀都要一致），请照这个写法修改后再保存。`,
     };
   }
   const preview = list.slice(0, 3).join('、');
