@@ -198,6 +198,26 @@ class TestServerLauncherCLI:
         assert args.host == "0.0.0.0"
         assert args.no_browser is True
 
+    def test_parse_args_reads_host_and_port_from_dotenv(self, tmp_path, monkeypatch):
+        # .env.example documents GALGAME2VOICE_HOST/PORT; Settings reads them from
+        # .env, so the launcher must bind there too instead of forcing 8080.
+        (tmp_path / ".env").write_text(
+            "galgame2voice_port=9123\nGALGAME2VOICE_HOST=127.0.0.2\n", encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        args = rs.parse_args([])
+        assert args.port == 9123
+        assert args.host == "127.0.0.2"
+
+        # A real environment variable still outranks the file, as in Settings.
+        monkeypatch.setenv("PORT", "9200")
+        assert rs.parse_args([]).port == 9200
+
+    def test_parse_args_ignores_unusable_dotenv_port(self, tmp_path, monkeypatch):
+        (tmp_path / ".env").write_text("GALGAME2VOICE_PORT=abc\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        assert rs.parse_args([]).port == 8080
+
     def test_parse_args_env_alias_precedence(self, monkeypatch):
         # GALGAME2VOICE_PORT takes precedence over PORT and GALGAME_PORT
         monkeypatch.setenv("GALGAME_PORT", "9999")
