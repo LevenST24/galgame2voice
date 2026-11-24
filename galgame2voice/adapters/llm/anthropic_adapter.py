@@ -454,10 +454,11 @@ class AnthropicAdapter(BaseLLMAdapter):
                 status_code=diag.get("status_code"),
             )
         t0 = time.time()
+        test_model = model or self.default_model
         try:
             resp = await self.chat(
                 messages=[ChatMessage(role="user", content="Hi")],
-                model=model or self.default_model,
+                model=test_model,
                 max_tokens=64,
                 reasoning_effort="none",
             )
@@ -466,7 +467,9 @@ class AnthropicAdapter(BaseLLMAdapter):
                 success=True,
                 message=f"Anthropic connection successful. Response: {resp.content[:30]}...",
                 latency_ms=latency,
-                models=await self.list_models(),
+                # The probe just chatted with test_model, so list it first; the preset
+                # list alone would make the settings page call a working model missing.
+                models=[test_model] + [m for m in await self.list_models() if m != test_model],
             )
         except Exception as exc:
             latency = (time.time() - t0) * 1000
