@@ -36,6 +36,7 @@ __all__ = [
     "update_provider",
     "set_active_provider",
     "delete_provider",
+    "clear_provider_api_key",
 ]
 
 
@@ -242,6 +243,20 @@ async def set_active_provider(conn: aiosqlite.Connection, provider_id: str) -> b
         if cur.rowcount == 0:
             await conn.execute("INSERT OR IGNORE INTO settings (id, active_provider_id) VALUES (1, ?);", (provider_id,))
     return True
+
+
+async def clear_provider_api_key(conn: aiosqlite.Connection, provider_id: str) -> bool:
+    """Removes the saved API key of a provider, keeping the rest of its settings.
+
+    update_provider() treats an empty key as "keep the saved one", so this is the
+    only way to take a key back out of the database.
+    """
+    async with immediate_transaction(conn):
+        cursor = await conn.execute(
+            "UPDATE providers SET api_key = '', updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
+            (provider_id,),
+        )
+    return cursor.rowcount > 0
 
 
 async def delete_provider(conn: aiosqlite.Connection, provider_id: str) -> bool:

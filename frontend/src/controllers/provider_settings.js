@@ -1,6 +1,7 @@
 // @ts-check
 // Provider Settings Controller: LLM Providers, Model & Key Rendering, Connection Tests, Save/Activate
 import {
+  clearProviderKey,
   fetchProviders,
   testProviderConnection,
 } from '../api.js';
@@ -100,6 +101,7 @@ export class ProviderSettingsController {
   _bindEvents() {
     if (this.dom.gProvider) this._bind(this.dom.gProvider, 'change', () => this.onProviderChange());
     if (this.dom.gBtnToggleKeyVisibility) this._bind(this.dom.gBtnToggleKeyVisibility, 'click', () => this.toggleKeyVisibility());
+    if (this.dom.gBtnClearKey) this._bind(this.dom.gBtnClearKey, 'click', () => this.clearStoredKey());
     if (this.dom.gChatModelSelect) this._bind(this.dom.gChatModelSelect, 'change', () => this.onChatModelSelectChange());
     if (this.dom.gProviderTest) this._bind(this.dom.gProviderTest, 'click', () => this.handleProviderTest());
     if (this.dom.gProviderActivate) this._bind(this.dom.gProviderActivate, 'click', () => this.handleActivateProvider());
@@ -292,6 +294,7 @@ export class ProviderSettingsController {
     const maskedKey = (stored?.api_key || '').trim();
     const hasKey = Boolean(maskedKey && maskedKey.length > 0);
     const serviceMark = activeServiceMark(isActive, capabilities.requires_api_key, hasKey);
+    if (this.dom.gBtnClearKey) this.dom.gBtnClearKey.classList.toggle('hidden', !hasKey);
     if (this.dom.gProviderActiveBadge) {
       const unusable = serviceMark === '未填密钥';
       const tone = unusable ? 'badge-pill-yellow' : isActive ? 'badge-pill-green' : 'badge-pill-gray';
@@ -303,7 +306,7 @@ export class ProviderSettingsController {
       if (this.dom.gApiKey) this.dom.gApiKey.placeholder = `已配置：${maskedKey}（留空保持原密钥，输入新密钥可覆盖）`;
       if (this.dom.gProviderKeyTag) this.dom.gProviderKeyTag.className = 'provider-status-tag tag-configured';
       if (this.dom.gKeyStatusText) this.dom.gKeyStatusText.textContent = `已配置密钥 (${maskedKey})`;
-      if (this.dom.gApiKeyTip) this.dom.gApiKeyTip.textContent = '密钥已保存。如需修改，请在此输入新密钥后保存。';
+      if (this.dom.gApiKeyTip) this.dom.gApiKeyTip.textContent = '密钥已保存。如需修改，请在此输入新密钥后保存；点「清除」可删除已保存的密钥。';
     } else if (!capabilities.requires_api_key) {
       if (this.dom.gApiKey) this.dom.gApiKey.placeholder = 'sk-…（本地 Ollama / vLLM 等无鉴权服务可留空）';
       if (this.dom.gProviderKeyTag) this.dom.gProviderKeyTag.className = 'provider-status-tag tag-optional';
@@ -383,6 +386,31 @@ export class ProviderSettingsController {
 
     // 7. 诊断输出框重置
     this.resetTestResultBox();
+  }
+
+  async clearStoredKey() {
+    if (this.disposed || this.providerSaving || !this.dom.gProvider) return;
+    const pid = this.dom.gProvider.value;
+    const realId = (pid === 'custom' || pid === '__custom__') ? 'custom' : pid;
+    const stored = this.cachedProviders.find((p) => p.id === realId);
+    if (!realId || !(stored?.api_key || '').trim()) return;
+    const name = stored.name || this.presetCapabilities(realId).name || realId;
+    const confirmFn = globalThis.confirm;
+    const warning = stored.is_active ? '这是当前生效的模型服务，清除后角色将无法回复，直到重新填写密钥。' : '清除后需要重新填写才能使用它。';
+    if (typeof confirmFn === 'function' && !confirmFn(`确定清除已保存的 ${name} API 密钥？${warning}`)) return;
+    const button = this.dom.gBtnClearKey;
+    if (button) button.disabled = true;
+    try {
+      await clearProviderKey(realId);
+      if (this.disposed) return;
+      showToast(`已清除 ${name} 的 API 密钥。`, 'success');
+      await this.loadProviders({ silent: true });
+    } catch (e) {
+      if (this.disposed) return;
+      showToast(`密钥没有清除：${e.message || e}`, 'error');
+    } finally {
+      if (button) button.disabled = false;
+    }
   }
 
   toggleKeyVisibility() {
