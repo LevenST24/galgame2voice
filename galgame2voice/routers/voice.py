@@ -200,17 +200,17 @@ async def update_voice_profile(profile_id: int, req: VoiceProfileUpdate) -> dict
 async def delete_voice_profile(profile_id: int) -> dict[str, Any]:
     validate_positive_profile_id(profile_id)
     try:
-        success = await get_character_voice_catalog().delete_profile(
+        result = await get_character_voice_catalog().delete_profile(
             profile_id,
             voice_manager=get_voice_manager(),
             db_factory=get_db,
         )
-        if not success:
+        if result is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Voice profile ID {profile_id} not found",
             )
-        return {"status": "deleted", "profile_id": profile_id}
+        return {"status": "deleted", "profile_id": profile_id, "moved_to": result["moved_to"]}
     except VoiceProfileBusyError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

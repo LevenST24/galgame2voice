@@ -12,12 +12,15 @@ import json
 import logging
 import os
 from pathlib import Path
+import shutil
+import time
 from typing import Any
 from weakref import WeakKeyDictionary
 
 import aiosqlite
 from fastapi import HTTPException, status
 
+from galgame2voice.config import get_settings
 from galgame2voice.database import crud
 from galgame2voice.database.models import (
     VoiceProfileCreate,
@@ -42,6 +45,27 @@ from galgame2voice.utils.path_guard import (
 )
 
 logger = logging.getLogger("galgame2voice.services.character_voice_catalog")
+
+
+def _package_folder(char_mgr: Any, name: str) -> Path | None:
+    """The folder under characters/ that a rescan would rebuild this voice from, if any."""
+    try:
+        package = char_mgr.get_character(name)
+    except Exception as exc:  # An unreadable catalog must not block deleting the row.
+        logger.warning("删除音色时读取角色包失败，只删除音色记录：%s", sanitize_error_detail(exc))
+        return None
+    folder = getattr(package, "folder_path", None)
+    if folder is None:
+        return None
+    folder = Path(folder)
+    if folder.parent != Path(char_mgr.characters_dir).resolve() or not folder.is_dir():
+        return None
+    return folder
+
+
+def _move_folder(source: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(source), str(target))
 
 
 class VoiceProfileBusyError(RuntimeError):
@@ -375,7 +399,11 @@ class CharacterVoiceCatalog:
         *,
         voice_manager: VoiceManager | None = None,
         db_factory: Callable[[], Any] | None = None,
-    ) -> bool:
+    ) -> dict[str, Any] | None:
+        """Deletes a voice; returns None when it does not exist.
+
+        ``moved_to`` names the backup folder a package voice's folder was moved to.
+        """
         vm = self._resolve_voice_manager(voice_manager)
         if vm.switching_profile_id == profile_id:
             raise VoiceProfileBusyError(profile_id)
@@ -383,13 +411,65 @@ class CharacterVoiceCatalog:
         vm.cancel_warmup(profile_id)
         open_db = self._resolve_db_factory(db_factory)
         async with open_db() as conn:
-            deleted = await crud.delete_voice_profile(conn, profile_id)
+            profile = await crud.get_voice_profile(conn, profile_id)
+        if profile is None:
+            return None
+        char_mgr = self._resolve_character_manager()
+        folder = await asyncio.to_thread(_package_folder, char_mgr, profile.name)
+
+        # A package voice is rebuilt from its folder on every rescan, import or restart,
+        # so deleting only the row never sticks. Move the folder to the backup folder
+        # first, and put it back if the row cannot be deleted.
+        async with self._get_loop_lock(self._rescan_locks):
+            moved: Path | None = None
+            if folder is not None:
+                backup = get_settings().data_dir / "deleted_characters" / f"{folder.name}-{time.strftime('%Y%m%d-%H%M%S')}"
+                try:
+                    await asyncio.to_thread(_move_folder, folder, backup)
+                except OSError as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            f"角色包文件夹「{folder.name}」正被其他程序占用，没能移到备份文件夹，音色没有删除。"
+                            "请关闭打开这个文件夹的窗口或程序后再试。"
+                        ),
+                    ) from exc
+                moved = backup
+            try:
+                async with open_db() as conn:
+                    deleted = await crud.delete_voice_profile(conn, profile_id)
+            except BaseException:
+                if moved is not None:
+                    await asyncio.to_thread(_move_folder, moved, folder)
+                raise
+            if moved is not None and not deleted:
+                await asyncio.to_thread(_move_folder, moved, folder)
+                moved = None
+            if moved is not None:
+                try:
+                    await asyncio.to_thread(char_mgr.discover_characters)
+                except Exception as exc:  # The row is gone; a stale catalog only lasts until the next scan.
+                    logger.warning("删除角色包音色后重新扫描失败：%s", sanitize_error_detail(exc))
+                import galgame2voice.routers.voice as voice_router
+
+                scan_cache = voice_router._scan_cache
+                generation = scan_cache.get("generation", 0) + 1
+                scan_cache.clear()
+                scan_cache["generation"] = generation
 
         if deleted:
             vm.cancel_warmup(profile_id)
             if VoiceManager._resolve_profile_field(vm.active_profile, "id") == profile_id:
                 vm.active_profile = None
-        return deleted
+        if not deleted:
+            return None
+        relative = None
+        if moved is not None:
+            try:
+                relative = moved.relative_to(get_settings().project_root).as_posix()
+            except ValueError:
+                relative = str(moved)
+        return {"moved_to": relative}
 
     async def rescan_packages(
         self,
