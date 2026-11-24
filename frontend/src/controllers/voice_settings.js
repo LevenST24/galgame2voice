@@ -992,7 +992,10 @@ async function pollRedeemStatus() {
   try {
     const progress = await requestJson('/api/characters/redeem/progress', {}, { timeoutMs: 10000 });
     if (!isImporting || !_dom.sVoiceRedeemStatus) return;
-    _dom.sVoiceRedeemStatus.textContent = formatRedeemProgress(progress);
+    // The server says idle while it re-lists the packages or checks a partial file
+    // before the download starts; keep the shown status instead of blanking it.
+    const text = formatRedeemProgress(progress);
+    if (text) _dom.sVoiceRedeemStatus.textContent = text;
   } catch {
     // 下一秒再查
   }
