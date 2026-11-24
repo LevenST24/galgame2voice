@@ -1,4 +1,5 @@
 // @ts-check
+import { splitGraphemes } from './adv/graphemes.js';
 // Shared session drawer and toast rendering.
 function timeLabel(ts) {
   const d = new Date(ts);
@@ -103,9 +104,11 @@ export function renderSessionList(container, { sessions, activeId, onSelect, onD
     const last = s.messages[s.messages.length - 1];
     const lastLine = last?.lines?.findLast(item => String(item.zh || item.ja || '').trim());
     const lastText = last && (last.content || lastLine?.zh || lastLine?.ja || last.japanese);
+    // Cut by whole characters so an emoji at the 26th place is not split in half.
+    const clip = text => splitGraphemes(text.replace(/[*`#\n]/g, ' ')).slice(0, 26).join('');
     const preview = lastText
-      ? `${last.role === 'user' ? '你：' : ''}${lastText.replace(/[*`#\n]/g, ' ').slice(0, 26)}`
-      : (s.lastLine ? s.lastLine.replace(/[*`#\n]/g, ' ').slice(0, 26) : '暂无消息');
+      ? `${last.role === 'user' ? '你：' : ''}${clip(lastText)}`
+      : (s.lastLine ? clip(s.lastLine) : '暂无消息');
 
     item.innerHTML = `
       <div class="si-main">
