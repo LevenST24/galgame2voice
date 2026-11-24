@@ -251,6 +251,15 @@ def discover_extracted_packages(extract_dir: Path, *, filename: str = "") -> lis
     def _walk(cur_dir: Path, depth: int) -> None:
         manifest_file = cur_dir / "manifest.json"
         if manifest_file.is_file() and not _is_portrait_manifest(cur_dir, manifest_file, depth):
+            try:
+                raw = json.loads(manifest_file.read_text(encoding="utf-8-sig"))
+            except Exception:
+                raw = None
+            if isinstance(raw, dict) and isinstance(raw.get("backgrounds"), list) and "emotions" not in raw:
+                raise HTTPException(
+                    422,
+                    "这是背景包，不是角色包；请把背景包文件夹放进程序目录下的 backgrounds 文件夹，无需重启程序，刷新网页即可。",
+                )
             found.append(
                 (_resolve_folder_name(filename, cur_dir) if depth == 0 else _resolve_folder_name(cur_dir.name), cur_dir)
             )

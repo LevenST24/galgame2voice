@@ -859,7 +859,7 @@ async def test_rescan_reports_long_folder_with_corrupt_manifest(project, isolate
         assert [p["name"] for p in voices["profiles"]] == ["有效角色"]
         warning = scan["catalog_warning"]
         assert warning is not None
-        assert warning.startswith(f"角色包「{long_folder}」不合格：manifest.json JSON 解析错误:")
+        assert warning.startswith(f"角色包「{long_folder}」不合格：manifest.json 不是有效的 JSON（第 1 行附近）")
         assert chars["catalog_warning"] == warning
         assert voices["catalog_warning"] == warning
 
@@ -877,8 +877,8 @@ async def test_rescan_reports_long_folder_with_corrupt_manifest(project, isolate
         scan2 = scan2_res.json()
         assert scan2["characters"] == ["有效角色"]
         warning2 = scan2["catalog_warning"]
-        assert f"角色包「{long_folder}」不合格：manifest.json JSON 解析错误:" in warning2
-        assert f"角色包「{second_long_folder}」不合格：manifest.json 结构验证失败:" in warning2
+        assert f"角色包「{long_folder}」不合格：manifest.json 不是有效的 JSON（第 1 行附近）" in warning2
+        assert f"角色包「{second_long_folder}」不合格：manifest.json 缺少 id、name" in warning2
 
 
 @pytest.fixture

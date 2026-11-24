@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from galgame2voice.utils.audio_spec import (
     REFERENCE_AUDIO_MAX_SECONDS,
@@ -77,11 +77,26 @@ class CharacterManifestV2(CharacterManifest):
 
 
 def manifest_json_error(exc: Exception) -> str:
-    return f"manifest.json JSON 解析错误: {exc}"
+    if isinstance(exc, json.JSONDecodeError):
+        return f"manifest.json 不是有效的 JSON（第 {exc.lineno} 行附近）"
+    return "manifest.json 不是有效的 JSON"
 
 
 def manifest_schema_error(exc: Exception) -> str:
-    return f"manifest.json 结构验证失败: {exc}"
+    if isinstance(exc, ValidationError):
+        missing: list[str] = []
+        invalid: list[str] = []
+        for err in exc.errors():
+            field = ".".join(str(part) for part in err.get("loc", ()))
+            if field and field not in missing and field not in invalid:
+                (missing if err.get("type") == "missing" else invalid).append(field)
+        parts = [
+            *([f"缺少 {'、'.join(missing)}"] if missing else []),
+            *([f"{'、'.join(invalid)} 的格式不对"] if invalid else []),
+        ]
+        if parts:
+            return ("manifest.json " if missing else "manifest.json 中 ") + "；".join(parts)
+    return "manifest.json 的格式不对"
 
 
 def no_emotions_error() -> str:
