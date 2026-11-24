@@ -453,20 +453,25 @@ class AnthropicAdapter(BaseLLMAdapter):
                 diagnostic=diag.get("diagnostic"),
                 status_code=diag.get("status_code"),
             )
+        tested_model = model or self.default_model
         t0 = time.time()
         try:
             resp = await self.chat(
                 messages=[ChatMessage(role="user", content="Hi")],
-                model=model or self.default_model,
+                model=tested_model,
                 max_tokens=64,
                 reasoning_effort="none",
             )
             latency = (time.time() - t0) * 1000
+            # The list is a fixed sample, but the reply just came from the tested model, so it exists.
+            models = await self.list_models()
+            if tested_model and tested_model not in models:
+                models = [tested_model, *models]
             return TestResult(
                 success=True,
                 message=f"Anthropic connection successful. Response: {resp.content[:30]}...",
                 latency_ms=latency,
-                models=await self.list_models(),
+                models=models,
             )
         except Exception as exc:
             latency = (time.time() - t0) * 1000
