@@ -352,6 +352,10 @@ async def _resolve_provider_test_credentials(
             if stored and stored.api_key:
                 # Credential leak guard: stored keys may only be sent to the base_url they were saved with
                 if base_url and stored.api_base_url and base_url.rstrip("/") != stored.api_base_url.rstrip("/"):
+                    if provider_id == "custom":
+                        # Custom endpoints need no key (Ollama, LM Studio): test the new
+                        # address without the stored one instead of refusing.
+                        return "", base_url
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail="Cannot test custom base_url with stored API key. Please provide the explicit API key."

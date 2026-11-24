@@ -188,6 +188,15 @@ async def update_provider(conn: aiosqlite.Connection, provider_id: str, updates:
     up_dict = updates.model_dump(exclude_unset=True)
     if up_dict.keys() - _UPDATE_COLUMNS:
         raise ValueError("Unsupported provider update columns")
+    new_key = str(up_dict.get("api_key") or "").strip()
+    new_url = up_dict.get("api_base_url")
+    if (current.api_key and new_url is not None and (not new_key or is_masked_key(new_key))
+            and str(new_url).rstrip("/") != (current.api_base_url or "").rstrip("/")):
+        # A saved key belongs to the address it was saved with. Moving to a new address
+        # without a new key drops it, so it is never sent to the new host; the
+        # connectivity test applies the same rule.
+        fields.append("api_key = ?")
+        values.append("")
 
     for k, v in up_dict.items():
         if k == "reasoning_effort":
