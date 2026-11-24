@@ -113,6 +113,8 @@ All notable changes to galgame2voice are documented here. The format follows
 - 修复修改计算方式后提示去点不存在的「重启语音引擎」按钮的问题；没有检测到 NVIDIA 显卡时选择 FP16/FP32 也会提醒可能无法启动，并建议改用 CPU 模式。
 - 修复在 .env 里写了 GALGAME2VOICE_HOST、GALGAME2VOICE_PORT 后，启动器仍然使用 127.0.0.1:8080 的问题。
 - 修复开启访问令牌后，只有第一次启动会（用英文）提到令牌保存位置、之后网页要求输入令牌却找不到在哪的问题；现在每次启动都会用中文说明令牌文件的位置，令牌文件被删除时会自动重新写出。
+- 修复台词里的半角片假名（如「ｱﾘｶﾞﾄｳ」）被当成无法朗读的符号、整句不配音的问题；现在会按全角假名朗读。
+- 修复「对话模型」选 Anthropic 时，填写服务商给的不带 /v1 的地址（如 https://api.deepseek.com/anthropic）每次都报 404 的问题；现在两种写法都能用。
 
 ## [3.2.11] - 2026-11-24
 ### Fixed
