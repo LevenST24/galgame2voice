@@ -6,6 +6,38 @@
 import { splitGraphemes, countGraphemes } from './graphemes.js';
 import { paginate as purePaginate, pairSubtitle } from './paginate.js';
 
+const QUOTE_PAIRS = /** @type {Record<string, string>} */ ({ '「': '」', '『': '』', '“': '”', '"': '"' });
+const CLOSING_QUOTES = new Set(Object.values(QUOTE_PAIRS));
+
+/**
+ * How a line's own quote marks sit around it:
+ * 'whole' when one pair encloses the whole line, 'open' when the first opener is never closed,
+ * 'close' when the line ends on a closer that has no opener, and 'none' otherwise.
+ * An inner quotation at either end (「笨蛋」什么的 / 就是「笨蛋」) is 'none'.
+ * @param {string} trimmed
+ */
+function outerQuoteShape(trimmed) {
+  const open = trimmed[0];
+  const close = QUOTE_PAIRS[open];
+  if (close) {
+    if (open === close) {
+      const count = trimmed.split(open).length - 1;
+      if (count === 1) return 'open';
+      return count === 2 && trimmed.length > 1 && trimmed.endsWith(close) ? 'whole' : 'none';
+    }
+    let depth = 0;
+    for (let i = 0; i < trimmed.length; i++) {
+      if (trimmed[i] === open) depth++;
+      else if (trimmed[i] === close && --depth === 0) return i === trimmed.length - 1 ? 'whole' : 'none';
+    }
+    return 'open';
+  }
+  const last = trimmed.at(-1) || '';
+  if (!CLOSING_QUOTES.has(last)) return 'none';
+  const opener = Object.keys(QUOTE_PAIRS).find(key => QUOTE_PAIRS[key] === last);
+  return opener && opener !== last && trimmed.includes(opener) ? 'none' : 'close';
+}
+
 /**
  * Wraps text with display-only quotation marks if it is character speech
  * and not already enclosed in quotes. Never mutates the raw stored string.
@@ -14,16 +46,12 @@ function formatDisplayQuote(text, mode) {
   if (!text) return '';
   if (mode !== 'character') return text;
   const trimmed = text.trim();
-  const startsWithQuote = /^[「“"『]/.test(trimmed);
-  const endsWithQuote = /[」”"』]$/.test(trimmed);
-  let res = text;
-  if (!startsWithQuote) {
-    res = `「${res}`;
+  switch (outerQuoteShape(trimmed)) {
+    case 'whole': return text;
+    case 'open': return `${text}${QUOTE_PAIRS[trimmed[0]]}`;
+    case 'close': return `「${text}`;
+    default: return `「${text}」`;
   }
-  if (!endsWithQuote) {
-    res = `${res}」`;
-  }
-  return res;
 }
 
 /**
