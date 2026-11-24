@@ -670,3 +670,26 @@ async def test_provider_test_passes_when_only_models_is_a_webpage(app_client, mo
     _patch_upstream(monkeypatch, relay)
     data = (await _post_provider_test(app_client, "custom", "sk-relay-valid-key-12345", "https://relay.example.com/v1")).json()
     assert data["success"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("bad_url", "punct"),
+    [
+        ("https：//api.deepseek.com", "："),
+        ("https://api。deepseek。com", "。"),
+        ("https://api.deepseek.com／v1", "／"),
+    ],
+)
+async def test_provider_url_with_fullwidth_punctuation_rejected(app_client, bad_url, punct):
+    expected = f"接口地址里有中文标点「{punct}」，请切换到英文输入法后重新输入"
+    save_resp = await app_client.post(
+        "/api/providers",
+        json={"id": "deepseek", "api_base_url": bad_url, "api_key": "sk-deepseek-test-12345"},
+    )
+    assert save_resp.status_code == 400
+    assert save_resp.json()["detail"] == expected
+    assert (await app_client.get("/api/providers/deepseek")).json()["provider"]["api_base_url"] == "https://api.deepseek.com"
+    test_resp = await _post_provider_test(app_client, "deepseek", "sk-deepseek-test-12345", bad_url)
+    assert test_resp.status_code == 400
+    assert test_resp.json()["detail"] == expected
