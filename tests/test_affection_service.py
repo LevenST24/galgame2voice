@@ -341,3 +341,31 @@ class TestAffectionServiceHardening:
             assert aff is not None
             assert "milestone_lv1" in aff.unlocked_dialogues
             assert "easter_egg_maid" in aff.unlocked_dialogues
+
+
+class TestCharacterLoreKeywords:
+    """「兼职」「喝一杯」「女仆装」 come from 四季夏目's story; other characters don't react to them."""
+
+    @pytest.mark.parametrize("text", ["今天去兼职了，好累", "我想喝一杯咖啡", "我特别喜欢女仆装"])
+    def test_another_character_gets_only_the_base_point(self, affection_service, text):
+        assert affection_service.calculate_turn_points(text, character_name="千早爱音") == (
+            1, ["base_turn", "base_interaction (+1)"],
+        )
+
+    @pytest.mark.parametrize("name", ["四季夏目", "夏目", "四季ナツメ", "Natsume"])
+    def test_natsume_keeps_her_keyword_bonus(self, affection_service, name):
+        points, reasons = affection_service.calculate_turn_points("今天去兼职了", character_name=name)
+        assert points == 1 + 3
+        assert "character_preference" in reasons
+
+    def test_another_character_triggers_no_easter_egg(self, affection_service):
+        assert affection_service.check_easter_eggs("女仆装", 5, character_name="千早爱音") is None
+        assert affection_service.check_easter_eggs("女仆装", 5, character_name="四季夏目")["id"] == "easter_egg_maid"
+
+    async def test_a_turn_with_another_character_earns_and_unlocks_nothing_extra(self, affection_service):
+        res = await affection_service.handle_turn_affection(
+            user_id="u_other_char", character_id=1, user_text="我想喝一杯，穿女仆装",
+            assistant_text="好啊", character_name="千早爱音",
+        )
+        assert res["points_earned"] == 1
+        assert res["easter_egg"] is None

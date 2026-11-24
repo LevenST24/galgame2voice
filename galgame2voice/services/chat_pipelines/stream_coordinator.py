@@ -878,6 +878,7 @@ class StreamCoordinator:
                 user_text=self.prompt,
                 assistant_text=full_chinese,
                 explicit_emotion=final_emotion,
+                character_name=self.character_name,
             )
             final_emotion = affection_res.get("emotion", final_emotion)
         except Exception as aff_err:
