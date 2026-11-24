@@ -90,6 +90,7 @@ All notable changes to galgame2voice are documented here. The format follows
 - 修复在 Windows 上编写、清单里用反斜杠写路径（如 refs\gentle.wav）的角色包，在 Linux 或 Docker 上导入失败的问题。
 - 修复日文 Windows 压缩的角色包解压后文件名乱码，以及在 Windows 上带「黒」「ソ」等字的文件名被拆成错误文件夹的问题。
 - 修复 Mac 上设过自定义图标的角色包文件夹导入失败的问题；导入时也不再把 __MACOSX、.DS_Store 这类系统文件复制进角色包。
+- 修复导入角色包时程序被关闭或崩溃，留下的上传文件和解压文件夹一直占着磁盘的问题；现在启动时会清掉。
 
 ## [3.2.11] - 2026-11-24
 ### Fixed
