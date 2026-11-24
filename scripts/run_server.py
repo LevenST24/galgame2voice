@@ -1109,7 +1109,14 @@ def _first_dotenv_value(names: tuple[str, ...]) -> str | None:
     try:
         from dotenv import dotenv_values
 
-        values = {str(k).upper(): v for k, v in dotenv_values(".env", encoding="utf-8").items() if k}
+        from galgame2voice.config import Settings
+
+        env_files = Settings.model_config.get("env_file") or ()
+        if isinstance(env_files, (str, os.PathLike)):
+            env_files = (env_files,)
+        values: dict[str, str | None] = {}
+        for env_file in env_files:  # later files win, as in pydantic-settings
+            values.update({str(k).upper(): v for k, v in dotenv_values(env_file, encoding="utf-8").items() if k})
     except Exception:
         return None
     for name in names:
