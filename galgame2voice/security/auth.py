@@ -58,7 +58,8 @@ async def verify_console_token(token: str) -> bool:
     env_token = get_env_console_token()
     if env_token:
         import hmac
-        return hmac.compare_digest(token, env_token)
+        # Compare bytes: compare_digest raises TypeError on non-ASCII str, which became a 500.
+        return hmac.compare_digest(token.encode("utf-8"), env_token.encode("utf-8"))
     async with get_db() as conn:
         return await crud.verify_console_token(conn, token)
 
