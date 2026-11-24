@@ -1478,3 +1478,43 @@ test('failed recent session preview rolls back main session and recent order', a
   h.q('.home-continue').click();
   assert.deepEqual(h.calls.at(-1), ['load', 'a']);
 });
+
+function bootProviderRetry(t, replyProviders) {
+  return bootTitleStartupEnv(t, {
+    fetchImpl: async url => {
+      const path = String(url);
+      if (path === '/api/providers') return replyProviders();
+      if (path.startsWith('/api/chat/sessions')) return Response.json({ sessions: [], has_more: false });
+      if (path === '/api/system/engine-status') return Response.json({ state: 'ready', base_url: 'http://127.0.0.1:9880' });
+      return Response.json({ status: 'ok', profiles: [{ id: 7, name: '星野' }], active_profile_id: 7, backgrounds: [], settings: {} });
+    },
+  });
+}
+
+test('home refresh retries after initial /api/providers failure, recovers home and stage status, and stops refetching', async t => {
+  let calls = 0;
+  const active = { id: 'deepseek', name: 'DeepSeek', chat_model: 'deepseek-chat', api_key: 'sk-****', is_active: true };
+  const env = bootProviderRetry(t, () => (++calls === 1
+    ? Response.json({ detail: 'down' }, { status: 503 }) : Response.json({ providers: [active], presets: [] })));
+  const title = await env.app.ready; for (let i = 0; i < 5; i++) await tick();
+  assert.equal(title.element.querySelector('.home-pill-text').textContent, '对话 状态未确认');
+  assert.equal(env.root.querySelector('.adv-qm-status-label').textContent, '模型配置暂时无法读取');
+  await title.refresh(); for (let i = 0; i < 5; i++) await tick();
+  assert.equal(calls, 2);
+  assert.equal(title.element.querySelector('.home-pill-text').textContent, '对话 可用');
+  assert.equal(env.root.querySelector('.adv-qm-status-label').textContent, 'deepseek-chat');
+  await title.refresh(); for (let i = 0; i < 5; i++) await tick();
+  assert.equal(calls, 2);
+});
+
+test('background /api/providers retry failure stays silent while opening settings center still shows error toast', async t => {
+  let calls = 0;
+  const env = bootProviderRetry(t, () => (++calls, Response.json({ detail: 'down' }, { status: 503 })));
+  const title = await env.app.ready; for (let i = 0; i < 5; i++) await tick();
+  const toasts = env.doc.getElementById('toastRoot');
+  for (const n of [...toasts.children]) { clearTimeout(n._timer); n.remove(); }
+  await title.refresh(); for (let i = 0; i < 5; i++) await tick();
+  assert.equal(calls, 2); assert.equal(toasts.children.length, 0);
+  env.app.actions.openSettings('models'); for (let i = 0; i < 5; i++) await tick();
+  assert.equal(toasts.children.length, 1);
+});
