@@ -313,3 +313,38 @@ async def test_import_corrupt_deflate_zip_returns_400_chinese(tmp_path, monkeypa
     assert "压缩包已损坏" in detail
     assert "decompressing" not in detail.lower()
     _assert_temp_empty()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("filename", "entry", "manifest_text", "expected"),
+    [
+        ("bad_schema.zip", "bad_schema/manifest.json", '{"emotions": ["bad"]}', ("缺少 id、name", "emotions 的格式不对")),
+        ("bad_json.zip", "bad_json/manifest.json", '{\n  "id": "x",\n  invalid\n}', ("manifest.json 不是有效的 JSON（第 3 行附近）",)),
+        (
+            "cafe_bg.zip",
+            "cafe/manifest.json",
+            '{"version": 1, "work": "cafe", "backgrounds": [{"id": "room", "name": "房间", "variants": {}}]}',
+            ("这是背景包，不是角色包", "backgrounds"),
+        ),
+    ],
+    ids=["schema_error", "json_syntax_error", "background_pack"],
+)
+async def test_import_reports_bad_manifest_and_background_pack_in_chinese(
+    tmp_path, monkeypatch, filename, entry, manifest_text, expected
+):
+    root, app = _setup_app(tmp_path, monkeypatch)
+    await init_db()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(entry, manifest_text.encode("utf-8"))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
+        res = await client.post("/api/characters/import", params={"filename": filename}, content=buf.getvalue())
+    assert res.status_code == 422, res.text
+    detail = res.json()["detail"]
+    for phrase in expected:
+        assert phrase in detail
+    for leak in ("validation error", "Field required", "Expecting", "JSONDecodeError", "http://", "https://"):
+        assert leak.lower() not in detail.lower()
+    assert not (root / "characters").exists() or list((root / "characters").iterdir()) == []
+    _assert_temp_empty()
