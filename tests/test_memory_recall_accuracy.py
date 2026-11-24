@@ -45,6 +45,26 @@ def test_names_are_still_learned(memory_service, text, name):
     assert _learned_name(memory_service, text) == name
 
 
+@pytest.mark.parametrize("text,name", [
+    ("叫我小明就行", "小明"), ("你可以叫我小明哦", "小明"), ("叫我阿明好了", "阿明"),
+    ("叫我小明就好啦", "小明"), ("我叫小明呢", "小明"), ("叫我小明即可。", "小明"),
+    ("叫我小明就可以了", "小明"), ("我叫小明嘛~", "小明"),
+])
+def test_words_after_a_name_are_not_part_of_it(memory_service, text, name):
+    assert _learned_name(memory_service, text) == name
+
+
+@pytest.mark.parametrize("text,key,value", [
+    ("我最喜欢的是猫", "like_猫", "猫"),
+    ("我喜欢的动漫是孤独摇滚", "like_孤独摇滚", "孤独摇滚"),
+    ("我最讨厌的是香菜。", "dislike_香菜", "香菜"),
+    ("我喜欢猫", "like_猫", "猫"),
+])
+def test_a_preference_said_as_x_is_y_keeps_only_y(memory_service, text, key, value):
+    facts = memory_service.extract_facts_heuristic(text)
+    assert [(f["fact_key"], f["fact_value"]) for f in facts] == [(key, value)]
+
+
 async def test_an_everyday_phrase_keeps_the_learned_nickname(memory_service, isolate_test_database):
     await memory_service.process_user_message("u1", 1, "我叫昂晴。")
     await memory_service.process_user_message("u1", 1, "我叫了个外卖，明天早上叫我起床")

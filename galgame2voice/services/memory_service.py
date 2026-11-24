@@ -36,6 +36,10 @@ _NICKNAME_NON_NAME_STARTS = (
     "起", "去", "来", "回", "吃", "喝", "做", "干", "帮", "给", "买", "拿", "看", "听", "睡",
     "什么", "啥", "谁", "怎么",
 )
+# Words people add after a name, any number of them: 叫我小明就行, 叫我小明就好啦.
+_NICKNAME_ENDINGS = r'(?:就好|就行|就可以了?|即可|好了|吧|啊|呀|哦|喔|呢|嘛|啦)*'
+# 我最喜欢的是猫, 我喜欢的动漫是孤独摇滚: the fact is what follows 是.
+_WHAT_I_MEAN_IS = r'(?:的[^\s,，。！!？?~是]{0,6}是)?'
 
 # Anchor facts (name, occupation) stay in the prompt however many newer facts exist.
 _ANCHOR_CATEGORIES = ("nickname", "identity")
@@ -88,21 +92,21 @@ class MemoryService:
         {
             "category": "nickname",
             "key": "player_name",
-            "regex": re.compile(r'(?:我叫(?:做|作)?|你可以叫我|我的名字是|叫我)\s*([^\s,，。！!？?~]+?)(?:(?:就好|吧|啊|呀)?(?:[。，！!？?~\s]|$))', re.IGNORECASE),
+            "regex": re.compile(r'(?:我叫(?:做|作)?|你可以叫我|我的名字是|叫我)\s*([^\s,，。！!？?~]+?)' + _NICKNAME_ENDINGS + r'(?:[。，！!？?~\s]|$)', re.IGNORECASE),
             "confidence": 1.0,
         },
         # 2. Preferences (Likes)
         {
             "category": "preference",
             "key_prefix": "like_",
-            "regex": re.compile(r'(?:我喜欢|我超爱|我的爱好是|我平时喜欢|我最喜欢)\s*([^\s,，。！!？?~]+)', re.IGNORECASE),
+            "regex": re.compile(r'(?:我喜欢|我超爱|我的爱好是|我平时喜欢|我最喜欢)' + _WHAT_I_MEAN_IS + r'\s*([^\s,，。！!？?~]+)', re.IGNORECASE),
             "confidence": 0.95,
         },
         # 3. Dislikes / Taboos
         {
             "category": "taboo",
             "key_prefix": "dislike_",
-            "regex": re.compile(r'(?:我不喜欢|我讨厌|我吃不了|我受不了|我最讨厌)\s*([^\s,，。！!？?~]+)', re.IGNORECASE),
+            "regex": re.compile(r'(?:我不喜欢|我讨厌|我吃不了|我受不了|我最讨厌)' + _WHAT_I_MEAN_IS + r'\s*([^\s,，。！!？?~]+)', re.IGNORECASE),
             "confidence": 0.95,
         },
         # 4. Promises / Appointments
