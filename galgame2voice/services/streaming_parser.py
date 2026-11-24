@@ -47,6 +47,7 @@ _RE_JAPANESE_FALLBACK = re.compile(r'(?:日文|Japanese)[:：]\s*(.*)$', flags=r
 _RE_JSON_BLOCK = re.compile(r'\{.*\}', flags=re.DOTALL)
 _RE_BRACKETED_JAPANESE = re.compile(r'【([^】]+)】')
 _RE_BRACKETED_JAPANESE_STRIP = re.compile(r'【[^】]+】')
+_RE_KANA = re.compile(r'[\u3040-\u309f\u30a0-\u30ff]')
 # A JSON object opening after a preamble ("好的～" + {"tts": ...), or a brace still waiting for its key.
 _RE_JSON_OBJECT_START = re.compile(r'\{\s*(?:["\']|$)')
 _JAPANESE_FALLBACK_LABELS = ("日文:", "日文：", "japanese:", "japanese：")
@@ -791,11 +792,26 @@ class StreamingBilingualParser:
             self.chinese_extracted = sanitized
 
         if self.chinese_extracted and "【" in self.chinese_extracted and "】" in self.chinese_extracted:
-            ja_bracket = _RE_BRACKETED_JAPANESE.search(self.chinese_extracted)
-            if ja_bracket:
+            # An emotion tag such as 【难过】 is a cue, never the voice line.
+            if not self.emotion_extracted:
+                tag_emotion, without_tag = extract_bracketed_emotion(self.chinese_extracted)
+                if tag_emotion and without_tag:
+                    self._set_lead_emotion(tag_emotion)
+                    self.chinese_extracted = without_tag
+            if _RE_BRACKETED_JAPANESE.search(self.chinese_extracted):
+                outside = _RE_BRACKETED_JAPANESE_STRIP.sub('', self.chinese_extracted).strip()
                 if not self.japanese_extracted or self.japanese_extracted == self.chinese_extracted:
-                    self.japanese_extracted = ja_bracket.group(1).strip()
-                self.chinese_extracted = _RE_BRACKETED_JAPANESE_STRIP.sub('', self.chinese_extracted).strip()
+                    voiced = [m.group(1).strip() for m in _RE_BRACKETED_JAPANESE.finditer(self.chinese_extracted)
+                              if _RE_KANA.search(m.group(1))]
+                    if _RE_KANA.search(outside):
+                        # The reply itself is Japanese, so every 【】 in it is a cue: voice the reply.
+                        self.japanese_extracted = outside
+                    elif voiced:
+                        # 中文【日文】中文【日文】: voice every Japanese block, in order.
+                        self.japanese_extracted = "".join(voiced)
+                    else:
+                        self.japanese_extracted = ""
+                self.chinese_extracted = outside
 
         if not self.japanese_extracted:
             self.japanese_extracted = self.chinese_extracted
