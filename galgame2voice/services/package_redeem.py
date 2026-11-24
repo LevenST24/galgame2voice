@@ -26,7 +26,7 @@ from galgame2voice.services.character_package_import import (
     import_character_archive_file,
 )
 from galgame2voice.utils.http_client import create_async_client
-from galgame2voice.utils.logger import sanitize_error_detail
+from galgame2voice.utils.logger import describe_storage_error, sanitize_error_detail
 
 logger = logging.getLogger("galgame2voice.services.package_redeem")
 _B64_RE, _PKG_RE = re.compile(r"^[A-Za-z0-9_-]+$"), re.compile(r"^[a-z0-9_-]{1,64}$")
@@ -184,8 +184,9 @@ def _resume_total(header: str, got: int, expect: int) -> int:
 async def _save_package(parsed: ParsedCode, host: str, pkg: dict[str, Any], part: Path) -> None:
     url, expect = f"{parsed.server_url}/v1/packages/{pkg['id']}", int(pkg["size"])
     digest, got, resumes = hashlib.sha256(), 0, 0
-    handle = await asyncio.to_thread(part.open, "wb")
+    handle = None
     try:
+        handle = await asyncio.to_thread(part.open, "wb")
         async with _client(host, httpx.Timeout(15.0, read=60.0, write=30.0, pool=15.0)) as client:
             while True:
                 headers = {"Authorization": f"Bearer {parsed.code_secret}"}
@@ -219,8 +220,19 @@ async def _save_package(parsed: ParsedCode, host: str, pkg: dict[str, Any], part
                         raise _net_error(exc, parsed, host) from exc
                     resumes += 1
                     logger.warning("Redeem resume=%d host=%s package_id=%s", resumes, host, pkg["id"])
-    finally:
         await asyncio.to_thread(handle.close)
+    except OSError as exc:
+        if handle is not None:
+            with suppress(OSError):
+                await asyncio.to_thread(handle.close)
+        await asyncio.to_thread(part.unlink, missing_ok=True)
+        if storage_msg := describe_storage_error(exc):
+            raise HTTPException(507, storage_msg) from exc
+        raise
+    finally:
+        if handle is not None and not handle.closed:
+            with suppress(OSError):
+                await asyncio.to_thread(handle.close)
     if digest.hexdigest() != pkg["sha256"]:
         raise HTTPException(502, "下载的文件校验失败，请重试")
 
@@ -277,6 +289,8 @@ async def redeem_download(request: Request, *, code: str, package_id: str, overw
             if action == "download":
                 _PROGRESS.update(phase="download", done=0, total=int(pkg["size"]), name=str(pkg["name"]))
                 await _save_package(parsed, host, pkg, part)
+            _KEPT[package_id] = str(pkg["sha256"])
+            keep = True
             logger.info("Redeem %s host=%s package_id=%s", action, host, package_id)
             _PROGRESS.update(phase="import", done=int(pkg["size"]), total=int(pkg["size"]), name=str(pkg["name"]))
             # 导入会删掉传入的路径。硬链接（不支持时复制）被删后，已校验的压缩包还在，确认覆盖不用再下载。
@@ -294,14 +308,14 @@ async def redeem_download(request: Request, *, code: str, package_id: str, overw
                 result = await import_character_archive_file(
                     request, link, filename=f"{package_id}.zip", overwrite=overwrite
                 )
+            except HTTPException as exc:
+                if exc.status_code in (400, 422):
+                    keep = False
+                raise
             finally:
                 await asyncio.to_thread(link.unlink, missing_ok=True)
-            if getattr(result, "status_code", None) == 409:
-                with suppress(Exception):
-                    body = json.loads(result.body)
-                    if isinstance(body, dict) and body.get("code") == "package_exists":
-                        _KEPT[package_id] = str(pkg["sha256"])
-                        keep = True
+            if getattr(result, "status_code", 200) in (200, 400, 422):
+                keep = False
             return result
         finally:
             if not keep:

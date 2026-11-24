@@ -31,7 +31,7 @@ from galgame2voice.services.character_manager import (
 )
 from galgame2voice.services.character_voice_catalog import get_character_voice_catalog
 from galgame2voice.utils.async_tasks import await_protected
-from galgame2voice.utils.logger import sanitize_error_detail
+from galgame2voice.utils.logger import describe_storage_error, sanitize_error_detail
 
 MAX_IMPORT_BYTES = 8 * 1024 * 1024 * 1024  # 8 GiB
 STREAM_WRITE_BUFFER_BYTES = 1024 * 1024  # 1 MiB
@@ -165,9 +165,9 @@ def _extract_members(
 def extract_archive_safely(
     archive_path: Path, fmt: str, extract_dir: Path, *, max_bytes: int = MAX_IMPORT_BYTES
 ) -> None:
-    extract_dir.mkdir(parents=True, exist_ok=True)
-    if fmt == "zip":
-        try:
+    try:
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        if fmt == "zip":
             with zipfile.ZipFile(archive_path, "r") as zf:
 
                 def _zip_members() -> Iterable[tuple[str, bool, Callable[[], IO[bytes] | None] | None]]:
@@ -180,18 +180,8 @@ def extract_archive_safely(
                         yield name, is_dir, None if is_dir else (lambda i=info: zf.open(i, "r"))
 
                 _extract_members(_zip_members(), extract_dir, max_bytes)
-        except HTTPException:
-            raise
-        except (zipfile.BadZipFile, zlib.error, RuntimeError, OSError, EOFError) as exc:
-            msg = (
-                "压缩包设有密码，请先解压后再导入角色包文件夹。"
-                if "encrypted" in str(exc).lower()
-                else "压缩包已损坏或不是有效的 .zip 文件。"
-            )
-            raise HTTPException(400, msg) from exc
-        return
+            return
 
-    try:
         with tarfile.open(archive_path, mode="r:", encoding="utf-8") as tf:
 
             def _tar_members() -> Iterable[tuple[str, bool, Callable[[], IO[bytes] | None] | None]]:
@@ -203,8 +193,20 @@ def extract_archive_safely(
             _extract_members(_tar_members(), extract_dir, max_bytes)
     except HTTPException:
         raise
-    except (tarfile.TarError, OSError, EOFError, ValueError) as exc:
-        raise HTTPException(400, "读取文件夹归档失败，请重新选择角色包后重试。") from exc
+    except (zipfile.BadZipFile, tarfile.TarError, zlib.error, RuntimeError, OSError, EOFError, ValueError) as exc:
+        if isinstance(exc, OSError):
+            if storage_msg := describe_storage_error(exc):
+                raise HTTPException(507, storage_msg) from exc
+            if isinstance(exc, PermissionError):
+                raise HTTPException(403, "数据目录没有写入权限，角色包未能导入。请把程序文件夹移到有写入权限的位置后重试。") from exc
+        if fmt != "zip":
+            raise HTTPException(400, "读取文件夹归档失败，请重新选择角色包后重试。") from exc
+        msg = (
+            "压缩包设有密码，请先解压后再导入角色包文件夹。"
+            if "encrypted" in str(exc).lower()
+            else "压缩包已损坏或不是有效的 .zip 文件。"
+        )
+        raise HTTPException(400, msg) from exc
 
 
 def _resolve_folder_name(raw_name: str, pkg_dir: Path | None = None) -> str:

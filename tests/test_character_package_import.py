@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import io
 import json
 from pathlib import Path
@@ -347,4 +348,24 @@ async def test_import_reports_bad_manifest_and_background_pack_in_chinese(
     for leak in ("validation error", "Field required", "Expecting", "JSONDecodeError", "http://", "https://"):
         assert leak.lower() not in detail.lower()
     assert not (root / "characters").exists() or list((root / "characters").iterdir()) == []
+    _assert_temp_empty()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("exc", "code", "msg"), [
+    (OSError(errno.ENOSPC, "No space left on device"), 507, "磁盘空间不足"),
+    (PermissionError(errno.EACCES, "Permission denied"), 403, "数据目录没有写入权限，角色包未能导入。请把程序文件夹移到有写入权限的位置后重试。"),
+])
+async def test_import_extract_disk_and_permission_errors(tmp_path, monkeypatch, exc, code, msg):
+    _root, app = _setup_app(tmp_path, monkeypatch)
+    await init_db()
+    real_open = Path.open
+    def fake_open(self, *a, **kw):
+        if "extracted" in self.parts:
+            raise exc
+        return real_open(self, *a, **kw)
+    monkeypatch.setattr(Path, "open", fake_open)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
+        res = await client.post("/api/characters/import", params={"filename": "a.zip"}, content=_make_package_bytes("zip", "a", "甲"))
+    assert res.status_code == code and msg in res.json()["detail"]
     _assert_temp_empty()
