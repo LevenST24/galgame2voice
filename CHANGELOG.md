@@ -96,6 +96,7 @@ All notable changes to galgame2voice are documented here. The format follows
 - 修复用 --host 0.0.0.0 开局域网访问却没开访问令牌时，只显示英文 FATAL 报错和「启动失败、检查目录和数据库」的误导提示的问题；现在启动前就用中文说明要加 GALGAME2VOICE_AUTH_DISABLED=0。
 - 修复把程序放在不能写入的文件夹（如 C:\Program Files、只读 U 盘）时启动直接报 PermissionError 错误的问题；现在会说明是哪个文件夹建不了，并提示把程序移到可写的位置。
 - 修复语音引擎端口被别的程序占用时，启动器仍然显示「语音引擎已在运行」的问题；现在会先确认那里真的是语音引擎，不是的话会说明端口被占用以及怎么处理。
+- 改进：环境检查（doctor）的报告和提示改成中文，方便直接看懂和贴给别人求助；--json 输出保持不变。
 
 ## [3.2.11] - 2026-11-24
 ### Fixed
