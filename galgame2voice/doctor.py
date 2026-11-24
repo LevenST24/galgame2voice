@@ -401,10 +401,16 @@ async def collect_checks(settings: Optional[Settings] = None, *, offline: bool =
     settings = settings or get_settings()
     providers, db_sovits_url = await _load_database_state(settings)
 
-    effective_sovits_url = resolve_sovits_url(
-        db_url=db_sovits_url,
-        settings_url=str(getattr(settings, "gpt_sovits_base_url", "") or ""),
-    ).base_url
+    # A malformed address (say 127.0.0.1:9880 without http://) is a finding, not a crash.
+    sovits_url_error: Optional[str] = None
+    try:
+        effective_sovits_url = resolve_sovits_url(
+            db_url=db_sovits_url,
+            settings_url=str(getattr(settings, "gpt_sovits_base_url", "") or ""),
+        ).base_url
+    except ValueError as exc:
+        effective_sovits_url = ""
+        sovits_url_error = str(exc)
 
     checks: List[Check] = []
     checks.extend(check_runtime())
@@ -415,7 +421,18 @@ async def collect_checks(settings: Optional[Settings] = None, *, offline: bool =
     checks.extend(check_proxy_environment())
     checks.extend(check_characters(settings))
     checks.extend(check_providers(providers))
-    checks.extend(await check_gpt_sovits(effective_sovits_url, offline=offline))
+    if sovits_url_error is not None:
+        checks.append(
+            Check(
+                "GPT-SoVITS",
+                FAIL,
+                sovits_url_error,
+                "The URL must start with http:// or https://, e.g. http://127.0.0.1:9880. "
+                "Fix GALGAME2VOICE_GPT_SOVITS_BASE_URL, .env or the address in Settings.",
+            )
+        )
+    else:
+        checks.extend(await check_gpt_sovits(effective_sovits_url, offline=offline))
     return checks
 
 
