@@ -93,6 +93,17 @@ except ImportError as exc:
     _print_python_recovery_command(["-m", "ensurepip", "--upgrade"])
     sys.exit(1)
 
+# UTF-8 console output first: every hint below is Chinese, and a cp1252/cp437
+# console or pipe would otherwise turn the hint itself into a UnicodeEncodeError.
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleTitleW("Galgame2Voice 启动器")
+    except Exception:
+        pass
+
 # Ensure runtime directories
 for d in ["logs", "data", "audio"]:
     try:
@@ -102,15 +113,6 @@ for d in ["logs", "data", "audio"]:
         print("程序需要在自己的文件夹里保存数据、日志和音频。请把整个程序文件夹移到可以写入的位置，")
         print("例如 D:\\Galgame2Voice 或你的用户文件夹，不要放在 C:\\Program Files、只读的 U 盘或压缩包预览窗口里。")
         sys.exit(1)
-
-if sys.platform == "win32":
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-        import ctypes
-        ctypes.windll.kernel32.SetConsoleTitleW("Galgame2Voice 启动器")
-    except Exception:
-        pass
 
 _SPAWNED_SOVITS_PROC = None
 _SPAWNED_SOVITS_STARTED_AT: float | None = None
