@@ -1156,38 +1156,20 @@ export async function deleteVoiceProfile() {
       switchSaveUnconfirmed = false;
     }
     const cleared = state.sessions.filter(sess => sess.settings?.voiceProfileId === id);
-    const sessionVersions = new Map();
-    for (const sess of cleared) {
-      sess.settings.voiceProfileId = null;
-      sess.updatedAt = Math.max(Date.now(), (sess.updatedAt || 0) + 1);
-      const version = (sess.unconfirmedSettingsVersion || 0) + 1;
-      sess.unconfirmedSettingsVersion = version;
-      sessionVersions.set(sess, version);
-    }
     let bindingNote = '';
     if (cleared.length) {
+      // The server unbinds its copies in the same delete and keeps their order,
+      // so only the local copies change here; touching updatedAt would move
+      // every old chat of this voice to the top of the recents.
+      for (const sess of cleared) sess.settings.voiceProfileId = null;
       _callbacks.invalidateSessionSync?.();
       saveState();
-      if (storageChangedByAnotherPage()) {
-        bindingNote = '；当前网页已暂停保存，解除绑定未提交到本机服务';
-      } else {
-        // The server copies still name the deleted voice; the next sync would restore them.
-        for (const sess of cleared) {
-          const version = sessionVersions.get(sess);
-          persistSession(sess).then(() => {
-            if (sess.unconfirmedSettingsVersion === version) {
-              delete sess.unconfirmedSettingsVersion;
-              saveState();
-            }
-          }).catch(() => {});
-        }
-        bindingNote = `，并解除了 ${cleared.length} 个会话的绑定`;
-      }
+      bindingNote = `，并解除了 ${cleared.length} 个会话的绑定`;
     }
     await loadSessionVoiceSelect(getActive());
     refreshActiveLoadedBadges();
     ensureSessionVoice(getActive(), { silent: true });
-    showToast(`音色「${p ? p.name : id}」已删除${bindingNote}`, bindingNote.startsWith('；') ? 'info' : 'success');
+    showToast(`音色「${p ? p.name : id}」已删除${bindingNote}`, 'success');
   } catch (e) {
     console.error('音色删除失败:', e);
     showToast(serverMessage(e) || '音色删除失败：该音色已被保留，请稍后重试；若仍失败，请打开「运行状态」检查服务', 'error');
