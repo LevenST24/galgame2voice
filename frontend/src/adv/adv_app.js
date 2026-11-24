@@ -311,6 +311,7 @@ export function mountAdv(dom, deps) {
   let backgrounds = [];
   let works = [];
   let appliedBackground = null;
+  let backgroundRefreshTimer = null;
   const storedBackground = () => normalizeBackgroundSelection({
     id: settings.advBackground, time: settings.advBgTime,
   });
@@ -380,8 +381,26 @@ export function mountAdv(dom, deps) {
     backgrounds = list;
     works = workList;
     background.setList(list);
+    scheduleBackgroundRefresh(list);
     // Auto resolves against the list, so re-check once it arrives.
     if (settings) syncBackground();
+  }
+
+  // Background links are signed for about 12 hours like portraits; fetch fresh ones a
+  // minute before the earliest expires, or later picks and thumbnails stop loading.
+  function scheduleBackgroundRefresh(list) {
+    if (backgroundRefreshTimer !== null) { clock.clearTimeout(backgroundRefreshTimer); backgroundRefreshTimer = null; }
+    const expiry = list.flatMap(item => Object.values(item?.variants || {})).reduce((min, url) => {
+      try {
+        const exp = Number(new URL(String(url), 'http://local').searchParams.get('exp'));
+        return exp > 0 ? (min ? Math.min(min, exp) : exp) : min;
+      } catch {
+        return min;
+      }
+    }, 0);
+    if (!expiry) return;
+    const delay = Math.max(60000, expiry * 1000 - (deps.wallNow?.() ?? Date.now()) - 60000);
+    backgroundRefreshTimer = clock.setTimeout(() => { backgroundRefreshTimer = null; loadBackgrounds(); }, delay);
   }
 
   function paint(line = currentLine || { emotion: 'gentle', act: {} }, options = {}) {
@@ -962,6 +981,7 @@ export function mountAdv(dom, deps) {
       portraitRequest?.abort();
       deps.cancelMic?.();
       if (refreshTimer !== null) clock.clearTimeout(refreshTimer);
+      if (backgroundRefreshTimer !== null) clock.clearTimeout(backgroundRefreshTimer);
       drafts.clear();
       shortcuts.destroy(); player.reset(); audio.stopLine({ fadeMs: 0 });
       sprite.destroy(); quickMenu.destroy(); textbox.destroy(); stage.destroy();

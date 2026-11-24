@@ -163,6 +163,7 @@ function setupApp(t, options = {}) {
     clock,
     getSession: () => active,
     voiceEnabled: () => false,
+    wallNow: options.wallNow,
     getCharacter: options.getCharacter
       || (() => (options.characterWork ? { id: 'c', name: '角色', work: options.characterWork } : null)),
     loadPortrait: null,
@@ -920,4 +921,28 @@ test('adv wiring: switching sessions closes the panel and re-applies per session
   h.app.unmount();
   assert.equal(h.dom.root.children.length, 0, 'unmount removes the background layer');
   assert.equal(h.doc.body.querySelector('.adv-bg-overlay'), null);
+});
+
+test('adv wiring: signed background links are fetched again before they expire', async t => {
+  const exp = 1_800_000_000;
+  const signed = { works: WORKS, backgrounds: LIST.map(item => ({ ...item, variants: Object.fromEntries(
+    Object.entries(item.variants).map(([time, url]) => [time, `${url}?exp=${exp}&sig=x`])) })) };
+  // Twelve hours before expiry, as the server signs them.
+  const h = setupApp(t, { wallNow: () => (exp - 12 * 3600) * 1000, fetchBackgrounds: async () => signed });
+  await microtasks();
+  assert.equal(h.calls.fetches, 1);
+  h.clock.tick(12 * 3600 * 1000 - 61000);
+  await microtasks();
+  assert.equal(h.calls.fetches, 1, 'not refetched while the links are still good');
+  h.clock.tick(2000);
+  await microtasks();
+  assert.equal(h.calls.fetches, 2, 'refetched a minute before the earliest link expires');
+});
+
+test('adv wiring: unsigned background links set no refresh timer', async t => {
+  const h = setupApp(t);
+  await microtasks();
+  h.clock.tick(48 * 3600 * 1000);
+  await microtasks();
+  assert.equal(h.calls.fetches, 1);
 });
