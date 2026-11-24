@@ -59,6 +59,11 @@ def _resolve_stage_guidance(score: int) -> str:
     return _STAGE_GUIDANCE_TIERS[-1][1]
 
 
+# One message rarely states more than a few things of one kind; cap it so a pasted
+# list cannot flood memory.
+_MAX_FACTS_PER_PATTERN = 5
+
+
 def _is_plausible_nickname(text: str, start: int, value: str) -> bool:
     """Tells a name ("我叫昂晴", "叫我昂晴就好") apart from phrases that share the trigger."""
     clause = _RE_CLAUSE_BREAK.split(text[:start])[-1]
@@ -161,19 +166,27 @@ class MemoryService:
         if not text or not isinstance(text, str):
             return []
 
-        facts: list[dict[str, Any]] = []
         # Clamp extreme input text to 4000 characters to prevent ReDoS / CPU exhaustion
         cleaned = text[:4000].strip()
 
+        # Every usable match counts, in the order the player said them, and a later
+        # statement about the same thing replaces an earlier one: "以前我讨厌香菜，现在我喜欢香菜"
+        # ends on like_香菜, and "我叫小明，不对，叫我阿明就好" on 阿明. Unusable matches
+        # are skipped, so "别叫我笨蛋，我叫昂晴" still learns 昂晴.
+        positioned: list[tuple[int, dict[str, Any]]] = []
         for pat in self.EXTRACTION_PATTERNS:
-            # The first usable match wins: "别叫我笨蛋，我叫昂晴" still learns 昂晴.
+            found = 0
             for match in pat["regex"].finditer(cleaned):
                 fact = self._fact_from_match(pat, cleaned, match)
                 if fact:
-                    facts.append(fact)
-                    break
+                    positioned.append((match.start(), fact))
+                    found += 1
+                    if found >= _MAX_FACTS_PER_PATTERN:
+                        break
+        positioned.sort(key=lambda item: item[0])
 
-        return facts
+        last_index = {fact["fact_key"]: i for i, (_, fact) in enumerate(positioned)}
+        return [fact for i, (_, fact) in enumerate(positioned) if last_index[fact["fact_key"]] == i]
 
     def _fact_from_match(self, pat: dict[str, Any], text: str, match: re.Match) -> dict[str, Any] | None:
         """Builds one sanitized fact from a pattern match, or None when the match is unusable."""
