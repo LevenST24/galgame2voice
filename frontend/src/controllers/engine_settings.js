@@ -212,15 +212,19 @@ class EngineSettingsController {
       const unconfirmed = err.code === 'CONFIG_WRITE_SKIPPED'
         || [401, 403, 404, 429].includes(err.status)
         || (!err.status && err.code !== 'ENGINE_NOT_READY');
+      // 409 means the restart was refused (another restart running, an engine in another
+      // window, a remote address, or the old engine still holding the port). Nothing failed
+      // to start, so don't show the red 启动失败 badge.
+      const refused = err.status === 409;
       this.coordinator.renderEngineStatus?.({
         state: (err.engineState && err.engineState !== 'unavailable')
           ? err.engineState
-          : (unconfirmed ? 'checking' : 'failed'),
+          : (unconfirmed || refused ? 'checking' : 'failed'),
         ready: false,
         message: err.message,
       });
       const needDir = /引擎目录|选择文件夹|api_v2\.py|运行环境/i.test(err.message || '');
-      this.coordinator.showToast?.(err.message, 'error', needDir ? {
+      this.coordinator.showToast?.(err.message, refused ? 'info' : 'error', needDir ? {
         actionLabel: '选择引擎文件夹',
         onAction: () => {
           this.coordinator.goToInferenceTab?.();
