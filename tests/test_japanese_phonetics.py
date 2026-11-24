@@ -243,3 +243,16 @@ def test_furigana_preserves_kanji_on_stage_cues_and_long_compounds():
     assert normalize_japanese_for_tts("これは秘密（ウインク）だよ！") == "これは秘密だよ！"
     assert normalize_japanese_for_tts("生徒会長白雪（しらゆき）です。") == "生徒会長白雪です。"
     assert normalize_japanese_for_tts("乃愛（のあ）だよ") == "のあだよ"
+
+
+def test_halfwidth_katakana_line_is_voiced_as_fullwidth_kana():
+    """A line written in half-width katakana (ｱﾘｶﾞﾄｳ) must be spoken, not dropped as silent."""
+    from galgame2voice.services.chat_pipelines.tts_pipeline import TtsStreamPipeline
+    from galgame2voice.utils.japanese_phonetics import has_vocal_text
+
+    assert has_vocal_text("ｱﾘｶﾞﾄｳ！")
+    assert TtsStreamPipeline.is_vocal_sentence("ﾎﾝﾄﾆ？")
+    # Voiced marks join their kana, so the engine gets the normal spelling.
+    assert normalize_japanese_for_tts("ｱﾘｶﾞﾄｳ、ﾊﾟﾊﾟ！") == "アリガトウ、パパ！"
+    # Other half-width forms (ASCII, full-width digits) are left as they were.
+    assert normalize_japanese_for_tts("ｶﾞﾝﾊﾞﾚ 123") == "ガンバレ 123"
