@@ -281,8 +281,8 @@ function importDom() {
   globalThis.document = doc;
   let imported = 0;
   initSessionBackup({ onImport: () => imported++, isBusy: () => false });
-  const choose = async (text = retryBackup) => {
-    input.files = [{ size: text.length, text: async () => text }];
+  const choose = async (text = retryBackup, fileExtra = {}) => {
+    input.files = [{ size: text.length, text: async () => text, ...fileExtra }];
     const listeners = [...(input.listeners.get('change') || [])];
     assert.equal(listeners.length, 1);
     await Promise.all(listeners.map((listener) => listener({ type: 'change' })));
@@ -989,6 +989,33 @@ function setupImportScenario() {
     URL.createObjectURL = prevCreateObjectURL;
     URL.revokeObjectURL = prevRevokeObjectURL;
   }
+  passed++;
+}
+
+// archive files (.zip/.7z/.rar, including >20 MB) show role-pack guidance; .json backup still imports
+{
+  const expected = '这是压缩包（例如角色包），不能当作聊天备份导入；导入角色请到「角色与会话」点「导入角色包」。';
+  for (const file of [
+    { name: 'character.zip', size: 25 * 1024 * 1024, text: async () => { throw new Error('should not read archive'); } },
+    { name: 'Character.ZIP', size: 64, text: async () => 'PK\x03\x04' },
+    { name: 'pack.7z', size: 64, text: async () => '7z' },
+    { name: 'pack.rar', size: 64, text: async () => 'Rar!' },
+  ]) {
+    const { server, choose, toastText, clearToasts, imported } = setupImportScenario();
+    const before = JSON.stringify(state.sessions);
+    await choose('', file);
+    const toasts = toastText();
+    clearToasts();
+    assert.deepEqual(toasts, [expected]);
+    assert.equal(imported(), 0);
+    assert.equal(server.ids.size, 0);
+    assert.equal(JSON.stringify(state.sessions), before);
+  }
+  const { server, choose, clearToasts, imported } = setupImportScenario();
+  await choose(backupOf([sessionOf('s_json_ok', ['正常备份'])]), { name: 'galgame2voice-chat.json' });
+  clearToasts();
+  assert.equal(imported(), 1);
+  assert.equal(server.ids.size, 1);
   passed++;
 }
 

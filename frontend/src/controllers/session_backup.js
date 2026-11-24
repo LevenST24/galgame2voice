@@ -98,6 +98,9 @@ export function initSessionBackup({
     button.disabled = true;
     let releaseImport = null;
     try {
+      if (typeof file.name === 'string' && /\.(?:zip|7z|rar)$/i.test(file.name)) {
+        throw new Error('这是压缩包（例如角色包），不能当作聊天备份导入；导入角色请到「角色与会话」点「导入角色包」。');
+      }
       if (file.size > 20 * 1024 * 1024) throw new Error('备份超过 20 MB，请拆分后再导入。');
       const incoming = prepareSessionImport(await file.text());
       if (isBusy()) throw new Error('当前回复正在生成，请停止或等待完成后再导入。');
