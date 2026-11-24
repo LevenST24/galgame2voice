@@ -29,6 +29,18 @@ export function formatTurnTimelineEntry(entry) {
  * deps: { controller, audio, getSession, voiceEnabled, loadPortrait, getCharacter,
  *   clock?, raf?, cancelRaf?, matchMedia?, subscribe?, subscribeOverlay?, ...actions }
  */
+// The earliest `exp` (seconds) among signed media URLs, or 0 when none is signed.
+function earliestExpiry(urls) {
+  return urls.reduce((min, url) => {
+    try {
+      const exp = Number(new URL(url, 'http://local').searchParams.get('exp'));
+      return exp > 0 ? (min ? Math.min(min, exp) : exp) : min;
+    } catch {
+      return min;
+    }
+  }, 0);
+}
+
 export function mountAdv(dom, deps) {
   const { controller, audio } = deps;
   const doc = dom.root.ownerDocument || globalThis.document;
@@ -98,6 +110,8 @@ export function mountAdv(dom, deps) {
   // outside the player's timer set instead of the injected clock.
   const background = createBackgroundView({
     layer: stage.background, matchMedia, ImageClass: deps.ImageClass || globalThis.Image,
+    // An image that will not load may only have an expired signed URL.
+    onLoadFailed: () => { renewBackgroundsIfExpiring(); },
   });
   const playerSettings = () => ({
     primary: settings.advPrimaryLanguage, subtitle: settings.advSubtitleLanguage,
@@ -360,12 +374,15 @@ export function mountAdv(dom, deps) {
     closeDrawer();
     closeLog();
     if (configPanel?.isOpen) configPanel.close({ revert: true });
-    bgPanel.open();
+    // The panel's thumbnails are built from the list, so renew expiring URLs first.
+    const renewal = renewBackgroundsIfExpiring();
+    if (renewal) renewal.then(() => { if (!destroyed) bgPanel.open(); });
+    else bgPanel.open();
   }
   function closeBgPanel() {
     if (bgPanel?.isOpen) bgPanel.close();
   }
-  async function loadBackgrounds() {
+  async function loadBackgrounds({ keepOnError = false } = {}) {
     let list = [];
     let workList = [];
     try {
@@ -373,16 +390,33 @@ export function mountAdv(dom, deps) {
       list = Array.isArray(data?.backgrounds) ? data.backgrounds : [];
       workList = Array.isArray(data?.works) ? data.works : [];
     } catch {
+      if (keepOnError) return;
       list = [];
       workList = [];
     }
     if (destroyed) return;
     backgrounds = list;
     works = workList;
+    backgroundsExpireAt = earliestExpiry(list.flatMap(item =>
+      item?.variants && typeof item.variants === 'object' ? Object.values(item.variants) : []));
     background.setList(list);
     // Auto resolves against the list, so re-check once it arrives.
     if (settings) syncBackground();
   }
+  // Background image URLs are signed for about 12 hours. Check the wall clock when
+  // they are about to be used (a timer would not run while the computer sleeps),
+  // and read the list again if they expire within a minute.
+  let backgroundsExpireAt = 0;
+  /** @type {Promise<void> | null} */
+  let backgroundRenewal = null;
+  function renewBackgroundsIfExpiring() {
+    if (backgroundRenewal) return backgroundRenewal;
+    if (destroyed || !backgroundsExpireAt) return null;
+    if ((deps.wallNow?.() ?? Date.now()) < backgroundsExpireAt * 1000 - 60000) return null;
+    backgroundRenewal = loadBackgrounds({ keepOnError: true }).finally(() => { backgroundRenewal = null; });
+    return backgroundRenewal;
+  }
+  listen(doc, 'visibilitychange', () => { if (doc.visibilityState === 'visible') renewBackgroundsIfExpiring(); });
 
   function paint(line = currentLine || { emotion: 'gentle', act: {} }, options = {}) {
     if (!line || !model) return;
@@ -747,14 +781,7 @@ export function mountAdv(dom, deps) {
         faces && typeof faces === 'object' ? Object.values(faces) : []
       );
       const layerFiles = Object.values(model?.layers || {});
-      const minExpiry = [...spriteFiles, ...layerFiles].reduce((min, item) => {
-        try {
-          const exp = Number(new URL(item?.file, 'http://local').searchParams.get('exp'));
-          return exp > 0 ? (min ? Math.min(min, exp) : exp) : min;
-        } catch {
-          return min;
-        }
-      }, 0);
+      const minExpiry = earliestExpiry([...spriteFiles, ...layerFiles].map(item => item?.file));
       if (minExpiry > 0) {
         const delay = Math.max(1000, minExpiry * 1000 - (deps.wallNow?.() ?? Date.now()) - 60000);
         refreshTimer = clock.setTimeout(() => { refreshTimer = null; loadPortrait(true); }, delay);
@@ -941,6 +968,7 @@ export function mountAdv(dom, deps) {
     getRecentTurnTimelines: () => recentTurnTimelines.map(item => ({ ...item })),
     prepareHome() {
       configPanel.close({ revert: true }); closeBgPanel(); closeLog(); closeDrawer();
+      renewBackgroundsIfExpiring();
       temporarySkip = false;
       resetInput(); ++replayToken; turnId = null; currentLine = null;
       sprite.suspend(); syncControls();
