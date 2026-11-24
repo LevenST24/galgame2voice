@@ -7,6 +7,7 @@ import errno
 import logging
 import logging.handlers
 import re
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
@@ -172,6 +173,24 @@ def describe_storage_error(exc_or_msg: Exception | str | None) -> str | None:
         return DISK_FULL_MESSAGE
     if _STORAGE_RO_RE.search(text) or any(marker in text for marker in _READ_ONLY_TEXT):
         return READ_ONLY_MESSAGE
+    return None
+
+
+DATABASE_BUSY_MESSAGE = "数据库正被另一个操作占用，这次操作没有完成。请等几秒后重试。"
+NO_WRITE_PERMISSION_MESSAGE = "没有权限读写数据目录，这次操作没有完成。请检查数据文件夹的权限后重试。"
+
+
+def describe_database_write_error(exc: Exception) -> str | None:
+    """Return a Chinese sentence for a full disk, read-only storage, a busy database or a
+    permission error, else None."""
+    if storage_message := describe_storage_error(exc):
+        return storage_message
+    if isinstance(exc, PermissionError):
+        return NO_WRITE_PERMISSION_MESSAGE
+    if isinstance(exc, sqlite3.OperationalError):
+        text = str(exc).lower()
+        if "database is locked" in text or "database is busy" in text:
+            return DATABASE_BUSY_MESSAGE
     return None
 
 
