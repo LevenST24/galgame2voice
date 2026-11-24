@@ -136,6 +136,20 @@ def _resolve_safe_extract_path(member_name: str, extract_root: Path) -> Path | N
     return dest
 
 
+# Files the operating system adds when a folder is zipped or browsed. They
+# are never part of a package, and macOS's "Icon\r" would otherwise be
+# rejected as an illegal name.
+_OS_METADATA_NAMES = frozenset({".ds_store", "icon\r", "thumbs.db", "desktop.ini"})
+
+
+def _is_os_metadata(member_name: str) -> bool:
+    parts = [part for part in member_name.replace("\\", "/").split("/") if part]
+    if not parts:
+        return False
+    name = parts[-1]
+    return "__MACOSX" in parts or name.startswith("._") or name.lower() in _OS_METADATA_NAMES
+
+
 def _extract_members(
     members: Iterable[tuple[str, bool, Callable[[], IO[bytes] | None] | None]],
     extract_dir: Path,
@@ -143,6 +157,8 @@ def _extract_members(
 ) -> None:
     actual_total = 0
     for member_name, is_dir, open_src in members:
+        if _is_os_metadata(member_name):
+            continue
         dest = _resolve_safe_extract_path(member_name, extract_dir)
         if dest is None:
             continue
