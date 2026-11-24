@@ -713,6 +713,18 @@ async def restart_sovits_endpoint(payload: RestartSovitsPayload | None = None) -
         raise HTTPException(status_code=500, detail="无法准备语音引擎。请确认程序和引擎目录可写，在「语音服务」重新选择完整引擎包后再试。") from exc
 
 
+async def _answers_like_sovits(base_url: str) -> bool:
+    """api_v2 answers GET /control without a command with 400; other servers on the port do not."""
+    from galgame2voice.services.gpt_sovits_client import HEALTH_TIMEOUT
+
+    try:
+        async with httpx.AsyncClient(trust_env=False, timeout=HEALTH_TIMEOUT) as one_shot:
+            response = await one_shot.get(f"{base_url.rstrip('/')}/control")
+    except httpx.HTTPError:
+        return False
+    return response.status_code in (status.HTTP_200_OK, status.HTTP_400_BAD_REQUEST)
+
+
 async def _restart_local_engine(endpoint: SovitsEndpoint, payload: RestartSovitsPayload | None) -> dict[str, Any]:
     settings = get_settings()
     sovits_dir = await asyncio.to_thread(_resolve_sovits_directory, settings.project_root)
@@ -726,7 +738,15 @@ async def _restart_local_engine(endpoint: SovitsEndpoint, payload: RestartSovits
     live_owned = owned is not None and owned.poll() is None
     owns_endpoint = live_owned and supervisor.get_managed_launch(endpoint) is not None
     if not owns_endpoint and await asyncio.to_thread(supervisor.is_port_in_use, endpoint.port, endpoint.host):
-        raise HTTPException(status_code=409, detail="语音引擎已在其他窗口运行，可直接使用。若需重启，请先关闭该引擎窗口，再在「运行状态」页启动引擎。")
+        if await _answers_like_sovits(endpoint.base_url):
+            raise HTTPException(status_code=409, detail="语音引擎已在其他窗口运行，可直接使用。若需重启，请先关闭该引擎窗口，再在「运行状态」页启动引擎。")
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"端口 {endpoint.port} 已被别的程序占用，那里运行的不是语音引擎。请关闭占用这个端口的程序，"
+                "或在「设置中心 → 语音服务」把「语音服务地址」改回 http://127.0.0.1:9880 后再启动。"
+            ),
+        )
     # Determine precision and device target only after validation and ownership checks.
     req_prec = str(payload.precision).strip().lower() if (payload and payload.precision) else None
     device, is_half, source = await _apply_sovits_precision_config(settings.project_root, sovits_dir, req_prec)
