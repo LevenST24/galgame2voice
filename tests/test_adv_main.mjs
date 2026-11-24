@@ -2506,3 +2506,32 @@ test('startup sync preserves unconfirmed local rename and posts it instead of ov
   assert.equal(saves.length, 1);
   assert.equal(saves[0].title, '本地刚改的新名字');
 });
+
+// r67 recovery 1: the turn died with the process (启动窗口被关掉). The server kept the
+// question, but no reply; after reopening, the question must still offer 「重新发送」.
+for (const [label, extra] of [
+  ['failed in this page', { failed: { error: '无法连接本机服务', code: 'network' } }],
+  ['page closed mid-reply', {}],
+]) {
+  test(`startup sync keeps a question the server saved without a reply retryable (${label})`, async t => {
+    const { app } = await bootActiveHistory(t, {
+      id: `s_exit_${label.length}`, title: '中途断开的对话', updatedAt: 1_700_000_999_000,
+      messages: [
+        { id: 'm_10', serverMessageId: 10, role: 'assistant', content: '之前的回复', ts: 1_700_000_000_000 },
+        localMsg('m_local_cut', 'user', '刚才的问题', { ts: 1_700_000_999_000, ...extra }),
+      ],
+      updated_at: '2024-06-01 00:10:01', message_count: 2, last_message: '刚才的问题',
+      mode: 'window',
+      historyMessages: [
+        srv(10, 'assistant', '之前的回复'),
+        srv(11, 'user', '刚才的问题', '', '2024-06-01 00:10:01'),
+      ],
+    });
+    const session = storedActive();
+    assert.equal(session.messages.length, 2);
+    const question = session.messages.at(-1);
+    assert.equal(question.serverMessageId, 11);
+    assert.ok(question.failed, 'the cut-off question keeps a failed note');
+    assert.equal(app.conversation.canRetry(question), true);
+  });
+}

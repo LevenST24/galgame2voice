@@ -310,14 +310,20 @@ class ChatService:
         if require_existing_session and await crud.get_session(conn, session_id) is None:
             raise TurnUnavailableError("对话已被删除，请重新选择对话后再发送。")
         sess_obj = await crud.get_or_create_session(conn, session_id)
-        user_msg = await crud.add_message(conn, MessageCreate(
-            session_id=session_id,
-            role="user",
-            content_chinese=prompt,
-            content_japanese="",
-            audio_url="",
-            latency_ms=0,
-        ))
+        # A turn cut off by the process exiting leaves its question with no reply.
+        # Sending the same question again answers that row instead of adding a copy.
+        last = await crud.get_recent_messages(conn, session_id, limit=1)
+        if last and last[0].role == "user" and last[0].content_chinese == prompt:
+            user_msg = last[0]
+        else:
+            user_msg = await crud.add_message(conn, MessageCreate(
+                session_id=session_id,
+                role="user",
+                content_chinese=prompt,
+                content_japanese="",
+                audio_url="",
+                latency_ms=0,
+            ))
 
         active_prof = await self._resolve_voice_profile(
             conn, voice_profile_id, tts_options, sess_obj, character_name
