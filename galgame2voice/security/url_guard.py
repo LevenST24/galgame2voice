@@ -147,6 +147,10 @@ def validate_llm_base_url(url: Optional[str], allow_private: bool = False) -> Tu
         return False, "接口地址不能为空"
     candidate = str(url).strip()
 
+    for ch in candidate:
+        if "\u3000" <= ch <= "\u303f" or "\uff00" <= ch <= "\uffef":
+            return False, f"接口地址里有中文标点「{ch}」，请切换到英文输入法后重新输入"
+
     try:
         parsed = urlparse(candidate)
         scheme = parsed.scheme
