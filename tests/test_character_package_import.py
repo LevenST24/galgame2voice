@@ -216,6 +216,30 @@ async def test_conflict_409_overwrite_backup_and_failed_overwrite_restore(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_update_under_another_file_name_asks_to_overwrite_the_installed_character(tmp_path, monkeypatch):
+    """A browser saves a second download as 「爱丽丝 (1).zip」; that is still an update of 爱丽丝."""
+    root, app = _setup_app(tmp_path, monkeypatch)
+    await init_db()
+    v1 = _make_package_bytes("zip", "alice", "爱丽丝", system_prompt="第一版人设")
+    v2 = _make_package_bytes("zip", "alice", "爱丽丝", system_prompt="第二版人设")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
+        first = await client.post("/api/characters/import", params={"filename": "爱丽丝.zip"}, content=v1)
+        assert first.status_code == 200, first.text
+        asked = await client.post("/api/characters/import", params={"filename": "爱丽丝 (1).zip"}, content=v2)
+        assert asked.status_code == 409, asked.text
+        assert asked.json()["code"] == "package_exists" and asked.json()["names"] == ["爱丽丝"]
+        replaced = await client.post(
+            "/api/characters/import", params={"filename": "爱丽丝 (1).zip", "overwrite": "1"}, content=v2
+        )
+        assert replaced.status_code == 200, replaced.text
+        assert replaced.json()["imported"][0]["profile_id"] == first.json()["imported"][0]["profile_id"]
+    assert sorted(p.name for p in (root / "characters").iterdir()) == ["爱丽丝"]
+    manifest = json.loads((root / "characters" / "爱丽丝" / "manifest.json").read_text("utf-8"))
+    assert manifest["system_prompt"] == "第二版人设"
+    _assert_temp_empty()
+
+
+@pytest.mark.asyncio
 async def test_missing_manifest_names_zip_and_folder(tmp_path, monkeypatch):
     _root, app = _setup_app(tmp_path, monkeypatch)
     await init_db()

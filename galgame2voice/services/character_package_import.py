@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse
 
 from galgame2voice.config import get_settings
 from galgame2voice.database.session import get_db
-from galgame2voice.services.character_identity import DuplicateCharacterId
+from galgame2voice.services.character_identity import DuplicateCharacterId, identity_key
 from galgame2voice.services.character_manager import (
     CharacterManager,
     CharacterPackage,
@@ -328,6 +328,40 @@ def _place_packages(
         placed.append(target)
 
 
+def _target_installed_folders(staged: list[tuple[str, Path]], char_mgr: Any) -> list[tuple[str, Path]]:
+    """Send an update of an installed character to that character's folder.
+
+    The folder name comes from the zip's file name, so 「爱丽丝 (1).zip」 for the installed
+    「爱丽丝」 would land in a second folder and fail as a duplicate id. Matching by manifest id
+    turns it into the usual 「已有同名角色包」 question, and overwrite replaces the right folder.
+    """
+    try:
+        installed = {
+            identity_key(pkg.id): pkg.folder.name
+            for pkg in char_mgr.get_available_characters()
+            if getattr(pkg, "id", None) and getattr(pkg, "folder", None) is not None
+        }
+    except Exception:
+        return staged
+    if not installed:
+        return staged
+    taken = {name for name, _ in staged}
+    result: list[tuple[str, Path]] = []
+    for folder_name, src_dir in staged:
+        try:
+            raw = json.loads((src_dir / "manifest.json").read_text(encoding="utf-8-sig"))
+        except Exception:
+            raw = None
+        pkg_id = raw.get("id") if isinstance(raw, dict) else None
+        current = installed.get(identity_key(pkg_id)) if isinstance(pkg_id, str) and pkg_id.strip() else None
+        if current and current != folder_name and current not in taken:
+            taken.discard(folder_name)
+            taken.add(current)
+            folder_name = current
+        result.append((folder_name, src_dir))
+    return result
+
+
 async def _rollback_and_rescan(
     placed: list[Path], backups: list[tuple[Path, Path]], catalog: Any, char_mgr: Any
 ) -> None:
@@ -393,6 +427,7 @@ async def import_character_archive_file(
         async with lock:
             chars_dir = char_mgr.characters_dir
             await asyncio.to_thread(chars_dir.mkdir, parents=True, exist_ok=True)
+            staged = await asyncio.to_thread(_target_installed_folders, staged, char_mgr)
             existing = [name for name, _ in staged if (chars_dir / name).exists()]
             if existing and not overwrite:
                 return JSONResponse(
