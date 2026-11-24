@@ -116,6 +116,8 @@ All notable changes to galgame2voice are documented here. The format follows
 - 修复台词里的半角片假名（如「ｱﾘｶﾞﾄｳ」）被当成无法朗读的符号、整句不配音的问题；现在会按全角假名朗读。
 - 修复「对话模型」选 Anthropic 时，填写服务商给的不带 /v1 的地址（如 https://api.deepseek.com/anthropic）每次都报 404 的问题；现在两种写法都能用。
 - 修复「对话模型」里保存过的 API 密钥无法删除、只能用别的密钥覆盖的问题；现在密钥输入框旁有「清除」按钮。
+- 修复环境变量 GALGAME2VOICE_SKIP_MEM_CHECK 写成 0 或 false 时反而跳过内存检查的问题；现在只有写 1 等开启值才跳过。
+- 改进：配置示例文件 .env.example 改为中文说明，写明放在哪里、怎样启用某一行以及每项的作用。
 
 ## [3.2.11] - 2026-11-24
 ### Fixed
