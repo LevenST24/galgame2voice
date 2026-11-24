@@ -41,7 +41,7 @@ from galgame2voice.database.session import get_database_path
 from galgame2voice.security.auth import is_auth_disabled
 from galgame2voice.services.sovits_endpoint import resolve_sovits_url
 from galgame2voice.utils.audio_converter import find_ffmpeg
-from galgame2voice.utils.http_client import PROXY_ENV_HINT, create_async_client, proxy_environment_is_usable
+from galgame2voice.utils.http_client import create_async_client, proxy_environment_is_usable
 
 OK = "OK"
 WARN = "WARN"
@@ -53,6 +53,10 @@ DEGRADED = "DEGRADED"
 FAILED = "FAILED"
 
 REQUIRED_PYTHON = (3, 10)
+# Report labels; --json keeps the codes above so scripts and issue templates stay stable.
+STATUS_LABELS = {OK: "正常", WARN: "注意", FAIL: "错误", SKIP: "跳过"}
+OVERALL_LABELS = {HEALTHY: "一切正常", DEGRADED: "能运行，但有需要注意的项", FAILED: "有错误，需要先处理"}
+
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"}
 _SOVITS_PROBE_TIMEOUT_SECONDS = 3.0
 
@@ -89,14 +93,14 @@ def exit_code(checks: Sequence[Check]) -> int:
 
 def render(checks: Sequence[Check]) -> str:
     """Human-readable report, one line per finding."""
-    lines = ["galgame2voice doctor", ""]
-    width = max((len(check.status) for check in checks), default=len(OK))
+    lines = ["Galgame2Voice 环境检查", ""]
     for check in checks:
-        lines.append(f"[{check.status.ljust(width)}] {check.name}: {check.detail}")
+        lines.append(f"[{STATUS_LABELS.get(check.status, check.status)}] {check.name}：{check.detail}")
         if check.hint:
-            lines.append(f"{' ' * (width + 3)}-> {check.hint}")
+            lines.append(f"       -> {check.hint}")
     lines.append("")
-    lines.append(f"Overall: {summarize(checks)}")
+    overall = summarize(checks)
+    lines.append(f"总体结果：{OVERALL_LABELS.get(overall, overall)}（{overall}）")
     return "\n".join(lines)
 
 
@@ -113,13 +117,13 @@ def as_dicts(checks: Sequence[Check]) -> List[Dict[str, Any]]:
 def check_runtime() -> List[Check]:
     version = ".".join(str(part) for part in sys.version_info[:3])
     if sys.version_info[:2] >= REQUIRED_PYTHON:
-        return [Check("Python", OK, f"{version} (requires >= {'.'.join(map(str, REQUIRED_PYTHON))})")]
+        return [Check("Python", OK, f"{version}（需要 >= {'.'.join(map(str, REQUIRED_PYTHON))}）")]
     return [
         Check(
             "Python",
             FAIL,
-            f"{version} is too old (requires >= {'.'.join(map(str, REQUIRED_PYTHON))})",
-            "Install a newer Python and recreate the virtual environment.",
+            f"{version} 版本太旧（需要 >= {'.'.join(map(str, REQUIRED_PYTHON))}）",
+            "请安装更新的 Python，再重新运行 uv sync --frozen 创建运行环境。",
         )
     ]
 
@@ -129,10 +133,10 @@ def _directory_check(label: str, path: Path) -> Check:
         path.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         return Check(
-            f"{label} directory",
+            f"{label}目录",
             FAIL,
-            f"{path} cannot be created ({exc.__class__.__name__}: {exc})",
-            "Fix the path permissions or point GALGAME2VOICE_DATA_DIR at a writable location.",
+            f"无法创建 {path}（{exc.__class__.__name__}: {exc}）",
+            "请把程序文件夹移到可以写入的位置，或用 GALGAME2VOICE_DATA_DIR 指定一个可写的数据目录。",
         )
 
     probe = path / f".doctor_probe_{os.getpid()}"
@@ -141,20 +145,20 @@ def _directory_check(label: str, path: Path) -> Check:
         probe.unlink()
     except OSError as exc:
         return Check(
-            f"{label} directory",
+            f"{label}目录",
             FAIL,
-            f"{path} is not writable ({exc.__class__.__name__}: {exc})",
-            "Grant write access to this directory.",
+            f"{path} 不能写入（{exc.__class__.__name__}: {exc}）",
+            "请给这个文件夹写入权限，或把程序文件夹移到可以写入的位置。",
         )
-    return Check(f"{label} directory", OK, f"writable: {path}")
+    return Check(f"{label}目录", OK, f"可写：{path}")
 
 
 def check_directories(settings: Settings) -> List[Check]:
     return [
-        _directory_check("Data", settings.data_dir),
-        _directory_check("Audio", settings.audio_dir),
-        _directory_check("Logs", settings.logs_dir),
-        _directory_check("Characters", settings.characters_dir),
+        _directory_check("数据", settings.data_dir),
+        _directory_check("音频", settings.audio_dir),
+        _directory_check("日志", settings.logs_dir),
+        _directory_check("角色包", settings.characters_dir),
     ]
 
 
@@ -165,10 +169,10 @@ def check_database(settings: Settings) -> List[Check]:
     if not db_path.exists():
         return [
             Check(
-                "Database",
+                "数据库",
                 WARN,
-                f"not created yet: {db_path}",
-                "This is normal before the first start; the schema is created automatically.",
+                f"还没有创建：{db_path}",
+                "第一次启动前是正常的，启动时会自动创建。",
             )
         ]
 
@@ -179,10 +183,10 @@ def check_database(settings: Settings) -> List[Check]:
     except sqlite3.Error as exc:
         return [
             Check(
-                "Database",
+                "数据库",
                 FAIL,
-                f"{db_path} cannot be opened read-only ({exc})",
-                "Check that the file is a valid SQLite database and is readable.",
+                f"无法以只读方式打开 {db_path}（{exc}）",
+                "请确认这个文件是完整的数据库文件，并且可以读取。",
             )
         ]
 
@@ -196,10 +200,10 @@ def check_database(settings: Settings) -> List[Check]:
     except sqlite3.Error as exc:
         return [
             Check(
-                "Database",
+                "数据库",
                 FAIL,
-                f"{db_path} is not a usable database ({exc})",
-                "Move the file aside and let the app recreate it, or restore a backup from data/backups.",
+                f"{db_path} 不是可用的数据库（{exc}）",
+                "请先另存这个文件，再从 data/backups 里的备份恢复（便携版可用「数据恢复.bat」）。",
             )
         ]
     finally:
@@ -208,13 +212,13 @@ def check_database(settings: Settings) -> List[Check]:
     if mode != "WAL":
         return [
             Check(
-                "Database",
+                "数据库",
                 WARN,
-                f"{db_path} is readable ({table_count} tables) but journal_mode={mode}",
-                "WAL is enabled automatically on the next start.",
+                f"{db_path} 可以读取（{table_count} 张表），但 journal_mode={mode}",
+                "下次启动时会自动切换到 WAL 模式。",
             )
         ]
-    return [Check("Database", OK, f"readable, WAL enabled ({table_count} tables): {db_path}")]
+    return [Check("数据库", OK, f"可以读取，已启用 WAL（{table_count} 张表）：{db_path}")]
 
 
 def check_ffmpeg() -> List[Check]:
@@ -224,9 +228,9 @@ def check_ffmpeg() -> List[Check]:
             Check(
                 "ffmpeg",
                 WARN,
-                "not found on PATH",
-                "Install ffmpeg (apt install ffmpeg / winget install ffmpeg) — OGG voice-note "
-                "conversion is unavailable without it. Set FFMPEG_PATH to override discovery.",
+                "在 PATH 里没有找到",
+                "没有 ffmpeg 时无法把语音转成 OGG 语音消息。请安装 ffmpeg（winget install ffmpeg / "
+                "apt install ffmpeg），或用 FFMPEG_PATH 指定 ffmpeg 的位置。",
             )
         ]
     return [Check("ffmpeg", OK, executable)]
@@ -247,33 +251,33 @@ def check_bind_and_auth(settings: Settings) -> List[Check]:
     if loopback and auth_off:
         return [
             Check(
-                "Console auth",
+                "访问令牌",
                 OK,
-                f"disabled, listening on loopback {bind} (local zero-config mode)",
+                f"未开启，只在本机 {bind} 监听（本机免令牌模式）",
             )
         ]
     if auth_off:
         return [
             Check(
-                "Console auth",
+                "访问令牌",
                 FAIL,
-                f"disabled while listening on non-loopback {bind}",
-                "The service refuses to start in this state. Set GALGAME2VOICE_AUTH_DISABLED=0, "
-                "or bind to 127.0.0.1 again.",
+                f"未开启，却在局域网地址 {bind} 监听",
+                "这种状态下服务会拒绝启动。请在 .env 里设置 GALGAME2VOICE_AUTH_DISABLED=0，"
+                "或改回只在 127.0.0.1 监听。",
             )
         ]
-    return [Check("Console auth", OK, f"enabled, listening on {bind}")]
+    return [Check("访问令牌", OK, f"已开启，监听 {bind}")]
 
 
 def check_proxy_environment() -> List[Check]:
     if proxy_environment_is_usable():
-        return [Check("Proxy environment", OK, "HTTP_PROXY/NO_PROXY are usable")]
+        return [Check("代理环境变量", OK, "HTTP_PROXY/NO_PROXY 可以正常解析")]
     return [
         Check(
-            "Proxy environment",
+            "代理环境变量",
             WARN,
-            "cannot be parsed; HTTP clients fall back to ignoring it",
-            PROXY_ENV_HINT,
+            "无法解析，联网请求会忽略这些设置",
+            "请检查 NO_PROXY/HTTP_PROXY/HTTPS_PROXY 里写错的条目，例如带方括号的 IPv6 地址 '[::1]'。",
         )
     ]
 
@@ -283,52 +287,52 @@ def check_characters(settings: Settings) -> List[Check]:
     if not root.is_dir():
         return [
             Check(
-                "Character packages",
+                "角色包",
                 WARN,
-                f"directory missing: {root}",
-                "Add character folders containing manifest.json, or import a package in the console.",
+                f"文件夹不存在：{root}",
+                "请在网页里导入角色包，或放入带 manifest.json 的角色文件夹。",
             )
         ]
     packages = sorted(child.name for child in root.iterdir() if (child / "manifest.json").is_file())
     if not packages:
         return [
             Check(
-                "Character packages",
+                "角色包",
                 WARN,
-                f"none found under {root}",
-                "Each character needs its own folder with manifest.json plus the GPT/SoVITS weights.",
+                f"{root} 里没有角色包",
+                "每个角色需要一个单独的文件夹，里面有 manifest.json 和 GPT/SoVITS 模型文件。",
             )
         ]
-    return [Check("Character packages", OK, f"{len(packages)} discovered: {', '.join(packages)}")]
+    return [Check("角色包", OK, f"找到 {len(packages)} 个：{', '.join(packages)}")]
 
 
 def check_providers(providers: Optional[List[Any]]) -> List[Check]:
     if providers is None:
-        return [Check("LLM providers", SKIP, "database not readable yet")]
+        return [Check("大模型服务", SKIP, "数据库暂时读不到")]
     configured = [getattr(provider, "id", "?") for provider in providers]
     if not configured:
         return [
             Check(
-                "LLM providers",
+                "大模型服务",
                 WARN,
-                "none configured",
-                "Add an LLM provider in the console (Settings -> Providers); chat needs one.",
+                "还没有配置",
+                "聊天需要至少一个大模型服务，请在网页「设置中心」里添加。",
             )
         ]
-    return [Check("LLM providers", OK, f"{len(configured)} configured: {', '.join(str(c) for c in configured)}")]
+    return [Check("大模型服务", OK, f"已配置 {len(configured)} 个：{', '.join(str(c) for c in configured)}")]
 
 
 async def check_gpt_sovits(base_url: str, *, offline: bool = False) -> List[Check]:
     target = (base_url or "").strip().rstrip("/")
     if offline:
-        return [Check("GPT-SoVITS", SKIP, f"probe skipped (--offline); configured at {target or 'unset'}")]
+        return [Check("GPT-SoVITS", SKIP, f"已跳过连通性检测（--offline）；配置的地址：{target or '未设置'}")]
     if not target:
         return [
             Check(
                 "GPT-SoVITS",
                 FAIL,
-                "no base URL configured",
-                "Set GALGAME2VOICE_GPT_SOVITS_BASE_URL (default http://127.0.0.1:9880).",
+                "没有配置语音服务地址",
+                "请在网页「设置中心 → 语音服务」填写地址，或设置 GALGAME2VOICE_GPT_SOVITS_BASE_URL（默认 http://127.0.0.1:9880）。",
             )
         ]
     if not target.startswith(("http://", "https://")):
@@ -336,8 +340,8 @@ async def check_gpt_sovits(base_url: str, *, offline: bool = False) -> List[Chec
             Check(
                 "GPT-SoVITS",
                 FAIL,
-                f"invalid base URL: {target}",
-                "The URL must start with http:// or https://.",
+                f"语音服务地址无效：{target}",
+                "地址必须以 http:// 或 https:// 开头。",
             )
         ]
 
@@ -352,18 +356,17 @@ async def check_gpt_sovits(base_url: str, *, offline: bool = False) -> List[Chec
             except httpx.HTTPError:
                 response = None
     except Exception:  # pragma: no cover - defensive
-        return [Check("GPT-SoVITS", WARN, "probe could not be constructed")]
+        return [Check("GPT-SoVITS", WARN, "无法发起检测请求")]
 
     if response is not None and response.status_code in (200, 400):
-        return [Check("GPT-SoVITS", OK, f"reachable at {target} (HTTP {response.status_code})")]
+        return [Check("GPT-SoVITS", OK, f"可以连接：{target}（HTTP {response.status_code}）")]
     return [
         Check(
             "GPT-SoVITS",
             WARN,
-            f"unreachable at {target}" if response is None
-            else f"{target}/control answered HTTP {response.status_code}, not a GPT-SoVITS API server",
-            "Start the GPT-SoVITS API server, or update GALGAME2VOICE_GPT_SOVITS_BASE_URL / the "
-            "URL stored in the console.",
+            f"连接不上：{target}" if response is None
+            else f"{target}/control 返回 HTTP {response.status_code}，那里运行的不是 GPT-SoVITS 语音引擎",
+            "请先启动语音引擎，或在网页「设置中心 → 语音服务」改正语音服务地址。",
         )
     ]
 
@@ -422,10 +425,10 @@ async def collect_checks(settings: Optional[Settings] = None, *, offline: bool =
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="galgame2voice doctor",
-        description="Diagnose the local galgame2voice environment.",
+        description="检查本机 Galgame2Voice 的运行环境。",
     )
-    parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
-    parser.add_argument("--offline", action="store_true", help="skip network probes")
+    parser.add_argument("--json", action="store_true", help="输出机器可读的 JSON")
+    parser.add_argument("--offline", action="store_true", help="跳过联网检测")
     return parser
 
 
