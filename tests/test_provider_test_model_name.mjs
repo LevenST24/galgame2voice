@@ -51,10 +51,34 @@ test('typed name with an empty model list is not called ready', async (t) => {
 });
 
 test('listed or blank model name stays successful without an unchecked ready claim', async (t) => {
-  const listed = await shown(t, 'Standin', ['models/standin']);
+  const listed = await shown(t, 'standin', ['models/standin']);
   assert.equal(listed.title, '连通性测试通过');
-  assert.equal(listed.body, '已成功连接至目标端点，模型 Standin 就绪。 (发现 1 个可用模型)');
+  assert.equal(listed.body, '已成功连接至目标端点，模型 standin 就绪。 (发现 1 个可用模型)');
   const blank = await shown(t, '', ['standin']);
   assert.equal(blank.title, '连通性测试通过');
   assert.equal(blank.body, '已成功连接至目标端点。 (发现 1 个可用模型)');
+});
+
+test('exact model name match is reported ready', async (t) => {
+  const view = await shown(t, 'deepseek-ai/DeepSeek-V3', ['deepseek-ai/DeepSeek-V3']);
+  assert.equal(view.title, '连通性测试通过');
+  assert.equal(view.body, '已成功连接至目标端点，模型 deepseek-ai/DeepSeek-V3 就绪。 (发现 1 个可用模型)');
+});
+
+test('case-mismatched model name suggests exact listed casing instead of ready', async (t) => {
+  const view = await shown(t, 'DEEPSEEK-FLASH', ['deepseek-flash']);
+  assert.equal(view.title, '模型名称应写成「deepseek-flash」');
+  assert.equal(
+    view.body,
+    '地址和密钥可用，但列表里的写法是「deepseek-flash」（大小写和前缀都要一致），请照这个写法修改后再保存。',
+  );
+});
+
+test('model name missing vendor prefix suggests full prefixed name instead of ready', async (t) => {
+  const view = await shown(t, 'DeepSeek-V3', ['deepseek-ai/DeepSeek-V3']);
+  assert.equal(view.title, '模型名称应写成「deepseek-ai/DeepSeek-V3」');
+  assert.equal(
+    view.body,
+    '地址和密钥可用，但列表里的写法是「deepseek-ai/DeepSeek-V3」（大小写和前缀都要一致），请照这个写法修改后再保存。',
+  );
 });
