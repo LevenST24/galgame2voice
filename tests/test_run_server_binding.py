@@ -237,3 +237,30 @@ class TestServerLauncherCLI:
         with pytest.raises(SystemExit) as exc_info:
             rs.main(["--check-only"])
         assert exc_info.value.code == 1
+
+
+_REAL_SETUP_SIGNAL_HANDLERS = run_server.setup_signal_handlers
+
+
+def test_stop_by_signal_is_reported_as_normal_stop_not_startup_failure(
+    isolated_launcher_env, monkeypatch, capsys
+):
+    """kill / docker stop / closing the run.sh terminal stops a running server: no 「启动失败」 hint."""
+    import signal
+
+    handlers = {}
+    monkeypatch.setattr(signal, "signal", lambda sig, handler: handlers.__setitem__(sig, handler))
+    monkeypatch.setattr(run_server, "setup_signal_handlers", _REAL_SETUP_SIGNAL_HANDLERS)
+
+    _setup_mock_uvicorn(monkeypatch, ("127.0.0.1", 8080))
+    server = uvicorn.Server(None)
+    # uvicorn re-raises the signal it captured after a clean shutdown; that reaches our handler.
+    server.run.side_effect = lambda *args, **kwargs: handlers[signal.SIGTERM](signal.SIGTERM, None)
+
+    with pytest.raises(SystemExit) as exc:
+        run_server.main(["--no-engine", "--no-browser", "--port", "8080"])
+
+    assert exc.value.code == 128 + signal.SIGTERM
+    out = capsys.readouterr().out
+    assert "启动失败" not in out
+    assert "正常停止" in out
