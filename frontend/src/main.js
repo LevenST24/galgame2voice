@@ -316,7 +316,8 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   };
 
   let _syncSessionsGen = 0;
-  // Set while the last /api/chat/sessions read failed; the home refresh reads it again.
+  // Set while the server's session list has not been applied, because the read failed
+  // or was dropped when the user acted during it; the home refresh reads it again.
   let sessionListReadFailed = false;
   const sessionsBehindServer = new Set();
   /** @type {ReturnType<typeof mountAdv> | null} */
@@ -943,6 +944,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     try {
       const backendSessions = await fetchAllSessions();
       if (isStale()) {
+        sessionListReadFailed = true;
         Promise.resolve(ensureProvidersLoaded()).catch(() => {});
         return false;
       }
@@ -1070,7 +1072,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       Promise.resolve(ensureProvidersLoaded()).catch(() => {});
       return true;
     } catch (err) {
-      if (!isStale()) sessionListReadFailed = true;
+      sessionListReadFailed = true;
       console.debug('Failed to sync sessions from backend:', err);
       throw err;
     }

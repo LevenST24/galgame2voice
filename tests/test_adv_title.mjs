@@ -8,7 +8,7 @@ import { showTitle } from '../frontend/src/adv/title_hook.js';
 import { createPortraitCache } from '../frontend/src/adv/portrait_cache.js';
 import { tick } from './helpers/chat_stream.mjs';
 import { initApp } from '../frontend/src/main.js';
-import { GREETING, LEGACY_GREETINGS } from '../frontend/src/store.js';
+import { GREETING, LEGACY_GREETINGS, state as storedState } from '../frontend/src/store.js';
 
 const NOW = new Date(2026, 9, 24, 22, 30);
 const audio = { status: 'ready', chunks: [{ audio_url: '/fake.wav' }] };
@@ -1546,4 +1546,38 @@ test('home refresh reads the session list again after the first /api/chat/sessio
   assert.equal(textTree(home.element.querySelector('.home-meta')), '星野 · 周五', 'home shows the session read from the server');
   await home.refresh(); for (let i = 0; i < 5; i++) await tick();
   assert.equal(listCalls, 2);
+});
+
+test('home refresh reads the session list again when the first read was dropped because the user acted during it', async t => {
+  let listCalls = 0;
+  let releaseFirstRead;
+  const active = { id: 'deepseek', name: 'DeepSeek', chat_model: 'deepseek-chat', api_key: 'sk-****', is_active: true };
+  const serverSession = { id: 's_server', title: '星夜的约定', last_message: '晚安。', message_count: 0,
+    created_at: '2026-11-20T10:00:00Z', updated_at: '2026-11-20T10:00:00Z', voice_profile_id: 7, settings: {} };
+  const list = () => Response.json({ sessions: [serverSession], has_more: false });
+  const env = bootTitleStartupEnv(t, {
+    fetchImpl: async (url, options = {}) => {
+      const path = String(url);
+      if ((options.method || 'GET') !== 'GET' && path === '/api/chat/sessions') return Response.json({ status: 'ok' });
+      if (path === '/api/chat/sessions' || path.startsWith('/api/chat/sessions?')) {
+        if (++listCalls === 1) return new Promise(resolve => { releaseFirstRead = () => resolve(list()); });
+        return list();
+      }
+      if (path.startsWith('/api/chat/sessions/')) return Response.json({ messages: [], has_more: false });
+      if (path === '/api/providers') return Response.json({ providers: [active], presets: [] });
+      if (path === '/api/system/engine-status') return Response.json({ state: 'ready', base_url: 'http://127.0.0.1:9880' });
+      return Response.json({ status: 'ok', profiles: [{ id: 7, name: '星野' }], active_profile_id: 7, backgrounds: [], settings: {} });
+    },
+  });
+  for (let i = 0; i < 5 && !releaseFirstRead; i++) await tick();
+  assert.equal(listCalls, 1);
+  env.app.actions.startNew(null);
+  releaseFirstRead();
+  await env.app.ready; t.mock.method(console, 'debug', () => {});
+  assert.ok(!storedState.sessions.some(session => session.id === 's_server'), 'the dropped read is not applied');
+  const home = env.app.returnHome();
+  t.after(() => home?.destroy());
+  for (let i = 0; i < 10; i++) await tick();
+  assert.equal(listCalls, 2, 'home reads the list again');
+  assert.ok(storedState.sessions.some(session => session.id === 's_server'), 'the server session is listed after all');
 });
