@@ -5,6 +5,8 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [3.2.11] - 2026-11-24
 ### Fixed
 - 修复触发「对话上下文超出模型最大限制」时点击「去设置」或提示条按钮误跳到没有该选项的「对话模型」页，以及将「最大生成长度」调得超过模型单次输出上限时被误报成上下文超长或只显示「模型服务返回异常」的问题；现在单次生成长度超限会单独提示在「角色与会话 → 对话高级参数」中调小「最大生成长度」，且这两类错误的「去设置」与提示条按钮都会直接打开「角色与会话」。
 - 修复把硅基流动或 Moonshot 的「接口地址」手动改成 http:// 开头时，没有像其他内置的官方服务那样被要求改用 https 的问题；现在这两家也只接受 https 地址。
@@ -220,7 +222,8 @@ All notable changes to galgame2voice are documented here. The format follows
 - 修复聊天输入框超过 4000 字发送时清空草稿且报错失真，以及打开设置中心时未立即停止首页正在播放的试听语音的问题。
 - 修复在输入框使用中文/日文输入法组字时按 Esc 取消候选词会直接关闭弹窗，以及在背景选择对话框按 Tab 或 Shift+Tab 时焦点跳出对话框的问题。
 
-[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.10...HEAD
+[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.11...HEAD
+[3.2.11]: https://github.com/LevenST24/galgame2voice/compare/v3.2.10...v3.2.11
 [3.2.10]: https://github.com/LevenST24/galgame2voice/compare/v3.2.9...v3.2.10
 [3.2.9]: https://github.com/LevenST24/galgame2voice/compare/v3.2.8...v3.2.9
 [3.2.8]: https://github.com/LevenST24/galgame2voice/compare/v3.2.7...v3.2.8
