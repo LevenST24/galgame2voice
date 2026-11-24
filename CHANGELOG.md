@@ -94,6 +94,7 @@ All notable changes to galgame2voice are documented here. The format follows
 - 修复 .env 只在命令行当前目录下才生效，以及用 PowerShell 或记事本（ANSI）保存的 .env 导致启动崩溃的问题；现在总是读取程序文件夹里的 .env，并自动识别编码。
 - 修复用 kill、docker stop 或关闭 run.sh 终端正常停止服务时，控制台误报「启动失败」并让人检查目录和数据库的问题。
 - 修复用 --host 0.0.0.0 开局域网访问却没开访问令牌时，只显示英文 FATAL 报错和「启动失败、检查目录和数据库」的误导提示的问题；现在启动前就用中文说明要加 GALGAME2VOICE_AUTH_DISABLED=0。
+- 修复把程序放在不能写入的文件夹（如 C:\Program Files、只读 U 盘）时启动直接报 PermissionError 错误的问题；现在会说明是哪个文件夹建不了，并提示把程序移到可写的位置。
 
 ## [3.2.11] - 2026-11-24
 ### Fixed
