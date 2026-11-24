@@ -48,8 +48,9 @@ def _valid_adv_setting(key: str, value) -> bool:
     if key == "advPlayerName":
         return isinstance(value, str) and bool(value.strip(_JS_WHITESPACE)) and len(value) <= _PLAYER_NAME_MAX_CODEPOINTS
     if key == "advOutfit":
-        return isinstance(value, str) and len(value) <= 200 and all(
-            char in "_-" or unicodedata.category(char)[0] in "LN" for char in value
+        # Manifest keys, never paths: the same rule the portrait loader and the frontend use.
+        return isinstance(value, str) and len(value) <= 200 and ".." not in value and not any(
+            char in "/\\" or unicodedata.category(char) == "Cc" for char in value
         )
     if key == "advBackground":
         # "" (follow the character's work), "none" (plain sky) or a global "<work>/<id>" key.

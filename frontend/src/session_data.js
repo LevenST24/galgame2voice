@@ -170,8 +170,12 @@ export function validAdvSetting(key, value) {
       ? [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(value)].length : [...value].length;
     return count <= 40;
   }
-  // Outfit IDs are manifest keys, never paths. Missing installed IDs remain portable.
-  if (key === 'advOutfit') return typeof value === 'string' && (value === '' || /^[\p{L}\p{N}_-]{1,200}$/u.test(value));
+  // Outfit IDs are manifest keys, never paths: the same rule the portrait loader uses,
+  // so any outfit a pack lists can be picked. Missing installed IDs remain portable.
+  if (key === 'advOutfit') {
+    return typeof value === 'string' && [...value].length <= 200 && !value.includes('..')
+      && !/[/\\\p{Cc}]/u.test(value);
+  }
   // advBackground is "" (follow the character's work), "none" (plain sky) or a global "<work>/<id>" key.
   if (key === 'advBackground') {
     if (typeof value !== 'string') return false;

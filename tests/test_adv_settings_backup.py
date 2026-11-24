@@ -51,7 +51,7 @@ INVALID_P3 = [
     ("advAutoPerCharMs", "45"), ("advPlayerName", ""), ("advPlayerName", "  "),
     ("advPlayerName", 17), ("advPlayerName", "人" * 401),
     ("advPlayerName", "\ufeff"),
-    ("advPlayerName", "👩🏽‍💻" * 101), ("advOutfit", "../other"), ("advOutfit", None),
+    ("advPlayerName", "👩🏽‍💻" * 101), ("advOutfit", "../other"), ("advOutfit", None), ("advOutfit", "a/b"), ("advOutfit", "a\\b"), ("advOutfit", "a\nb"),
     ("advBlink", "false"), ("advBlink", 1), ("advLipSync", "true"), ("advLipSync", 0),
     ("advBackground", "../cafe"), ("advBackground", "a" * 65), ("advBackground", "咖啡店"),
     ("advBackground", "cafe\n"), ("advBackground", None), ("advBackground", 1),
@@ -59,6 +59,12 @@ INVALID_P3 = [
     ("advBackground", "/stella"), ("advBackground", "cafe/"), ("advBackground", "cafe/" + "a" * 65),
     ("advBgTime", "dawn"), ("advBgTime", ""), ("advBgTime", None), ("advBgTime", 1),
 ]
+
+
+@pytest.mark.parametrize("outfit", ["school uniform", "uniform.summer", "制服_2"])
+def test_outfit_ids_a_portrait_pack_can_list_survive_import(outfit):
+    session = ImportedSession(id="s_import_outfit", title="outfit", messages=[], settings={"advOutfit": outfit})
+    assert session.settings == {"advOutfit": outfit}
 
 
 @pytest.mark.parametrize("background", ["", "cafe/stella", "A_-09/a", "a" * 64 + "/" + "b" * 64])
