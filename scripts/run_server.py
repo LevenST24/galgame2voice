@@ -1099,31 +1099,20 @@ def _first_env_value(names: tuple[str, ...]) -> str | None:
     return None
 
 
-def _first_dotenv_value(names: tuple[str, ...]) -> str | None:
-    """Read a host/port alias from the same .env file Settings loads.
+def _dotenv_setting(field: str) -> Any:
+    """Read host/port the way Settings does, from its own .env source.
 
     Settings would pick these up too, but the launcher syncs its own CLI defaults
     into the environment before Settings runs, so without this the documented
     GALGAME2VOICE_HOST/PORT lines in .env were silently replaced by 127.0.0.1:8080.
+    Only consulted when no environment variable sets the value.
     """
     try:
-        from dotenv import dotenv_values
-
         from galgame2voice.config import Settings
 
-        env_files = Settings.model_config.get("env_file") or ()
-        if isinstance(env_files, (str, os.PathLike)):
-            env_files = (env_files,)
-        values: dict[str, str | None] = {}
-        for env_file in env_files:  # later files win, as in pydantic-settings
-            values.update({str(k).upper(): v for k, v in dotenv_values(env_file, encoding="utf-8").items() if k})
+        return getattr(Settings(), field)
     except Exception:
         return None
-    for name in names:
-        value = (values.get(name) or "").strip()
-        if value:
-            return value
-    return None
 
 
 def parse_args(args: list[str] | None = None) -> argparse.Namespace:
@@ -1135,13 +1124,13 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     port_names = ("GALGAME2VOICE_PORT", "PORT", "GALGAME_PORT")
     host_names = ("GALGAME2VOICE_HOST", "HOST", "GALGAME_HOST")
     env_port = 8080
-    env_port_str = _first_env_value(port_names) or _first_dotenv_value(port_names)
+    env_port_str = _first_env_value(port_names) or str(_dotenv_setting("port") or "")
     if env_port_str:
         try:
             env_port = int(env_port_str)
         except ValueError:
             pass
-    env_host = _first_env_value(host_names) or _first_dotenv_value(host_names) or "127.0.0.1"
+    env_host = _first_env_value(host_names) or _dotenv_setting("host") or "127.0.0.1"
     env_no_browser = os.environ.get("GALGAME_NO_BROWSER", "").lower() in ("1", "true", "yes")
 
     parser.add_argument(

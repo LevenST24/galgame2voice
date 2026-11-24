@@ -204,6 +204,9 @@ class TestServerLauncherCLI:
         (tmp_path / ".env").write_text(
             "galgame2voice_port=9123\nGALGAME2VOICE_HOST=127.0.0.2\n", encoding="utf-8",
         )
+        # Both the working-directory and program-folder lookups point at tmp_path.
+        import galgame2voice.config as config_module
+        monkeypatch.setattr(config_module, "get_install_root", lambda: tmp_path)
         monkeypatch.chdir(tmp_path)
         args = rs.parse_args([])
         assert args.port == 9123
@@ -215,6 +218,8 @@ class TestServerLauncherCLI:
 
     def test_parse_args_ignores_unusable_dotenv_port(self, tmp_path, monkeypatch):
         (tmp_path / ".env").write_text("GALGAME2VOICE_PORT=abc\n", encoding="utf-8")
+        import galgame2voice.config as config_module
+        monkeypatch.setattr(config_module, "get_install_root", lambda: tmp_path)
         monkeypatch.chdir(tmp_path)
         assert rs.parse_args([]).port == 8080
 
