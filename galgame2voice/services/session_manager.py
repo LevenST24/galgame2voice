@@ -341,9 +341,18 @@ class SessionManager:
         reply_format: str = "lines",
     ) -> list[ChatMessage]:
         """High-level helper returning List[ChatMessage] for BaseLLMAdapter."""
+        # The new prompt is usually saved before this runs. Read one row more so it
+        # does not use up a slot: an even setting then carries whole exchanges
+        # instead of opening on a reply whose question was cut off.
         history = await self.get_history(
-            session_id, max_messages=max_messages, max_tokens=max_tokens, conn=conn
+            session_id, max_messages=max_messages + 1, max_tokens=max_tokens, conn=conn
         )
+        prompt_saved = bool(history) and _is_duplicate_user_prompt(
+            {"role": history[-1].role, "content": history[-1].content_chinese or history[-1].raw_content or ""},
+            user_prompt,
+        )
+        if not prompt_saved and max_messages >= 0 and len(history) > max_messages:
+            history = history[len(history) - max_messages:]
         dict_msgs = self.format_llm_messages(
             character_name=character_name or "Character",
             history=history,
