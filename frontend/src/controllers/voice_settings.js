@@ -572,7 +572,7 @@ export async function populateScanOptions() {
 
 async function refreshScanOptions(revision, dom) {
   const isCurrent = () => revision === scanRevision && dom === _dom;
-  const fill = (sel, list, emptyHint) => {
+  const fill = (sel, list, emptyHint, hidden = 0) => {
     if (!sel) return;
     const previous = sel.value;
     const stillAvailable = list.some(file => file.path === previous);
@@ -600,6 +600,13 @@ async function refreshScanOptions(revision, dom) {
       opt.textContent = labelCounts.get(labels[i]) > 1 ? file.path : labels[i];
       sel.appendChild(opt);
     });
+    if (hidden > 0) {
+      const more = document.createElement('option');
+      more.value = '';
+      more.disabled = true;
+      more.textContent = `（还有 ${hidden} 个没列出，只显示前 ${list.length} 个；把要用的文件放进 data 文件夹会排在最前面）`;
+      sel.appendChild(more);
+    }
     sel.value = stillAvailable ? previous : needsChoice ? '' : list[0]?.path || '';
   };
   try {
@@ -608,9 +615,10 @@ async function refreshScanOptions(revision, dom) {
       if (!isCurrent()) return;
       scannedModels = models;
     }
-    fill(dom.sCvGpt, scannedModels.gpt_weights || [], '（未扫描到 .ckpt 文件；请先在「设置中心 → 语音服务」选择引擎目录）');
-    fill(dom.sCvSovits, scannedModels.sovits_weights || [], '（未扫描到 .pth 文件；请先在「设置中心 → 语音服务」选择引擎目录）');
-    fill(dom.sCvRef, scannedModels.audio_files || [], '（未扫描到音频文件；参考音频为必选项，无法创建自定义音色）');
+    const hidden = scannedModels.hidden || {};
+    fill(dom.sCvGpt, scannedModels.gpt_weights || [], '（未扫描到 .ckpt 文件；请先在「设置中心 → 语音服务」选择引擎目录）', hidden.gpt_weights);
+    fill(dom.sCvSovits, scannedModels.sovits_weights || [], '（未扫描到 .pth 文件；请先在「设置中心 → 语音服务」选择引擎目录）', hidden.sovits_weights);
+    fill(dom.sCvRef, scannedModels.audio_files || [], '（未扫描到音频文件；参考音频为必选项，无法创建自定义音色）', hidden.audio_files);
   } catch (e) {
     if (!isCurrent()) return;
     [dom.sCvGpt, dom.sCvSovits, dom.sCvRef].forEach((sel) => {
