@@ -54,6 +54,7 @@ function setup(t, options = {}) {
     onNewSession: () => { calls.newSession++; }, onMic: () => { calls.mic++; },
     subscribeOverlay: fn => { overlayChange = fn; return () => { overlayChange = null; }; },
     subscribe: fn => { subscription = fn; return () => { subscription = null; }; },
+    ...options.deps?.(doc),
   });
   t.after(() => app.unmount());
   const emit = (type, event) => { for (const fn of [...listeners.get(type) || []]) fn(event); };
@@ -1420,3 +1421,18 @@ for (const trigger of ['button', 'Escape']) {
     assert.deepEqual(assistantReplies[1].lines?.map(l => l.zh), ['未完第一句。']);
   });
 }
+
+test('a reply finishing leaves focus alone in the embedded experience settings page', t => {
+  // The settings center shows this page inside its own dialog, which owns focus there.
+  const h = setup(t, { deps: doc => {
+    const host = doc.createElement('div'); doc.body.appendChild(host);
+    return { readingSettingsContainer: host, onOpenReadingSettings: undefined };
+  } });
+  h.start(); h.line(0);
+  h.overlay(true);
+  h.app.configPanel.open();
+  const footerSave = h.doc.createElement('button'); h.doc.body.appendChild(footerSave);
+  footerSave.focus();
+  h.done();
+  assert.ok(h.doc.activeElement === footerSave, `focus moved to ${h.doc.activeElement?.id || h.doc.activeElement?.tagName}`);
+});
