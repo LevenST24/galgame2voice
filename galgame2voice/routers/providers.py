@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from galgame2voice.adapters.base import clean_api_key
 from galgame2voice.adapters.registry import (
     get_llm_adapter,
     get_provider_preset,
@@ -168,7 +169,7 @@ async def _update_existing_provider(
             await _enforce_llm_url_guard(url_val)
             update_kwargs["api_base_url"] = url_val
     if "api_key" in provider_data and provider_data["api_key"] is not None:
-        update_kwargs["api_key"] = provider_data["api_key"]
+        update_kwargs["api_key"] = clean_api_key(provider_data["api_key"])
     if "chat_model" in provider_data or "model" in provider_data:
         model_val = provider_data.get("chat_model") or provider_data.get("model")
         if model_val is not None:
@@ -217,7 +218,7 @@ async def _create_new_provider(
         or (preset["default_stt_model"] if preset else "")
     )
     is_active = bool(provider_data.get("is_active", False))
-    api_key = provider_data.get("api_key", "")
+    api_key = clean_api_key(provider_data.get("api_key", ""))
     if is_masked_key(api_key):
         api_key = ""
     custom_headers = provider_data.get("custom_headers") or {}

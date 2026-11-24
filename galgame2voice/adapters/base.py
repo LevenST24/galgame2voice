@@ -10,6 +10,7 @@ import email.utils
 import json
 import logging
 import random
+import re
 from typing import AsyncIterator, Any, Callable
 import httpx
 from pydantic import BaseModel, Field
@@ -394,6 +395,17 @@ def configured_reasoning_effort(adapter: object) -> str | None:
     return value if isinstance(value, str) and value in REASONING_EFFORT_LEVELS else None
 
 
+# Copied along with a key: quotes and zero-width characters anywhere, a "Bearer " prefix, whitespace.
+_API_KEY_JUNK_RE = re.compile("[\"'\u201c\u201d\u2018\u2019\u200b-\u200d\ufeff]")
+_BEARER_PREFIX_RE = re.compile(r"^\s*bearer\s+", re.IGNORECASE)
+
+
+def clean_api_key(api_key: str | None) -> str:
+    """Drop what gets pasted along with an API key, so the stored and sent key is the key itself."""
+    key = _API_KEY_JUNK_RE.sub("", str(api_key or ""))
+    return "".join(_BEARER_PREFIX_RE.sub("", key, count=1).split())
+
+
 class BaseLLMAdapter(ABC):
     """
     Abstract Base Class for Large Language Model Adapters.
@@ -407,7 +419,7 @@ class BaseLLMAdapter(ABC):
         base_url: str = "https://api.openai.com/v1",
         **kwargs: Any,
     ):
-        self.api_key = str(api_key).strip() if api_key else ""
+        self.api_key = clean_api_key(api_key)
         self.base_url = str(base_url).rstrip("/") if base_url else ""
         self.extra_config: dict[str, Any] = kwargs
         self.reasoning_effort: str | None = kwargs.get("reasoning_effort")
