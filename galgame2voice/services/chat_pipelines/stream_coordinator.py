@@ -362,6 +362,8 @@ class StreamCoordinator:
                         base_options=self.tts_options,
                         adaptive_enabled=bool(self.ai_adaptive_voice),
                         sentence_text=sentence,
+                        # Prosody follows the line being voiced, not the reply's lead emotion.
+                        emotion_override=line_item["emotion"] if line_item is not None else None,
                     )
                     if line_item is not None:
                         chunk_opts["emotion"] = line_item["emotion"]

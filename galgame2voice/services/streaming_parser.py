@@ -376,6 +376,7 @@ class StreamingBilingualParser:
         base_options: dict[str, Any] | None = None,
         adaptive_enabled: bool = True,
         sentence_text: str | None = None,
+        emotion_override: str | None = None,
     ) -> dict[str, Any]:
         """
         Merges base session TTS options with dynamic parameters if adaptive_enabled is True.
@@ -393,13 +394,14 @@ class StreamingBilingualParser:
             v is not None
             for v in (self.tts_speed, self.tts_temperature, self.tts_top_k, self.tts_top_p, self.tts_fragment_interval, self.tts_emotion)
         )
-        has_explicit_emotion = bool(self.tts_emotion or opts.get("emotion"))
+        has_explicit_emotion = bool(emotion_override or self.tts_emotion or opts.get("emotion"))
 
         # Backward compatibility for legacy tests checking get_dynamic_tts_options(base_opts) without sentence
         if not has_dynamic_llm and not has_explicit_emotion and not sentence_text and not self.is_plain_text_fallback:
             return opts
 
-        emo = self.tts_emotion or opts.get("emotion")
+        # A line's own emotion (lines format) outranks the reply-level one.
+        emo = emotion_override or self.tts_emotion or opts.get("emotion")
         if not emo and sentence_text:
             _, text_emo = extract_stage_directions_and_emotion(sentence_text)
             if text_emo:
