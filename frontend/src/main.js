@@ -316,6 +316,8 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   };
 
   let _syncSessionsGen = 0;
+  // Set while the last /api/chat/sessions read failed; the home refresh reads it again.
+  let sessionListReadFailed = false;
   const sessionsBehindServer = new Set();
   /** @type {ReturnType<typeof mountAdv> | null} */
   let advApp = null;
@@ -816,6 +818,9 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       if (!haveProvidersLoaded() || hasProviderReadError()) {
         Promise.resolve(ensureProvidersLoaded()).catch(() => {});
       }
+      if (sessionListReadFailed) {
+        syncSessionsFromBackend({ fromHome: true }).then(synced => { if (synced) onModel?.({}); }).catch(() => {});
+      }
       let engine, engineRead = true;
       try { engine = await requestJson('/api/system/engine-status', {}, { timeoutMs: 10000 }); }
       catch (error) { engine = { state: 'unavailable', message: error.message }; engineRead = false; }
@@ -932,7 +937,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   if (window.innerWidth > 820) /** @type {ReturnType<typeof mountAdv> | null} */ (advApp)?.textbox.inputElement?.focus();
 
   // 同步后端 SQLite 会话列表及历史消息（generation counter 防止过期结果覆盖用户新建会话）
-  async function syncSessionsFromBackend() {
+  async function syncSessionsFromBackend({ fromHome = false } = {}) {
     const gen = ++_syncSessionsGen;
     const isStale = () => gen !== _syncSessionsGen;
     try {
@@ -1052,7 +1057,8 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           }
         }).catch(() => {});
       }
-      const carryDraft = !startupSessionSwitched && prevActiveId && state.activeId !== prevActiveId
+      sessionListReadFailed = false;
+      const carryDraft = !fromHome && !startupSessionSwitched && prevActiveId && state.activeId !== prevActiveId
         ? (advApp?.textbox.draft || '')
         : '';
       fullRender();
@@ -1060,10 +1066,11 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         advApp.textbox.setDraft(carryDraft);
       }
       ensureSessionVoice(getActive(), { silent: true });
-      if (window.innerWidth > 820) advApp?.textbox.inputElement?.focus();
+      if (!fromHome && window.innerWidth > 820) advApp?.textbox.inputElement?.focus();
       Promise.resolve(ensureProvidersLoaded()).catch(() => {});
       return true;
     } catch (err) {
+      if (!isStale()) sessionListReadFailed = true;
       console.debug('Failed to sync sessions from backend:', err);
       throw err;
     }
