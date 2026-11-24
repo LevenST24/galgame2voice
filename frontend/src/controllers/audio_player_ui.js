@@ -353,7 +353,10 @@ export function toggleMic() {
     stopMic();
     return;
   }
-  if (_callbacks.isBusy && _callbacks.isBusy()) return;
+  if (_callbacks.isBusy && _callbacks.isBusy()) {
+    showToast('角色还在回复，等这段回复结束后再用语音输入。', 'info');
+    return;
+  }
   const revision = ++micRevision;
   micAutoEnded = false;
   micDiscardRecording = false;

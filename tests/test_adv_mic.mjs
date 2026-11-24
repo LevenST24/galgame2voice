@@ -773,3 +773,13 @@ test('retry and explicit voiceMeta sends are unaffected by pendingVoice', async 
   assert.equal(h.stream.requests.length, 3);
   assert.equal(h.createdUrls.length, h.revokedUrls.length, 'unconsumed pending mic URL should be revoked cleanly');
 });
+
+test('pressing the mic while a reply is generating says why nothing starts', t => {
+  const h = setup(t);
+  const toastRoot = document.createElement('div'); toastRoot.id = 'toastRoot'; document.body.appendChild(toastRoot);
+  initAudioPlayerUi({}, { getInput: () => h.input, getMicButton: () => h.mic, isBusy: () => true, sendMessage: () => true });
+  toggleMic();
+  assert.equal(h.recognizers.length, 0);
+  assert.equal(toastRoot.children.length, 1);
+  assert.match(toastRoot.children[0].textContent, /回复结束后再用语音输入/);
+});
