@@ -1,6 +1,9 @@
 // @ts-check
 /** Home is a transparent overlay on the active session's real ADV stage. */
 import { canReplayLine } from './replay.js';
+import { splitGraphemes } from './graphemes.js';
+
+const avatarInitial = session => splitGraphemes(session.characterName || session.title || '')[0] || '';
 
 const PAGE_SIZE = 6;
 export function formatHomeTime(value, now = new Date()) {
@@ -348,7 +351,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
       const button = btn('home-recent', '', () => preview(session.id));
       button.setAttribute('aria-label', `切换到${session.characterName || session.title}`);
       button.dataset.session = session.id;
-      const avatar = el('span', 'home-avatar', (session.characterName || session.title).slice(0, 1));
+      const avatar = el('span', 'home-avatar', avatarInitial(session));
       const text = el('span', 'home-recent-text');
       add(text, el('b', '', session.characterName || session.title), el('span', '', formatHomeTime(session.updatedAt, now())));
       button.replaceChildren(avatar, text); recents.appendChild(button);
@@ -376,7 +379,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
         image.style.height = r.height ? `${r.height / rect.width * 100}%` : 'auto';
         if (!r.width) { image.style.height = 'auto'; image.style.width = 'auto'; image.onload = () => { image.style.width = `${image.naturalWidth / rect.width * 100}%`; }; }
         image.style.opacity = String(layer.opacity ?? 1);
-        image.onerror = () => { delete avatar.dataset.art; avatar.replaceChildren(); avatar.textContent = (session.characterName || session.title).slice(0, 1); };
+        image.onerror = () => { delete avatar.dataset.art; avatar.replaceChildren(); avatar.textContent = avatarInitial(session); };
         return image;
       });
       avatar.dataset.art = key; avatar.textContent = ''; avatar.replaceChildren(...images);

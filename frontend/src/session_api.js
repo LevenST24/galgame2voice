@@ -1,6 +1,11 @@
 // @ts-check
 import { requestJson } from './api.js';
 
+/** Replaces lone UTF-16 surrogates, which the server cannot decode, with U+FFFD. */
+const wellFormed = text => (typeof text === 'string'
+  ? text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD')
+  : text);
+
 const writes = new Map();
 const deletions = new Map();
 const deleted = new Set();
@@ -35,7 +40,7 @@ export function persistSession(session) {
   }
   const options = {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id: session.id, title: session.title,
+    body: JSON.stringify({ id: session.id, title: wellFormed(session.title),
       voice_profile_id: session.settings?.voiceProfileId ?? null, settings: session.settings }),
   };
   const pending = writes.get(session.id);
