@@ -95,7 +95,13 @@ except ImportError as exc:
 
 # Ensure runtime directories
 for d in ["logs", "data", "audio"]:
-    (PROJECT_ROOT / d).mkdir(parents=True, exist_ok=True)
+    try:
+        (PROJECT_ROOT / d).mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"[错误] 无法在程序文件夹里创建 {d} 文件夹：{PROJECT_ROOT / d}（{exc.strerror or exc}）。")
+        print("程序需要在自己的文件夹里保存数据、日志和音频。请把整个程序文件夹移到可以写入的位置，")
+        print("例如 D:\\Galgame2Voice 或你的用户文件夹，不要放在 C:\\Program Files、只读的 U 盘或压缩包预览窗口里。")
+        sys.exit(1)
 
 if sys.platform == "win32":
     try:
