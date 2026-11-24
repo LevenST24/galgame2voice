@@ -1420,3 +1420,16 @@ for (const trigger of ['button', 'Escape']) {
     assert.deepEqual(assistantReplies[1].lines?.map(l => l.zh), ['未完第一句。']);
   });
 }
+
+test('X during a reply error keeps the error box and does not draw the old line over it', t => {
+  const h = setup(t, { voice: false }); h.start(); h.line(0);
+  h.clock.tick(2000);
+  h.done('error');
+  assert.equal(h.app.player.state, 'error');
+  const q = s => h.app.stage.stage.querySelector(s);
+  const language = h.sessions[0].settings.advPrimaryLanguage;
+  h.app.stage.stage.dispatchEvent({ type: 'keydown', key: 'x' });
+  assert.equal(q('.adv-speech-view').classList.contains('is-hidden'), true);
+  assert.equal(q('.adv-error-wrap').classList.contains('is-hidden'), false);
+  assert.equal(h.sessions[0].settings.advPrimaryLanguage, language);
+});

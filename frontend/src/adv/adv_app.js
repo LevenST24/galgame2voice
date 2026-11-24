@@ -628,7 +628,10 @@ export function mountAdv(dom, deps) {
         break;
       case 'home': deps.onHome?.(); break;
       case 'model_status': deps.onModelSettings?.(); break;
-      case 'swap_languages': textbox.swapLanguages(); break;
+      case 'swap_languages':
+        // In the input and error states the textbox shows the draft or the error box, not a line to redraw.
+        if (['input', 'error'].includes(player.state)) break;
+        textbox.swapLanguages(); break;
       case 'new_session': deps.onNewSession?.(); break;
       case 'stop':
         stopStageReplay();
