@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { paginate, pairSubtitle } from '../frontend/src/adv/paginate.js';
+import { paginate, pairSubtitle, pairToFit } from '../frontend/src/adv/paginate.js';
 import { countGraphemes } from '../frontend/src/adv/graphemes.js';
 
 test('paginate: losslessness (pages.join("") === text)', () => {
@@ -92,4 +92,25 @@ test('pairSubtitle: empty subtitle handling', () => {
   const pages = pairSubtitle('', 3);
   assert.deepEqual(pages, ['', '', '']);
   assert.equal(pages.join(''), '');
+});
+
+test('pairToFit: every page fits the box when re-paired to more pages', () => {
+  const ja = '昨日は駅前のあのカフェで午後ずっと座ってあなたが言ったあの言葉の意味を考えていたの。でも分からなくて、気づいたら暗くなってた。';
+  const fits = candidate => countGraphemes(candidate) <= 38;
+  assert.equal(paginate(ja, fits).length, 2);
+  for (const count of [3, 4, 5]) {
+    const pages = pairToFit(ja, count, fits);
+    assert.equal(pages.length, count);
+    assert.equal(pages.join(''), ja);
+    for (const page of pages) assert.ok(fits(page), `page too long: ${page}`);
+  }
+});
+
+test('pairSubtitle: a fits check caps each cut at the box width', () => {
+  const text = '一二三四五六七八九十一二三四五六七八九十。甲乙。';
+  const fits = candidate => countGraphemes(candidate) <= 12;
+  const pages = pairSubtitle(text, 3, fits);
+  assert.equal(pages.join(''), text);
+  assert.ok(countGraphemes(pages[0]) <= 12, pages[0]);
+  assert.ok(countGraphemes(pages[1]) <= 12, pages[1]);
 });

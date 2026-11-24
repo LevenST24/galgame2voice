@@ -96,11 +96,15 @@ export function paginate(text, fits) {
  * - pages.join('') === subtitle (lossless)
  * - Break at punctuation boundaries closest to proportional targets when possible
  *
+ * When `fits` is given, a cut never makes a page longer than the box allows,
+ * as long as the next grapheme on its own fits.
+ *
  * @param {string} subtitle
  * @param {number} pageCount
+ * @param {(candidate: string) => boolean} [fits]
  * @returns {string[]}
  */
-export function pairSubtitle(subtitle, pageCount) {
+export function pairSubtitle(subtitle, pageCount, fits) {
   if (typeof subtitle !== 'string') subtitle = String(subtitle ?? '');
   const count = Math.max(1, Math.floor(pageCount || 1));
 
@@ -129,7 +133,12 @@ export function pairSubtitle(subtitle, pageCount) {
   for (let p = 1; p < count; p++) {
     const idealTarget = Math.round((totalClusters * p) / count);
     const minCut = prevCut + 1;
-    const maxCut = totalClusters - (count - p);
+    let maxCut = totalClusters - (count - p);
+    if (typeof fits === 'function') {
+      let fitEnd = minCut;
+      while (fitEnd < maxCut && fits(clusters.slice(prevCut, fitEnd + 1).join(''))) fitEnd++;
+      maxCut = fitEnd;
+    }
 
     let bestCut = -1;
     let minDistance = Infinity;
@@ -161,7 +170,7 @@ export function pairSubtitle(subtitle, pageCount) {
     // 3. Fall back to search across valid range if no cut point was found in window
     if (bestCut === -1) {
       for (let i = 1; i < totalClusters; i++) {
-        if (i > prevCut && (totalClusters - i) >= (count - p)) {
+        if (i > prevCut && i <= maxCut) {
           if (PUNCT_OR_SPACE_BREAK.test(clusters[i - 1])) {
             const dist = Math.abs(i - idealTarget);
             if (dist < minDistance) {
@@ -189,5 +198,42 @@ export function pairSubtitle(subtitle, pageCount) {
   }
   pages.push(clusters.slice(start).join(''));
 
+  return pages;
+}
+
+/**
+ * Splits text into exactly `pageCount` pages that each fit the box.
+ *
+ * Tries the proportional split of pairSubtitle first, so both languages turn
+ * pages at similar points. If a page still would not fit, it falls back to the
+ * pages paginate() found and splits the longest of them until the count is met,
+ * since a piece of a page that fits also fits.
+ *
+ * @param {string} text
+ * @param {number} pageCount
+ * @param {(candidate: string) => boolean} fits
+ * @returns {string[]}
+ */
+export function pairToFit(text, pageCount, fits) {
+  if (typeof text !== 'string') text = String(text ?? '');
+  const paired = pairSubtitle(text, pageCount, fits);
+  if (paired.every(page => !page || fits(page))) return paired;
+
+  const count = Math.max(1, Math.floor(pageCount || 1));
+  const pages = paginate(text, fits);
+  while (pages.length < count) {
+    let longest = -1;
+    let longestSize = 1;
+    pages.forEach((page, index) => {
+      const size = splitGraphemes(page).length;
+      if (size > longestSize) {
+        longest = index;
+        longestSize = size;
+      }
+    });
+    if (longest === -1) break;
+    pages.splice(longest, 1, ...pairSubtitle(pages[longest], 2));
+  }
+  while (pages.length < count) pages.push('');
   return pages;
 }
