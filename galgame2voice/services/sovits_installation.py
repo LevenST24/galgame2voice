@@ -112,6 +112,10 @@ def save_sovits_directory(project_root: Path, value: str) -> dict:
         directory = project_root / directory
     directory = directory.resolve()
     if not directory.is_dir() or not (directory / "api_v2.py").is_file():
+        if directory.is_dir() and (directory.parent / "api_v2.py").is_file():
+            raise ValueError(
+                f"你选的是引擎里面的“{directory.name}”，请改选它的上一级文件夹“{directory.parent}”。"
+            )
         detail = "所选文件夹需包含 api_v2.py。请先完整解压 GPT-SoVITS，再选择引擎目录。"
         nested = _single_nested_engine_name(directory)
         if nested:
