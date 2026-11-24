@@ -646,6 +646,37 @@ def _find_custom_voice_ref_audio(
     return None, default_text, default_lang
 
 
+def _probe_engine_identity(base_url: str, *, local: bool = True, timeout: float = 3.0) -> str:
+    """Asks a busy engine port whether GPT-SoVITS answers there.
+
+    api_v2 answers GET /control without a command with 400 (some builds 200).
+    Returns "engine" for that, "other" when something else answered or the
+    connection broke, and "unknown" when nothing answered in time (a busy engine
+    can be slow, so a timeout is not proof either way).
+    """
+    import http.client
+    import socket as _socket
+    import urllib.error
+    import urllib.request
+
+    handlers = [urllib.request.ProxyHandler({})] if local else []
+    opener = urllib.request.build_opener(*handlers)
+    try:
+        with opener.open(f"{base_url.rstrip('/')}/control", timeout=timeout) as resp:
+            status = resp.status
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+    except (TimeoutError, _socket.timeout):
+        return "unknown"
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, (TimeoutError, _socket.timeout)):
+            return "unknown"
+        return "other"
+    except (http.client.HTTPException, OSError):
+        return "other"
+    return "engine" if status in (200, 400) else "other"
+
+
 def _probe_synth_peak(host: str, port: int, timeout: float = 90.0) -> float | None:
     """
     Synthesizes one short test sentence via the engine's /tts endpoint and returns
@@ -907,7 +938,19 @@ def ensure_gpt_sovits_running(
         sovits_base_url = "http://127.0.0.1:9880"
     print(f"[1/2] 正在检测 GPT-SoVITS 语音推理引擎 ({sovits_host}:{sovits_port})...")
     if is_port_in_use(sovits_port, sovits_host):
-        print("      [OK] GPT-SoVITS 语音引擎已在运行")
+        identity = _probe_engine_identity(sovits_base_url, local=sovits_is_local)
+        if identity == "engine":
+            print("      [OK] GPT-SoVITS 语音引擎已在运行")
+        elif identity == "other":
+            print(
+                f"      [WARN] 端口 {sovits_port} 已被别的程序占用，那里运行的不是语音引擎。"
+                "请关闭占用这个端口的程序，或在「设置中心 → 语音服务」把「语音服务地址」改回 http://127.0.0.1:9880 后重新启动。"
+            )
+        else:
+            print(
+                f"      [提示] 端口 {sovits_port} 已有程序在监听，但几秒内没有应答语音引擎的检测。"
+                "如果是正在忙的语音引擎可以忽略；否则请关闭占用这个端口的程序后重新启动。"
+            )
         return
     if not sovits_is_local:
         print(
