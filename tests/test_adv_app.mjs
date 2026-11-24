@@ -314,6 +314,35 @@ test('swap_languages repaginates a multi-page target language in place without r
   assert.equal(sub.textContent, '「第二句。」');
 });
 
+for (const overlay of ['log', 'settings']) {
+  test(`a resize while ${overlay} is open lays the page out again once it closes`, async t => {
+    const h = setup(t, { settings: { advTextIntervalMs: 0 } });
+    const stage = h.app.stage.stage;
+    const column = stage.querySelector('.adv-text-column');
+    column.clientWidth = 100;
+    stage.querySelector('.adv-subtitle-measurer').clientWidth = 100;
+    const measurer = stage.querySelector('.adv-text-measurer');
+    measurer.getBoundingClientRect = () => ({ width: measurer.textContent.length, height: 100 });
+    const primary = stage.querySelector('.adv-primary-text');
+    h.start();
+    h.line(0, { zh: '短中文第一句。第二句。', ja: 'とても長い日本語の文章です。分割が必要です。' });
+    h.audioEvent(0);
+    assert.equal(primary.textContent, '「短中文第一句。第二句。」');
+    if (overlay === 'log') h.app.action('log'); else h.overlay(true);
+    assert.equal(h.app.player.state, 'suspended');
+    column.clientWidth = 12;
+    h.viewport.dispatchEvent({ type: 'resize' });
+    if (overlay === 'log') h.app.action('close_overlay'); else h.overlay(false);
+    await microtasks();
+    assert.equal(h.app.player.state, 'waiting_advance');
+    const shown = primary.textContent;
+    assert.notEqual(shown, '「短中文第一句。第二句。」', 'the page fits the window it is shown in');
+    h.viewport.dispatchEvent({ type: 'resize' });
+    assert.equal(primary.textContent, shown, 'the same layout a live resize gives');
+    assert.equal(h.app.player.page, 0);
+  });
+}
+
 test('stale sprite decode after character/session switch cannot repaint stage or crop', async t => {
   const h = setup(t, { art: true }); await microtasks(); h.start(); h.line();
   const old = h.loads.slice(-2); assert.equal(old.length, 2);

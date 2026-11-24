@@ -924,14 +924,28 @@ export function mountAdv(dom, deps) {
     player.settle(turnId, kind === 'done' ? { ok: true } : { kind, error: { message: event.error, code: event.code || event.kind } });
     syncControls();
   }));
-  disposers.push(player.on('state', syncControls));
-  if (deps.subscribe) disposers.push(deps.subscribe(update));
-  listen(deps.viewport || globalThis.window, 'resize', () => {
-    if (!currentLine || !['revealing', 'waiting_advance', 'waiting_audio'].includes(player.state)) return;
+  // A resize while LOG or a settings panel holds the player is applied once it resumes,
+  // so the page laid out for the old window size does not stay on screen.
+  let relayoutPending = false;
+  const RELAYOUT_STATES = ['revealing', 'waiting_advance', 'waiting_audio'];
+  function relayout() {
+    if (!currentLine || !RELAYOUT_STATES.includes(player.state)) return;
     const wasRevealing = player.state === 'revealing';
     player.repaginate();
     textbox.reflow({ pageIndex: player.page });
     if (wasRevealing) player.advance();
+  }
+  disposers.push(player.on('state', syncControls));
+  disposers.push(player.on('state', state => {
+    if (!relayoutPending || state === 'suspended') return;
+    relayoutPending = false;
+    // Let resume() finish restoring the line before the page is laid out again.
+    if (RELAYOUT_STATES.includes(state)) queueMicrotask(relayout);
+  }));
+  if (deps.subscribe) disposers.push(deps.subscribe(update));
+  listen(deps.viewport || globalThis.window, 'resize', () => {
+    if (currentLine && player.state === 'suspended' && player.isPresenting()) relayoutPending = true;
+    else relayout();
   });
   loadBackgrounds();
   update();
