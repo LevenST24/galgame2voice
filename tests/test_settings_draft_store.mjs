@@ -75,3 +75,45 @@ test('commitAll saves the engine directory, then global config, without saving d
   await store.commitAll();
   assert.deepEqual(order, ['directory.save']);
 });
+
+for (const [source, where] of [['dotenv', /\.env/], ['env', /环境变量/]]) {
+  test(`saving a 语音服务地址 that ${source} overrides says it did not take effect`, async () => {
+    const { createSettingsDraftStore } = await import('../frontend/src/controllers/settings_draft_store.js');
+    const toasts = [];
+    const store = createSettingsDraftStore({
+      isConfigSaving: () => false,
+      getProviderController: () => null,
+      isConfigLoaded: () => true,
+      showToast: (message, type) => toasts.push({ message, type }),
+      reloadConfig: () => {},
+      getEngineDirectory: () => null,
+      getCoordinatorRevision: () => 1,
+      setConfigSaving: () => {},
+      getConfigRevision: () => 1,
+      readConfigPayload: () => ({ gpt_sovits_url: 'http://127.0.0.1:9880' }),
+      // What POST /api/config answers when .env or an environment variable keeps another address.
+      runSettingsMutation: (operation) => operation(async () => ({
+        status: 'success', settings: { gpt_sovits_url: 'http://127.0.0.1:9880' },
+        effective_sovits_url: 'http://192.168.1.50:9880', effective_sovits_source: source,
+      })),
+      clearConfigDirtyIfUnchanged: () => {},
+      isConfigDirty: () => false,
+      refreshTelemetry: () => {},
+    });
+    await store.commitAll();
+    assert.equal(toasts.length, 1);
+    assert.notEqual(toasts[0].type, 'success');
+    assert.match(toasts[0].message, /未生效/);
+    assert.match(toasts[0].message, /192\.168\.1\.50:9880/);
+    assert.match(toasts[0].message, where);
+  });
+}
+
+test('saving a 语音服务地址 that takes effect is a plain success', async () => {
+  const { sovitsUrlOverrideNotice } = await import('../frontend/src/controllers/settings_draft_store.js');
+  assert.equal(sovitsUrlOverrideNotice(
+    { gpt_sovits_url: 'http://127.0.0.1:9880/' },
+    { effective_sovits_url: 'http://127.0.0.1:9880', effective_sovits_source: 'db' },
+  ), '');
+  assert.equal(sovitsUrlOverrideNotice({ audio_retention_minutes: 30 }, { effective_sovits_url: 'http://x:1' }), '');
+});
