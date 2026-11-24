@@ -57,12 +57,12 @@ class VoiceProfileCreateRequest(BaseModel):
     sovits_weights_path: str = Field(..., min_length=1, max_length=1000)
     refer_audio_path: str | None = Field(default=None, max_length=1000)
     ref_audio_path: str | None = Field(default=None, max_length=1000)
-    refer_text: str | None = Field(default=None, max_length=1000)
-    prompt_text: str | None = Field(default=None, max_length=1000)
+    refer_text: str | None = Field(default=None, max_length=500)
+    prompt_text: str | None = Field(default=None, max_length=500)
     refer_language: str | None = Field(default="ja", max_length=32)
     prompt_lang: str | None = Field(default="ja", max_length=32)
     text_lang: str | None = Field(default="ja", max_length=32)
-    system_prompt: str | None = Field(default="", max_length=10000)
+    system_prompt: str | None = Field(default="", max_length=20000)
     is_default: bool = False
 
 
