@@ -358,6 +358,43 @@ class TestInFlightConnectivityTestingAndDiagnostics:
             assert resp.json()["success"] is True
             assert intercepted_key == f"Bearer {stored_key}"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("raw_key", "expected_key"),
+        [
+            ("bearer sk-clean-key-123456", "sk-clean-key-123456"),
+            ('"Bearer sk-clean-key-123456"', "sk-clean-key-123456"),
+            ("'sk-clean-key-123456'", "sk-clean-key-123456"),
+            ("“sk-clean-key-123456”", "sk-clean-key-123456"),
+            ("‘sk-clean-key-123456’", "sk-clean-key-123456"),
+            ("\u200bsk-clean\u200c-key-\u200d123456\ufeff", "sk-clean-key-123456"),
+            ("sk-clean -key-\n123\t456", "sk-clean-key-123456"),
+            ("sk-normal_Key.123-456", "sk-normal_Key.123-456"),
+        ],
+    )
+    async def test_pasted_dirty_api_key_cleaned_on_test_and_save(
+        self, app_client, isolate_test_database, raw_key, expected_key
+    ):
+        """A key pasted with a Bearer prefix, quotes, zero-width characters or whitespace is tested and saved clean."""
+        seen_auth = None
+
+        def check_auth(method, url, kwargs):
+            nonlocal seen_auth
+            seen_auth = httpx.Headers(kwargs.get("headers", {})).get("Authorization")
+            return httpx.Response(200, json={"data": [{"id": "gpt-6-luna"}]}, request=httpx.Request(method, url))
+
+        p_get, p_post = mock_external_http_responses({"api.openai.com": check_auth})
+        with p_get, p_post:
+            test_resp = await app_client.post("/api/providers/test", json={"id": "openai", "api_key": raw_key})
+            assert test_resp.status_code == 200 and test_resp.json()["success"] is True
+            assert seen_auth == f"Bearer {expected_key}"
+
+        for pid in ("deepseek", "new_clean_target"):
+            save_resp = await app_client.post("/api/providers", json={"id": pid, "api_key": raw_key})
+            assert save_resp.status_code == 200
+            async with get_db(isolate_test_database) as conn:
+                assert (await crud.get_provider_raw(conn, pid)).api_key == expected_key
+
 
 # ============================================================================
 # 5. Provider Activation Flow
