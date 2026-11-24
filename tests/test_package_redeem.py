@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import io
 import json
@@ -305,3 +306,24 @@ def test_redeem_dist_error_replaces_english_upstream_errors_with_chinese() -> No
     chinese = _dist_error(403, json.dumps({"error": "该兑换码已达到下载上限"}).encode("utf-8"))
     assert chinese.status_code == 400
     assert chinese.detail == "该兑换码已达到下载上限"
+
+
+async def test_redeem_reuses_verified_download_after_disk_full(api: AsyncClient, dist_env: dict, monkeypatch) -> None:
+    code, phase, real_open = _publish(dist_env, "alice", "爱丽丝", "once", downloads=1), "save", Path.open
+    def fake_open(self, *a, **kw):
+        if (phase == "save" and self.suffix == ".part") or (phase == "extract" and "extracted" in self.parts):
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_open(self, *a, **kw)
+    monkeypatch.setattr(Path, "open", fake_open)
+    body = {"code": code, "package_id": "once", "overwrite": False}
+    r0 = await api.post("/api/characters/redeem/download", json=body)
+    assert r0.status_code == 507 and "磁盘空间不足" in r0.json()["detail"] and "续传" not in r0.json()["detail"]
+    _no_parts()
+    phase = "extract"
+    r1 = await api.post("/api/characters/redeem/download", json=body)
+    assert r1.status_code == 507 and (get_settings().data_dir / "character_import" / "dl-once.zip.part").is_file()
+    phase = "ok"
+    monkeypatch.setattr(DistRequestHandler, "do_GET", lambda _self: pytest.fail("should not download again"))
+    r2 = await api.post("/api/characters/redeem/download", json=body)
+    assert r2.status_code == 200 and r2.json()["imported"][0]["name"] == "爱丽丝"
+    _no_parts()
