@@ -147,10 +147,10 @@ export class ProviderSettingsController {
   }
 
   ensureProvidersLoaded() {
-    if (this.disposed || this.providersLoaded || this.providerLoadingLoad !== 0) {
+    if (this.disposed || (this.providersLoaded && !this.providerReadError) || this.providerLoadingLoad !== 0) {
       return Promise.resolve();
     }
-    return this.loadProviders();
+    return this.loadProviders({ silent: this.providerReadError });
   }
 
   isProviderSaving() {
@@ -409,7 +409,7 @@ export class ProviderSettingsController {
     }
   }
 
-  async loadProviders({ formRevision = this.providerRevision } = {}) {
+  async loadProviders({ formRevision = this.providerRevision, silent = false } = {}) {
     if (this.disposed) return;
     const load = ++this.providerLoad;
     this.providerLoadingLoad = load;
@@ -505,7 +505,7 @@ export class ProviderSettingsController {
       this.providerReadError = true;
       if (this.coordinator.updateBadge) this.coordinator.updateBadge();
       if (hadOptions) {
-        showToast(`列表暂时无法刷新，当前输入已保留：${e.message}`, 'error');
+        if (!silent) showToast(`列表暂时无法刷新，当前输入已保留：${e.message}`, 'error');
         return;
       }
       this.cachedBuiltinPresets = [];
@@ -522,7 +522,7 @@ export class ProviderSettingsController {
         customOpt.textContent = '＋ 自定义模型 / 接口…';
         this.dom.gProvider.appendChild(customOpt);
       }
-      showToast('模型服务列表加载失败：请检查网络后重试。', 'error');
+      if (!silent) showToast('模型服务列表加载失败：请检查网络后重试。', 'error');
       this.renderLoadedProvider(this.providerDirty || this.providerRevision !== formRevision);
     } finally {
       if (this.providerLoadingLoad === load) {

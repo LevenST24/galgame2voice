@@ -813,7 +813,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         onModelStatus = onModel;
         if (haveProvidersLoaded()) onModel(sampleModel());
       }
-      if (!haveProvidersLoaded()) {
+      if (!haveProvidersLoaded() || hasProviderReadError()) {
         Promise.resolve(ensureProvidersLoaded()).catch(() => {});
       }
       let engine, engineRead = true;
