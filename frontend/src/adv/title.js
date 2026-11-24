@@ -169,7 +169,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     try { result = await actions.playExcerpt?.(excerpt); } catch { result = 'failed'; }
     if (!opened || token !== playRevision) return;
     playing = false; listenButton.children[0].textContent = '▶ 试听这句'; listenButton.setAttribute('aria-pressed', 'false');
-    if (result === 'failed') { failedAudio.add(JSON.stringify(excerpt)); listenButton.hidden = true; }
+    if (result === 'failed') { failedAudio.add(JSON.stringify(excerpt)); renderPane(true); }
   }
   function isCheckingState() {
     const anySessionHasMessages = sessions.some(s => Boolean(s?.hasUserMessages));
@@ -221,7 +221,9 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
         const primaryLabel = session?.hasUserMessages ? '接着聊 →' : '开始聊天';
         row.appendChild(btn('home-primary home-continue', primaryLabel, () => enter()));
         const canPlay = canReplayLine(excerpt.line, excerpt, actions.voiceEnabled?.() ?? true, now().getTime());
-        if (canPlay && !failedAudio.has(JSON.stringify(excerpt))) {
+        if (canPlay && failedAudio.has(JSON.stringify(excerpt))) {
+          row.appendChild(el('p', 'home-listen-note', '这句语音已过期或不可用'));
+        } else if (canPlay) {
           listenButton = btn('home-link home-listen', '▶ 试听这句', () => toggleListen(excerpt));
           listenButton.setAttribute('aria-pressed', 'false');
           row.appendChild(listenButton);
