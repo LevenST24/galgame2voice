@@ -327,3 +327,59 @@ async def test_redeem_reuses_verified_download_after_disk_full(api: AsyncClient,
     r2 = await api.post("/api/characters/redeem/download", json=body)
     assert r2.status_code == 200 and r2.json()["imported"][0]["name"] == "爱丽丝"
     _no_parts()
+
+
+def _drop_package_reads(monkeypatch: pytest.MonkeyPatch, state: dict) -> None:
+    """While state["drop"] is set, every package read stops after 64 bytes."""
+    orig = httpx.Response.aiter_bytes
+
+    async def aiter_bytes(self, chunk_size=None):
+        if "/v1/packages/" not in str(self.request.url):
+            async for chunk in orig(self, chunk_size):
+                yield chunk
+            return
+        state["ranges"].append(self.request.headers.get("range"))
+        async for chunk in orig(self, chunk_size):
+            if state["drop"]:
+                yield chunk[:64]
+                raise httpx.RemoteProtocolError("drop")
+            yield chunk
+
+    monkeypatch.setattr(httpx.Response, "aiter_bytes", aiter_bytes)
+
+
+async def test_dropped_download_resumes_on_retry_without_another_count(
+    api: AsyncClient, dist_env: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    code = _publish(dist_env, "flaky", "断网", "flaky", downloads=1)
+    state = {"drop": True, "ranges": []}
+    _drop_package_reads(monkeypatch, state)
+    body = {"code": code, "package_id": "flaky", "overwrite": False}
+    failed = await api.post("/api/characters/redeem/download", json=body)
+    assert failed.status_code == 502, failed.text
+    assert state["ranges"] == [None, "bytes=64-", "bytes=128-", "bytes=192-"]
+    part = get_settings().data_dir / "character_import" / "dl-flaky.zip.part"
+    assert part.is_file() and part.stat().st_size == 256
+    state.update(drop=False, ranges=[])
+    saved = await api.post("/api/characters/redeem/download", json=body)
+    assert saved.status_code == 200, saved.text
+    assert state["ranges"] == ["bytes=256-"], "the retry resumes instead of starting a counted download"
+    assert (get_settings().characters_dir / "flaky" / "manifest.json").is_file()
+    _no_parts()
+
+
+async def test_dropped_download_starts_over_when_the_server_refuses_to_resume(
+    api: AsyncClient, dist_env: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    code = _publish(dist_env, "stale", "过期", "stale", downloads=2)
+    state = {"drop": True, "ranges": []}
+    _drop_package_reads(monkeypatch, state)
+    body = {"code": code, "package_id": "stale", "overwrite": False}
+    assert (await api.post("/api/characters/redeem/download", json=body)).status_code == 502
+    real_clock = dist_env["store"]._clock
+    monkeypatch.setattr(dist_env["store"], "_clock", lambda: real_clock() + 2 * 86400)
+    state.update(drop=False, ranges=[])
+    saved = await api.post("/api/characters/redeem/download", json=body)
+    assert saved.status_code == 200, saved.text
+    assert state["ranges"] == [None], "a refused resume starts a fresh download"
+    _no_parts()
