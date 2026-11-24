@@ -365,20 +365,21 @@ def _discover_gpt_sovits_roots() -> list[str]:
 
 def _scan_models_sync() -> dict[str, list[dict[str, Any]]]:
     """Blocking filesystem scan for weights & reference audio (worker thread)."""
-    candidate_roots: list[str] = []
-    for root in _discover_gpt_sovits_roots():
-        if root not in candidate_roots and os.path.isdir(root):
-            candidate_roots.append(root)
-
-    # Also scan the app's own directories for user-copied assets.
+    # The app's own folders come first: the lists are capped, and a trained
+    # GPT-SoVITS install can hold hundreds of training slices that would
+    # otherwise push out the clip the user copied into audio/.
     settings = get_settings()
+    candidate_roots: list[str] = []
     for root_candidate in (
-        str(settings.project_root),
-        str(settings.data_dir),
         str(settings.audio_dir),
+        str(settings.data_dir),
+        str(settings.project_root),
     ):
         if root_candidate not in candidate_roots:
             candidate_roots.append(root_candidate)
+    for root in _discover_gpt_sovits_roots():
+        if root not in candidate_roots and os.path.isdir(root):
+            candidate_roots.append(root)
 
     excluded_cache_dirs: set[Path] = set()
     for p in (
