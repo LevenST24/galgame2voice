@@ -23,9 +23,15 @@ export function initEngineDirectory(dom, notify, onSaved = () => {}, onOpenDashb
     if (disposed) return;
     edited = true;
     revision += 1;
-    setStatus('目录已修改，点击「保存目录」后生效。');
+    setStatus('目录已修改，离开输入框后自动保存。');
+  };
+  // Like the other fields on this page, a finished edit saves itself.
+  const onChange = () => {
+    if (disposed || saving || !isDirty() || !input.value.trim()) return;
+    save();
   };
   input?.addEventListener('input', onInput);
+  input?.addEventListener('change', onChange);
 
   function isDirty() {
     if (disposed || !input) return false;
@@ -67,7 +73,7 @@ export function initEngineDirectory(dom, notify, onSaved = () => {}, onOpenDashb
         input.value = data.selected_path;
         edited = true;
         revision += 1;
-        setStatus('目录已选择，点击「保存目录」后生效。');
+        setStatus('目录已选择，正在保存…');
       }
     } catch (error) {
       if (!disposed) notify(`无法选择文件夹：${error.message}。也可直接粘贴目录路径。`, 'error');
@@ -75,6 +81,7 @@ export function initEngineDirectory(dom, notify, onSaved = () => {}, onOpenDashb
       browsing = false;
       if (!disposed && dom.gBrowseSovitsDirectory) dom.gBrowseSovitsDirectory.disabled = false;
     }
+    if (!disposed && !saving && isDirty() && input.value.trim()) await save();
   }
 
   async function save() {
@@ -140,6 +147,7 @@ export function initEngineDirectory(dom, notify, onSaved = () => {}, onOpenDashb
     browsing = false;
     saving = false;
     input?.removeEventListener('input', onInput);
+    input?.removeEventListener('change', onChange);
     dom.gBrowseSovitsDirectory?.removeEventListener('click', browse);
     dom.gSaveSovitsDirectory?.removeEventListener('click', save);
   }
