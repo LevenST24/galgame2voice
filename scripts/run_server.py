@@ -201,6 +201,43 @@ def cleanup_subprocesses():
         pass
 
 
+def find_running_instance(root: Path) -> str | None:
+    """Returns the web address of another live launcher for this install, or None.
+
+    A launcher writes galgame2voice.pid and data/active_port.txt once it has a
+    port. Both must point at a live process whose /api/health answers as
+    galgame2voice; a stale or reused PID alone is never trusted.
+    """
+    import urllib.request
+
+    try:
+        raw_pid = (root / "galgame2voice.pid").read_text(encoding="utf-8").strip()
+        raw_port = (root / "data" / "active_port.txt").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not (raw_pid.isdigit() and raw_port.isdigit()) or int(raw_pid) == os.getpid():
+        return None
+    port = int(raw_port)
+    if not 1 <= port <= 65535:
+        return None
+    try:
+        import psutil
+        if not psutil.pid_exists(int(raw_pid)):
+            return None
+    except ImportError:
+        pass
+    url = f"http://127.0.0.1:{port}/"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(url + "api/health", timeout=1.5) as response:
+            health = json.loads(response.read(4096))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(health, dict) or health.get("app") != "galgame2voice" or health.get("status") != "ok":
+        return None
+    return url
+
+
 def _check_sovits_dir(p: Path) -> Path | None:
     """Checks if p or a nested directory inside p contains api_v2.py."""
     if not p.exists() or not p.is_dir():
@@ -1189,6 +1226,21 @@ def main(args: list[str] | None = None):
     if getattr(parsed, "profile", False):
         os.environ["GALGAME2VOICE_PROFILE"] = "1"
         print("[性能追踪] 已启用 --profile 实时延迟瀑布图分析模式 (GALGAME2VOICE_PROFILE=1)")
+
+    # A second launch of the same install reuses the running service instead of
+    # starting a duplicate that would later delete the first one's runtime files.
+    # The portable build has its own single-instance handling in desktop_entry.
+    if not parsed.check_only and not getattr(sys, "frozen", False):
+        running_url = find_running_instance(_resolve_project_root())
+        if running_url:
+            print(f"[提示] Galgame2Voice 已经在另一个窗口运行，访问地址：{running_url}")
+            print("      这次不会再启动第二个服务。需要重启时，请先关闭原来的启动窗口。")
+            if not parsed.no_browser:
+                try:
+                    webbrowser.open(running_url)
+                except Exception:
+                    pass
+            sys.exit(0)
 
     # Step 0: Pre-Flight Environment & Hardware Diagnostics
     if not check_python_environment():
