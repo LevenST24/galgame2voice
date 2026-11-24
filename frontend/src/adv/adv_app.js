@@ -310,6 +310,7 @@ export function mountAdv(dom, deps) {
 
   let backgrounds = [];
   let works = [];
+  let backgroundRevision = 0, backgroundRefreshTimer = null;
   let appliedBackground = null;
   const storedBackground = () => normalizeBackgroundSelection({
     id: settings.advBackground, time: settings.advBgTime,
@@ -366,6 +367,8 @@ export function mountAdv(dom, deps) {
     if (bgPanel?.isOpen) bgPanel.close();
   }
   async function loadBackgrounds() {
+    const revision = ++backgroundRevision;
+    if (backgroundRefreshTimer !== null) { clock.clearTimeout(backgroundRefreshTimer); backgroundRefreshTimer = null; }
     let list = [];
     let workList = [];
     try {
@@ -376,12 +379,26 @@ export function mountAdv(dom, deps) {
       list = [];
       workList = [];
     }
-    if (destroyed) return;
+    if (destroyed || revision !== backgroundRevision) return;
     backgrounds = list;
     works = workList;
     background.setList(list);
     // Auto resolves against the list, so re-check once it arrives.
     if (settings) syncBackground();
+    // Image links are signed for about half a day; read the list again a minute
+    // before the first one expires, as the portrait does.
+    const minExpiry = list.reduce((min, item) => Object.values(item?.variants || {}).reduce((least, url) => {
+      try {
+        const exp = Number(new URL(String(url), 'http://local').searchParams.get('exp'));
+        return exp > 0 ? (least ? Math.min(least, exp) : exp) : least;
+      } catch {
+        return least;
+      }
+    }, min), 0);
+    if (minExpiry > 0) {
+      const delay = Math.max(1000, minExpiry * 1000 - (deps.wallNow?.() ?? Date.now()) - 60000);
+      backgroundRefreshTimer = clock.setTimeout(() => { backgroundRefreshTimer = null; loadBackgrounds(); }, delay);
+    }
   }
 
   function paint(line = currentLine || { emotion: 'gentle', act: {} }, options = {}) {
@@ -962,6 +979,7 @@ export function mountAdv(dom, deps) {
       portraitRequest?.abort();
       deps.cancelMic?.();
       if (refreshTimer !== null) clock.clearTimeout(refreshTimer);
+      if (backgroundRefreshTimer !== null) clock.clearTimeout(backgroundRefreshTimer);
       drafts.clear();
       shortcuts.destroy(); player.reset(); audio.stopLine({ fadeMs: 0 });
       sprite.destroy(); quickMenu.destroy(); textbox.destroy(); stage.destroy();

@@ -47,6 +47,8 @@ function setup(t, options = {}) {
     toggleVoice: () => { voiceEnabled = !voiceEnabled; },
     getCharacter: () => character, ImageClass: Image,
     loadPortrait: options.loadPortrait || (async () => options.art ? portrait() : null),
+    ...(options.fetchBackgrounds ? { fetchBackgrounds: options.fetchBackgrounds } : {}),
+    ...(options.wallNow ? { wallNow: options.wallNow } : {}),
     raf: fn => { frames.set(++frameId, fn); return frameId; }, cancelRaf: id => frames.delete(id),
     matchMedia: () => mql, viewport,
     saveSettings: patch => { Object.assign(active.settings, patch); },
@@ -1420,3 +1422,24 @@ for (const trigger of ['button', 'Escape']) {
     assert.deepEqual(assistantReplies[1].lines?.map(l => l.zh), ['未完第一句。']);
   });
 }
+
+test('background links are read again a minute before they expire', async t => {
+  const lists = [];
+  const fetchBackgrounds = async () => {
+    const n = lists.length + 1;
+    const list = { works: [], backgrounds: [{ key: 'w/cafe', work: 'w', id: 'cafe', name: '咖啡店',
+      variants: { day: `/api/media/background/w/cafe/day?v=1&exp=${1000 * n}&sig=s${n}` } }] };
+    lists.push(list);
+    return list;
+  };
+  const h = setup(t, { fetchBackgrounds, wallNow: () => 0 });
+  await microtasks();
+  assert.equal(lists.length, 1);
+  h.clock.tick(1000 * 1000 - 60000 - 1); await microtasks();
+  assert.equal(lists.length, 1, 'not before the minute ahead of expiry');
+  h.clock.tick(1); await microtasks();
+  assert.equal(lists.length, 2, 'the list is read again before the links stop working');
+  h.app.unmount();
+  h.clock.tick(5000 * 1000); await microtasks();
+  assert.equal(lists.length, 2, 'no refresh after unmount');
+});
