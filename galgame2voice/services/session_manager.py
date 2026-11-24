@@ -28,7 +28,7 @@ class SessionTurn(BaseModel):
     lines: list[dict] | None = None
 
 
-def _render_system_template(tpl: str, character_name: str) -> str:
+def render_system_template(tpl: str, character_name: str) -> str:
     """Renders a system template string with character_name substitution."""
     if "{character_name}" in tpl:
         rendered = tpl.replace("{character_name}", character_name)
@@ -295,7 +295,7 @@ class SessionManager:
         Injects optional long-term memory & affection context block into system prompt.
         """
         tpl = system_template or self.system_template
-        system_content = _render_system_template(tpl, character_name)
+        system_content = render_system_template(tpl, character_name)
 
         if memory_prompt_block and memory_prompt_block.strip():
             system_content = f"{system_content}\n\n{memory_prompt_block.strip()}"
