@@ -20,7 +20,7 @@ from starlette.requests import ClientDisconnect
 
 from galgame2voice.services.character_identity import identity_key
 from galgame2voice.services.chat_service import ChatService
-from galgame2voice.services.chat_pipelines.line_scanner import FX, MOTIONS
+from galgame2voice.services.chat_pipelines.line_scanner import FX, MOTIONS, MOVES
 from galgame2voice.services.chat_pipelines.tts_pipeline import TTS_JOB_TIMEOUT_SECONDS
 from galgame2voice.services.chat_backup import export_chat_backup, import_timestamp, validate_adv_settings
 from galgame2voice.services.gpt_sovits_client import validate_user_tts_options
@@ -268,8 +268,9 @@ class SessionUpsertRequest(BaseModel):
     settings: dict[str, Any] | None = Field(default=None, description="Session-specific generation & voice parameters")
 
 
-ALLOWED_ACT_KEYS = frozenset({"face", "pose", "motion", "blush", "fx"})
+ALLOWED_ACT_KEYS = frozenset({"face", "pose", "motion", "move", "blush", "fx"})
 _ALLOWED_ACT_MOTIONS = frozenset(MOTIONS)
+_ALLOWED_ACT_MOVES = frozenset(MOVES)
 _ALLOWED_ACT_FX = frozenset(FX)
 
 
@@ -278,6 +279,8 @@ def _valid_imported_act_item(key: Any, val: Any) -> bool:
         return isinstance(val, str) and bool(val)
     if key == "motion":
         return isinstance(val, str) and val in _ALLOWED_ACT_MOTIONS
+    if key == "move":
+        return isinstance(val, str) and val in _ALLOWED_ACT_MOVES
     if key == "fx":
         return isinstance(val, str) and val in _ALLOWED_ACT_FX
     if key == "blush":
