@@ -364,6 +364,10 @@ class CharacterVoiceCatalog:
                 ) from pte
             if updates.ref_audio_path:
                 updates.ref_audio_path = to_project_relative_path(updates.ref_audio_path)
+            if updates.gpt_weights_path:
+                updates.gpt_weights_path = to_project_relative_path(updates.gpt_weights_path)
+            if updates.sovits_weights_path:
+                updates.sovits_weights_path = to_project_relative_path(updates.sovits_weights_path)
 
         open_db = self._resolve_db_factory(db_factory)
         async with open_db() as conn:
