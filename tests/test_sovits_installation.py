@@ -53,6 +53,28 @@ def test_bom_quoted_hint_resolves_against_install_not_cwd(tmp_path, monkeypatch)
     assert installation.read_sovits_directory(tmp_path) == engine
 
 
+def test_hint_saved_as_ansi_gbk_resolves_to_the_chinese_folder(tmp_path):
+    """Notepad's 「ANSI」 save on Chinese Windows writes GBK; the folder must still be found."""
+    engine = make_engine(tmp_path / "语音引擎")
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "sovits_dir.txt").write_bytes(str(engine).encode("gbk"))
+    assert installation.read_sovits_directory(tmp_path) == engine
+
+
+@pytest.mark.asyncio
+async def test_system_status_loads_when_engine_hint_cannot_be_read(tmp_path, monkeypatch):
+    monkeypatch.setattr(get_settings(), "project_root", tmp_path)
+
+    def unreadable(*args, **kwargs):
+        raise PermissionError(13, "拒绝访问。")
+
+    monkeypatch.setattr(health, "read_sovits_directory", unreadable)
+    transport = ASGITransport(app=create_app())
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+        result = await client.get("/api/system/status")
+    assert result.status_code == 200
+
+
 @pytest.mark.parametrize("value", ["", " \n ", "invalid\x00folder", "missing", "data"])
 def test_invalid_selection_preserves_saved_directory(tmp_path, value):
     make_engine(tmp_path / "engine")

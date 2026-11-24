@@ -11,7 +11,13 @@ def read_sovits_directory(project_root: Path, hint_file: Path | None = None) -> 
     file = hint_file if hint_file is not None else project_root / "data" / "sovits_dir.txt"
     if not file.is_file():
         return None
-    value = file.read_text(encoding="utf-8-sig").strip().strip("\"'")
+    raw = file.read_bytes()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        # Notepad's "ANSI" save on Chinese Windows writes the path in GBK.
+        text = raw.decode("gb18030")
+    value = text.strip().strip("\"'")
     if not value:
         return None
     directory = Path(value).expanduser()
