@@ -153,7 +153,9 @@ class Settings(BaseSettings):
 
     # Pydantic Settings Config
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # The working-directory .env keeps older setups working; the one beside the
+        # program (documented in README) is listed last so it wins on shared keys.
+        env_file=(".env", str(get_install_root() / ".env")),
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
