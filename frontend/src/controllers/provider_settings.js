@@ -390,25 +390,41 @@ export class ProviderSettingsController {
 
   async clearStoredKey() {
     if (this.disposed || this.providerSaving || !this.dom.gProvider) return;
+    if (this.coordinator.isConfigSaving?.()) return;
     const pid = this.dom.gProvider.value;
     const realId = (pid === 'custom' || pid === '__custom__') ? 'custom' : pid;
     const stored = this.cachedProviders.find((p) => p.id === realId);
     if (!realId || !(stored?.api_key || '').trim()) return;
-    const name = stored.name || this.presetCapabilities(realId).name || realId;
+    const capabilities = this.presetCapabilities(realId);
+    const name = stored.name || capabilities.name || realId;
     const confirmFn = globalThis.confirm;
-    const warning = stored.is_active ? '这是当前生效的模型服务，清除后角色将无法回复，直到重新填写密钥。' : '清除后需要重新填写才能使用它。';
+    const warning = !capabilities.requires_api_key
+      ? '本地免密服务不受影响；若所连接口需要鉴权，清除后需重新填写密钥。'
+      : stored.is_active
+        ? '这是当前生效的模型服务，清除后角色将无法回复，直到重新填写密钥。'
+        : '清除后需要重新填写才能使用它。';
     if (typeof confirmFn === 'function' && !confirmFn(`确定清除已保存的 ${name} API 密钥？${warning}`)) return;
+    this.invalidateActiveProviderTest();
+    this.resetTestResultBox();
     const button = this.dom.gBtnClearKey;
+    this.providerSaving = true;
+    this.coordinator.updateSaveButtons?.();
     if (button) button.disabled = true;
     try {
       await clearProviderKey(realId);
       if (this.disposed) return;
+      stored.api_key = '';
+      if (this.currentActiveProvider?.id === realId) this.currentActiveProvider.api_key = '';
+      this.coordinator.updateBadge?.();
+      this.renderProviderForm(this.providerDirty);
       showToast(`已清除 ${name} 的 API 密钥。`, 'success');
       await this.loadProviders({ silent: true });
     } catch (e) {
       if (this.disposed) return;
       showToast(`密钥没有清除：${e.message || e}`, 'error');
     } finally {
+      this.providerSaving = false;
+      if (!this.disposed) this.coordinator.updateSaveButtons?.();
       if (button) button.disabled = false;
     }
   }
