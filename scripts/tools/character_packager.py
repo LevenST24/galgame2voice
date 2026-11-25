@@ -37,6 +37,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from galgame2voice.schemas.character_manifest import (  # noqa: E402
     validate_character_package,
 )
+from galgame2voice.services.character_package_import import _resolve_folder_name  # noqa: E402
 
 IGNORED_PATTERNS = {
     "__pycache__",
@@ -144,7 +145,11 @@ def cmd_install(zip_path: Path, target_dir: Path, force: bool = False) -> int:
                     print(f"  - {err}", file=sys.stderr)
                 return 1
 
-        final_dest = dest_base / char_name
+        # The same folder name the in-app importer uses: no separators, .. or reserved names.
+        final_dest = dest_base / _resolve_folder_name(str(char_name))
+        if final_dest.resolve().parent != dest_base:
+            print(f"[ERROR] 角色名不能用作文件夹名: {char_name}", file=sys.stderr)
+            return 1
         if final_dest.exists():
             print(f"[*] 目标角色目录已存在，正在更新: {final_dest}")
         else:
