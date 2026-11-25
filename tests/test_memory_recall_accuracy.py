@@ -137,3 +137,31 @@ async def test_level_up_follows_the_score_not_a_manually_written_level(memory_se
         updated, gained, level_up = await crud.increment_affection(conn, "u1", 1, 5)
         assert gained == 5 and updated.affection_score == 80
         assert level_up is True  # 75 -> 80 reaches Lv.5
+
+
+@pytest.mark.parametrize("text", [
+    "你还记得我喜欢什么吗？", "你知道我讨厌什么吗", "猜猜我最喜欢什么", "我喜欢猫吗？", "我讨厌谁你知道吗",
+    "我喜欢的人是谁",
+])
+def test_a_question_about_preferences_is_not_saved_as_one(memory_service, text):
+    assert memory_service.extract_facts_heuristic(text) == []
+
+
+@pytest.mark.parametrize("text,key,value", [
+    ("我最喜欢狗了", "like_狗", "狗"), ("我喜欢猫啊！", "like_猫", "猫"), ("我讨厌香菜呀", "dislike_香菜", "香菜"),
+    ("我喜欢的是狗", "like_狗", "狗"), ("我最喜欢哪吒", "like_哪吒", "哪吒"),
+    ("我讨厌去酒吧", "dislike_去酒吧", "去酒吧"),
+])
+def test_a_trailing_particle_is_not_part_of_the_preference(memory_service, text, key, value):
+    facts = memory_service.extract_facts_heuristic(text)
+    assert [(f["fact_key"], f["fact_value"]) for f in facts] == [(key, value)]
+
+
+async def test_a_dislike_replaces_a_like_said_with_a_particle(memory_service, isolate_test_database):
+    await memory_service.process_user_message("u1", 1, "我最喜欢狗了")
+    await memory_service.process_user_message("u1", 1, "你还记得我喜欢什么吗？")
+    await memory_service.process_user_message("u1", 1, "我讨厌狗")
+
+    async with get_db(isolate_test_database) as conn:
+        keys = {m.fact_key for m in await crud.list_memories(conn, user_id="u1", character_id=1)}
+    assert keys == {"dislike_狗"}
