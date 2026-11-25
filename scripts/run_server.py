@@ -1149,6 +1149,25 @@ def sync_runtime_address(*, host: str | None = None, port: int | None = None) ->
         pass
 
 
+class _ChineseHelpFormatter(argparse.HelpFormatter):
+    """Chinese headings and defaults; argparse's own strings stay English otherwise."""
+
+    def add_usage(self, usage, actions, groups, prefix=None):
+        return super().add_usage(usage, actions, groups, prefix="用法：")
+
+    def _get_help_string(self, action):
+        help_text = action.help or ""
+        if action.default not in (None, False, argparse.SUPPRESS) and "%(default)" not in help_text:
+            help_text += "（默认：%(default)s）"
+        return help_text
+
+
+class _LauncherArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(2, f"[错误] 启动参数有误：{message}\n      运行时加上 --help 可以查看所有参数。\n")
+
+
 def _port_number(value: str) -> int:
     """argparse type for --port: a whole number within the TCP range."""
     try:
@@ -1162,10 +1181,13 @@ def _port_number(value: str) -> int:
 
 def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     """Parses CLI flags for the Galgame2Voice server launcher."""
-    parser = argparse.ArgumentParser(
-        description="Galgame2Voice Server Entry Point & Enterprise Auto-Launcher",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    parser = _LauncherArgumentParser(
+        description="Galgame2Voice 启动器：启动本机服务，并按需拉起 GPT-SoVITS 语音引擎、打开浏览器。",
+        formatter_class=_ChineseHelpFormatter,
+        add_help=False,
     )
+    parser._optionals.title = "参数"
+    parser.add_argument("-h", "--help", action="help", help="显示这份帮助并退出")
     env_port = 8080
     env_port_str = os.environ.get("GALGAME2VOICE_PORT") or os.environ.get("PORT") or os.environ.get("GALGAME_PORT")
     if env_port_str:
@@ -1186,59 +1208,59 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
         "--host",
         type=str,
         default=env_host,
-        help="Host interface to bind the server on",
+        help="监听地址。改成 127.0.0.1 以外的地址（如 0.0.0.0）时，必须先在 .env 里设置 GALGAME2VOICE_AUTH_DISABLED=0 开启访问令牌",
     )
     parser.add_argument(
         "--port",
         type=_port_number,
         default=env_port,
-        help="Port to listen on",
+        help="网页端口，被占用时会自动换一个可用端口",
     )
     parser.add_argument(
         "--no-browser",
         action="store_true",
         default=env_no_browser,
-        help="Suppress automatic browser launch on server startup",
+        help="启动后不自动打开浏览器（也可设置环境变量 GALGAME_NO_BROWSER=1）",
     )
     parser.add_argument(
         "--no-engine",
         action="store_true",
-        help="Open the application without discovering or starting a local GPT-SoVITS process",
+        help="不查找、不启动本机的 GPT-SoVITS 语音引擎，稍后可在网页里配置",
     )
     parser.add_argument(
         "--check-only",
         action="store_true",
-        help="Run pre-flight environment & hardware diagnostics, print report, and exit cleanly (exit code 0 if healthy, 1 if fatal)",
+        help="只检查运行环境和硬件，打印结果后退出（通过返回 0，有致命问题返回 1）",
     )
     parser.add_argument(
         "--precision",
         choices=["fp16", "fp32", "cpu", "auto"],
         default=None,
-        help="Inference precision/mode: fp16 (half-precision), fp32 (single-precision), cpu (safe host-RAM mode), or auto",
+        help="语音推理精度：fp16（半精度，显存占用小）、fp32（全精度）、cpu（只用 CPU，最稳但慢）或 auto（自动选择）",
     )
     parser.add_argument(
         "--fp16",
         action="store_true",
         default=False,
-        help="Enable half-precision (FP16) inference (alias for --precision fp16)",
+        help="使用半精度推理，同 --precision fp16",
     )
     parser.add_argument(
         "--fp32",
         action="store_true",
         default=False,
-        help="Force single-precision (FP32) inference (alias for --precision fp32)",
+        help="使用全精度推理，同 --precision fp32",
     )
     parser.add_argument(
         "--cpu",
         action="store_true",
         default=False,
-        help="Force CPU inference mode (bypasses GPU/VRAM to eliminate OOM risk and driver crashes)",
+        help="只用 CPU 推理，不占显卡显存，可避免显存不足和显卡驱动崩溃，同 --precision cpu",
     )
     parser.add_argument(
         "--profile",
         action="store_true",
         default=False,
-        help="Enable latency waterfall profiling mode (shows TTFT, First Sentence, TTS Dispatch, TTS Inference, TTFA)",
+        help="开启延迟分析，在日志里显示每轮对话各阶段的耗时（首字、首句、语音合成等）",
     )
     return parser.parse_args(args)
 
