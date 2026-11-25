@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import time
 from typing import Any
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from galgame2voice.config import get_settings
@@ -197,11 +197,15 @@ async def update_voice_profile(profile_id: int, req: VoiceProfileUpdate) -> dict
     summary="Delete Voice Profile",
     description="Deletes a voice profile by ID.",
 )
-async def delete_voice_profile(profile_id: int) -> dict[str, Any]:
+async def delete_voice_profile(profile_id: int, request: Request) -> dict[str, Any]:
     validate_positive_profile_id(profile_id)
     try:
+        lock = getattr(request.app.state, "character_rescan_lock", None)
+        if lock is None:
+            lock = request.app.state.character_rescan_lock = asyncio.Lock()
         result = await get_character_voice_catalog().delete_profile(
             profile_id,
+            lock=lock,
             voice_manager=get_voice_manager(),
             db_factory=get_db,
         )
@@ -384,6 +388,7 @@ def _scan_models_sync() -> dict[str, list[dict[str, Any]]]:
     for p in (
         settings.audio_dir / "cache",
         settings.data_dir / "engine_cache",
+        settings.data_dir / "deleted_characters",
     ):
         try:
             excluded_cache_dirs.add(p.resolve())

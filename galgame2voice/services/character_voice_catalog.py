@@ -48,12 +48,14 @@ from galgame2voice.utils.path_guard import (
 logger = logging.getLogger("galgame2voice.services.character_voice_catalog")
 
 
-def _package_folder(char_mgr: Any, name: str) -> Path | None:
+def _package_folder(char_mgr: Any, profile: Any, profiles: list[Any]) -> Path | None:
     """The folder under characters/ that a rescan would rebuild this voice from, if any."""
     try:
-        package = char_mgr.get_character(name)
+        package = owned_package_for_profile(profile, profiles, char_mgr)
     except Exception as exc:  # An unreadable catalog must not block deleting the row.
         logger.warning("删除音色时读取角色包失败，只删除音色记录：%s", sanitize_error_detail(exc))
+        return None
+    if package is None or not getattr(package, "is_valid", True):
         return None
     folder = getattr(package, "folder_path", None)
     if folder is None:
@@ -419,6 +421,7 @@ class CharacterVoiceCatalog:
         self,
         profile_id: int,
         *,
+        lock: asyncio.Lock | None = None,
         voice_manager: VoiceManager | None = None,
         db_factory: Callable[[], Any] | None = None,
     ) -> dict[str, Any] | None:
@@ -432,17 +435,19 @@ class CharacterVoiceCatalog:
 
         vm.cancel_warmup(profile_id)
         open_db = self._resolve_db_factory(db_factory)
-        async with open_db() as conn:
-            profile = await crud.get_voice_profile(conn, profile_id)
-        if profile is None:
-            return None
         char_mgr = self._resolve_character_manager()
-        folder = await asyncio.to_thread(_package_folder, char_mgr, profile.name)
 
         # A package voice is rebuilt from its folder on every rescan, import or restart,
         # so deleting only the row never sticks. Move the folder to the backup folder
         # first, and put it back if the row cannot be deleted.
-        async with self._get_loop_lock(self._rescan_locks):
+        effective_lock = lock if lock is not None else self._get_loop_lock(self._rescan_locks)
+        async with effective_lock:
+            async with open_db() as conn:
+                profile = await crud.get_voice_profile(conn, profile_id)
+                if profile is None:
+                    return None
+                profiles = await crud.list_voice_profiles(conn)
+            folder = await asyncio.to_thread(_package_folder, char_mgr, profile, profiles)
             moved: Path | None = None
             if folder is not None:
                 backup = get_settings().data_dir / "deleted_characters" / f"{folder.name}-{time.strftime('%Y%m%d-%H%M%S')}"

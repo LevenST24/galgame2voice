@@ -1184,6 +1184,7 @@ export async function deleteVoiceProfile() {
         bindingNote = `，并解除了 ${cleared.length} 个会话的绑定`;
       }
     }
+    invalidateScannedModels();
     await loadSessionVoiceSelect(getActive());
     refreshActiveLoadedBadges();
     ensureSessionVoice(getActive(), { silent: true });

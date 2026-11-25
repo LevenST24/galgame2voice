@@ -139,13 +139,17 @@ async def test_parenthesized_variant_keeps_its_own_identity(project, isolate_tes
         rescanned = await client.post("/api/characters/rescan")
         assert rescanned.status_code == 200, rescanned.text
         restored = (await client.get("/api/voice/profiles")).json()
+        assert all(row["name"] != "安娜" for row in restored["profiles"])
+        (project / deleted.json()["moved_to"]).rename(package)
+        assert (await client.post("/api/characters/rescan")).status_code == 200
+        restored = (await client.get("/api/voice/profiles")).json()
         kept = _profile_by_name(restored, "安娜 (V2)")
+        recreated = _profile_by_name(restored, "安娜")
         assert kept["id"] == variant_id
         assert kept["prompt_text"] == "V2 的参考台词"
         assert kept["system_prompt"] == "变体新人设"
         assert "v2-ref.wav" in kept["ref_audio_path"].replace("\\", "/")
-        # Deleting the package voice moved its folder away, so the rescan does not bring it back.
-        assert all(row["name"] != "安娜" for row in restored["profiles"])
+        assert recreated["id"] != variant_id and "gentle.wav" in recreated["ref_audio_path"].replace("\\", "/")
 
 
 async def test_unreadable_character_catalog_keeps_the_voice_usable(project, isolate_test_database, monkeypatch):
