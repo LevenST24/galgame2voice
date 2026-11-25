@@ -93,3 +93,15 @@ test('pairSubtitle: empty subtitle handling', () => {
   assert.deepEqual(pages, ['', '', '']);
   assert.equal(pages.join(''), '');
 });
+
+test('paginate: a mark left over after a forced split never gets a page of its own', () => {
+  // The textbox fallback width: 35 graphemes plus the two quote marks.
+  const fits = candidate => countGraphemes(candidate) + 2 <= 37;
+  const ja = 'きょうはてんきがとてもいいからいっしょにこうえんへさんぽにいきましょう、それからおみせでおいしいおかしをかってかえってきていっしょにたべましょうね、どうかな';
+  const pages = paginate(ja, fits);
+  assert.equal(pages.join(''), ja);
+  assert.ok(pages.every(fits));
+  assert.deepEqual(pages.filter(page => /^[、。，！？」\s]+$/u.test(page)), [], JSON.stringify(pages));
+  // A sentence that opens with a short clause still breaks after it.
+  assert.deepEqual(paginate('嗯，今天天气真好。', candidate => countGraphemes(candidate) <= 4), ['嗯，', '今天天气', '真好。']);
+});
