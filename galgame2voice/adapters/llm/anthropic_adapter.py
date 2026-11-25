@@ -79,6 +79,20 @@ class AnthropicAdapter(BaseLLMAdapter):
         self.custom_headers = custom_headers or {}
         self.last_finish_reason: str | None = None
 
+    def _messages_url(self) -> str:
+        """Returns the /v1/messages endpoint for the configured base URL.
+
+        Anthropic-compatible services (DeepSeek, Kimi, Zhipu and others) publish their
+        base URL the way the official SDK takes it, without /v1, and the SDK adds
+        /v1/messages itself. Pasting that URL here must not end in a 404 on /messages.
+        """
+        url = self.base_url.rstrip("/")
+        if url.endswith("/messages"):
+            return url
+        if not url.endswith("/v1"):
+            url = f"{url}/v1"
+        return f"{url}/messages"
+
     def _validate_credentials(self) -> None:
         """Validates that an API key is present."""
         if not self.api_key:
@@ -222,7 +236,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         """
         self.last_finish_reason = None
         self._validate_credentials()
-        url = f"{self.base_url}/messages" if not self.base_url.endswith("/messages") else self.base_url
+        url = self._messages_url()
         payload = self._prepare_anthropic_payload(
             messages, model=model, temperature=temperature, stream=False, **kwargs
         )
@@ -309,7 +323,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         """Streams token chunks from Anthropic SSE /messages stream with connection resilience."""
         self.last_finish_reason = None
         self._validate_credentials()
-        url = f"{self.base_url}/messages" if not self.base_url.endswith("/messages") else self.base_url
+        url = self._messages_url()
         payload = self._prepare_anthropic_payload(
             messages, model=model, temperature=temperature, stream=True, **kwargs
         )
