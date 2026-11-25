@@ -559,6 +559,17 @@ async def get_sovits_directory_endpoint() -> dict:
     return await asyncio.to_thread(inspect_sovits_directory, get_settings().project_root)
 
 
+def _is_engine_hint_write_error(exc: OSError, project_root: Path) -> bool:
+    """Whether ``exc`` came from writing data/sovits_dir.txt rather than reading the chosen folder."""
+    if not exc.filename:
+        return True
+    try:
+        data_dir = (project_root / "data").resolve()
+        return Path(os.fsdecode(exc.filename)).resolve().is_relative_to(data_dir)
+    except (OSError, ValueError, TypeError):
+        return True
+
+
 @router.put("/api/system/sovits-directory", dependencies=[Depends(require_auth)])
 async def save_sovits_directory_endpoint(payload: SovitsDirectoryPayload) -> dict:
     try:
@@ -567,6 +578,13 @@ async def save_sovits_directory_endpoint(payload: SovitsDirectoryPayload) -> dic
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except OSError as exc:
         logger.warning("Failed saving engine directory: %s", exc)
+        if not _is_engine_hint_write_error(exc, get_settings().project_root):
+            # Checking the chosen folder failed (disconnected network drive, no access,
+            # name too long); the program folder's write permission is not the problem.
+            raise HTTPException(
+                status_code=400,
+                detail="无法打开所选文件夹。请确认路径正确、当前账户能打开这个文件夹（网络盘需先连接），再重新选择。",
+            ) from exc
         raise HTTPException(status_code=500, detail="无法保存引擎目录，请确认程序目录有写入权限。") from exc
     from galgame2voice.routers.voice import _scan_cache
     generation = _scan_cache.get("generation", 0) + 1
