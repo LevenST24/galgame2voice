@@ -106,6 +106,7 @@ for (const [source, where] of [['dotenv', /\.env/], ['env', /环境变量/]]) {
     assert.match(toasts[0].message, /未生效/);
     assert.match(toasts[0].message, /192\.168\.1\.50:9880/);
     assert.match(toasts[0].message, where);
+    assert.match(toasts[0].message, /\bGPT_SOVITS_BASE_URL\b/);
   });
 }
 
@@ -116,4 +117,24 @@ test('saving a 语音服务地址 that takes effect is a plain success', async (
     { effective_sovits_url: 'http://127.0.0.1:9880', effective_sovits_source: 'db' },
   ), '');
   assert.equal(sovitsUrlOverrideNotice({ audio_retention_minutes: 30 }, { effective_sovits_url: 'http://x:1' }), '');
+});
+
+test('saving the same 语音服务地址 with omitted default port or different case is not reported as overridden', async () => {
+  const { sovitsUrlOverrideNotice } = await import('../frontend/src/controllers/settings_draft_store.js');
+  assert.equal(sovitsUrlOverrideNotice(
+    { gpt_sovits_url: 'https://sovits.example.com' },
+    { effective_sovits_url: 'https://sovits.example.com:443', effective_sovits_source: 'env' },
+  ), '');
+  assert.equal(sovitsUrlOverrideNotice(
+    { gpt_sovits_url: 'http://192.168.1.50' },
+    { effective_sovits_url: 'http://192.168.1.50:9880', effective_sovits_source: 'env' },
+  ), '');
+  assert.equal(sovitsUrlOverrideNotice(
+    { gpt_sovits_url: 'HTTP://LOCALHOST:9880/' },
+    { effective_sovits_url: 'http://localhost:9880', effective_sovits_source: 'env' },
+  ), '');
+  assert.match(sovitsUrlOverrideNotice(
+    { gpt_sovits_url: 'http://192.168.1.50:80' },
+    { effective_sovits_url: 'http://192.168.1.50:9880', effective_sovits_source: 'env' },
+  ), /未生效/);
 });
