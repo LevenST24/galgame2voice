@@ -183,5 +183,7 @@ export function needsModelSettings(_error, code = null) {
   if (!normalized || normalized.startsWith('VOICE_PROFILE_') || SESSION_SETTING_DIAGNOSTIC_CODES.has(normalized)) {
     return false;
   }
+  // The conversation was deleted or cleared elsewhere; nothing in the model settings changes that.
+  if (normalized === 'TURN_UNAVAILABLE') return false;
   return !TRANSIENT_DIAGNOSTIC_CODES.has(normalized) && !normalized.endsWith('RATE_LIMIT');
 }
