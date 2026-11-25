@@ -74,8 +74,10 @@ class AffectionService:
     # Keyword scoring rules
     COMPLIMENT_KEYWORDS = [
         "可爱", "辛苦了", "喜欢你", "谢谢你", "真棒", "夸你", "好看", "漂亮", "温柔", "爱你", "想你", "开心",
-        "太棒了", "真好", "努力", "赞", "喜欢夏目"
+        "太棒了", "真好", "努力", "赞"
     ]
+
+    CHARACTER_COMPLIMENT_KEYWORDS = ["喜欢夏目"]
 
     CHARACTER_PREFERENCE_KEYWORDS = [
         "星光咖啡馆", "女仆装", "甜鸡尾酒", "咖啡加糖", "大枣", "死神", "咖啡豆", "兼职", "高岭之花", "喝一杯",
@@ -181,14 +183,18 @@ class AffectionService:
 
         combined = user_text[:4000].lower()
 
+        uses_lore = _uses_character_lore(character_name)
+
         # Check compliments
-        has_compliment = _has_unnegated_keyword(combined, self.COMPLIMENT_KEYWORDS)
+        has_compliment = _has_unnegated_keyword(combined, self.COMPLIMENT_KEYWORDS) or (
+            uses_lore and _has_unnegated_keyword(combined, self.CHARACTER_COMPLIMENT_KEYWORDS)
+        )
         if has_compliment:
             points += 2
             reasons.extend(["compliment", "warm_compliment (+2)"])
 
         # Check character preferences
-        has_preference = _uses_character_lore(character_name) and _has_unnegated_keyword(
+        has_preference = uses_lore and _has_unnegated_keyword(
             combined, self.CHARACTER_PREFERENCE_KEYWORDS,
         )
         if has_preference:

@@ -344,9 +344,11 @@ class TestAffectionServiceHardening:
 
 
 class TestCharacterLoreKeywords:
-    """「兼职」「喝一杯」「女仆装」 come from 四季夏目's story; other characters don't react to them."""
+    """「兼职」「喝一杯」「女仆装」「喜欢夏目」 come from 四季夏目's story; other characters don't react to them."""
 
-    @pytest.mark.parametrize("text", ["今天去兼职了，好累", "我想喝一杯咖啡", "我特别喜欢女仆装"])
+    @pytest.mark.parametrize(
+        "text", ["今天去兼职了，好累", "我想喝一杯咖啡", "我特别喜欢女仆装", "我其实更喜欢夏目"],
+    )
     def test_another_character_gets_only_the_base_point(self, affection_service, text):
         assert affection_service.calculate_turn_points(text, character_name="千早爱音") == (
             1, ["base_turn", "base_interaction (+1)"],
@@ -357,6 +359,11 @@ class TestCharacterLoreKeywords:
         points, reasons = affection_service.calculate_turn_points("今天去兼职了", character_name=name)
         assert points == 1 + 3
         assert "character_preference" in reasons
+
+    def test_natsume_keeps_her_compliment_keyword(self, affection_service):
+        points, reasons = affection_service.calculate_turn_points("我其实更喜欢夏目", character_name="四季夏目")
+        assert points == 1 + 2
+        assert "compliment" in reasons
 
     def test_another_character_triggers_no_easter_egg(self, affection_service):
         assert affection_service.check_easter_eggs("女仆装", 5, character_name="千早爱音") is None
