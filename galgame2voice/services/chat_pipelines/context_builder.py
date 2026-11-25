@@ -20,6 +20,7 @@ from galgame2voice.services.chat_pipelines.reply_contract import (
     strip_old_format_block,
 )
 from galgame2voice.services.character_manager import get_character_manager
+from galgame2voice.services.session_manager import render_system_template
 from galgame2voice.services.portrait_manifest import load_portrait_manifest
 
 logger = logging.getLogger(__name__)
@@ -178,7 +179,9 @@ async def build_chat_context(
     char_name = character_name or (active_profile.name if active_profile else "Character")
 
     menu = _build_acting_menu(char_name, outfit)
-    system_prompt = strip_old_format_block(system_prompt)
+    # Fill in the persona before the reply contract joins it: rendering
+    # {character_name} also turns }} into }, which broke the contract's JSON example.
+    system_prompt = render_system_template(strip_old_format_block(system_prompt), char_name)
     contract = render_lines_contract(menu)
     system_prompt = f"{system_prompt.rstrip()}\n\n{contract}" if system_prompt.strip() else contract
 
