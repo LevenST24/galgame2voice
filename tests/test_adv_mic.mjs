@@ -258,6 +258,27 @@ test('no-speech with MediaRecorder stops recording, leaks no Blob URL, and shows
   assert.equal(h.tracks[0].stopped, true);
 });
 
+test('a failed recognition says why instead of going quiet, and a cancelled one says nothing', async (t) => {
+  const cases = [
+    ['network', ['语音识别服务连不上，请检查网络；也可以改用 Edge 浏览器，或直接打字。']],
+    ['audio-capture', ['没有找到可用的麦克风，请检查麦克风是否插好、是否被其他程序占用。']],
+    ['language-not-supported', ['语音识别没有成功，请再试一次，或直接打字。']],
+    ['aborted', []],
+  ];
+  for (const [error, expected] of cases) {
+    const h = setupWithRecorder(t, { asyncRecordStopMs: 1 });
+    toggleMic();
+    await new Promise((r) => setTimeout(r, 0));
+    h.recognizers[0].onerror?.({ error });
+    h.recognizers[0].onend?.();
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(isListening(), false);
+    assert.deepEqual(h.sent, []);
+    assert.deepEqual(h.toasts(), expected, error);
+    cancelMic();
+  }
+});
+
 test('manual mic stop with MediaRecorder keeps late onresult and sends text with audio', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const h = setupWithRecorder(t, { syncEndOnStop: false, asyncRecordStopMs: 20 });

@@ -221,6 +221,22 @@ class TestAnthropicPayloadInvariance:
         assert sent["output_config"] == {"effort": "low"}
 
 
+@pytest.mark.asyncio
+async def test_connection_lists_a_tested_model_outside_the_sample_list():
+    """A model that just answered the probe must be in the returned list, or the UI calls it missing."""
+    adapter = AnthropicAdapter(api_key="sk-ant-test")
+    mock_resp = MagicMock(status_code=200, text="{}")
+    mock_resp.json.return_value = {"content": [{"type": "text", "text": "Hi"}], "stop_reason": "end_turn"}
+    adapter.client_override = AsyncMock(post=AsyncMock(return_value=mock_resp))
+    probe = await adapter.test_connection(model="claude-3-5-haiku-20241022")
+    assert probe.success is True
+    assert probe.models[0] == "claude-3-5-haiku-20241022"
+    assert "claude-sonnet-5-5" in probe.models
+
+    known = await adapter.test_connection(model="claude-sonnet-5-5")
+    assert known.models == await adapter.list_models()
+
+
 class TestAnthropicEmptyApiKeyFastFail:
     """Verifies AnthropicAdapter fails fast without making network requests when api_key is empty."""
 
