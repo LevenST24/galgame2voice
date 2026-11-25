@@ -633,3 +633,21 @@ async def test_unwrapped_array_and_flat_object_stream_and_persist_as_lines(
     assert saved.content_japanese == expected_ja
     assert saved.lines == done["lines"]
 
+
+
+@pytest.mark.asyncio
+async def test_each_line_is_voiced_with_its_own_emotion_prosody(coordinator_factory):
+    from galgame2voice.utils.prosody import calculate_adaptive_prosody
+
+    coordinator, tts, _ = coordinator_factory(lines=[
+        {"zh": "我好开心！", "ja": "すごく嬉しい！", "emotion": "happy", "act": {}},
+        {"zh": "好难过……", "ja": "悲しいよ……", "emotion": "sad", "act": {}},
+    ])
+    events = [event async for event in coordinator]
+    assert events[-1]["event"] == "done"
+    options = {call.args[0]: call.kwargs["options"] for call in tts.synthesize_to_file.await_args_list}
+    for sentence, emotion in (("すごく嬉しい！", "happy"), ("悲しいよ……", "sad")):
+        expected = calculate_adaptive_prosody(text=sentence, emotion=emotion, base_params={})
+        assert options[sentence]["emotion"] == emotion
+        for key in ("speed", "top_k", "fragment_interval"):
+            assert options[sentence][key] == pytest.approx(expected[key]), (sentence, key)

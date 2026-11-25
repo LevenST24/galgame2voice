@@ -79,6 +79,20 @@ class AnthropicAdapter(BaseLLMAdapter):
         self.custom_headers = custom_headers or {}
         self.last_finish_reason: str | None = None
 
+    def _messages_url(self) -> str:
+        """Returns the /v1/messages endpoint for the configured base URL.
+
+        Anthropic-compatible services (DeepSeek, Kimi, Zhipu and others) publish their
+        base URL the way the official SDK takes it, without /v1, and the SDK adds
+        /v1/messages itself. Pasting that URL here must not end in a 404 on /messages.
+        """
+        url = self.base_url.rstrip("/")
+        if url.endswith("/messages"):
+            return url
+        if not url.endswith("/v1"):
+            url = f"{url}/v1"
+        return f"{url}/messages"
+
     def _validate_credentials(self) -> None:
         """Validates that an API key is present."""
         if not self.api_key:
@@ -222,7 +236,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         """
         self.last_finish_reason = None
         self._validate_credentials()
-        url = f"{self.base_url}/messages" if not self.base_url.endswith("/messages") else self.base_url
+        url = self._messages_url()
         payload = self._prepare_anthropic_payload(
             messages, model=model, temperature=temperature, stream=False, **kwargs
         )
@@ -309,7 +323,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         """Streams token chunks from Anthropic SSE /messages stream with connection resilience."""
         self.last_finish_reason = None
         self._validate_credentials()
-        url = f"{self.base_url}/messages" if not self.base_url.endswith("/messages") else self.base_url
+        url = self._messages_url()
         payload = self._prepare_anthropic_payload(
             messages, model=model, temperature=temperature, stream=True, **kwargs
         )
@@ -453,20 +467,25 @@ class AnthropicAdapter(BaseLLMAdapter):
                 diagnostic=diag.get("diagnostic"),
                 status_code=diag.get("status_code"),
             )
+        tested_model = model or self.default_model
         t0 = time.time()
         try:
             resp = await self.chat(
                 messages=[ChatMessage(role="user", content="Hi")],
-                model=model or self.default_model,
+                model=tested_model,
                 max_tokens=64,
                 reasoning_effort="none",
             )
             latency = (time.time() - t0) * 1000
+            # The list is a fixed sample, but the reply just came from the tested model, so it exists.
+            models = await self.list_models()
+            if tested_model and tested_model not in models:
+                models = [tested_model, *models]
             return TestResult(
                 success=True,
                 message=f"Anthropic connection successful. Response: {resp.content[:30]}...",
                 latency_ms=latency,
-                models=await self.list_models(),
+                models=models,
             )
         except Exception as exc:
             latency = (time.time() - t0) * 1000

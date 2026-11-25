@@ -114,6 +114,20 @@ def normalize_dialogue_prosody(text: str) -> str:
     return s.strip()
 
 
+def _is_number_comma(text: str, index: int) -> bool:
+    """A comma between digits ("1,000" / "１，５００") groups a number; it is not a pause."""
+    if text[index] not in ",，" or index == 0 or not text[index - 1].isdigit():
+        return False
+    return index + 1 >= len(text) or text[index + 1].isdigit()
+
+
+
+def ends_inside_number(text: str) -> bool:
+    """True when streamed text stops on a comma right after a digit, which may still be "1,000"."""
+    stripped = text.rstrip()
+    return bool(stripped) and _is_number_comma(stripped, len(stripped) - 1)
+
+
 def split_japanese_sentences(
     text: str,
     is_first_chunk: bool = False,
@@ -175,7 +189,7 @@ def split_japanese_sentences(
             first_sent = "".join(curr).strip()
             if first_sent:
                 return _emit_first_and_remainder(first_sent, i + 1)
-        elif c in clause_punct:
+        elif c in clause_punct and not _is_number_comma(text, i):
             while i + 1 < n and (text[i + 1] in clause_punct or text[i + 1] in CLOSING_BRACKETS):
                 i += 1
                 curr.append(text[i])
@@ -199,4 +213,5 @@ __all__ = [
     "SHORT_INTERJECTIONS_PATTERN",
     "is_short_salutation",
     "is_natural_clause_boundary",
+    "ends_inside_number",
 ]
