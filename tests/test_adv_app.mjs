@@ -1433,3 +1433,40 @@ test('X during a reply error keeps the error box and does not draw the old line 
   assert.equal(q('.adv-error-wrap').classList.contains('is-hidden'), false);
   assert.equal(h.sessions[0].settings.advPrimaryLanguage, language);
 });
+
+test('X while hidden during a reply error keeps the error box and language after unhiding', t => {
+  const h = setup(t, { voice: false }); h.start(); h.line(0);
+  h.clock.tick(2000); h.done('error');
+  const stage = h.app.stage.stage, q = s => stage.querySelector(s);
+  const language = h.sessions[0].settings.advPrimaryLanguage;
+  stage.dispatchEvent({ type: 'keydown', key: 'h' });
+  assert.equal(h.app.player.hidden, true); assert.equal(h.app.player.state, 'suspended');
+  stage.dispatchEvent({ type: 'keydown', key: 'x' });
+  stage.dispatchEvent({ type: 'keydown', key: 'h' });
+  assert.equal(h.app.player.hidden, false); assert.equal(h.app.player.state, 'error');
+  assert.equal(q('.adv-speech-view').classList.contains('is-hidden'), true);
+  assert.equal(q('.adv-error-wrap').classList.contains('is-hidden'), false);
+  assert.equal(h.sessions[0].settings.advPrimaryLanguage, language);
+});
+
+test('settings preview, cancel, and save during a reply error keep the error box', t => {
+  const h = setup(t, { voice: false }); h.start(); h.line(0);
+  h.clock.tick(2000); h.done('error');
+  const stage = h.app.stage.stage, q = s => stage.querySelector(s);
+  const primary = h.app.configPanel.controls.advPrimaryLanguage;
+  stage.dispatchEvent({ type: 'keydown', key: 'F8' });
+  assert.equal(h.app.player.state, 'suspended');
+  primary.value = 'ja'; primary.dispatchEvent({ type: 'change' });
+  assert.equal(q('.adv-speech-view').classList.contains('is-hidden'), true);
+  stage.querySelector('.adv-config-btn-cancel').click();
+  assert.equal(h.app.player.state, 'error');
+  assert.equal(q('.adv-speech-view').classList.contains('is-hidden'), true);
+  assert.equal(q('.adv-error-wrap').classList.contains('is-hidden'), false);
+  stage.dispatchEvent({ type: 'keydown', key: 'F8' });
+  primary.value = 'ja'; primary.dispatchEvent({ type: 'change' });
+  stage.querySelector('.adv-config-btn-save').click();
+  assert.equal(h.app.player.state, 'error');
+  assert.equal(h.sessions[0].settings.advPrimaryLanguage, 'ja');
+  assert.equal(q('.adv-speech-view').classList.contains('is-hidden'), true);
+  assert.equal(q('.adv-error-wrap').classList.contains('is-hidden'), false);
+});

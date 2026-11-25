@@ -261,7 +261,7 @@ export function mountAdv(dom, deps) {
       }
       if (patch.advBlink !== undefined || patch.advLipSync !== undefined) sprite.setAnimationOptions(patch);
       if (patch.advPrimaryLanguage !== undefined || patch.advSubtitleLanguage !== undefined) {
-        if (currentLine && player.state !== 'input' && player.state !== 'error') {
+        if (currentLine && player.isPresenting()) {
           player.repaginate();
           textbox.reflow({ pageIndex: player.page });
         }
@@ -277,7 +277,7 @@ export function mountAdv(dom, deps) {
         paint(currentLine, { costume: baselineSettings?.advOutfit || model.defaultCostume });
       }
       sprite.setAnimationOptions(animationOptions(baselineSettings || settings));
-      if (currentLine && player.state !== 'input' && player.state !== 'error') {
+      if (currentLine && player.isPresenting()) {
         player.repaginate();
         textbox.reflow({ pageIndex: player.page });
       }
@@ -629,8 +629,8 @@ export function mountAdv(dom, deps) {
       case 'home': deps.onHome?.(); break;
       case 'model_status': deps.onModelSettings?.(); break;
       case 'swap_languages':
-        // In the input and error states the textbox shows the draft or the error box, not a line to redraw.
-        if (['input', 'error'].includes(player.state)) break;
+        // Only swap while presenting a visible line; hidden, input, error and their suspended states have no line on stage.
+        if (!player.isPresenting() || player.hidden) break;
         textbox.swapLanguages(); break;
       case 'new_session': deps.onNewSession?.(); break;
       case 'stop':
@@ -824,7 +824,7 @@ export function mountAdv(dom, deps) {
       if (mounted) spriteTransition.change(swap);
       else swap();
     } else if (changedOutfit) paint();
-    if (changedLanguage && currentLine && player.state !== 'input' && player.state !== 'error') {
+    if (changedLanguage && currentLine && player.isPresenting()) {
       // Reflow presentation only; no activate/live announcement/acting/voice replay.
       player.repaginate();
       textbox.reflow({ pageIndex: player.page });

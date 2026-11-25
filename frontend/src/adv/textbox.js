@@ -597,6 +597,7 @@ export function createTextbox(container, opts = {}) {
   }
 
   function enterInput({ canSend = true } = {}) {
+    pageRevealed = false;
     clearTypewriter();
     setCanSend(canSend);
     clearError();
@@ -728,6 +729,7 @@ export function createTextbox(container, opts = {}) {
   }
 
   function showError({ message = '', actions = [] } = {}) {
+    pageRevealed = false;
     clearError();
     clearTypewriter();
     glyph(false);
