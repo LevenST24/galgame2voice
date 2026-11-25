@@ -141,9 +141,9 @@ _RE_TERMINAL_PUNCT_CHECK = re.compile(r'[。！？!?…]')
 _RE_ACTION_ASTERISK = re.compile(r'(?<!\*)\*([^*]{1,35})\*(?!\*)')
 _RE_BRACKET_CUES = re.compile(r'[（\(\[【〖〔\*]([^）\)\]】〗〕\*]{1,30})[）\)\]】〗〕\*]')
 VOCAL_CHAR_PATTERN = re.compile(
-    r'[A-Za-z0-9\uff10-\uff19\uff21-\uff3a\uff41-\uff5a\u3007\u3041-\u3096\u30a1-\u30fa\uff66-\uff9d\u3400-\u4dbf\u4e00-\u9fff]'
+    r'[A-Za-z0-9\uff10-\uff19\uff21-\uff3a\uff41-\uff5a\u3007\u3041-\u3096\u30a1-\u30fa\uff66-\uff6f\uff71-\uff9d\u3400-\u4dbf\u4e00-\u9fff]'
 )
-_RE_HAS_CJK_OR_KANA = re.compile(r'[\u3007\u3041-\u3096\u30a1-\u30fa\uff66-\uff9d\u3400-\u4dbf\u4e00-\u9fff]')
+_RE_HAS_CJK_OR_KANA = re.compile(r'[\u3007\u3041-\u3096\u30a1-\u30fa\uff66-\uff6f\uff71-\uff9d\u3400-\u4dbf\u4e00-\u9fff]')
 # Half-width katakana with its punctuation and sound marks (U+FF61-FF9F).
 _RE_HALFWIDTH_KATAKANA_RUN = re.compile(r'[\uff61-\uff9f]+')
 
@@ -295,6 +295,7 @@ def clean_japanese_parentheses(text: str, max_passes: int = 5) -> str:
     cleaned = strip_reasoning_tags(text)
     if not cleaned:
         return ""
+    cleaned = widen_halfwidth_katakana(cleaned)
 
     # 0. Clean Markdown links, bare URLs, and Markdown decoration wrappers
     cleaned = _RE_MARKDOWN_LINK.sub(r'\1', cleaned)

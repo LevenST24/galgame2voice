@@ -256,3 +256,20 @@ def test_halfwidth_katakana_line_is_voiced_as_fullwidth_kana():
     assert normalize_japanese_for_tts("ｱﾘｶﾞﾄｳ、ﾊﾟﾊﾟ！") == "アリガトウ、パパ！"
     # Other half-width forms (ASCII, full-width digits) are left as they were.
     assert normalize_japanese_for_tts("ｶﾞﾝﾊﾞﾚ 123") == "ガンバレ 123"
+
+
+def test_halfwidth_prolonged_mark_and_stage_cues_are_not_voiced():
+    """Half-width prolonged marks, kaomoji, and half-width stage cues must stay silent."""
+    from galgame2voice.services.chat_pipelines.tts_pipeline import TtsStreamPipeline
+    from galgame2voice.utils.japanese_phonetics import (
+        has_vocal_text,
+        is_spoken_dialogue_inside_brackets,
+    )
+
+    assert not has_vocal_text("ｰｰｰ")
+    assert not is_spoken_dialogue_inside_brackets("´ｰ｀")
+    assert not TtsStreamPipeline.is_vocal_sentence("ｰｰｰ")
+    assert not TtsStreamPipeline.is_vocal_sentence("(´ｰ｀)")
+    assert clean_japanese_parentheses("（ﾄﾞｷﾄﾞｷ）") == ""
+    assert not TtsStreamPipeline.is_vocal_sentence("（ﾄﾞｷﾄﾞｷ）")
+    assert not TtsStreamPipeline.is_vocal_sentence("｡www")
