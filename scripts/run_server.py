@@ -1124,6 +1124,17 @@ def sync_runtime_address(*, host: str | None = None, port: int | None = None) ->
         pass
 
 
+def _port_number(value: str) -> int:
+    """argparse type for --port: a whole number within the TCP range."""
+    try:
+        port = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"端口应是 0-65535 之间的整数，收到的是「{value}」") from None
+    if not 0 <= port <= 65535:
+        raise argparse.ArgumentTypeError(f"端口应在 0-65535 之间，收到的是 {port}")
+    return port
+
+
 def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     """Parses CLI flags for the Galgame2Voice server launcher."""
     parser = argparse.ArgumentParser(
@@ -1134,8 +1145,9 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     env_port_str = os.environ.get("GALGAME2VOICE_PORT") or os.environ.get("PORT") or os.environ.get("GALGAME_PORT")
     if env_port_str:
         try:
-            env_port = int(env_port_str)
-        except ValueError:
+            env_port = _port_number(env_port_str)
+        except argparse.ArgumentTypeError:
+            # An out-of-range environment value would crash bind() later; keep the default.
             pass
     env_host = (
         os.environ.get("GALGAME2VOICE_HOST")
@@ -1153,7 +1165,7 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--port",
-        type=int,
+        type=_port_number,
         default=env_port,
         help="Port to listen on",
     )

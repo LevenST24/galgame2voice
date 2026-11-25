@@ -189,6 +189,17 @@ class TestServerLauncherCLI:
         assert args.no_browser is True
         assert args.check_only is True
 
+    @pytest.mark.parametrize("port", ["70000", "-1", "abc"])
+    def test_parse_args_rejects_a_port_outside_the_tcp_range(self, port, capsys):
+        with pytest.raises(SystemExit) as exc:
+            rs.parse_args(["--port", port])
+        assert exc.value.code == 2
+        assert "端口应" in capsys.readouterr().err
+
+    def test_parse_args_ignores_an_out_of_range_env_port(self, monkeypatch):
+        monkeypatch.setenv("PORT", "70000")
+        assert rs.parse_args([]).port == 8080
+
     def test_parse_args_env_overrides(self, monkeypatch):
         monkeypatch.setenv("GALGAME_PORT", "9999")
         monkeypatch.setenv("GALGAME_HOST", "0.0.0.0")
