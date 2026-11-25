@@ -343,7 +343,10 @@ export function mountAdv(dom, deps) {
     getWorks: () => works,
     getWork: () => deps.getCharacter?.()?.work || null,
     getSelection: storedBackground,
-    saveSettings: patch => deps.saveSettings?.(patch),
+    saveSettings: patch => {
+      deps.saveSettings?.(patch);
+      settings = pickSettings({ ...settings, ...deps.getSession()?.settings, ...patch }, DEFAULT_SESSION_SETTINGS);
+    },
     onPreview: selection => {
       appliedBackground = shownBackground(selection);
       background.setSelection(appliedBackground);
@@ -370,16 +373,23 @@ export function mountAdv(dom, deps) {
     },
     documentObj: doc,
   });
+  let bgPanelOpenToken = 0;
   function openBgPanel() {
     closeDrawer();
     closeLog();
     if (configPanel?.isOpen) configPanel.close({ revert: true });
+    const token = ++bgPanelOpenToken;
     // The panel's thumbnails are built from the list, so renew expiring URLs first.
     const renewal = renewBackgroundsIfExpiring();
-    if (renewal) renewal.then(() => { if (!destroyed) bgPanel.open(); });
+    if (renewal) renewal.then(() => {
+      if (destroyed || token !== bgPanelOpenToken) return;
+      if (stage.stage.classList.contains('is-home') || drawer || backlog || externalOverlay || configPanel?.isOpen) return;
+      bgPanel.open();
+    });
     else bgPanel.open();
   }
   function closeBgPanel() {
+    ++bgPanelOpenToken;
     if (bgPanel?.isOpen) bgPanel.close();
   }
   async function loadBackgrounds({ keepOnError = false } = {}) {
@@ -402,6 +412,7 @@ export function mountAdv(dom, deps) {
     background.setList(list);
     // Auto resolves against the list, so re-check once it arrives.
     if (settings) syncBackground();
+    if (bgPanel?.isOpen) bgPanel.refresh();
   }
   // Background image URLs are signed for about 12 hours. Check the wall clock when
   // they are about to be used (a timer would not run while the computer sleeps),
@@ -639,6 +650,7 @@ export function mountAdv(dom, deps) {
       case 'background': openBgPanel(); break;
       case 'sessions': openDrawer('sessions'); break;
       case 'close_overlay':
+        ++bgPanelOpenToken;
         if (backlog) closeLog();
         else if (configPanel?.isOpen) configPanel.close({ revert: true });
         else if (bgPanel?.isOpen) bgPanel.close();
@@ -665,6 +677,7 @@ export function mountAdv(dom, deps) {
       case 'swap_languages': textbox.swapLanguages(); break;
       case 'new_session': deps.onNewSession?.(); break;
       case 'stop':
+        ++bgPanelOpenToken;
         stopStageReplay();
         controller.stop();
         if (player.isPresenting()) player.beginPlayerEdit();
@@ -744,7 +757,7 @@ export function mountAdv(dom, deps) {
   else if (mql?.addListener) { mql.addListener(motionChange); disposers.push(() => mql.removeListener(motionChange)); }
   function setOverlay(open) {
     externalOverlay = open;
-    if (open) { deps.cancelMic?.(); player.suspend('dialog'); stopStageReplay(); sprite.suspend(); textbox.completeReveal(); textbox.glyph(false); }
+    if (open) { ++bgPanelOpenToken; deps.cancelMic?.(); player.suspend('dialog'); stopStageReplay(); sprite.suspend(); textbox.completeReveal(); textbox.glyph(false); }
     else { player.resume('dialog'); if (!drawer && !backlog && !configPanel?.isOpen) restoreSprite(); }
     syncControls();
   }
@@ -973,7 +986,10 @@ export function mountAdv(dom, deps) {
       resetInput(); ++replayToken; turnId = null; currentLine = null;
       sprite.suspend(); syncControls();
     },
-    backgroundUrl: (id, time, work) => selectionUrl(backgrounds, { id: backgroundKey(id ?? '', work || null), time }),
+    backgroundUrl: (id, time, work) => {
+      renewBackgroundsIfExpiring();
+      return selectionUrl(backgrounds, { id: backgroundKey(id ?? '', work || null), time });
+    },
     listBackgrounds: () => backgrounds.map(({ key, name, work }) => ({ key, name, work })),
     get backlog() { return backlog; },
     unmount() {
