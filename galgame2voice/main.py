@@ -126,9 +126,11 @@ def _init_logging_and_safety(settings) -> None:
 
     if not is_loopback and is_auth_disabled():
         err_msg = (
-            f"FATAL: Application is configured to listen on '{settings.host}' with auth_disabled=True. "
-            "Network exposure strictly requires console token authentication enabled. "
-            "Set GALGAME2VOICE_AUTH_DISABLED=0 in your environment or docker-compose.yml to proceed."
+            f"无法监听 {settings.host}：未开启访问令牌时只允许本机（127.0.0.1）访问。"
+            "如需让局域网或其他设备访问，请在程序目录的 .env 中加入 GALGAME2VOICE_AUTH_DISABLED=0"
+            "（Docker 部署写在 docker-compose.yml 中）后重新启动；令牌保存在 data/.console_token。"
+            "只在本机使用时，请把监听地址改回 127.0.0.1。\n"
+            f"FATAL: Application is configured to listen on '{settings.host}' with auth_disabled=True."
         )
         logger.critical(err_msg)
         raise RuntimeError(err_msg)
