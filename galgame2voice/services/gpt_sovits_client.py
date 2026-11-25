@@ -968,6 +968,8 @@ class GptSovitsClient:
 
                 if not checked_silence:
                     pre_buffer.extend(item)
+                    if len(pre_buffer) >= 12 and not _is_wav_payload(bytes(pre_buffer[:12])):
+                        raise RuntimeError(NON_AUDIO_RESPONSE_ERROR)
                     # Inspect initial WAV PCM samples
                     peak = wav_peak_amplitude(bytes(pre_buffer))
                     if peak is not None and peak > 0.0:
@@ -984,6 +986,8 @@ class GptSovitsClient:
                     yield item
 
             if not checked_silence and pre_buffer:
+                if not _is_wav_payload(bytes(pre_buffer)):
+                    raise RuntimeError(NON_AUDIO_RESPONSE_ERROR)
                 if wav_is_silent(bytes(pre_buffer)):
                     raise RuntimeError(SILENT_AUDIO_ERROR)
                 if profiler and hasattr(profiler, "record_app_first_chunk"):
