@@ -154,6 +154,55 @@ def _init_directories(settings) -> None:
     )
 
 
+async def _read_db_console_token(settings) -> str:
+    async with get_db(settings.db_path) as conn:
+        raw = await crud.get_settings_raw(conn)
+    return str(raw.console_token or "").strip()
+
+
+async def _announce_console_token(settings) -> None:
+    """Say where the access token is on every startup, never the token itself.
+
+    The token was only logged (in English) the first time it was generated, so a
+    later visit that asked for it left the user to search the README.
+    """
+    from galgame2voice.security import auth
+
+    if auth.is_auth_disabled():
+        return
+    if auth.get_env_console_token():
+        logger.info(
+            "已开启访问令牌：网页要求输入令牌时，填写 %s（环境变量或 .env）里设置的值。",
+            auth.ENV_TOKEN_VAR,
+        )
+        return
+    token_file = settings.data_dir / ".console_token"
+    if not token_file.is_file():
+        # Someone deleted the file; write it again from the stored token.
+        try:
+            token = await _read_db_console_token(settings)
+            if token:
+                token_file.parent.mkdir(parents=True, exist_ok=True)
+                token_file.write_text(token, encoding="utf-8")
+                try:
+                    token_file.chmod(0o600)
+                except OSError:
+                    pass
+        except Exception as exc:
+            logger.warning("Could not restore the console token file: %s", exc)
+    if token_file.is_file():
+        logger.info(
+            "已开启访问令牌：网页要求输入令牌时，用记事本打开 %s，复制里面的内容粘贴进去。",
+            token_file,
+        )
+    else:
+        logger.warning(
+            "已开启访问令牌，但没能写出令牌文件 %s。可以在 .env 里设置 %s=自己定的令牌，重启后用它登录。",
+            token_file,
+            auth.ENV_TOKEN_VAR,
+        )
+
+
 async def _init_database_and_characters(settings) -> None:
     """Initializes SQLite schema, auto-heals voice profiles, and syncs character packages."""
     await init_db(settings.db_path)
@@ -319,6 +368,7 @@ async def lifespan(app: FastAPI):
     _init_logging_and_safety(settings)
     _init_directories(settings)
     await _init_database_and_characters(settings)
+    await _announce_console_token(settings)
     await _init_gpt_sovits_client(settings)
 
     cleanup_task = asyncio.create_task(
