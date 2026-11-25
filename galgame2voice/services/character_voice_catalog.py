@@ -12,6 +12,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import sqlite3
 from typing import Any
 from weakref import WeakKeyDictionary
 
@@ -34,6 +35,12 @@ from galgame2voice.services.character_identity import (
 from galgame2voice.services.character_manager import get_character_manager
 from galgame2voice.services.voice_manager import VoiceManager, get_voice_manager
 from galgame2voice.utils.async_tasks import await_protected
+from galgame2voice.utils.audio_spec import (
+    REFERENCE_AUDIO_MAX_SECONDS,
+    REFERENCE_AUDIO_MIN_SECONDS,
+    probe_audio_duration_seconds,
+    resolve_reference_audio_path,
+)
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.path_guard import (
     PathTraversalError,
@@ -42,6 +49,37 @@ from galgame2voice.utils.path_guard import (
 )
 
 logger = logging.getLogger("galgame2voice.services.character_voice_catalog")
+
+
+def _check_reference_audio_length(ref_audio_path: str | None) -> None:
+    """GPT-SoVITS refuses reference audio outside 3~10 s on every line; say so when saving.
+
+    A file that is missing or whose length cannot be read is left for the engine to judge.
+    """
+    if not ref_audio_path or not ref_audio_path.strip():
+        return
+    found = Path(resolve_reference_audio_path(ref_audio_path.strip()))
+    if not found.is_file():
+        return
+    duration = probe_audio_duration_seconds(str(found))
+    if duration is None or REFERENCE_AUDIO_MIN_SECONDS <= duration <= REFERENCE_AUDIO_MAX_SECONDS:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail=(
+            f"参考音频长 {duration:.1f} 秒，GPT-SoVITS 只接受 "
+            f"{REFERENCE_AUDIO_MIN_SECONDS:g}～{REFERENCE_AUDIO_MAX_SECONDS:g} 秒的参考音频，请换一段。"
+        ),
+    )
+
+
+def _raise_if_duplicate_name(exc: sqlite3.IntegrityError, name: str | None) -> None:
+    """Voice names are unique; say so instead of passing SQLite's English text on."""
+    if name is not None and "voice_profiles.name" in str(exc):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"已有名为「{name.strip()}」的音色，请换一个名称。",
+        ) from exc
 
 
 class VoiceProfileBusyError(RuntimeError):
@@ -322,10 +360,15 @@ class CharacterVoiceCatalog:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Invalid file path: {pte}",
                 ) from pte
+            _check_reference_audio_length(profile.ref_audio_path)
 
         open_db = self._resolve_db_factory(db_factory)
         async with open_db() as conn:
-            return await crud.create_voice_profile(conn, profile)
+            try:
+                return await crud.create_voice_profile(conn, profile)
+            except sqlite3.IntegrityError as exc:
+                _raise_if_duplicate_name(exc, profile.name)
+                raise
 
     async def update_profile(
         self,
@@ -362,12 +405,21 @@ class CharacterVoiceCatalog:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Invalid file path: {pte}",
                 ) from pte
+            _check_reference_audio_length(updates.ref_audio_path)
             if updates.ref_audio_path:
                 updates.ref_audio_path = to_project_relative_path(updates.ref_audio_path)
+            if updates.gpt_weights_path:
+                updates.gpt_weights_path = to_project_relative_path(updates.gpt_weights_path)
+            if updates.sovits_weights_path:
+                updates.sovits_weights_path = to_project_relative_path(updates.sovits_weights_path)
 
         open_db = self._resolve_db_factory(db_factory)
         async with open_db() as conn:
-            return await crud.update_voice_profile(conn, profile_id, updates)
+            try:
+                return await crud.update_voice_profile(conn, profile_id, updates)
+            except sqlite3.IntegrityError as exc:
+                _raise_if_duplicate_name(exc, updates.name)
+                raise
 
     async def delete_profile(
         self,
