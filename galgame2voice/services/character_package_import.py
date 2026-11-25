@@ -14,6 +14,7 @@ import sys
 import tarfile
 import tempfile
 from typing import Any, Callable, IO, Iterable
+import unicodedata
 import zipfile
 import zlib
 
@@ -95,14 +96,91 @@ def detect_archive_format(archive_path: Path) -> str:
     raise HTTPException(400, "不支持的文件格式：请选择角色包 .zip 压缩包或直接选择角色包文件夹。")
 
 
-def _decode_zip_member_name(info: zipfile.ZipInfo) -> str:
+# Names without the UTF-8 flag are in the zipping computer's code page. Simplified
+# Chinese Windows (GBK) is the most common source, then Japanese Windows (cp932).
+_LEGACY_ZIP_ENCODINGS = ("utf-8", "gb18030", "cp932")
+_MAX_MANIFEST_PROBE_BYTES = 1024 * 1024
+
+
+def _raw_zip_member_name(info: zipfile.ZipInfo) -> bytes | None:
+    """The stored bytes of a name without the UTF-8 flag, else None.
+
+    orig_filename is used because on Windows zipfile turns every 0x5C byte of
+    filename into "/", and 0x5C is the second byte of many GBK and cp932
+    characters (黒, 運, ソ, 表 ...).
+    """
     if info.flag_bits & 0x800:
-        return info.filename
+        return None
     try:
-        raw = info.filename.encode("cp437")
+        return info.orig_filename.encode("cp437").split(b"\0", 1)[0]
     except UnicodeEncodeError:
+        return None
+
+
+def _manifest_strings(zf: zipfile.ZipFile, info: zipfile.ZipInfo) -> set[str]:
+    """Every string in a manifest.json member, with forward slashes."""
+    if info.file_size > _MAX_MANIFEST_PROBE_BYTES:
+        return set()
+    try:
+        data = json.loads(zf.read(info).decode("utf-8-sig"))
+    except Exception:
+        return set()
+    found: set[str] = set()
+    stack: list[Any] = [data]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+        elif isinstance(item, str):
+            found.add(unicodedata.normalize("NFC", item.replace("\\", "/")).strip("/"))
+    return found
+
+
+def _choose_zip_name_encoding(zf: zipfile.ZipFile) -> str:
+    """Pick the one code page for the archive's unflagged names.
+
+    UTF-8 wins when every name is valid UTF-8. Otherwise the candidate under
+    which most names match the paths its manifest.json refers to is used,
+    falling back to GBK, which decodes almost any byte string.
+    """
+    raw_names = [(info, raw) for info in zf.infolist() if (raw := _raw_zip_member_name(info)) is not None]
+    if not any(any(b >= 0x80 for b in raw) for _, raw in raw_names):
+        return "utf-8"
+    decoded: dict[str, list[str]] = {}
+    for enc in _LEGACY_ZIP_ENCODINGS:
+        try:
+            decoded[enc] = [raw.decode(enc) for _, raw in raw_names]
+        except UnicodeDecodeError:
+            continue
+    if "utf-8" in decoded:
+        return "utf-8"
+    references: set[str] = set()
+    for info in zf.infolist():
+        if info.filename.replace("\\", "/").rsplit("/", 1)[-1] == "manifest.json":
+            references |= _manifest_strings(zf, info)
+
+    def matches(names: list[str]) -> int:
+        count = 0
+        for name in names:
+            parts = unicodedata.normalize("NFC", name.replace("\\", "/")).strip("/").split("/")
+            count += any("/".join(parts[i:]) in references for i in range(len(parts)))
+        return count
+
+    if "cp932" in decoded and matches(decoded["cp932"]) > matches(decoded.get("gb18030", [])):
+        return "cp932"
+    return "gb18030"
+
+
+def _decode_zip_member_name(info: zipfile.ZipInfo, encoding: str = "gb18030") -> str:
+    raw = _raw_zip_member_name(info)
+    if raw is None:
         return info.filename
-    for enc in ("utf-8", "gb18030"):
+    # UTF-8 goes first for GBK archives: GBK decodes almost anything, so a
+    # genuinely UTF-8 name in a mixed archive would otherwise be garbled.
+    order = ("utf-8", encoding) if encoding == "gb18030" else (encoding, "utf-8")
+    for enc in dict.fromkeys((*order, *_LEGACY_ZIP_ENCODINGS)):
         try:
             return raw.decode(enc)
         except UnicodeDecodeError:
@@ -113,6 +191,9 @@ def _decode_zip_member_name(info: zipfile.ZipInfo) -> str:
 def _resolve_safe_extract_path(member_name: str, extract_root: Path) -> Path | None:
     if not member_name:
         return None
+    # macOS stores names decomposed (NFD) while manifest.json is typed composed
+    # (NFC); Windows and Linux treat the two as different files.
+    member_name = unicodedata.normalize("NFC", member_name)
     if (
         "\x00" in member_name
         or any(ord(c) < 32 for c in member_name)
@@ -136,6 +217,20 @@ def _resolve_safe_extract_path(member_name: str, extract_root: Path) -> Path | N
     return dest
 
 
+# Files the operating system adds when a folder is zipped or browsed. They
+# are never part of a package, and macOS's "Icon\r" would otherwise be
+# rejected as an illegal name.
+_OS_METADATA_NAMES = frozenset({".ds_store", "icon\r", "thumbs.db", "desktop.ini"})
+
+
+def _is_os_metadata(member_name: str) -> bool:
+    parts = [part for part in member_name.replace("\\", "/").split("/") if part]
+    if not parts:
+        return False
+    name = parts[-1]
+    return "__MACOSX" in parts or name.startswith("._") or name.lower() in _OS_METADATA_NAMES
+
+
 def _extract_members(
     members: Iterable[tuple[str, bool, Callable[[], IO[bytes] | None] | None]],
     extract_dir: Path,
@@ -143,6 +238,8 @@ def _extract_members(
 ) -> None:
     actual_total = 0
     for member_name, is_dir, open_src in members:
+        if _is_os_metadata(member_name):
+            continue
         dest = _resolve_safe_extract_path(member_name, extract_dir)
         if dest is None:
             continue
@@ -169,13 +266,14 @@ def extract_archive_safely(
         extract_dir.mkdir(parents=True, exist_ok=True)
         if fmt == "zip":
             with zipfile.ZipFile(archive_path, "r") as zf:
+                name_encoding = _choose_zip_name_encoding(zf)
 
                 def _zip_members() -> Iterable[tuple[str, bool, Callable[[], IO[bytes] | None] | None]]:
                     for info in zf.infolist():
                         mode = (info.external_attr >> 16) & 0xFFFF
                         if stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR):
                             raise HTTPException(400, "压缩包内包含符号链接或特殊文件，已拒绝导入。")
-                        name = _decode_zip_member_name(info)
+                        name = _decode_zip_member_name(info, name_encoding)
                         is_dir = info.is_dir() or name.endswith(("/", "\\"))
                         yield name, is_dir, None if is_dir else (lambda i=info: zf.open(i, "r"))
 

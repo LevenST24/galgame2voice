@@ -414,6 +414,12 @@ async function applySessionVoice(session, { silent = false }, want, isCurrent) {
     // On the home screen, or after the user chose text only, a missing engine is not news.
     if (_callbacks.isHomeOpen?.() || _callbacks.isVoiceEnabled?.() === false) return;
     console.error('音色切换失败:', e);
+    if (e.status === 503 && e.message) {
+      // The engine runs, but this computer lacks free memory or VRAM for the
+      // model. The service's sentence says which and what to close.
+      showToast(e.message, 'error');
+      return;
+    }
     showToast('语音引擎还没准备好，现在只有文字、没有声音。可在「运行状态」查看引擎。', 'error', _callbacks.onOpenEngineStatus ? {
       actionLabel: '检查运行状态',
       onAction: () => _callbacks.onOpenEngineStatus(),
@@ -1224,8 +1230,12 @@ async function handleSaveSessionSettings() {
         return;
       }
     }
+    const maxTokens = Number(_dom.sMaxTokens.value);
+    if (!String(_dom.sMaxTokens.value).trim() || !Number.isInteger(maxTokens) || maxTokens < 16 || maxTokens > 32768) {
+      showToast('「最大生成长度」请填 16 到 32768 之间的整数，设置未保存。', 'error');
+      return;
+    }
     _callbacks.invalidateSessionSync?.();
-    const maxTokens = Math.round(Number(_dom.sMaxTokens.value)) || DEFAULT_SESSION_SETTINGS.maxTokens;
     const voiceListUnavailable = _dom.sVoice.value === VOICE_LIST_UNAVAILABLE;
     let profileId = _dom.sVoice.value && _dom.sVoice.value !== '__custom__'
       ? Number(_dom.sVoice.value)
@@ -1250,7 +1260,7 @@ async function handleSaveSessionSettings() {
       voiceProfileId: profileId,
       temperature: Number(_dom.sTemp.value),
       topP: Number(_dom.sTopP.value),
-      maxTokens: Math.min(32768, Math.max(16, maxTokens)),
+      maxTokens,
       freqPenalty: Number(_dom.sFreq.value),
       presPenalty: Number(_dom.sPres.value),
       maxContext: Number(_dom.sCtx.value),
