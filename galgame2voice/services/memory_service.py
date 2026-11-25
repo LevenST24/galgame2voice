@@ -37,9 +37,9 @@ _NICKNAME_NON_NAME_STARTS = (
     "什么", "啥", "谁", "怎么",
 )
 # Words people add after a name, any number of them: 叫我小明就行, 叫我小明就好啦.
-_NICKNAME_ENDINGS = r'(?:就好|就行|就可以了?|即可|好了|吧|啊|呀|哦|喔|呢|嘛|啦)*'
+_NICKNAME_ENDINGS = r'(?:就好了?|就行了?|就可以了?|即可|好了|吧|啊|呀|哦|喔|呢|嘛|啦)*'
 # 我最喜欢的是猫, 我喜欢的动漫是孤独摇滚: the fact is what follows 是.
-_WHAT_I_MEAN_IS = r'(?:的[^\s,，。！!？?~是]{0,6}是)?'
+_WHAT_I_MEAN_IS = r'(?!的[^\s,，。！!？?~是]{0,6}不是)(?:的[^\s,，。！!？?~是]{0,6}是)?'
 
 # Anchor facts (name, occupation) stay in the prompt however many newer facts exist.
 _ANCHOR_CATEGORIES = ("nickname", "identity")

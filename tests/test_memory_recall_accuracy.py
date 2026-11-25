@@ -49,6 +49,7 @@ def test_names_are_still_learned(memory_service, text, name):
     ("叫我小明就行", "小明"), ("你可以叫我小明哦", "小明"), ("叫我阿明好了", "阿明"),
     ("叫我小明就好啦", "小明"), ("我叫小明呢", "小明"), ("叫我小明即可。", "小明"),
     ("叫我小明就可以了", "小明"), ("我叫小明嘛~", "小明"),
+    ("叫我小明就行了", "小明"), ("叫我小明就好了", "小明"),
 ])
 def test_words_after_a_name_are_not_part_of_it(memory_service, text, name):
     assert _learned_name(memory_service, text) == name
@@ -63,6 +64,16 @@ def test_words_after_a_name_are_not_part_of_it(memory_service, text, name):
 def test_a_preference_said_as_x_is_y_keeps_only_y(memory_service, text, key, value):
     facts = memory_service.extract_facts_heuristic(text)
     assert [(f["fact_key"], f["fact_value"]) for f in facts] == [(key, value)]
+
+
+@pytest.mark.parametrize("text", [
+    "我最喜欢的不是猫",
+    "我喜欢的才不是甜食",
+    "我讨厌的不是你",
+    "我不喜欢的不是香菜",
+])
+def test_a_negated_x_is_not_y_preference_is_not_saved(memory_service, text):
+    assert memory_service.extract_facts_heuristic(text) == []
 
 
 async def test_an_everyday_phrase_keeps_the_learned_nickname(memory_service, isolate_test_database):
