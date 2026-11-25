@@ -38,7 +38,7 @@ const invalid = {
   advPrimaryLanguage: ['en', 'none', null, 1], advSubtitleLanguage: ['en', null, false],
   advWindowOpacity: [-1, 101, 1.5, Infinity, '75'], advTextIntervalMs: [-1, 101, 0.5, NaN, '30'],
   advAutoBaseMs: [-1, 6001, 1.1, Infinity, null], advAutoPerCharMs: [-1, 201, 0.5, NaN],
-  advAutoMode: ['fast', '', null, 2], advOutfit: ['../private', '/absolute', 'a/b', 'a\\b', 'a\nb', 'x'.repeat(201), {}, null],
+  advAutoMode: ['fast', '', null, 2], advOutfit: ['.', '   ', '../private', '/absolute', 'a/b', 'a\\b', 'a\nb', 'x'.repeat(201), {}, null],
   advBackground: ['../cafe', 'cafe', 'cafe/stella/day', 'cafe//stella', '/stella', 'cafe/', 'cafe\\day',
     '咖啡店', 'a'.repeat(65), 'cafe\n', 'cafe/' + 'a'.repeat(65), {}, null, 1],
   advBgTime: ['dawn', '', 'DAY', null, 1],

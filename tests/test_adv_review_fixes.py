@@ -23,15 +23,17 @@ def test_chat_request_outfit_security_validation():
     _validate_chat_request(req_slash)
     assert req_slash.outfit is None
 
-    # 3. Excessive length (> 64 chars)
-    req_long = ChatRequest(prompt="hello", outfit="a" * 65)
-    _validate_chat_request(req_long)
-    assert req_long.outfit is None
+    # 3. Excessive length (> 200 chars), single dot, and control characters
+    for bad in ("a" * 201, ".", "a\nb"):
+        req_bad = ChatRequest(prompt="hello", outfit=bad)
+        _validate_chat_request(req_bad)
+        assert req_bad.outfit is None
 
-    # 4. Valid outfit identifier
-    req_valid = ChatRequest(prompt="hello", outfit="summer_dress_2")
-    _validate_chat_request(req_valid)
-    assert req_valid.outfit == "summer_dress_2"
+    # 4. Valid outfit identifiers (up to 200 chars, including spaces/dots and untrimmed spacing)
+    for valid in ("summer_dress_2", "school uniform ", "a" * 200):
+        req_valid = ChatRequest(prompt="hello", outfit=valid)
+        _validate_chat_request(req_valid)
+        assert req_valid.outfit == valid
 
     # 5. Empty or whitespace outfit
     req_empty = ChatRequest(prompt="hello", outfit="   ")

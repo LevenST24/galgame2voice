@@ -51,7 +51,7 @@ INVALID_P3 = [
     ("advAutoPerCharMs", "45"), ("advPlayerName", ""), ("advPlayerName", "  "),
     ("advPlayerName", 17), ("advPlayerName", "人" * 401),
     ("advPlayerName", "\ufeff"),
-    ("advPlayerName", "👩🏽‍💻" * 101), ("advOutfit", "../other"), ("advOutfit", None), ("advOutfit", "a/b"), ("advOutfit", "a\\b"), ("advOutfit", "a\nb"),
+    ("advPlayerName", "👩🏽‍💻" * 101), ("advOutfit", "../other"), ("advOutfit", None), ("advOutfit", "a/b"), ("advOutfit", "a\\b"), ("advOutfit", "a\nb"), ("advOutfit", "."), ("advOutfit", "   "),
     ("advBlink", "false"), ("advBlink", 1), ("advLipSync", "true"), ("advLipSync", 0),
     ("advBackground", "../cafe"), ("advBackground", "a" * 65), ("advBackground", "咖啡店"),
     ("advBackground", "cafe\n"), ("advBackground", None), ("advBackground", 1),

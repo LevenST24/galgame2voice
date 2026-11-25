@@ -22,7 +22,7 @@ from galgame2voice.services.character_identity import identity_key
 from galgame2voice.services.chat_service import ChatService
 from galgame2voice.services.chat_pipelines.line_scanner import FX, MOTIONS
 from galgame2voice.services.chat_pipelines.tts_pipeline import TTS_JOB_TIMEOUT_SECONDS
-from galgame2voice.services.chat_backup import export_chat_backup, import_timestamp, validate_adv_settings
+from galgame2voice.services.chat_backup import export_chat_backup, import_timestamp, is_valid_outfit_id, validate_adv_settings
 from galgame2voice.services.gpt_sovits_client import validate_user_tts_options
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, get_database_path, immediate_transaction
@@ -88,14 +88,9 @@ class ChatRequest(BaseModel):
     @field_validator("outfit", mode="before")
     @classmethod
     def _validate_outfit(cls, value: Any) -> str | None:
-        if not isinstance(value, str):
+        if not isinstance(value, str) or not value or not is_valid_outfit_id(value):
             return None
-        val = value.strip()
-        if not val or len(val) > 64:
-            return None
-        if "/" in val or "\\" in val or ".." in val:
-            return None
-        return val
+        return value
 
 
 # ============================================================================
