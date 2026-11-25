@@ -76,6 +76,7 @@ try:
         terminate_process_tree,
     )
     from galgame2voice.config import get_settings  # noqa: E402
+    from galgame2voice.utils.active_turns import stop_active_turns  # noqa: E402
     from galgame2voice.utils.windows_runtime import kernel32  # noqa: E402
     from scripts.launcher_address import browser_hosts  # noqa: E402
 except ImportError as exc:
@@ -110,7 +111,14 @@ _SPAWNED_SOVITS_PROC = None
 _SPAWNED_SOVITS_STARTED_AT: float | None = None
 _SPAWNED_SOVITS_LAUNCH: EngineLaunch | None = None
 _WINDOWS_JOB_HANDLE = None
+_CONSOLE_CTRL_HANDLER = None
 register_runtime_host(sys.modules[__name__])
+
+# Console events that end the process: the window closed, the user signed out,
+# or Windows is shutting down. Windows ends the process about 5 s after it
+# reports one of them, so a turn in progress gets slightly less than that.
+_CONSOLE_EXIT_EVENTS = frozenset({2, 5, 6})  # CTRL_CLOSE, CTRL_LOGOFF, CTRL_SHUTDOWN
+_CONSOLE_EXIT_SAVE_SECONDS = 4.0
 
 
 def setup_windows_job_object():
@@ -144,6 +152,31 @@ def setup_signal_handlers():
             signal.signal(sig, _posix_signal_handler)
         except (ValueError, OSError, AttributeError):
             pass
+
+
+def _on_console_control(ctrl_type: int) -> bool:
+    """Save the replies still streaming before Windows ends the process."""
+    if ctrl_type in _CONSOLE_EXIT_EVENTS:
+        try:
+            stop_active_turns(_CONSOLE_EXIT_SAVE_SECONDS)
+        except Exception:
+            pass
+    # Not handled: the next handler (Python's Ctrl+C, then Windows) still runs.
+    return False
+
+
+def setup_console_close_handler():
+    """Let a closed console window stop chat turns so their partial replies are saved."""
+    global _CONSOLE_CTRL_HANDLER
+    if sys.platform != "win32" or _CONSOLE_CTRL_HANDLER is not None:
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    routine = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)(_on_console_control)
+    if kernel32().SetConsoleCtrlHandler(routine, True):
+        # Windows calls the routine from its own thread; keep it alive.
+        _CONSOLE_CTRL_HANDLER = routine
 
 
 def _resolve_project_root() -> Path:
@@ -1208,6 +1241,7 @@ def main(args: list[str] | None = None):
 
     setup_windows_job_object()
     setup_signal_handlers()
+    setup_console_close_handler()
     atexit.register(cleanup_subprocesses)
 
     listener = None
