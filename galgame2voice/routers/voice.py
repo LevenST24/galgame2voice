@@ -9,7 +9,6 @@ from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 from pathlib import Path
-import re
 import time
 from typing import Any
 from fastapi import APIRouter, HTTPException, status
@@ -23,6 +22,7 @@ from galgame2voice.database.models import (
     VoiceProfileUpdate,
 )
 from galgame2voice.routers.common import validate_positive_profile_id
+from galgame2voice.services.audio_artifacts import GENERATED_AUDIO_NAME
 from galgame2voice.services.character_manager import (
     get_character_default_tts_speed,
     get_character_manager,
@@ -344,10 +344,7 @@ _SCAN_EXCLUDED_DIRS = frozenset({
     "logs",
 })
 
-_SYNTH_AUDIO_FILENAME_PATTERN = re.compile(
-    r"^(?:chunk_\d+|full|repair|voice)_[0-9a-f]{12}\.wav$",
-    re.IGNORECASE,
-)
+_SYNTH_AUDIO_FILENAME_PATTERN = GENERATED_AUDIO_NAME
 
 
 def _is_path_or_subpath_of_any(path: Path, targets: set[Path]) -> bool:
