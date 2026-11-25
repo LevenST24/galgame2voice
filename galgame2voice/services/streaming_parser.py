@@ -18,7 +18,9 @@ from galgame2voice.services.emotion_classifier import (
     classify_emotion,
     extract_bracketed_emotion,
 )
-from galgame2voice.utils.japanese_phonetics import extract_stage_directions_and_emotion
+from galgame2voice.utils.japanese_phonetics import (
+    extract_stage_directions_and_emotion, is_spoken_dialogue_inside_brackets,
+)
 from galgame2voice.utils.prosody import (
     clamp_dynamic_speed,
     clamp_dynamic_temperature,
@@ -47,7 +49,11 @@ _RE_JAPANESE_FALLBACK = re.compile(r'(?:日文|Japanese)[:：]\s*(.*)$', flags=r
 _RE_JSON_BLOCK = re.compile(r'\{.*\}', flags=re.DOTALL)
 _RE_BRACKETED_JAPANESE = re.compile(r'【([^】]+)】')
 _RE_BRACKETED_JAPANESE_STRIP = re.compile(r'【[^】]+】')
-_RE_KANA = re.compile(r'[\u3040-\u309f\u30a0-\u30ff]')
+_RE_KANA = re.compile(r'[\u3041-\u3096\u30a1-\u30fa]')
+_RE_HIRAGANA = re.compile(r'[\u3041-\u3096]')
+_RE_CJK = re.compile(r'[\u3007\u3400-\u4dbf\u4e00-\u9fff]')
+_RE_BRACKET_EMO_PREFIX = re.compile(r'^(?:情绪|心情|状态|emotion|emo)[:：\s]*', flags=re.IGNORECASE)
+_RE_BRACKET_EMO_PUNCT = re.compile(r'[。！？!?….~〜 　\-\*]+')
 # A JSON object opening after a preamble ("好的～" + {"tts": ...), or a brace still waiting for its key.
 _RE_JSON_OBJECT_START = re.compile(r'\{\s*(?:["\']|$)')
 _JAPANESE_FALLBACK_LABELS = ("日文:", "日文：", "japanese:", "japanese：")
@@ -230,6 +236,11 @@ def _normalize_valid_emotion(val: Any) -> str | None:
     raw_e = str(val).lower()
     norm = EMOTION_NAME_MAP.get(raw_e, raw_e)
     return norm if norm in VALID_EMOTIONS else None
+
+
+def _match_exact_bracket_emotion(inner: str) -> str | None:
+    cand = _RE_BRACKET_EMO_PREFIX.sub('', inner.strip()).strip().lower()
+    return _normalize_valid_emotion(cand) or _normalize_valid_emotion(_RE_BRACKET_EMO_PUNCT.sub('', cand).strip())
 
 
 def _trim_partial_japanese_label(text: str) -> str:
@@ -792,25 +803,26 @@ class StreamingBilingualParser:
             self.chinese_extracted = sanitized
 
         if self.chinese_extracted and "【" in self.chinese_extracted and "】" in self.chinese_extracted:
-            # An emotion tag such as 【难过】 is a cue, never the voice line.
-            if not self.emotion_extracted:
-                tag_emotion, without_tag = extract_bracketed_emotion(self.chinese_extracted)
-                if tag_emotion and without_tag:
-                    self._set_lead_emotion(tag_emotion)
-                    self.chinese_extracted = without_tag
-            if _RE_BRACKETED_JAPANESE.search(self.chinese_extracted):
+            if matches := list(_RE_BRACKETED_JAPANESE.finditer(self.chinese_extracted)):
                 outside = _RE_BRACKETED_JAPANESE_STRIP.sub('', self.chinese_extracted).strip()
+                voiced: list[str] = []
+                first_tag: tuple[str, int] | None = None
+                for m in matches:
+                    inner = m.group(1).strip()
+                    if tag_emo := _match_exact_bracket_emotion(inner):
+                        first_tag = first_tag or (tag_emo, m.start())
+                    elif is_spoken_dialogue_inside_brackets(inner) and _RE_KANA.search(inner):
+                        voiced.append(inner)
+                if not self.emotion_extracted and first_tag:
+                    prefix = _RE_BRACKETED_JAPANESE_STRIP.sub('', self.chinese_extracted[:first_tag[1]])
+                    if not extract_bracketed_emotion(prefix)[0]:
+                        self._set_lead_emotion(first_tag[0])
                 if not self.japanese_extracted or self.japanese_extracted == self.chinese_extracted:
-                    voiced = [m.group(1).strip() for m in _RE_BRACKETED_JAPANESE.finditer(self.chinese_extracted)
-                              if _RE_KANA.search(m.group(1))]
-                    if _RE_KANA.search(outside):
-                        # The reply itself is Japanese, so every 【】 in it is a cue: voice the reply.
-                        self.japanese_extracted = outside
-                    elif voiced:
-                        # 中文【日文】中文【日文】: voice every Japanese block, in order.
-                        self.japanese_extracted = "".join(voiced)
-                    else:
-                        self.japanese_extracted = ""
+                    ja_outside = bool(
+                        _RE_HIRAGANA.search(outside)
+                        and len(_RE_KANA.findall(outside)) >= len(_RE_CJK.findall(outside))
+                    )
+                    self.japanese_extracted = "".join(voiced) if voiced and not ja_outside else ""
                 self.chinese_extracted = outside
 
         if not self.japanese_extracted:
