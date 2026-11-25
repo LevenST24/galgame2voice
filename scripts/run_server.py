@@ -126,6 +126,10 @@ def setup_windows_job_object():
     return _setup_windows_job_object()
 
 
+class StoppedBySignal(SystemExit):
+    """Raised by the launcher's signal handler: a deliberate stop, not a startup failure."""
+
+
 def setup_signal_handlers():
     """
     Registers signal handlers for graceful shutdown on POSIX systems (and Windows where supported).
@@ -137,7 +141,7 @@ def setup_signal_handlers():
 
     def _posix_signal_handler(signum, frame):
         cleanup_subprocesses()
-        sys.exit(128 + signum)
+        raise StoppedBySignal(128 + signum)
 
     signals_to_register = []
     if hasattr(signal, "SIGTERM"):
@@ -1309,6 +1313,9 @@ def main(args: list[str] | None = None):
                 raise SystemExit(3)
         except KeyboardInterrupt:
             print("\n[提示] 服务已正常停止，正在释放资源...")
+        except StoppedBySignal:
+            print("\n[提示] 收到停止信号，服务已正常停止，正在释放资源...")
+            raise
         except SystemExit as exc:
             if exc.code not in (None, 0):
                 print("\n[启动失败] 本机服务未能就绪。请确认解压目录可写，并查看 logs 中的错误日志；若提示数据库损坏，请先保留 data 文件夹，再从备份恢复。")
