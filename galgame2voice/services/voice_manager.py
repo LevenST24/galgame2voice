@@ -445,7 +445,9 @@ class VoiceManager:
         # Memory precheck: new and old weights briefly co-reside during a switch; loading
         # with too little free memory OOM-crashes the engine. Sits here (not in the HTTP
         # layer) so every call path — REST, auto-bind, warmup — gets the same guard.
-        await asyncio.to_thread(self._check_switch_memory_guard, force)
+        # A switch that only changes the reference audio loads nothing and needs no check.
+        if await asyncio.to_thread(self.client.loads_new_weights, profile_obj, force):
+            await asyncio.to_thread(self._check_switch_memory_guard, force)
 
         # 2. Execute 3-step atomic model switch with auto-rollback.
         # The id is published before the slow load and cleared only after commit or
