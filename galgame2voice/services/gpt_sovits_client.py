@@ -460,6 +460,22 @@ class GptSovitsClient:
             (self._loaded_sovits_source, self.current_sovits_weights),
         ))
 
+    def loads_new_weights(self, target: Any, force: bool = False) -> bool:
+        """Whether switching to ``target`` would load GPT or SoVITS weights (reads file stats)."""
+        if force or self._model_state_uncertain:
+            return True
+        try:
+            spec = _extract_weight_spec(target)
+        except ValueError:
+            return True
+        return any(
+            not current or current != path or loaded is not None and loaded != SourceFile.capture(path)
+            for current, loaded, path in (
+                (self.current_gpt_weights, self._loaded_gpt_source, spec.gpt_weights_path),
+                (self.current_sovits_weights, self._loaded_sovits_source, spec.sovits_weights_path),
+            )
+        )
+
     async def set_refer_audio(
         self,
         refer_audio_path: str,

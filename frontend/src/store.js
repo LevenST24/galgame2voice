@@ -502,7 +502,10 @@ export function autoTitle(session) {
   if (!firstUser) return false;
   const t = firstUser.content.replace(/[\r\n\t]+/g, ' ').trim();
   if (!t) return false;
-  session.title = t.length > 20 ? `${t.slice(0, 20)}…` : t;
+  // Count characters, not UTF-16 units: cutting an emoji in half leaves a
+  // lone surrogate that the service cannot store.
+  const chars = Array.from(t);
+  session.title = chars.length > 20 ? `${chars.slice(0, 20).join('')}…` : t;
   return true;
 }
 
