@@ -325,6 +325,9 @@ class LineScanner:
         self._root_is_array: bool = False
         self._saw_lines_key: bool = False
         self._saw_flat_line_key: bool = False
+        # The root that just closed was one flat line object, so another '{' right after it
+        # (one object per line, without the lines wrapper) is the next line, not trailing text.
+        self._after_flat_line_root: bool = False
         self._root_chars: list[str] = []
 
         # String / escape tracking
@@ -400,6 +403,7 @@ class LineScanner:
         self._root_is_array = False
         self._saw_lines_key = False
         self._saw_flat_line_key = False
+        self._after_flat_line_root = False
         self._root_chars = ["{"]
         self._phase = 1
 
@@ -417,6 +421,7 @@ class LineScanner:
             return
         if not isinstance(obj, dict) or "lines" in obj:
             return
+        self._after_flat_line_root = True
         line, line_issues = validate_line(obj, ordinal=self._line_ordinal)
         self._line_ordinal += 1
         if line is not None:
@@ -442,6 +447,14 @@ class LineScanner:
                 if self._feed_think_tag_outside_string(c):
                     self._reset_state()
                     emitted_lines.clear()
+                    continue
+                if (
+                    c == "{"
+                    and self._after_flat_line_root
+                    and not self.trailing_text.strip(" \t\r\n,")
+                ):
+                    self.trailing_text = ""
+                    self._enter_root_object()
                     continue
                 self.trailing_text += c
                 continue
