@@ -6,7 +6,7 @@ Provides type-safe environment and runtime settings via Pydantic V2.
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from galgame2voice import __version__
@@ -195,7 +195,35 @@ class Settings(BaseSettings):
         return self.project_root / self.backgrounds_dir_name
 
 
+_SETTING_ERROR_REASONS = {
+    "int_parsing": "不是有效的整数",
+    "int_from_float": "不是有效的整数",
+    "float_parsing": "不是有效的数字",
+    "bool_parsing": "不是有效的开关值，请填 true 或 false",
+}
+
+
+class InvalidSettingsError(SystemExit):
+    """A setting from the environment or .env cannot be used.
+
+    Subclasses SystemExit so that startup ends with the plain message, not a traceback.
+    """
+
+
+def _describe_invalid_settings(exc: ValidationError) -> str:
+    lines = ["galgame2voice 无法启动：以下配置项的值无效（来自环境变量，或程序目录下的 .env 文件）："]
+    for err in exc.errors():
+        name = ".".join(str(part) for part in err.get("loc", ())) or "?"
+        reason = _SETTING_ERROR_REASONS.get(err.get("type", ""), err.get("msg", "格式不对"))
+        lines.append(f"- {name} = {str(err.get('input', ''))[:80]!r}：{reason}")
+    lines.append("请改正或删除这些配置项后重新启动。")
+    return "\n".join(lines)
+
+
 @lru_cache()
 def get_settings() -> Settings:
     """Returns a cached singleton instance of Settings."""
-    return Settings()
+    try:
+        return Settings()
+    except ValidationError as exc:
+        raise InvalidSettingsError(_describe_invalid_settings(exc)) from None
