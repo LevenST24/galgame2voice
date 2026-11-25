@@ -131,6 +131,7 @@ All notable changes to galgame2voice are documented here. The format follows
 - 修复分层立绘的角色连续换几次表情后，部分表情图层显示不出来、页面其他操作也提示「请求过于频繁」的问题；立绘和背景图片现在不计入请求频率限制。
 - 修复把程序文件夹复制到另一台电脑或另一个 Windows 用户下使用时，开启访问令牌后填入 data/.console_token 里的令牌仍一直提示无效的问题；现在启动时会自动换成这台电脑能读取的保存方式，原来的令牌继续可用。
 - 修复 Docker 部署时用 GALGAME2VOICE_PORT 改了监听端口后，服务正常运行、容器却一直显示 unhealthy 的问题；健康检查现在访问实际监听的端口。
+- 修复把 GALGAME2VOICE_AUDIO_CLEANUP_INTERVAL_SECONDS 设为 0 或负数后，后台音频清理不停空转、一直占满一个 CPU 核心的问题；小于 60 秒的值现在按 60 秒执行，并在日志中提示一次。
 
 ## [3.2.11] - 2026-11-24
 ### Fixed
