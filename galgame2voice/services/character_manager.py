@@ -561,29 +561,17 @@ class CharacterManager:
         found = select_profile(rows, char_name, aliases or ())
         if found is not None:
             return found
-        # A package renamed in its manifest without listing the old name as an alias:
-        # its row no longer matches any package by name, but still plays this package's
-        # reference audio. Keep that row (sessions, affection, memories) instead of
-        # adding a second voice. Two such rows are ambiguous, so neither is taken.
-        orphans = [
+        # A package renamed without an alias keeps its own row matched by package_id;
+        # custom voices (package_id is NULL) and conflicting names are never claimed.
+        target_pkg = identity_key(package.id)
+        by_package = [
             row for row in all_rows
-            if index.resolve(row["name"]) is None and CharacterManager._row_uses_package_audio(row, package)
+            if index.resolve(row["name"]) is None
+            and not index.is_conflicting(row["name"])
+            and "package_id" in row.keys() and row["package_id"]
+            and identity_key(str(row["package_id"])) == target_pkg
         ]
-        return orphans[0] if len(orphans) == 1 else None
-
-    @staticmethod
-    def _row_uses_package_audio(row: Any, package: CharacterPackage) -> bool:
-        """True when the row's reference audio lives inside the package folder."""
-        raw = str(row["ref_audio_path"] or "").strip().strip("\"'").replace("\\", "/")
-        if not raw:
-            return False
-        path = Path(raw)
-        if not path.is_absolute():
-            path = get_settings().project_root / path
-        try:
-            return path.resolve().is_relative_to(package.folder.resolve())
-        except (OSError, ValueError):
-            return False
+        return by_package[0] if len(by_package) == 1 else None
 
     @classmethod
     def _resolve_package_profile_defaults(cls, pkg: CharacterPackage) -> dict[str, Any]:
@@ -753,13 +741,15 @@ class CharacterManager:
     ) -> bool:
         """Idempotently updates existing voice_profile row with healed paths and prompt updates."""
         updates = await asyncio.to_thread(cls._build_profile_updates, existing_row, pkg, defaults, known_other_packages)
+        needs_pkg_id = "package_id" in existing_row.keys() and existing_row["package_id"] != pkg.id
         if updates:
             from galgame2voice.database.crud_modules.voice_profiles import update_voice_profile
             from galgame2voice.database.models import VoiceProfileUpdate
 
             await update_voice_profile(conn, existing_row["id"], VoiceProfileUpdate(**updates))
-            return True
-        return False
+        if needs_pkg_id:
+            await conn.execute("UPDATE voice_profiles SET package_id = ? WHERE id = ?;", (pkg.id, existing_row["id"]))
+        return bool(updates or needs_pkg_id)
 
     @staticmethod
     async def _insert_new_profile(
@@ -773,13 +763,14 @@ class CharacterManager:
         from galgame2voice.database.crud_modules.voice_profiles import create_voice_profile
         from galgame2voice.database.models import VoiceProfileCreate
 
-        await create_voice_profile(conn, VoiceProfileCreate(
+        created = await create_voice_profile(conn, VoiceProfileCreate(
             name=char_name, description=manifest.description,
             gpt_weights_path=defaults["gpt_weights"], sovits_weights_path=defaults["sovits_weights"],
             ref_audio_path=defaults["ref_audio_str"], prompt_text=defaults["prompt_text"],
             prompt_lang=defaults["prompt_lang"], text_lang=defaults["prompt_lang"],
             system_prompt=defaults["system_prompt"], is_default=bool(is_default_val),
         ))
+        await conn.execute("UPDATE voice_profiles SET package_id = ? WHERE id = ?;", (manifest.id, created.id))
 
     async def sync_with_db(self, conn: aiosqlite.Connection) -> int:
         """
@@ -799,9 +790,11 @@ class CharacterManager:
 
         valid_pkgs = sorted(valid_pkgs, key=_pkg_sort_key)
 
+        from galgame2voice.database.migrations import _add_column_if_missing
         from galgame2voice.database.session import immediate_transaction
 
         async with immediate_transaction(conn):
+            await _add_column_if_missing(conn, "voice_profiles", "package_id", "TEXT DEFAULT NULL")
             cur = await conn.execute("SELECT COUNT(*) FROM voice_profiles;")
             count_row = await cur.fetchone()
             existing_count = count_row[0] if count_row else 0
