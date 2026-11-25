@@ -7,14 +7,16 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import field_validator
-from pydantic_settings import NoDecode
-
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from galgame2voice import __version__
 from galgame2voice.runtime_paths import get_install_root
+
+# Imported after the main pydantic lines above so a missing or outdated package
+# is still reported by its own name (see the launcher's dependency check).
+from pydantic import field_validator
+from pydantic_settings import NoDecode
 
 
 class Settings(BaseSettings):
