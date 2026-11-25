@@ -118,6 +118,8 @@ All notable changes to galgame2voice are documented here. The format follows
 - 修复「对话模型」里保存过的 API 密钥无法删除、只能用别的密钥覆盖的问题；现在密钥输入框旁有「清除」按钮。
 - 修复环境变量 GALGAME2VOICE_SKIP_MEM_CHECK 写成 0 或 false 时反而跳过内存检查的问题；现在只有写 1 等开启值才跳过。
 - 改进：配置示例文件 .env.example 改为中文说明，写明放在哪里、怎样启用某一行以及每项的作用。
+- 修复环境变量 GALGAME2VOICE_AUDIO_RETENTION_MINUTES 不起作用、临时语音始终保留 30 分钟的问题；现在首次启动时用它作为「音频缓存保留时间」的初始值，之后以网页里的设置为准。
+- 修复环境变量 GALGAME2VOICE_LOG_LEVEL 写成「 debug 」（带空格）或数字时悄悄按 INFO 记录、写错级别名时日志开头还显示成那个错名字的问题；现在不区分大小写和首尾空格，无法识别时会在日志开头提示并按 INFO 记录。
 
 ## [3.2.11] - 2026-11-24
 ### Fixed
