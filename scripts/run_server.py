@@ -1044,13 +1044,23 @@ def reserve_available_socket(preferred_port: int = 8080, host: str = "127.0.0.1"
             listener.bind((host, p))
             listener.listen(2048)
             return listener
-        except OSError:
+        # A port outside 0-65535 (e.g. GALGAME2VOICE_PORT=99999) raises OverflowError, not OSError.
+        except (OSError, OverflowError):
             if listener is not None:
                 listener.close()
             if p == 0:
                 raise
 
     raise RuntimeError("Could not reserve a listening port")
+
+
+def port_switch_notice(preferred_port: int, active_port: int) -> str | None:
+    """Explains why the server is not on the port the user asked for, if it is not."""
+    if preferred_port == 0 or active_port == preferred_port:
+        return None
+    if not 0 < preferred_port <= 65535:
+        return f"[提示] 端口 {preferred_port} 不在 1 到 65535 之间，已自动改用可用端口: {active_port}"
+    return f"[提示] 默认端口 {preferred_port} 无法绑定 (可能被系统代理或其他程序占用)，已自动切换至可用端口: {active_port}"
 
 
 def find_available_port(preferred_port: int = 8080, host: str = "127.0.0.1") -> int:
@@ -1274,8 +1284,9 @@ def main(args: list[str] | None = None):
         bind_host = parsed.host
         listener = reserve_available_socket(preferred_port, host=bind_host)
         active_port = listener.getsockname()[1]
-        if preferred_port != 0 and active_port != preferred_port:
-            print(f"[提示] 默认端口 {preferred_port} 无法绑定 (可能被系统代理或其他程序占用)，已自动切换至可用端口: {active_port}")
+        notice = port_switch_notice(preferred_port, active_port)
+        if notice:
+            print(notice)
 
         # Synchronize active port and host across all aliases and clear Settings cache
         sync_runtime_address(host=bind_host, port=active_port)
