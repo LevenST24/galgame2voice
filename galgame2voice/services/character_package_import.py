@@ -23,6 +23,8 @@ from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from galgame2voice.config import get_settings
+from galgame2voice.database.crud_modules.voice_profiles import update_voice_profile
+from galgame2voice.database.models import VoiceProfileUpdate
 from galgame2voice.database.session import get_db
 from galgame2voice.services.character_identity import AmbiguousProfileName, DuplicateCharacterId, identity_key, select_profile
 from galgame2voice.services.character_manager import (
@@ -364,7 +366,8 @@ def _staged_identities(staged: list[tuple[str, Path]]) -> list[tuple[str, list[s
             continue
         if not isinstance(data, dict) or not isinstance(data.get("name"), str) or not data["name"].strip():
             continue
-        aliases = [a for a in data.get("aliases") or [] if isinstance(a, str) and a.strip()]
+        raw_aliases = data.get("aliases")
+        aliases = [a for a in raw_aliases if isinstance(a, str) and a.strip()] if isinstance(raw_aliases, list) else []
         package_id = data.get("id") if isinstance(data.get("id"), str) else ""
         found.append((data["name"].strip(), [x for x in (package_id, *aliases) if x]))
     return found
@@ -376,19 +379,26 @@ async def _own_voice_clashes(staged: list[tuple[str, Path]], char_mgr: Any) -> l
     if not identities:
         return []
     async with get_db() as conn:
-        cursor = await conn.execute("SELECT id, name FROM voice_profiles ORDER BY id;")
+        cursor = await conn.execute("SELECT * FROM voice_profiles ORDER BY id;")
         rows = await cursor.fetchall()
     own_rows = [row for row in rows if char_mgr.get_character(row["name"]) is None]
     clashes: list[dict[str, Any]] = []
     for name, aliases in identities:
         if char_mgr.get_character(name) is not None:
             continue  # An update of an installed package keeps its own voice.
-        try:
-            row = select_profile(own_rows, name, aliases)
-        except AmbiguousProfileName:
-            continue  # Sync already refuses to touch an ambiguous name.
-        if row is not None and all(c["profile_id"] != row["id"] for c in clashes):
-            clashes.append({"package": name, "profile_id": row["id"], "profile_name": row["name"]})
+        rest = list(own_rows)
+        while rest:
+            try:
+                row = select_profile(rest, name, aliases)
+            except AmbiguousProfileName:
+                break  # Sync already refuses to touch an ambiguous name.
+            if row is None:
+                break
+            rest = [r for r in rest if r["id"] != row["id"]]
+            if all(c["profile_id"] != row["id"] for c in clashes):
+                clashes.append(
+                    {"package": name, "profile_id": row["id"], "profile_name": row["name"], "snap": dict(row)}
+                )
     return clashes
 
 
@@ -415,17 +425,23 @@ async def _rename_own_voices(clashes: list[dict[str, Any]]) -> list[tuple[int, s
     return renamed
 
 
-async def _restore_own_voice_names(renamed: list[tuple[int, str]]) -> None:
-    if not renamed:
+_OWN_VOICE_COLS = (
+    "name", "description", "gpt_weights_path", "sovits_weights_path",
+    "ref_audio_path", "prompt_text", "prompt_lang", "text_lang", "system_prompt",
+)
+
+
+async def _restore_own_voices(snapshots: list[dict[str, Any]]) -> None:
+    if not snapshots:
         return
     async with get_db() as conn:
-        for profile_id, old_name in renamed:
+        for snap in snapshots:
             try:
-                await conn.execute("UPDATE voice_profiles SET name = ? WHERE id = ?;", (old_name, profile_id))
+                await update_voice_profile(
+                    conn, snap["id"], VoiceProfileUpdate(**{k: snap[k] for k in _OWN_VOICE_COLS})
+                )
             except sqlite3.IntegrityError:
-                # A row the failed import already made holds the name; the voice keeps its new one.
-                logger.warning("导入失败后无法恢复音色原名：%s", old_name)
-        await conn.commit()
+                logger.warning("导入失败后无法恢复音色原名：%s", snap["name"])
 
 
 def _validate_placed_packages(mgr: Any, placed: list[Path], out_pkgs: list[CharacterPackage]) -> None:
@@ -502,15 +518,17 @@ async def import_character_archive_file(
 
             placed: list[Path] = []
             backups: list[tuple[Path, Path]] = []
-            renamed: list[tuple[int, str]] = []
+            snapshots: list[dict[str, Any]] = []
 
             async def _undo() -> None:
-                await _restore_own_voice_names(renamed)
+                await _restore_own_voices(snapshots)
                 await _rollback_and_rescan(placed, backups, catalog, char_mgr)
 
             try:
-                if clashes and same_name == "keep_both":
-                    renamed.extend(await _rename_own_voices(clashes))
+                if clashes and same_name in ("keep_both", "replace"):
+                    snapshots.extend(c["snap"] for c in clashes)
+                    if same_name == "keep_both":
+                        await _rename_own_voices(clashes)
                 await asyncio.to_thread(
                     _place_packages, staged, chars_dir, settings.data_dir / "replaced_characters", placed, backups
                 )
@@ -534,6 +552,17 @@ async def import_character_archive_file(
                         if prof is None:
                             raise _ImportValidationError(
                                 f"角色包「{pkg.name}」未能同步为可用音色，请检查是否存在同名音色冲突。"
+                            )
+                        if same_name == "replace" and any(c["profile_id"] == prof.id for c in clashes):
+                            d = await asyncio.to_thread(CharacterManager._resolve_package_profile_defaults, pkg)
+                            await update_voice_profile(
+                                conn, prof.id, VoiceProfileUpdate(
+                                    name=pkg.name, description=pkg.manifest.description,
+                                    gpt_weights_path=d["gpt_weights"], sovits_weights_path=d["sovits_weights"],
+                                    ref_audio_path=d["ref_audio_str"], prompt_text=d["prompt_text"],
+                                    prompt_lang=d["prompt_lang"], text_lang=d["prompt_lang"],
+                                    system_prompt=d["system_prompt"],
+                                ),
                             )
                         imported_items.append(
                             {

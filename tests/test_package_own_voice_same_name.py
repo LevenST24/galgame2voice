@@ -1,6 +1,7 @@
 """A character package named like a voice the user made asks before taking that voice over."""
 
 import io
+import json
 import wave
 from pathlib import Path
 
@@ -11,9 +12,9 @@ from galgame2voice.database.session import init_db
 from test_character_package_import import _make_package_bytes, _setup_app
 
 
-def _own_voice_files(root: Path) -> dict[str, str]:
+def _own_voice_files(root: Path, name: str = "爱丽丝") -> dict[str, str]:
     own = root / "my"
-    own.mkdir()
+    own.mkdir(exist_ok=True)
     (own / "g.ckpt").write_bytes(b"g" * 1024)
     (own / "s.pth").write_bytes(b"s" * 1024)
     buf = io.BytesIO()
@@ -24,7 +25,7 @@ def _own_voice_files(root: Path) -> dict[str, str]:
         audio.writeframes(b"\x02\x00" * 8000 * 5)
     (own / "ref.wav").write_bytes(buf.getvalue())
     return {
-        "name": "爱丽丝",
+        "name": name,
         "gpt_weights_path": str(own / "g.ckpt"),
         "sovits_weights_path": str(own / "s.pth"),
         "ref_audio_path": str(own / "ref.wav"),
@@ -33,8 +34,8 @@ def _own_voice_files(root: Path) -> dict[str, str]:
     }
 
 
-async def _create_own_voice(client, root) -> int:
-    created = await client.post("/api/voice/profiles", json=_own_voice_files(root))
+async def _create_own_voice(client, root, name: str = "爱丽丝") -> int:
+    created = await client.post("/api/voice/profiles", json=_own_voice_files(root, name))
     assert created.status_code in (200, 201), created.text
     return created.json()["id"]
 
@@ -95,7 +96,38 @@ async def test_replace_lets_the_package_take_over_the_own_voice(tmp_path, monkey
         res = await _import(client, same_name="replace")
         assert res.status_code == 200, res.text
         assert res.json()["imported"][0]["profile_id"] == own_id
-        assert (await _profiles(client))[own_id]["system_prompt"] == "角色包的人设"
+        own = (await _profiles(client))[own_id]
+        assert own["system_prompt"] == "角色包的人设" and own["prompt_text"] == "爱丽丝の優しい声。"
+        assert own["gpt_weights_path"] == "characters/a/gpt.ckpt" and own["sovits_weights_path"] == "characters/a/sovits.pth"
+        assert own["ref_audio_path"] == "characters/a/refs/gentle.wav"
+
+
+@pytest.mark.asyncio
+async def test_keep_both_renames_name_and_alias_own_voices(tmp_path, monkeypatch):
+    async with _client(tmp_path, monkeypatch) as client:
+        await init_db()
+        id_name = await _create_own_voice(client, tmp_path, "爱丽丝")
+        id_alias = await _create_own_voice(client, tmp_path, "alice")
+        res = await _import(client)
+        assert res.status_code == 409 and res.json()["names"] == ["爱丽丝", "alice"]
+        res = await _import(client, same_name="keep_both")
+        assert res.status_code == 200, res.text
+        profiles = await _profiles(client)
+        assert profiles[id_name]["name"] == "爱丽丝（自建）" and profiles[id_alias]["name"] == "alice（自建）"
+        assert profiles[id_alias]["system_prompt"] == "我自己写的人设"
+        assert res.json()["imported"][0]["profile_id"] not in (id_name, id_alias)
+
+
+@pytest.mark.asyncio
+async def test_non_list_aliases_returns_422_instead_of_500_or_char_clash(tmp_path, monkeypatch):
+    async with _client(tmp_path, monkeypatch) as client:
+        await init_db()
+        await _create_own_voice(client, tmp_path, "小")
+        for bad_aliases in (123, "小爱"):
+            bad = {"manifest.json": json.dumps({"id": "alice", "name": "爱丽丝", "aliases": bad_aliases}).encode()}
+            pkg = _make_package_bytes("zip", "alice", "爱丽丝", extra_entries=bad)
+            res = await client.post("/api/characters/import", params={"filename": "a.zip"}, content=pkg)
+            assert res.status_code == 422, res.text
 
 
 @pytest.mark.asyncio

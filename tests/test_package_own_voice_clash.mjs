@@ -1,6 +1,7 @@
 // A character package named like a voice the user made: the import asks, and "keep both" is the default.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { state, loadState, DEFAULT_SESSION_SETTINGS } from '../frontend/src/store.js';
 import { initVoiceSettings, askOwnVoiceSameName } from '../frontend/src/controllers/voice_settings.js';
 
@@ -101,4 +102,12 @@ test('import retries with the choice and says the own voice was renamed', async 
   await done;
   assert.match(toastRoot.children.at(-1)?.dataset.msg || '', /你自己建的「爱丽丝」已改名为「爱丽丝（自建）」/);
   for (const c of toastRoot.children) clearTimeout(c._timer);
+});
+
+test('ownVoiceClashModal uses dark modal styles and a bordered replace button', () => {
+  const rd = (p) => readFileSync(new URL(p, import.meta.url), 'utf8');
+  assert.match(rd('../frontend/index.html'), /class="btn (?:ghost|secondary)"[^>]*id="ownVoiceClashReplace"/);
+  assert.match(rd('../frontend/src/interface.css'), /#ownVoiceClashModal[^}]*\.modal\s*\{/);
+  assert.match(rd('../frontend/src/interface.css'), /#ownVoiceClashModal[^}]*\.btn\.ghost/);
+  assert.match(rd('../frontend/src/adv/app.css'), /#ownVoiceClashModal:not\(\[hidden\]\)/);
 });
