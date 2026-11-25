@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { autoTitle } from '../frontend/src/store.js';
+import { autoTitle, prepareSessionImport } from '../frontend/src/store.js';
+import { mergeChatBackup } from '../frontend/src/chat_backup.js';
 import { persistSession } from '../frontend/src/session_api.js';
 import { createTitleScreen } from '../frontend/src/adv/title.js';
 import { fakeDocument, fakeClock, microtasks } from './helpers/adv_dom.mjs';
@@ -50,4 +51,40 @@ test('a recent conversation whose title starts with an emoji gets the whole emoj
   } });
   t.after(() => ui.destroy()); ui.open(); await microtasks();
   assert.equal(ui.element.querySelector('.home-avatar').textContent, '🌙');
+});
+
+test('an imported chat backup with a broken title is repaired before saving', () => {
+  const raw = JSON.stringify({
+    format: 'galgame2voice.chat',
+    version: 1,
+    sessions: [{
+      id: 's_old',
+      title: '走呀\uD83D…',
+      messages: [{ id: 'm_1', role: 'user', content: '你好', ts: 1000 }],
+    }],
+  });
+  const incoming = prepareSessionImport(raw);
+  assert.equal(LONE_SURROGATE.test(incoming.sessions[0].title), false, JSON.stringify(incoming.sessions[0].title));
+  assert.equal(incoming.sessions[0].title, '走呀\uFFFD…');
+});
+
+test('a browser copy title in a merged backup never splits an emoji in half', () => {
+  const title = `${'聊'.repeat(179)}😊尾巴`;
+  const serverData = {
+    format: 'galgame2voice.chat',
+    version: 1,
+    sessions: [{ id: 's_1', title, messages: [{ id: 'm_1', role: 'user', content: '服务端消息', ts: 1000 }] }],
+  };
+  const localData = {
+    format: 'galgame2voice.chat',
+    version: 1,
+    sessions: [{ id: 's_1', title, messages: [{ id: 'm_2', role: 'user', content: '本地未同步消息', ts: 2000 }] }],
+  };
+  const result = mergeChatBackup(serverData, localData);
+  assert.equal(result.browserCopies, 1);
+  const copy = JSON.parse(result.content).sessions.find(s => s.title.endsWith('（浏览器副本）'));
+  assert.ok(copy);
+  assert.equal(LONE_SURROGATE.test(copy.title), false, JSON.stringify(copy.title));
+  assert.equal(copy.title, `${'聊'.repeat(179)}（浏览器副本）`);
+  assert.ok([...copy.title].length <= 200);
 });

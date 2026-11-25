@@ -1,10 +1,6 @@
 // @ts-check
 import { requestJson } from './api.js';
-
-/** Replaces lone UTF-16 surrogates, which the server cannot decode, with U+FFFD. */
-const wellFormed = text => (typeof text === 'string'
-  ? text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD')
-  : text);
+import { wellFormed } from './session_data.js';
 
 const writes = new Map();
 const deletions = new Map();
