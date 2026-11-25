@@ -414,6 +414,12 @@ async function applySessionVoice(session, { silent = false }, want, isCurrent) {
     // On the home screen, or after the user chose text only, a missing engine is not news.
     if (_callbacks.isHomeOpen?.() || _callbacks.isVoiceEnabled?.() === false) return;
     console.error('音色切换失败:', e);
+    if (e.status === 503 && e.message) {
+      // The engine runs, but this computer lacks free memory or VRAM for the
+      // model. The service's sentence says which and what to close.
+      showToast(e.message, 'error');
+      return;
+    }
     showToast('语音引擎还没准备好，现在只有文字、没有声音。可在「运行状态」查看引擎。', 'error', _callbacks.onOpenEngineStatus ? {
       actionLabel: '检查运行状态',
       onAction: () => _callbacks.onOpenEngineStatus(),

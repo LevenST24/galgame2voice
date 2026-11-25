@@ -45,10 +45,8 @@ def test_rejected_nickname_is_still_skipped(service):
 
 
 def test_two_different_likes_are_both_kept(service):
-    facts = service.extract_facts_heuristic("我喜欢猫，我最喜欢的还有狗。")
-    keys = [f["fact_key"] for f in facts]
-    assert "like_猫" in keys
-    assert len(keys) == 2
+    facts = service.extract_facts_heuristic("我喜欢猫，我最喜欢狗。")
+    assert sorted(f["fact_key"] for f in facts) == ["like_狗", "like_猫"]
 
 
 def test_facts_follow_the_order_they_were_said(service):
