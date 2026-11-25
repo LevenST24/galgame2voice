@@ -6,17 +6,15 @@ Provides type-safe environment and runtime settings via Pydantic V2.
 import codecs
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from pydantic import AliasChoices, Field
-from pydantic_settings import (
-    BaseSettings,
-    DotEnvSettingsSource,
-    PydanticBaseSettingsSource,
-    SettingsConfigDict,
-)
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from galgame2voice import __version__
 from galgame2voice.runtime_paths import get_install_root
+
+_DEFAULT_ENV_FILE = object()
 
 
 def detect_env_file_encoding(path: Path) -> str:
@@ -179,34 +177,30 @@ class Settings(BaseSettings):
     )
 
     # Pydantic Settings Config
-    # ".env" means the one in the program folder, wherever the console was
-    # opened from (see settings_customise_sources).
+    # Default .env is resolved against get_install_root() in __init__ so
+    # BaseSettings never pre-reads a .env from the current working directory.
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=None,
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
     )
 
-    @classmethod
-    def settings_customise_sources(
-        cls,
-        settings_cls: type[BaseSettings],
-        init_settings: PydanticBaseSettingsSource,
-        env_settings: PydanticBaseSettingsSource,
-        dotenv_settings: PydanticBaseSettingsSource,
-        file_secret_settings: PydanticBaseSettingsSource,
-    ) -> tuple[PydanticBaseSettingsSource, ...]:
-        env_file = getattr(dotenv_settings, "env_file", None)
-        if env_file == ".env":
-            env_file = get_install_root() / ".env"
-        if isinstance(env_file, (str, Path)) and Path(env_file).is_file():
-            dotenv_settings = DotEnvSettingsSource(
-                settings_cls,
-                env_file=env_file,
-                env_file_encoding=detect_env_file_encoding(Path(env_file)),
-            )
-        return init_settings, env_settings, dotenv_settings, file_secret_settings
+    def __init__(
+        self,
+        *,
+        _env_file: Any = _DEFAULT_ENV_FILE,
+        _env_file_encoding: str | None = None,
+        **values: Any,
+    ) -> None:
+        if _env_file is _DEFAULT_ENV_FILE:
+            candidate = get_install_root() / ".env"
+            _env_file = candidate if candidate.is_file() else None
+        if _env_file_encoding is None and isinstance(_env_file, (str, Path)):
+            path = Path(_env_file).expanduser()
+            if path.is_file():
+                _env_file_encoding = detect_env_file_encoding(path)
+        super().__init__(_env_file=_env_file, _env_file_encoding=_env_file_encoding, **values)
 
     @property
     def data_dir(self) -> Path:
