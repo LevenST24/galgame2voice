@@ -59,6 +59,7 @@ try:
     from galgame2voice.services.sovits_installation import (  # noqa: E402, F401
         find_engine_python,
         read_sovits_directory,
+        read_sovits_directory_hint,
         write_sovits_directory_hint,
     )
     from galgame2voice.services.engine_runtime import EngineLaunch, prepare_engine_entrypoint  # noqa: E402, F401
@@ -262,7 +263,7 @@ def find_gpt_sovits_directory() -> Path | None:
                     valid_cached = _check_sovits_dir(cached_path)
                     if valid_cached:
                         try:
-                            raw_hint = cache_file.read_text(encoding="utf-8-sig").strip().strip("\"'")
+                            raw_hint = read_sovits_directory_hint(cache_file)
                             if Path(raw_hint).is_absolute() and valid_cached.resolve().is_relative_to(hint_root.resolve().parent):
                                 write_sovits_directory_hint(hint_root, valid_cached)
                         except Exception:

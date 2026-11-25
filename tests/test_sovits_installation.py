@@ -344,6 +344,28 @@ def test_launcher_discovery_migrates_legacy_absolute_hint_for_sibling(tmp_path, 
     assert Path(inspected["directory"]).resolve() != engine.resolve()
 
 
+def test_launcher_discovery_migrates_ansi_gbk_absolute_hint_for_sibling(tmp_path, monkeypatch):
+    parent = tmp_path / "中文目录"
+    g2v = parent / "Galgame2Voice"
+    engine = make_engine(parent / "语音引擎")
+    g2v.mkdir(parents=True)
+    (g2v / "data").mkdir()
+
+    cache_file = g2v / "data" / "sovits_dir.txt"
+    cache_file.write_bytes(str(engine.resolve()).encode("gbk"))
+
+    monkeypatch.setattr(run_server, "PROJECT_ROOT", g2v)
+    monkeypatch.delenv("GPT_SOVITS_DIR", raising=False)
+    monkeypatch.delenv("GALGAME2VOICE_DATA_ROOT", raising=False)
+
+    discovered = run_server.find_gpt_sovits_directory()
+    assert discovered == engine.resolve()
+
+    migrated_text = cache_file.read_text(encoding="utf-8").strip()
+    assert not Path(migrated_text).is_absolute()
+    assert migrated_text in ("..\\语音引擎", "../语音引擎")
+
+
 def test_launcher_discovery_handles_quoted_env_override(tmp_path, monkeypatch):
     parent = tmp_path / "env_test"
     g2v = parent / "Galgame2Voice"
