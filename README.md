@@ -253,7 +253,7 @@ python -m galgame2voice.main doctor --json     # 机器可读，方便贴进 iss
 | `GALGAME2VOICE_AUDIO_RETENTION_MINUTES` | ✓ | `30` | 临时合成音频的保留时间（分钟） |
 | `GALGAME2VOICE_PRIVACY_MODE` | ✓ | `false` | 关闭语音缓存：合成结果不写入也不复用磁盘缓存 |
 | `GALGAME2VOICE_LOG_LEVEL` | ✓ | `INFO` | 日志级别 |
-| `GALGAME2VOICE_ENABLE_DOCS` | ✓ | `false` | 开放 `/docs` 接口文档 |
+| `GALGAME2VOICE_ENABLE_DOCS` | ✓ | `false` | 开放 `/docs`、`/redoc` 接口文档和 `/openapi.json`；关闭时三者都不提供 |
 | `GALGAME2VOICE_SKIP_MEM_CHECK` | | | 设为任意非空值即跳过切换角色前的内存检查（写 `0` 也会跳过） |
 
 ## 常见问题
