@@ -47,6 +47,7 @@ def engine_body(monkeypatch):
         b'{"message": "tts failed", "exception": "CUDA out of memory"}',
         b"RIFF\x00\x00\x00\x00AVI LIST",
     ],
+    ids=["html", "json", "riff-not-wave"],
 )
 async def test_non_wav_reply_is_rejected(engine_body, content):
     engine_body["content"] = content
@@ -82,6 +83,8 @@ async def _collect_stream(client: GptSovitsClient) -> bytes:
         # Long page: used to fail with the misleading FP16 silent-audio advice.
         b"<html>" + b"x" * 200_000 + b"</html>",
     ],
+    # Short ids: Windows caps the PYTEST_CURRENT_TEST variable at 32767 characters.
+    ids=["short-page", "long-page"],
 )
 async def test_streamed_non_wav_reply_is_rejected(engine_body, content):
     engine_body["content"] = content
