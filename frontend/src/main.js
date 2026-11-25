@@ -316,6 +316,8 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   };
 
   let _syncSessionsGen = 0;
+  let latestSessionSyncId = 0;
+  let activeSessionSyncId = 0;
   // Set while the server's session list has not been applied, because the read failed
   // or was dropped when the user acted during it; the home refresh reads it again.
   let sessionListReadFailed = false;
@@ -739,6 +741,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   function newChat(selection, { enterFromHome = false } = {}) {
     if (!selection || !Object.hasOwn(selection, 'voiceProfileId')) selection = null;
     ++_syncSessionsGen;
+    startupSessionSwitched = true;
     interruptAll();
     closeDrawer();
     revokeAllCachedAudioUrls();
@@ -819,7 +822,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       if (!haveProvidersLoaded() || hasProviderReadError()) {
         Promise.resolve(ensureProvidersLoaded()).catch(() => {});
       }
-      if (sessionListReadFailed) {
+      if (sessionListReadFailed && !activeSessionSyncId) {
         syncSessionsFromBackend({ fromHome: true }).then(synced => { if (synced) onModel?.({}); }).catch(() => {});
       }
       let engine, engineRead = true;
@@ -939,12 +942,14 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
 
   // 同步后端 SQLite 会话列表及历史消息（generation counter 防止过期结果覆盖用户新建会话）
   async function syncSessionsFromBackend({ fromHome = false } = {}) {
+    const syncId = ++latestSessionSyncId;
     const gen = ++_syncSessionsGen;
     const isStale = () => gen !== _syncSessionsGen;
+    activeSessionSyncId = syncId;
     try {
       const backendSessions = await fetchAllSessions();
       if (isStale()) {
-        sessionListReadFailed = true;
+        if (syncId === latestSessionSyncId) sessionListReadFailed = true;
         Promise.resolve(ensureProvidersLoaded()).catch(() => {});
         return false;
       }
@@ -1027,8 +1032,9 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         }
         for (const [_, rem] of existingMap) {
           markInterruptedPrompt(rem);
-          if ((rem.messages && rem.messages.some((m) => m.role === 'user')) || (startupSessionSwitched && rem.id === state.activeId)) {
+          if ((rem.messages && rem.messages.some((m) => m.role === 'user')) || (startupSessionSwitched && rem.id === state.activeId) || rem.unconfirmedSettingsVersion) {
             merged.push(rem);
+            if (rem.unconfirmedSettingsVersion) unconfirmedLocalSessions.push(rem);
           }
         }
         state.sessions = merged;
@@ -1072,9 +1078,11 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       Promise.resolve(ensureProvidersLoaded()).catch(() => {});
       return true;
     } catch (err) {
-      sessionListReadFailed = true;
+      if (syncId === latestSessionSyncId) sessionListReadFailed = true;
       console.debug('Failed to sync sessions from backend:', err);
       throw err;
+    } finally {
+      if (activeSessionSyncId === syncId) activeSessionSyncId = 0;
     }
   }
 

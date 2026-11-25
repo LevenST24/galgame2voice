@@ -1543,7 +1543,7 @@ test('home refresh reads the session list again after the first /api/chat/sessio
   t.after(() => home?.destroy());
   for (let i = 0; i < 10; i++) await tick();
   assert.equal(listCalls, 2);
-  assert.equal(textTree(home.element.querySelector('.home-meta')), '星野 · 周五', 'home shows the session read from the server');
+  assert.equal(textTree(home.element.querySelector('.home-meta')), `星野 · ${formatHomeTime(serverSession.updated_at)}`, 'home shows the session read from the server');
   await home.refresh(); for (let i = 0; i < 5; i++) await tick();
   assert.equal(listCalls, 2);
 });
@@ -1571,7 +1571,7 @@ test('home refresh reads the session list again when the first read was dropped 
   });
   for (let i = 0; i < 5 && !releaseFirstRead; i++) await tick();
   assert.equal(listCalls, 1);
-  env.app.actions.startNew(null);
+  const created = env.app.actions.startNew(null);
   releaseFirstRead();
   await env.app.ready; t.mock.method(console, 'debug', () => {});
   assert.ok(!storedState.sessions.some(session => session.id === 's_server'), 'the dropped read is not applied');
@@ -1580,4 +1580,39 @@ test('home refresh reads the session list again when the first read was dropped 
   for (let i = 0; i < 10; i++) await tick();
   assert.equal(listCalls, 2, 'home reads the list again');
   assert.ok(storedState.sessions.some(session => session.id === 's_server'), 'the server session is listed after all');
+  assert.ok(storedState.sessions.some(session => session.id === created.id), 'the newly created session is kept');
+  assert.equal(storedState.activeId, created.id, 'the newly created session remains active');
+});
+
+test('home refresh reuses an in-flight session list retry instead of invalidating it', async t => {
+  let listCalls = 0;
+  let releaseRetry;
+  const active = { id: 'deepseek', name: 'DeepSeek', chat_model: 'deepseek-chat', api_key: 'sk-****', is_active: true };
+  const serverSession = { id: 's_server', title: '星夜的约定', last_message: '晚安。', message_count: 0,
+    created_at: '2026-11-20T10:00:00Z', updated_at: '2026-11-20T10:00:00Z', voice_profile_id: 7, settings: {} };
+  const env = bootTitleStartupEnv(t, {
+    fetchImpl: async url => {
+      const path = String(url);
+      if (path === '/api/chat/sessions' || path.startsWith('/api/chat/sessions?')) {
+        if (++listCalls === 1) return Response.json({ detail: 'down' }, { status: 503 });
+        if (listCalls === 2) return new Promise(resolve => { releaseRetry = () => resolve(Response.json({ sessions: [serverSession], has_more: false })); });
+        return Response.json({ sessions: [serverSession], has_more: false });
+      }
+      if (path.startsWith('/api/chat/sessions/')) return Response.json({ messages: [], has_more: false });
+      if (path === '/api/providers') return Response.json({ providers: [active], presets: [] });
+      if (path === '/api/system/engine-status') return Response.json({ state: 'ready', base_url: 'http://127.0.0.1:9880' });
+      return Response.json({ status: 'ok', profiles: [{ id: 7, name: '星野' }], active_profile_id: 7, backgrounds: [], settings: {} });
+    },
+  });
+  await env.app.ready; t.mock.method(console, 'debug', () => {});
+  const home = env.app.returnHome();
+  t.after(() => home?.destroy());
+  for (let i = 0; i < 10; i++) await tick();
+  assert.equal(listCalls, 2);
+  await home.refresh(); for (let i = 0; i < 5; i++) await tick();
+  assert.equal(listCalls, 2, 'an in-flight retry must not launch a second overlapping read');
+  releaseRetry(); for (let i = 0; i < 10; i++) await tick();
+  assert.ok(storedState.sessions.some(session => session.id === 's_server'));
+  await home.refresh(); for (let i = 0; i < 5; i++) await tick();
+  assert.equal(listCalls, 2, 'stops refetching after the in-flight retry succeeds');
 });
