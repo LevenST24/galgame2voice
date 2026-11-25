@@ -13,8 +13,21 @@ REPAIR_AUDIO_PREFIX = "repair"
 _REPAIR_AUDIO_NAME = re.compile(re.escape(REPAIR_AUDIO_PREFIX) + r"_[0-9a-f]{12}\.wav\Z")
 
 
+# Every name the app gives a synthesized file in audio_dir: per-chunk audio,
+# concatenated replies, line repairs and one-off synthesis.
+GENERATED_AUDIO_NAME = re.compile(
+    r"(?:chunk_\d+|full|repair|voice)_[0-9a-f]{12}\.wav\Z",
+    re.IGNORECASE,
+)
+
+
 def is_repair_audio_name(name: str) -> bool:
     return _REPAIR_AUDIO_NAME.fullmatch(name) is not None
+
+
+def is_generated_audio_name(name: str) -> bool:
+    """True only for files the app wrote; anything else in audio_dir is the user's."""
+    return GENERATED_AUDIO_NAME.fullmatch(name) is not None
 
 
 def _unlink_owned_file(path: Path) -> None:

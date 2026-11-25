@@ -22,7 +22,7 @@ async def test_cleanup_preserves_audio_until_metadata_recovers(tmp_path, monkeyp
     cache = audio / "cache"
     cache.mkdir(parents=True)
     reference = audio / "custom-reference.wav"
-    ephemeral = audio / "chunk_expired.wav"
+    ephemeral = audio / "chunk_0_0123456789ab.wav"
     hot = cache / "hot.wav"
     orphan = cache / "orphan.wav"
     for path in (reference, ephemeral, hot, orphan):
