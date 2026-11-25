@@ -289,6 +289,11 @@ assert.match(
 );
 resolvePkg2Download(ok({ status: 'ok', imported: [{ name: '角色二', profile_id: 22 }] }));
 await pkg2Done;
+globalThis.fetch = async (u) => ok(String(u).includes('/redeem/list') ? { packages: [{ id: 'flaky', name: '断网', size: 2048, remaining: 0, resumable: true }] } : {});
+dom.sVoiceRedeemCode.value = 'G2V1.resumable-code';
+await dom.sVoiceRedeemQuery.fire('click');
+assert.equal(dom.sVoiceRedeemList.children[0].children[0].textContent, '断网 · 2.0 KB · 可继续下载');
+assert.equal(dom.sVoiceRedeemList.children[0].children[1].textContent, '继续下载');
 
 toastRoot.children.forEach((c) => clearTimeout(c._timer));
 console.log('package redeem frontend tests: passed');

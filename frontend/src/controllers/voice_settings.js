@@ -921,11 +921,11 @@ function renderRedeemList(packages) {
     const row = document.createElement('div');
     row.className = 'redeem-item';
     const label = document.createElement('span');
-    label.textContent = `${pkg.name} · ${formatRedeemSize(pkg.size)} · 还可下载 ${pkg.remaining} 次`;
+    label.textContent = `${pkg.name} · ${formatRedeemSize(pkg.size)} · ${pkg.resumable ? (pkg.remaining ? `可继续下载 · 还可下载 ${pkg.remaining} 次` : '可继续下载') : `还可下载 ${pkg.remaining} 次`}`;
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'btn ghost';
-    button.textContent = '下载并导入';
+    button.textContent = pkg.resumable ? '继续下载' : '下载并导入';
     button.addEventListener('click', () => downloadRedeemPackage(pkg));
     row.appendChild(label);
     row.appendChild(button);

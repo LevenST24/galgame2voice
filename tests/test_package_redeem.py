@@ -341,7 +341,8 @@ def _drop_package_reads(monkeypatch: pytest.MonkeyPatch, state: dict) -> None:
         state["ranges"].append(self.request.headers.get("range"))
         async for chunk in orig(self, chunk_size):
             if state["drop"]:
-                yield chunk[:64]
+                if state.get("take", 64):
+                    yield chunk[:64]
                 raise httpx.RemoteProtocolError("drop")
             yield chunk
 
@@ -360,6 +361,10 @@ async def test_dropped_download_resumes_on_retry_without_another_count(
     assert state["ranges"] == [None, "bytes=64-", "bytes=128-", "bytes=192-"]
     part = get_settings().data_dir / "character_import" / "dl-flaky.zip.part"
     assert part.is_file() and part.stat().st_size == 256
+    other, _ = dist_env["store"].create_code(server_url=dist_env["base"], packages=["flaky"], max_downloads=1)
+    assert not (await api.post("/api/characters/redeem/list", json={"code": other})).json()["packages"][0].get("resumable")
+    listed = (await api.post("/api/characters/redeem/list", json={"code": code})).json()["packages"]
+    assert len(listed) == 1 and listed[0]["id"] == "flaky" and listed[0]["remaining"] == 0 and listed[0]["resumable"]
     state.update(drop=False, ranges=[])
     saved = await api.post("/api/characters/redeem/download", json=body)
     assert saved.status_code == 200, saved.text
@@ -376,10 +381,37 @@ async def test_dropped_download_starts_over_when_the_server_refuses_to_resume(
     _drop_package_reads(monkeypatch, state)
     body = {"code": code, "package_id": "stale", "overwrite": False}
     assert (await api.post("/api/characters/redeem/download", json=body)).status_code == 502
+    assert (get_settings().data_dir / "character_import" / "dl-stale.zip.part").stat().st_size == 256
     real_clock = dist_env["store"]._clock
     monkeypatch.setattr(dist_env["store"], "_clock", lambda: real_clock() + 2 * 86400)
+    seen, orig_get = [], DistRequestHandler.do_GET
+    monkeypatch.setattr(DistRequestHandler, "do_GET", lambda s: (seen.append(s.headers.get("Range")), orig_get(s))[1])
     state.update(drop=False, ranges=[])
     saved = await api.post("/api/characters/redeem/download", json=body)
     assert saved.status_code == 200, saved.text
-    assert state["ranges"] == [None], "a refused resume starts a fresh download"
+    assert seen == ["bytes=256-", None], "a refused resume starts a fresh download"
+    _no_parts()
+
+
+async def test_resume_keeps_partial_on_transient_503_and_429(api: AsyncClient, dist_env: dict, monkeypatch) -> None:
+    code, state = _publish(dist_env, "blip", "波动", "blip", downloads=1), {"drop": True, "ranges": []}
+    _drop_package_reads(monkeypatch, state)
+    body = {"code": code, "package_id": "blip", "overwrite": False}
+    assert (await api.post("/api/characters/redeem/download", json=body)).status_code == 502
+    part, reply, seen, orig_get = get_settings().data_dir / "character_import" / "dl-blip.zip.part", [503, 429], [], DistRequestHandler.do_GET
+    def flaky_get(self):
+        seen.append(self.headers.get("Range"))
+        return self._send_json(reply.pop(0), {"error": "busy"}) if reply else orig_get(self)
+    monkeypatch.setattr(DistRequestHandler, "do_GET", flaky_get)
+    state["drop"] = False
+    for expected in (502, 400, 200):
+        assert (await api.post("/api/characters/redeem/download", json=body)).status_code == expected
+        assert expected == 200 or (part.is_file() and part.stat().st_size == 256)
+    assert seen == ["bytes=256-"] * 3 and _no_parts() is None
+
+
+async def test_drop_before_first_byte_does_not_keep_zero_byte_partial(api: AsyncClient, dist_env: dict, monkeypatch) -> None:
+    code = _publish(dist_env, "zero", "零字节", "zero", downloads=2)
+    _drop_package_reads(monkeypatch, {"drop": True, "ranges": [], "take": 0})
+    assert (await api.post("/api/characters/redeem/download", json={"code": code, "package_id": "zero", "overwrite": False})).status_code == 502
     _no_parts()
