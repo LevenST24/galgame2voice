@@ -47,6 +47,15 @@ let precisionSavedRevision = 0;
 let gpuAvailable = true;
 const CONFIG_FIELDS = ['gParamSovitsUrl', 'gPrecision', 'gAudioRetention'];
 
+// A blank, fractional or out-of-range value is refused instead of being saved as another number.
+export function readRetentionMinutes(raw) {
+  const minutes = Number(raw);
+  if (!String(raw).trim() || !Number.isInteger(minutes) || minutes < 1 || minutes > 10080) {
+    throw new Error('「音频缓存保留时间」请填 1 到 10080 之间的整数分钟');
+  }
+  return minutes;
+}
+
 function _bindCoordinator(element, type, handler) {
   if (!element || typeof element.addEventListener !== 'function') return;
   const bound = (...args) => handler(...args);
@@ -460,7 +469,7 @@ const settingsDraftStore = createSettingsDraftStore({
   readConfigPayload: () => ({
     gpt_sovits_url: _dom.gParamSovitsUrl ? _dom.gParamSovitsUrl.value.trim() || 'http://127.0.0.1:9880' : undefined,
     inference_precision: _dom.gPrecision ? _dom.gPrecision.value : undefined,
-    audio_retention_minutes: _dom.gAudioRetention ? Math.max(1, Number(_dom.gAudioRetention.value) || 30) : 30,
+    audio_retention_minutes: _dom.gAudioRetention ? readRetentionMinutes(_dom.gAudioRetention.value) : 30,
   }),
   runSettingsMutation,
   clearConfigDirtyIfUnchanged: (savedRevision) => {
