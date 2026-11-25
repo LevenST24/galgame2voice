@@ -369,3 +369,31 @@ async def test_import_extract_disk_and_permission_errors(tmp_path, monkeypatch, 
         res = await client.post("/api/characters/import", params={"filename": "a.zip"}, content=_make_package_bytes("zip", "a", "甲"))
     assert res.status_code == code and msg in res.json()["detail"]
     _assert_temp_empty()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fmt", ["zip", "tar"])
+async def test_import_skips_files_macos_and_windows_add(tmp_path, monkeypatch, fmt):
+    """Finder's __MACOSX folder, .DS_Store and "Icon\\r" are not package files.
+
+    "Icon\\r" (added when a folder has a custom icon) used to fail the whole
+    import as an illegal path, and the rest were copied into the package.
+    """
+    root, app = _setup_app(tmp_path, monkeypatch)
+    await init_db()
+    junk = {
+        "__MACOSX/._manifest.json": b"\x00\x05\x16\x07",
+        "__MACOSX/refs/._gentle.wav": b"\x00\x05\x16\x07",
+        ".DS_Store": b"Bud1",
+        "refs/.DS_Store": b"Bud1",
+        "Icon\r": b"",
+        "Thumbs.db": b"\xd0\xcf",
+    }
+    content = _make_package_bytes(fmt, "mika", "美嘉", extra_entries=junk)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
+        res = await client.post("/api/characters/import", params={"filename": f"mika.{fmt}"}, content=content)
+    assert res.status_code == 200, res.text
+    installed = root / "characters" / "mika"
+    names = sorted(p.relative_to(installed).as_posix() for p in installed.rglob("*"))
+    assert names == ["gpt.ckpt", "manifest.json", "refs", "refs/gentle.wav", "sovits.pth"]
+    _assert_temp_empty()
