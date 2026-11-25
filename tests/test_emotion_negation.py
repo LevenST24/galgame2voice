@@ -86,3 +86,11 @@ def test_streamed_line_without_emotion_is_not_happy_when_negated():
     parser.feed_chunk(json.dumps(reply, ensure_ascii=False))
     parser.finalize()
     assert parser.normalized_lines()[0]["emotion"] != "happy"
+
+
+def test_double_negated_unhappy_is_not_sad():
+    assert classify_emotion("我不是不开心，只是有点累。", "") != "sad"
+
+
+def test_negated_fennu_is_not_angry():
+    assert classify_emotion("我不愤怒。", "") != "angry"
