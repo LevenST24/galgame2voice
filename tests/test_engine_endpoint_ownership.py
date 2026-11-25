@@ -379,6 +379,43 @@ async def test_restart_abort_after_stopping_owned_process_clears_launch_and_does
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("port_frees_later", [False, True])
+async def test_restart_when_old_engine_is_slow_to_exit_waits_for_the_port(owned_engine, monkeypatch, port_frees_later):
+    # A large model can take longer than 3s to unload; that used to surface as a 500
+    # telling the user to check the folder is writable or to pick the engine again.
+    import subprocess
+
+    endpoint, proc = owned_engine
+    proc.wait = MagicMock(side_effect=subprocess.TimeoutExpired("engine", 3))
+    monkeypatch.setattr(run_server, "terminate_process_tree", lambda pid: None)
+    monkeypatch.setattr(health, "_apply_sovits_precision_config", AsyncMock(return_value=("cpu", False, "test")))
+    sleep = asyncio.sleep
+
+    async def fast_sleep(delay):
+        await sleep(0 if delay == 0.25 else delay)
+
+    monkeypatch.setattr(health.asyncio, "sleep", fast_sleep)
+    checks = iter([True, True, False] if port_frees_later else [True] * 64)
+    monkeypatch.setattr(run_server, "is_port_in_use", lambda *args: next(checks))
+    next_proc = MagicMock(pid=5678)
+    next_proc.poll.return_value = None
+    spawn = MagicMock(return_value=next_proc)
+    monkeypatch.setattr(run_server, "_spawn_sovits_process", spawn)
+
+    if port_frees_later:
+        result = await health.restart_sovits_endpoint(None)
+        assert result["status"] == "starting"
+        spawn.assert_called_once()
+        return
+    with pytest.raises(HTTPException) as caught:
+        await health.restart_sovits_endpoint(None)
+    assert caught.value.status_code == 409
+    assert caught.value.detail["code"] == "SOVITS_PORT_STILL_IN_USE"
+    spawn.assert_not_called()
+    # Still ours, so pressing 重启 again can stop it instead of calling it "another window".
+    assert run_server._SPAWNED_SOVITS_PROC is proc
+
+@pytest.mark.asyncio
 async def test_managed_engine_launch_matches_localhost_loopback_alias_and_allows_restart(owned_engine, monkeypatch):
     endpoint, proc = owned_engine
     launch = EngineLaunch(proc, "127.0.0.1", 9880, "cuda", False)
