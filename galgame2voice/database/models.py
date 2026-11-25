@@ -231,6 +231,7 @@ class ReplyLineAct(BaseModel):
     face: str = ""
     pose: str = ""
     motion: Literal["nod", "bounce", "startle", "sigh", "fidget", "head-shake", "lean-in", "step-back"] | None = None
+    move: Literal["approach", "retreat", "closeup", "left", "right", "center"] | None = None
     blush: bool = False
     fx: Literal["sweat", "anger", "heart", "sparkle", "question", "exclamation"] | None = None
 
