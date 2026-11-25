@@ -474,6 +474,11 @@ def create_app(*, engine_supervisor: EngineSupervisor | None = None) -> FastAPI:
     app.include_router(metrics.router, dependencies=auth_deps)
     app.include_router(system.router, dependencies=auth_deps)
 
+    # Ids too large for SQLite can match no row: answer 404, not 500.
+    from galgame2voice.utils.sqlite_overflow import register_sqlite_overflow_handler
+
+    register_sqlite_overflow_handler(app)
+
 
     # 3. Mount Static Audio Storage Directory
     settings.audio_dir.mkdir(parents=True, exist_ok=True)
@@ -523,10 +528,6 @@ def create_app(*, engine_supervisor: EngineSupervisor | None = None) -> FastAPI:
             status_code=500,
             content={"detail": "Internal Server Error", "error_type": type(exc).__name__},
         )
-
-    from galgame2voice.utils.sqlite_overflow import register_sqlite_overflow_handler
-
-    register_sqlite_overflow_handler(app)
 
     return app
 
