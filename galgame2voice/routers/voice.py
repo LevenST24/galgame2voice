@@ -117,8 +117,8 @@ async def create_voice_profile(req: VoiceProfileCreateRequest) -> dict[str, Any]
     profile_dto = VoiceProfileCreate(
         name=req.name.strip(),
         description=req.description or "",
-        gpt_weights_path=req.gpt_weights_path.strip(),
-        sovits_weights_path=req.sovits_weights_path.strip(),
+        gpt_weights_path=to_project_relative_path(req.gpt_weights_path).strip(),
+        sovits_weights_path=to_project_relative_path(req.sovits_weights_path).strip(),
         ref_audio_path=ref_audio.strip(),
         prompt_text=prompt_txt.strip(),
         prompt_lang=prompt_l.strip(),
