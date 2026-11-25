@@ -133,6 +133,7 @@ All notable changes to galgame2voice are documented here. The format follows
 - 修复 Docker 部署时用 GALGAME2VOICE_PORT 改了监听端口后，服务正常运行、容器却一直显示 unhealthy 的问题；健康检查现在访问实际监听的端口。
 - 修复把 GALGAME2VOICE_AUDIO_CLEANUP_INTERVAL_SECONDS 设为 0 或负数后，后台音频清理不停空转、一直占满一个 CPU 核心的问题；小于 60 秒的值现在按 60 秒执行，并在日志中提示一次。
 - 修复 GALGAME2VOICE_CORS_ORIGINS 按常见写法填逗号分隔的地址（或只填一个地址）时程序无法启动的问题；现在逗号分隔和 JSON 数组两种写法都能识别。
+- 修复 .env 或环境变量里某项设置留空（如 GALGAME2VOICE_PORT=）时程序无法启动的问题；留空现在视为未设置，使用默认值。
 
 ## [3.2.11] - 2026-11-24
 ### Fixed
