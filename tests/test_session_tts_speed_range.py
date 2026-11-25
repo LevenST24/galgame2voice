@@ -4,6 +4,7 @@ A range input clamps its value, so a narrower slider silently rewrites a
 pack's default speed the first time the session settings are saved.
 """
 
+from decimal import Decimal
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -35,5 +36,11 @@ def test_speed_slider_spans_the_pack_speed_range():
     finder.feed(INDEX.read_text(encoding="utf-8"))
     assert finder.attrs is not None
     metadata = VoiceParamsConfig.model_fields["speed"].metadata
-    assert float(finder.attrs["min"]) <= _bound(metadata, "ge")
-    assert float(finder.attrs["max"]) >= _bound(metadata, "le")
+    slider_min = Decimal(finder.attrs["min"])
+    slider_max = Decimal(finder.attrs["max"])
+    slider_step = Decimal(finder.attrs["step"])
+    assert slider_min == Decimal(str(_bound(metadata, "ge")))
+    assert slider_max == Decimal(str(_bound(metadata, "le")))
+    assert slider_step > 0
+    assert (Decimal("0.88") - slider_min) % slider_step == 0
+    assert (slider_max - slider_min) % slider_step == 0

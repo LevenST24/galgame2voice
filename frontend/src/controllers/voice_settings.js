@@ -18,6 +18,9 @@ let voiceProfiles = [];
 let _promptBaseline = '';
 let _promptOwnerId = null;
 let _promptSelection = '';
+let _ttsSpeedDirty = false;
+/** @type {string | null} */
+let _ttsSpeedBaseline = null;
 let editorRevision = 0;
 let activeProfileId = null;
 let lastSwitchFailed = false;
@@ -68,6 +71,8 @@ export function initVoiceSettings(dom, callbacks = {}) {
   _promptBaseline = '';
   _promptOwnerId = null;
   _promptSelection = '';
+  _ttsSpeedDirty = false;
+  _ttsSpeedBaseline = null;
   lastSwitchFailed = false;
   lastShownCatalogWarning = '';
   failedSwitchProfileId = null;
@@ -108,6 +113,9 @@ export function initVoiceSettings(dom, callbacks = {}) {
   sliders.forEach((r) => {
     if (r) r.addEventListener('input', syncRangeLabels);
   });
+  const markTtsSpeedDirty = () => { _ttsSpeedDirty = true; };
+  _dom.sTtsSpeed?.addEventListener('input', markTtsSpeedDirty);
+  _dom.sTtsSpeed?.addEventListener('change', markTtsSpeedDirty);
 
   if (_dom.sReset) {
     _dom.sReset.addEventListener('click', () => {
@@ -120,6 +128,7 @@ export function initVoiceSettings(dom, callbacks = {}) {
       _dom.sCtx.value = DEFAULT_SESSION_SETTINGS.maxContext;
       _dom.sAiAdaptiveVoice.value = String(DEFAULT_SESSION_SETTINGS.aiAdaptiveVoice !== false);
       _dom.sTtsSpeed.value = DEFAULT_SESSION_SETTINGS.ttsSpeed;
+      _ttsSpeedDirty = true;
       _dom.sTtsTopK.value = DEFAULT_SESSION_SETTINGS.ttsTopK;
       _dom.sTtsTopP.value = DEFAULT_SESSION_SETTINGS.ttsTopP;
       _dom.sTtsTemp.value = DEFAULT_SESSION_SETTINGS.ttsTemperature;
@@ -203,7 +212,13 @@ export async function openSessionSettings() {
   if (_dom.sMaxTokens) _dom.sMaxTokens.value = s.settings.maxTokens;
   if (_dom.sCtx) _dom.sCtx.value = s.settings.maxContext;
   if (_dom.sAiAdaptiveVoice) _dom.sAiAdaptiveVoice.value = String(s.settings.aiAdaptiveVoice !== false);
-  if (_dom.sTtsSpeed) _dom.sTtsSpeed.value = s.settings.ttsSpeed;
+  if (_dom.sTtsSpeed) {
+    _dom.sTtsSpeed.value = s.settings.ttsSpeed;
+    _ttsSpeedBaseline = String(_dom.sTtsSpeed.value);
+  } else {
+    _ttsSpeedBaseline = null;
+  }
+  _ttsSpeedDirty = false;
   if (_dom.sTtsTopK) _dom.sTtsTopK.value = s.settings.ttsTopK;
   if (_dom.sTtsTopP) _dom.sTtsTopP.value = s.settings.ttsTopP;
   if (_dom.sTtsTemp) _dom.sTtsTemp.value = s.settings.ttsTemperature;
@@ -1245,6 +1260,9 @@ async function handleSaveSessionSettings() {
       s.title = nextTitle;
     }
     if (_dom.smTitle) _dom.smTitle.textContent = `· ${s.title}`;
+    const ttsSpeedChanged = _ttsSpeedDirty
+      || _ttsSpeedBaseline === null
+      || String(_dom.sTtsSpeed.value) !== _ttsSpeedBaseline;
     s.settings = {
       ...s.settings,
       voiceProfileId: profileId,
@@ -1255,7 +1273,7 @@ async function handleSaveSessionSettings() {
       presPenalty: Number(_dom.sPres.value),
       maxContext: Number(_dom.sCtx.value),
       aiAdaptiveVoice: _dom.sAiAdaptiveVoice.value === 'true',
-      ttsSpeed: Number(_dom.sTtsSpeed.value),
+      ttsSpeed: ttsSpeedChanged ? Number(_dom.sTtsSpeed.value) : s.settings.ttsSpeed,
       ttsTopK: Math.round(Number(_dom.sTtsTopK.value)),
       ttsTopP: Number(_dom.sTtsTopP.value),
       ttsTemperature: Number(_dom.sTtsTemp.value),
