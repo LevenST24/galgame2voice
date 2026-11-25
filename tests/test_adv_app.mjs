@@ -314,34 +314,45 @@ test('swap_languages repaginates a multi-page target language in place without r
   assert.equal(sub.textContent, '「第二句。」');
 });
 
-for (const overlay of ['log', 'settings']) {
-  test(`a resize while ${overlay} is open lays the page out again once it closes`, async t => {
-    const h = setup(t, { settings: { advTextIntervalMs: 0 } });
-    const stage = h.app.stage.stage;
-    const column = stage.querySelector('.adv-text-column');
-    column.clientWidth = 100;
-    stage.querySelector('.adv-subtitle-measurer').clientWidth = 100;
-    const measurer = stage.querySelector('.adv-text-measurer');
-    measurer.getBoundingClientRect = () => ({ width: measurer.textContent.length, height: 100 });
-    const primary = stage.querySelector('.adv-primary-text');
-    h.start();
-    h.line(0, { zh: '短中文第一句。第二句。', ja: 'とても長い日本語の文章です。分割が必要です。' });
-    h.audioEvent(0);
-    assert.equal(primary.textContent, '「短中文第一句。第二句。」');
-    if (overlay === 'log') h.app.action('log'); else h.overlay(true);
-    assert.equal(h.app.player.state, 'suspended');
-    column.clientWidth = 12;
-    h.viewport.dispatchEvent({ type: 'resize' });
-    if (overlay === 'log') h.app.action('close_overlay'); else h.overlay(false);
+function setupResize(t, options = {}) {
+  const h = setup(t, options), stage = h.app.stage.stage, column = stage.querySelector('.adv-text-column');
+  column.clientWidth = 100;
+  for (const name of ['.adv-text-measurer', '.adv-subtitle-measurer']) {
+    const el = stage.querySelector(name);
+    el.getBoundingClientRect = () => ({ width: el.textContent.length, height: 100 });
+  }
+  return { h, column, primary: stage.querySelector('.adv-primary-text'), sub: stage.querySelector('.adv-subtitle-text') };
+}
+for (const flow of ['log', 'settings', 'log_to_settings']) {
+  test(`resize under ${flow} reflows to normal pages once closed`, async t => {
+    const { h, column, primary, sub } = setupResize(t);
+    h.start(); h.line(0, { zh: '短中文第一句。第二句。', ja: '短い一番目。二番目。' }); h.audioEvent(0);
+    h.clock.tick(60); assert.equal(h.app.player.state, 'revealing');
+    if (flow === 'settings') h.overlay(true); else h.app.action('log');
+    column.clientWidth = 10; h.viewport.dispatchEvent({ type: 'resize' });
+    if (flow === 'log') h.app.action('close_overlay'); else if (flow === 'settings') h.overlay(false);
+    else { h.app.action('close_overlay'); h.overlay(true); await microtasks(); h.overlay(false); }
     await microtasks();
-    assert.equal(h.app.player.state, 'waiting_advance');
-    const shown = primary.textContent;
-    assert.notEqual(shown, '「短中文第一句。第二句。」', 'the page fits the window it is shown in');
-    h.viewport.dispatchEvent({ type: 'resize' });
-    assert.equal(primary.textContent, shown, 'the same layout a live resize gives');
-    assert.equal(h.app.player.page, 0);
+    assert.equal(h.app.player.state, 'waiting_advance'); assert.equal(h.app.player.page, 0);
+    assert.equal(primary.textContent, '「短中文第一句。」'); assert.equal(sub.textContent, '「短い一番目。」');
+    h.app.action('advance'); h.clock.tick(200);
+    assert.equal(h.app.player.page, 1); assert.equal(primary.textContent, '「第二句。」'); assert.equal(sub.textContent, '「二番目。」');
   });
 }
+test('resize under waiting_line or replay keeps the next line reveal and new page intact', async t => {
+  const { h, column, primary } = setupResize(t, { voice: false });
+  h.start(); h.line(0, { zh: '第一句。', ja: '一番目。' }); h.clock.tick(200); h.app.action('advance');
+  h.app.action('log'); column.clientWidth = 10; h.viewport.dispatchEvent({ type: 'resize' });
+  h.line(1, { zh: '短中文第一句。第二句。', ja: '短い一番目。二番目。' }); h.app.action('close_overlay'); await microtasks();
+  assert.equal(h.app.player.currentIndex, 1); assert.equal(h.app.player.state, 'revealing');
+  h.clock.tick(300); assert.equal(primary.textContent, '「短中文第一句。」');
+  const r = setupResize(t); r.h.start('turn_replay');
+  r.h.line(0, { zh: '短中文第一句。第二句。', ja: '短い一番目。二番目。' }); r.h.line(1, { zh: '下一句。', ja: '次です。' });
+  r.h.audioEvent(0); r.h.audioEvent(1); r.h.done(); r.h.clock.tick(400); r.h.app.action('replay_voice');
+  r.column.clientWidth = 10; r.h.viewport.dispatchEvent({ type: 'resize' }); r.h.app.action('advance'); await microtasks();
+  assert.equal(r.h.app.player.currentIndex, 0); assert.equal(r.h.app.player.page, 1); assert.equal(r.h.app.player.state, 'revealing');
+  r.h.clock.tick(200); assert.equal(r.primary.textContent, '「第二句。」'); assert.equal(r.sub.textContent, '「二番目。」');
+});
 
 test('stale sprite decode after character/session switch cannot repaint stage or crop', async t => {
   const h = setup(t, { art: true }); await microtasks(); h.start(); h.line();

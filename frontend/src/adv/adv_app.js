@@ -564,7 +564,7 @@ export function mountAdv(dom, deps) {
   function action(name) {
     if (destroyed) return;
     switch (name) {
-      case 'advance': stopStageReplay(); player.advance(); break;
+      case 'advance': stopStageReplay(); flushRelayout(); player.advance(); break;
       case 'toggle_auto':
       case 'auto': if (stageReplaying || !['input', 'error', 'suspended'].includes(player.state)) player.setAuto(!player.auto); break;
       case 'toggle_skip':
@@ -924,27 +924,33 @@ export function mountAdv(dom, deps) {
     player.settle(turnId, kind === 'done' ? { ok: true } : { kind, error: { message: event.error, code: event.code || event.kind } });
     syncControls();
   }));
-  // A resize while LOG or a settings panel holds the player is applied once it resumes,
+  // A resize while an overlay or replay holds the player is applied once it resumes,
   // so the page laid out for the old window size does not stay on screen.
-  let relayoutPending = false;
+  let relayoutLine = null, activeState = player.state;
   const RELAYOUT_STATES = ['revealing', 'waiting_advance', 'waiting_audio'];
   function relayout() {
     if (!currentLine || !RELAYOUT_STATES.includes(player.state)) return;
+    relayoutLine = null;
     const wasRevealing = player.state === 'revealing';
     player.repaginate();
     textbox.reflow({ pageIndex: player.page });
     if (wasRevealing) player.advance();
   }
+  function flushRelayout() {
+    if (relayoutLine && relayoutLine === currentLine) relayout();
+  }
   disposers.push(player.on('state', syncControls));
   disposers.push(player.on('state', state => {
-    if (!relayoutPending || state === 'suspended') return;
-    relayoutPending = false;
+    if (state === 'suspended') return;
+    activeState = state;
+    if (!relayoutLine) return;
     // Let resume() finish restoring the line before the page is laid out again.
-    if (RELAYOUT_STATES.includes(state)) queueMicrotask(relayout);
+    if (relayoutLine === currentLine && RELAYOUT_STATES.includes(state)) queueMicrotask(flushRelayout);
+    else relayoutLine = null;
   }));
   if (deps.subscribe) disposers.push(deps.subscribe(update));
   listen(deps.viewport || globalThis.window, 'resize', () => {
-    if (currentLine && player.state === 'suspended' && player.isPresenting()) relayoutPending = true;
+    if (currentLine && player.state === 'suspended' && RELAYOUT_STATES.includes(activeState)) relayoutLine = currentLine;
     else relayout();
   });
   loadBackgrounds();
