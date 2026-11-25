@@ -37,7 +37,15 @@ if [ -f "$VENV_PYTHON" ]; then
     PYTHON_EXE="$VENV_PYTHON"
     if ! "$PYTHON_EXE" -c "import fastapi, uvicorn, aiosqlite" >/dev/null 2>&1; then
         echo "[提示] 正在安装或补全缺失的运行依赖..."
-        "$SCRIPT_DIR/.venv/bin/pip" install -r "$SCRIPT_DIR/requirements.txt"
+        # uv 建的 .venv 和缺少 python3-venv 时半建好的 .venv 里都没有 pip
+        if command -v uv >/dev/null 2>&1; then
+            uv pip install -r "$SCRIPT_DIR/requirements.txt" --python "$PYTHON_EXE"
+        elif "$PYTHON_EXE" -m pip --version >/dev/null 2>&1 || "$PYTHON_EXE" -m ensurepip --upgrade >/dev/null 2>&1; then
+            "$PYTHON_EXE" -m pip install -r "$SCRIPT_DIR/requirements.txt"
+        else
+            echo "[错误] .venv 中没有 pip，无法补全依赖。请删除 .venv 文件夹后重新运行本脚本。"
+            exit 1
+        fi
     fi
 else
     echo "[首次部署] 正在初始化虚拟环境 .venv ..."
