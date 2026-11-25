@@ -351,11 +351,17 @@ export function toggleMic() {
   clearMicTimers();
   if (isListening()) {
     stopMic();
-    return;
+    return false;
   }
-  if (_callbacks.isBusy && _callbacks.isBusy()) {
-    showToast('角色还在回复，等这段回复结束后再用语音输入。', 'info');
-    return;
+  const busy = _callbacks.isBusy?.();
+  if (busy) {
+    const msg = busy === 'loading_older'
+      ? '正在加载更早的聊天记录，完成后再用语音输入。'
+      : busy === 'deleting'
+        ? '正在删除这个对话，请稍候或切换到其他对话。'
+        : '角色还在回复，等这段回复结束后再用语音输入。';
+    showToast(msg, 'info');
+    return false;
   }
   const revision = ++micRevision;
   micAutoEnded = false;
@@ -430,7 +436,7 @@ export function toggleMic() {
   });
   if (!handle.ok) {
     showToast(handle.reason, 'error');
-    return;
+    return false;
   }
   micBase = inputDom() ? inputDom().value : '';
   if (pendingVoice?.audio) {
@@ -452,6 +458,7 @@ export function toggleMic() {
   if (!recorderSupported() && !voiceSupported()) {
     showToast('当前浏览器不支持语音输入，建议使用 Chrome / Edge', 'error');
   }
+  return true;
 }
 
 export function revokeAllCachedAudioUrls() {

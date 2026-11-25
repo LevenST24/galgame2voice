@@ -902,7 +902,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     getInput: () => advApp?.textbox.inputElement,
     getMicButton: () => advApp?.textbox.micButton,
     sendMessage,
-    isBusy: () => conversation.busy,
+    isBusy: () => conversation.busyReason,
     onOpenSessionSettings: openSessionSettings,
     onOpenEngineStatus: () => openGlobalSettings('dashboard'),
   });

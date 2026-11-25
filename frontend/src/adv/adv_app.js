@@ -113,9 +113,9 @@ export function mountAdv(dom, deps) {
     onAdvance: () => action('advance'),
     onSend: text => !controller.busy && controller.send(text),
     onMic: () => {
+      if (deps.onMic?.(textbox.inputElement, textbox.micButton) === false) return;
       player.beginPlayerEdit();
       stopStageReplay();
-      deps.onMic?.(textbox.inputElement, textbox.micButton);
     },
     onAction: (actionName, data) => {
       if (actionName === 'player_edit') { deps.disarmMicAutoSend?.(); player.beginPlayerEdit(); stopStageReplay(); sprite.suspend(); syncControls(); }
