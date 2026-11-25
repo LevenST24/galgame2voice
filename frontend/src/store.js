@@ -311,10 +311,10 @@ export function loadState() {
 
 /**
  * @param {Array<{ id?: number | string | null, name?: string | null }>} [profiles]
- * @returns {string}
+ * @returns {PortableChatSnapshot}
  */
-export function exportSessionData(profiles = []) {
-  const portable = portableSnapshot(normalizeSnapshot(snapshot(), DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL));
+export function buildLocalBackupSnapshot(profiles = []) {
+  const local = normalizeSnapshot(snapshot(), DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL);
   const nameById = new Map();
   if (Array.isArray(profiles)) {
     for (const profile of profiles) {
@@ -325,7 +325,7 @@ export function exportSessionData(profiles = []) {
       }
     }
   }
-  for (const session of portable.sessions) {
+  for (const session of local.sessions) {
     const voiceId = session.settings.voiceProfileId;
     const resolvedName = voiceId !== null ? nameById.get(voiceId) : undefined;
     if (resolvedName) {
@@ -334,6 +334,15 @@ export function exportSessionData(profiles = []) {
       delete session.characterName;
     }
   }
+  return local;
+}
+
+/**
+ * @param {Array<{ id?: number | string | null, name?: string | null }>} [profiles]
+ * @returns {string}
+ */
+export function exportSessionData(profiles = []) {
+  const portable = portableSnapshot(buildLocalBackupSnapshot(profiles));
   return JSON.stringify({
     format: 'galgame2voice.chat',
     version: 1,

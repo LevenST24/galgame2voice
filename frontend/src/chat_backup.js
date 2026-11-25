@@ -1,7 +1,7 @@
 // @ts-check
 import { requestJson } from './api.js';
 import { normalizeSnapshot, portableSnapshot } from './session_data.js';
-import { exportSessionData, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL, GREETING, LEGACY_GREETINGS, uid } from './store.js';
+import { buildLocalBackupSnapshot, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL, GREETING, LEGACY_GREETINGS, uid } from './store.js';
 
 const normalize = data => portableSnapshot(normalizeSnapshot(data, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL));
 
@@ -88,5 +88,5 @@ export function mergeChatBackup(serverData, localData) {
  */
 export async function exportCompleteChatBackup(profiles = []) {
   const server = await requestJson('/api/chat/export', {}, { timeoutMs: 60000 });
-  return mergeChatBackup(server, JSON.parse(exportSessionData(profiles)));
+  return mergeChatBackup(server, buildLocalBackupSnapshot(profiles));
 }
