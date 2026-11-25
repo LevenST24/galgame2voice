@@ -329,7 +329,12 @@ export function mountAdv(dom, deps) {
     getWorks: () => works,
     getWork: () => deps.getCharacter?.()?.work || null,
     getSelection: storedBackground,
-    saveSettings: patch => deps.saveSettings?.(patch),
+    saveSettings: patch => {
+      deps.saveSettings?.(patch);
+      // main.js sends no session update for its own save, so reread it: reopening the panel
+      // or picking a time must start from this choice, not the one loaded at mount.
+      update();
+    },
     onPreview: selection => {
       appliedBackground = shownBackground(selection);
       background.setSelection(appliedBackground);
@@ -433,7 +438,8 @@ export function mountAdv(dom, deps) {
     stage.stage.classList.toggle('is-window-hidden', player.hidden);
     stage.stage.classList.toggle('reduced-motion', reducedMotion);
     quickMenu.setModelStatus(deps.getModelStatus?.() || { label: '对话模型', state: controller.busy ? 'busy' : 'ok' });
-    if (configPanel?.isOpen && !configPanel.element.contains(doc.activeElement)) {
+    // Embedded in the settings center, the dialog owns focus; pulling it back would yank the user off its tabs and buttons.
+    if (configPanel?.isOpen && !deps.readingSettingsContainer && !configPanel.element.contains(doc.activeElement)) {
       configPanel.focusFirstControl?.();
     }
   }

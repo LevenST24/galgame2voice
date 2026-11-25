@@ -53,12 +53,16 @@ export function paginate(text, fits) {
     let bestPunctIndex = -1;
     let longestFitIndex = -1;
     let candidate = '';
+    // A page of nothing but marks (the 「、」 left over after a forced split) is not a page.
+    let hasWords = false;
 
     for (let i = 0; i < clusters.length; i++) {
       candidate += clusters[i];
       if (fits(candidate)) {
         longestFitIndex = i;
-        if (PUNCT_OR_SPACE_BREAK.test(clusters[i])) {
+        if (!PUNCT_OR_SPACE_BREAK.test(clusters[i])) {
+          hasWords = true;
+        } else if (hasWords) {
           bestPunctIndex = i;
         }
       } else {
