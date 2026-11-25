@@ -126,6 +126,13 @@ export function startListening({ onInterim, onText, onRecorded, onError, onEnd }
         if (typeof onError === 'function') onError('麦克风权限被拒绝，请在浏览器地址栏允许使用麦克风');
       } else if (e.error === 'no-speech') {
         if (typeof onError === 'function') onError('没有听到说话，请再试一次');
+      } else if (e.error === 'network') {
+        // Chrome sends speech to an online service; when it is unreachable the mic would just go quiet.
+        if (typeof onError === 'function') onError('语音识别服务连不上，请检查网络；也可以改用 Edge 浏览器，或直接打字。');
+      } else if (e.error === 'audio-capture') {
+        if (typeof onError === 'function') onError('没有找到可用的麦克风，请检查麦克风是否插好、是否被其他程序占用。');
+      } else if (e.error !== 'aborted') {
+        if (typeof onError === 'function') onError('语音识别没有成功，请再试一次，或直接打字。');
       }
       finishRecognition();
     };

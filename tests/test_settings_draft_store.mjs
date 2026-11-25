@@ -75,3 +75,35 @@ test('commitAll saves the engine directory, then global config, without saving d
   await store.commitAll();
   assert.deepEqual(order, ['directory.save']);
 });
+
+test('a refused audio retention value saves nothing, not even a dirty engine directory', async () => {
+  const { createSettingsDraftStore } = await import('../frontend/src/controllers/settings_draft_store.js');
+  const { readRetentionMinutes } = await import('../frontend/src/controllers/global_settings.js');
+  for (const raw of ['-5', '0', '', '1.5', '10081']) {
+    assert.throws(() => readRetentionMinutes(raw), /1 到 10080 之间的整数分钟/, raw);
+  }
+  assert.equal(readRetentionMinutes('60'), 60);
+  const order = [];
+  const toasts = [];
+  const store = createSettingsDraftStore({
+    isConfigSaving: () => false,
+    getProviderController: () => null,
+    isConfigLoaded: () => true,
+    showToast: (msg, type) => { toasts.push({ msg, type }); },
+    reloadConfig: () => {},
+    getEngineDirectory: () => ({ isDirty: () => true, async save() { order.push('directory.save'); return true; } }),
+    getCoordinatorRevision: () => 1,
+    setConfigSaving: () => {},
+    getConfigRevision: () => 1,
+    readConfigPayload: () => ({ audio_retention_minutes: readRetentionMinutes('-5') }),
+    runSettingsMutation: async (operation) => operation(async () => { order.push('config'); }),
+    clearConfigDirtyIfUnchanged: () => {},
+    isConfigDirty: () => false,
+    refreshTelemetry: () => {},
+  });
+  await store.commitAll();
+  assert.deepEqual(order, []);
+  assert.equal(toasts.length, 1);
+  assert.equal(toasts[0].type, 'error');
+  assert.match(toasts[0].msg, /音频缓存保留时间/);
+});
