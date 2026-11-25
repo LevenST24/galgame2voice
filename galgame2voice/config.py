@@ -156,6 +156,9 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        # GALGAME2VOICE_PORT= left empty in .env means "not set", as auth.py already
+        # treats an empty GALGAME2VOICE_AUTH_DISABLED; it used to stop startup.
+        env_ignore_empty=True,
         case_sensitive=False,
     )
 
