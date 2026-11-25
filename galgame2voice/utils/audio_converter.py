@@ -71,6 +71,24 @@ def _find_ffmpeg_in_project_dirs(exe_name: str) -> str | None:
     return None
 
 
+def _resolve_ffmpeg_setting(value: str, exe_name: str) -> str | None:
+    """Accepts the ffmpeg program itself or the folder that holds it.
+
+    People commonly point FFMPEG_PATH at the unzipped ``ffmpeg\\bin`` folder,
+    sometimes copied with the quotes Explorer's "Copy as path" adds.
+    """
+    clean = value.strip().strip('"').strip("'").strip()
+    if not clean:
+        return None
+    candidate = Path(clean)
+    if candidate.is_dir():
+        for inner in (candidate / exe_name, candidate / "bin" / exe_name):
+            if inner.is_file():
+                return str(inner.resolve())
+        return None
+    return shutil.which(clean) or (str(candidate.resolve()) if candidate.is_file() else None)
+
+
 def find_ffmpeg(custom_path: str | None = None) -> str | None:
     """
     Discovers and caches the ffmpeg executable location.
@@ -98,18 +116,22 @@ def find_ffmpeg(custom_path: str | None = None) -> str | None:
     if _cached_ffmpeg_bin is not None:
         return _cached_ffmpeg_bin
 
-    # 3. Environment variables FFMPEG_PATH or FFMPEG_BIN
-    for env_var in ("FFMPEG_PATH", "FFMPEG_BIN"):
-        env_val = os.environ.get(env_var)
-        if env_val:
-            resolved = shutil.which(env_val) or (str(Path(env_val).resolve()) if Path(env_val).is_file() else None)
-            if resolved:
-                _cached_ffmpeg_bin = resolved
-                return _cached_ffmpeg_bin
-
     is_win = sys.platform == "win32"
     exe_name = "ffmpeg.exe" if is_win else "ffmpeg"
     scripts_dir = "Scripts" if is_win else "bin"
+
+    # 3. Environment variables FFMPEG_PATH or FFMPEG_BIN
+    for env_var in ("FFMPEG_PATH", "FFMPEG_BIN"):
+        resolved = _resolve_ffmpeg_setting(os.environ.get(env_var, ""), exe_name)
+        if resolved:
+            _cached_ffmpeg_bin = resolved
+            return _cached_ffmpeg_bin
+        if os.environ.get(env_var, "").strip():
+            logger.warning(
+                "%s=%r does not point to ffmpeg; looking for ffmpeg elsewhere.",
+                env_var,
+                os.environ[env_var],
+            )
 
     # 4. Project root & bundled tools directories
     bundled_ffmpeg = _find_ffmpeg_in_project_dirs(exe_name)
