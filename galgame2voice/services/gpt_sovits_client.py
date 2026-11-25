@@ -98,6 +98,17 @@ ENDPOINT_SET_REFER_AUDIO = "/set_refer_audio"
 ENDPOINT_CONTROL = "/control"
 ENDPOINT_TTS = "/tts"
 
+# api_v2 answers /tts with WAV by default; any other 200 body (a proxy's sign-in page,
+# another web app on the same port) must not be saved or cached as audio.
+NON_AUDIO_RESPONSE_ERROR = (
+    "语音引擎返回的内容不是音频（可能是网页或错误信息），已丢弃。"
+    "请确认语音引擎地址指向 GPT-SoVITS 的 api_v2 服务（默认 http://127.0.0.1:9880）后重试。"
+)
+
+
+def _is_wav_payload(data: bytes) -> bool:
+    return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"
+
 PARAM_WEIGHTS_PATH = "weights_path"
 PARAM_REFER_AUDIO_PATH = "refer_audio_path"
 PARAM_STREAMING_MODE = "streaming_mode"
@@ -799,6 +810,8 @@ class GptSovitsClient:
                         raise RuntimeError(f"TTS synthesis failed with status {resp.status_code}: {resp.text[:300]}")
                     if not resp.content:
                         raise RuntimeError("TTS synthesis returned empty audio payload")
+                    if not _is_wav_payload(resp.content):
+                        raise RuntimeError(NON_AUDIO_RESPONSE_ERROR)
                     if wav_is_silent(resp.content):
                         raise RuntimeError(SILENT_AUDIO_ERROR)
 
