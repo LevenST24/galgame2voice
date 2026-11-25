@@ -502,10 +502,12 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       if (historyGen !== _syncSessionsGen || getSession(session.id) !== session || (session.messages ? session.messages.length : 0) !== initialCount) return;
       if (Array.isArray(data.messages) && data.messages.length > 0) {
         const incoming = data.messages.map(mapBackendMessage);
+        const serverTail = incoming[incoming.length - 1];
+        /** @type {Map<any, any>} server message -> the local message it matched */
+        const pairedServer = new Map();
         if (session.messages && session.messages.length > 0) {
           const usedIndices = new Set();
-          /** @type {Map<any, any>} local message -> the server message it matched */
-          const pairedLocal = new Map();
+          const pairedLocal = new Set();
 
           // 1. 本地消息有已知服务端 ID（serverMessageId 或 m_<数字> 形式的 id）时，只和同 ID 的服务端消息配对。
           const incomingById = new Map();
@@ -525,7 +527,8 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
                 const serverMsg = incoming[j];
                 if (serverMsg.role === localMsg.role) {
                   usedIndices.add(j);
-                  pairedLocal.set(localMsg, serverMsg);
+                  pairedLocal.add(localMsg);
+                  pairedServer.set(serverMsg, localMsg);
                   if (localMsg.voiceKey) {
                     serverMsg.voiceKey = localMsg.voiceKey;
                     if (localMsg.dur !== undefined) {
@@ -552,7 +555,8 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
                 if (localMsg.failed && !(/** @type {number} */ (extractServerId(serverMsg)) > lastKnownId)) continue;
                 if (serverMsg.role === 'user' && serverMsg.content === localMsg.content) {
                   usedIndices.add(j);
-                  pairedLocal.set(localMsg, serverMsg);
+                  pairedLocal.add(localMsg);
+                  pairedServer.set(serverMsg, localMsg);
                   if (localMsg.voiceKey) {
                     serverMsg.voiceKey = localMsg.voiceKey;
                     if (localMsg.dur !== undefined) {
@@ -570,12 +574,6 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
 
           // 3. 本地最后一条是带 failed 或尚无服务端 ID 的用户消息，且没有配上任何服务端消息时，补标 failed 并接到新列表末尾。
           const lastLocalMsg = session.messages[session.messages.length - 1];
-          // 配上的服务端提问是记录的最后一条、后面没有回复：这一轮中途断了（如关掉启动窗口），保留「重新发送」。
-          const lastIncoming = incoming[incoming.length - 1];
-          if (lastLocalMsg && lastLocalMsg.role === 'user' && lastIncoming?.role === 'user'
-            && pairedLocal.get(lastLocalMsg) === lastIncoming) {
-            lastIncoming.failed = lastLocalMsg.failed || { error: '对话已中断，未收到回复', code: 'cancelled' };
-          }
           if (
             lastLocalMsg &&
             lastLocalMsg.role === 'user' &&
@@ -587,6 +585,17 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
             }
             incoming.push(lastLocalMsg);
           }
+        }
+        // 服务端历史停在无回复提问且后面没有更新的本地提问时，去掉服务端身份并保留「重新发送」。
+        if (incoming[incoming.length - 1] === serverTail && serverTail.role === 'user') {
+          const matchedLocal = pairedServer.get(serverTail);
+          const oldId = serverTail.id;
+          delete serverTail.serverMessageId;
+          serverTail.id = matchedLocal && extractServerId(matchedLocal) === null ? matchedLocal.id : uid('m');
+          if (audioStore && serverTail.id !== oldId && audioStore.has(oldId) && !audioStore.has(serverTail.id)) {
+            audioStore.set(serverTail.id, audioStore.get(oldId));
+          }
+          serverTail.failed = matchedLocal?.failed || { error: '对话已中断，未收到回复', code: 'cancelled' };
         }
         session.messages = incoming;
         session.hasServerMessages = Boolean(data.has_more) || incoming.some((m) => m.role === 'user');

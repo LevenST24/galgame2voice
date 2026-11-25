@@ -2509,17 +2509,18 @@ test('startup sync preserves unconfirmed local rename and posts it instead of ov
 
 // r67 recovery 1: the turn died with the process (启动窗口被关掉). The server kept the
 // question, but no reply; after reopening, the question must still offer 「重新发送」.
-for (const [label, extra] of [
-  ['failed in this page', { failed: { error: '无法连接本机服务', code: 'network' } }],
-  ['page closed mid-reply', {}],
+const priorReply = { id: 'm_10', serverMessageId: 10, role: 'assistant', content: '之前的回复', ts: 1_700_000_000_000 };
+const cutPrompt = extra => localMsg('m_local_cut', 'user', '刚才的问题', { ts: 1_700_000_999_000, ...extra });
+for (const [slug, label, messages, expectedId] of [
+  ['failed', 'failed in this page', [priorReply, cutPrompt({ failed: { error: '无法连接本机服务', code: 'network' } })], 'm_local_cut'],
+  ['closed', 'page closed mid-reply', [priorReply, cutPrompt({})], 'm_local_cut'],
+  ['partial', 'partial reply already streamed', [priorReply, cutPrompt({}), localMsg('m_partial', 'assistant', '半截台词', { ts: 1_700_000_999_500 })], 'm_local_cut'],
+  ['empty', 'empty local messages', [], null],
 ]) {
   test(`startup sync keeps a question the server saved without a reply retryable (${label})`, async t => {
     const { app } = await bootActiveHistory(t, {
-      id: `s_exit_${label.length}`, title: '中途断开的对话', updatedAt: 1_700_000_999_000,
-      messages: [
-        { id: 'm_10', serverMessageId: 10, role: 'assistant', content: '之前的回复', ts: 1_700_000_000_000 },
-        localMsg('m_local_cut', 'user', '刚才的问题', { ts: 1_700_000_999_000, ...extra }),
-      ],
+      id: `s_exit_${slug}`, title: '中途断开的对话', updatedAt: 1_700_000_999_000,
+      messages,
       updated_at: '2024-06-01 00:10:01', message_count: 2, last_message: '刚才的问题',
       mode: 'window',
       historyMessages: [
@@ -2530,8 +2531,29 @@ for (const [label, extra] of [
     const session = storedActive();
     assert.equal(session.messages.length, 2);
     const question = session.messages.at(-1);
-    assert.equal(question.serverMessageId, 11);
+    assert.equal(question.serverMessageId, undefined);
+    if (expectedId) assert.equal(question.id, expectedId); else assert.doesNotMatch(question.id, /^m_\d+$/);
     assert.ok(question.failed, 'the cut-off question keeps a failed note');
     assert.equal(app.conversation.canRetry(question), true);
   });
 }
+
+test('retrying a recovered single-turn question that fails and gets pruned still survives reload', async t => {
+  let pruned = false, app2;
+  t.after(() => { try { app2?.conversation.stop(); app2?.adv?.unmount(); } catch {} });
+  const { root, server, app } = await bootActiveHistory(t, {
+    id: 's_exit_retry_prune', title: '首问断开后重发失败', updatedAt: 1_700_000_999_000,
+    messages: [localMsg('m_local_first', 'user', '第一句提问', { ts: 1_700_000_999_000 })],
+    updated_at: '2024-06-01 00:10:01', message_count: 1, last_message: '第一句提问', mode: 'window',
+    prepareHistory: built => () => historyPayload(built, pruned
+      ? { oldest_id: null, count: 0, messages: [] }
+      : { oldest_id: 1, count: 1, messages: [srv(1, 'user', '第一句提问', '', '2024-06-01 00:10:01')] }),
+    routes: target => target.includes('/api/chat/stream')
+      ? (pruned = true, server.message_count = 0, server.last_message = '', Response.json({ detail: '对话模型未配置 API Key' }, { status: 500 })) : undefined,
+  });
+  const question = storedActive().messages.at(-1);
+  assert.equal(app.conversation.retry(question), true);
+  for (let i = 0; i < 10 && app.conversation.busy; i++) await tick(); assert.ok(question.failed);
+  app2 = initApp({ dom: { advRoot: root }, renderSessionList() {} }); await app2.ready; for (let i = 0; i < 5; i++) await tick();
+  assert.deepEqual(storedActive().messages.map(m => [m.id, app2.conversation.canRetry(m)]), [['m_local_first', true]]);
+});
