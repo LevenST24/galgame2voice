@@ -14,6 +14,8 @@ from galgame2voice.services.streaming_parser import StreamingBilingualParser
         ("我一点也不开心。", "全然嬉しくない。"),
         ("你这样我很不高兴！", ""),
         ("我不太开心。", ""),
+        ("我不是太开心。", ""),
+        ("我不是特别开心。", ""),
         ("", "嬉しくない。"),
     ],
 )
@@ -34,9 +36,29 @@ def test_gentle_smile_is_gentle():
     assert classify_emotion("她微笑着看你。", "") == "gentle"
 
 
-@pytest.mark.parametrize("zh", ["别难过了。", "我不难过。", "别生气嘛。"])
-def test_comforting_lines_are_not_read_as_the_negated_emotion(zh):
-    assert classify_emotion(zh, "") not in {"sad", "angry"}
+@pytest.mark.parametrize(
+    "zh, ja",
+    [
+        ("别难过了。", "悲しまないで。"),
+        ("我不难过。", "悲しくないよ。"),
+        ("别生气嘛。", "怒らないでよ。"),
+        ("我没生气。", "怒ってないよ。"),
+    ],
+)
+def test_comforting_lines_are_not_read_as_the_negated_emotion(zh, ja):
+    assert classify_emotion(zh, ja) not in {"sad", "angry"}
+
+
+def test_negated_shy_in_japanese_is_not_shy():
+    assert classify_emotion("我不害羞。", "恥ずかしくない。") != "shy"
+
+
+@pytest.mark.parametrize(
+    "zh, expected",
+    [("我今天特别开心！", "happy"), ("我特别难过。", "sad"), ("我特别不开心。", "sad")],
+)
+def test_tebie_intensifier_is_not_treated_as_negation(zh, expected):
+    assert classify_emotion(zh, "") == expected
 
 
 def test_unhappy_reads_as_sad():
@@ -52,7 +74,9 @@ def test_plain_keywords_still_match(zh, expected):
 
 
 def test_keyword_counts_when_one_occurrence_is_affirmed():
-    assert detect_emotion_cue("不是不开心，是真的开心。") is not None
+    assert detect_emotion_cue("不是不开心，是真的开心。") == "happy"
+    assert detect_emotion_cue("我不太开心，但见到你还是开心。") == "happy"
+    assert detect_emotion_cue("她先是苦笑，后来真的笑了。") == "happy"
     assert detect_emotion_cue("别哭，我很开心。") == "happy"
 
 

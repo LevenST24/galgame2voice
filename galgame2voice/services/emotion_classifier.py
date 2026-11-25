@@ -27,10 +27,14 @@ EMOTION_KEYWORDS: dict[str, list[str]] = {
 VALID_EMOTIONS = {"gentle", "shy", "happy", "tsundere", "cool", "sad", "angry"}
 
 # A keyword right after a negator says the opposite: 不开心 / 别难过 / 一点也不高兴.
-# Up to two degree words may sit in between (很不高兴 already ends in 不, 不太开心 needs 太).
-_RE_NEGATED_TAIL = re.compile(r"(?:不|没|没有|别|不要|别再|并不)(?:太|很|那么|怎么|是很|再)?$")
-# Japanese negates after the stem: 嬉しくない / 悲しくなかった.
-_JA_NEGATION_SUFFIXES = ("くない", "くなかった", "くなく")
+# Exclude 特别 ("especially") from 别, and allow degree modifiers like 不是太 / 不是特别.
+_RE_NEGATED_TAIL = re.compile(r"(?:不|不要|没|没有|(?<!特)别再?|并不)(?:太|很|那么|怎么|是很|是太|是特别|特别|再)?$")
+# Japanese negates after the stem: 嬉しくない / 恥ずかしくない / 悲しまないで / 怒ってない.
+_JA_NEGATION_SUFFIXES = (
+    "くない", "くなかった", "くなく", "くありません",
+    "しくない", "しくなかった", "しくなく", "しくありません",
+    "まない", "らない", "わない", "ってない", "っていない",
+)
 # 笑 alone reads as happy, but 苦笑 / 冷笑 / 嘲笑 do not, and 微笑 belongs to gentle.
 _KEYWORD_EXCLUDED_PREFIXES: dict[str, tuple[str, ...]] = {
     "笑": ("苦", "冷", "嘲", "讥", "干", "假", "奸", "坏", "微"),
