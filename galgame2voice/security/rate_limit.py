@@ -53,10 +53,14 @@ class SlidingWindowCounter:
         self.window = window_seconds
         self.events: Deque[float] = deque()
 
-    def allow(self, now: float) -> bool:
+    def has_room(self, now: float) -> bool:
+        """Reports whether one more request fits, without recording it."""
         while self.events and now - self.events[0] >= self.window:
             self.events.popleft()
-        if len(self.events) >= self.limit:
+        return len(self.events) < self.limit
+
+    def allow(self, now: float) -> bool:
+        if not self.has_room(now):
             return False
         self.events.append(now)
         return True
@@ -86,10 +90,6 @@ class RateLimitMiddleware:
         now = time.monotonic()
         ip = self._client_ip(scope)
 
-        if not self.global_counter.allow(now):
-            await self._reject(send)
-            return
-
         is_protected = path.startswith(_PROTECTED_PREFIXES) or (
             path.startswith(_ADMIN_STRICT_PREFIXES)
             and str(scope.get("method", "GET")).upper() in _MUTATING_METHODS
@@ -107,9 +107,14 @@ class RateLimitMiddleware:
                     _evict_oldest(self.ip_counters)
                 counter = self.ip_counters[ip] = SlidingWindowCounter(_DEFAULT_IP_LIMIT)
 
-        if not counter.allow(now):
+        # Check both budgets before recording in either: a request turned away
+        # by its own client's budget must not eat the shared global budget, or
+        # one runaway client on the LAN would lock every other client out.
+        if not (counter.has_room(now) and self.global_counter.has_room(now)):
             await self._reject(send)
             return
+        counter.events.append(now)
+        self.global_counter.events.append(now)
 
         await self.app(scope, receive, send)
 

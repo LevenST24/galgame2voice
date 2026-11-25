@@ -96,3 +96,44 @@ class TestMiddleware:
         for i in range(200):
             await mw({"type": "http", "path": "/static/js/app.js", "client": ("8.8.8.8", 1)}, receive, send)
         assert len(handled) == 200
+
+
+class TestRejectedRequestsSpareOtherBudgets:
+    @staticmethod
+    async def _call(mw, ip, path="/api/characters"):
+        statuses = []
+
+        async def app(scope, receive, send):
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        mw.app = app
+
+        async def receive():
+            return {"type": "http.request"}
+
+        async def send(message):
+            if message["type"] == "http.response.start":
+                statuses.append(message["status"])
+
+        await mw({"type": "http", "path": path, "method": "GET", "client": (ip, 1)}, receive, send)
+        return statuses[0]
+
+    @pytest.mark.asyncio
+    async def test_runaway_client_does_not_lock_out_others(self, monkeypatch):
+        monkeypatch.delenv("GALGAME2VOICE_RATE_LIMIT_DISABLED", raising=False)
+        mw = RateLimitMiddleware(None)
+        # One LAN client loops far past its own per-IP budget.
+        results = [await self._call(mw, "192.168.1.50") for _ in range(400)]
+        assert results.count(200) == 120
+        # The PC's own browser must still get through.
+        assert await self._call(mw, "127.0.0.1") == 200
+
+    @pytest.mark.asyncio
+    async def test_global_rejection_does_not_spend_client_budget(self, monkeypatch):
+        monkeypatch.delenv("GALGAME2VOICE_RATE_LIMIT_DISABLED", raising=False)
+        mw = RateLimitMiddleware(None)
+        mw.global_counter = SlidingWindowCounter(limit=1)
+        assert await self._call(mw, "10.0.0.1") == 200
+        assert await self._call(mw, "10.0.0.2") == 429
+        assert len(mw.ip_counters["10.0.0.2"].events) == 0
