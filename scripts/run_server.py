@@ -45,6 +45,17 @@ def _print_python_recovery_command(arguments: list[str]) -> None:
         print(f"    {shlex.join(command)}")
 
 
+# UTF-8 console output first: every hint below is Chinese, and a cp1252/cp437
+# console or pipe would otherwise turn the hint itself into a UnicodeEncodeError.
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleTitleW("Galgame2Voice 启动器")
+    except Exception:
+        pass
+
 # E402: these imports must follow the sys.path bootstrap above, otherwise the
 # script cannot find the package when it is executed directly from a checkout.
 try:
@@ -93,23 +104,19 @@ except ImportError as exc:
     _print_python_recovery_command(["-m", "ensurepip", "--upgrade"])
     sys.exit(1)
 
-# UTF-8 console output first: every hint below is Chinese, and a cp1252/cp437
-# console or pipe would otherwise turn the hint itself into a UnicodeEncodeError.
-if sys.platform == "win32":
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-        import ctypes
-        ctypes.windll.kernel32.SetConsoleTitleW("Galgame2Voice 启动器")
-    except Exception:
-        pass
-
-# Ensure runtime directories
+# Ensure runtime directories exist and are writable
 for d in ["logs", "data", "audio"]:
+    target = PROJECT_ROOT / d
+    probe = target / f".write_probe_{os.getpid()}_{time.time_ns()}"
     try:
-        (PROJECT_ROOT / d).mkdir(parents=True, exist_ok=True)
+        target.mkdir(parents=True, exist_ok=True)
+        fd = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        try:
+            os.close(fd)
+        finally:
+            probe.unlink(missing_ok=True)
     except OSError as exc:
-        print(f"[错误] 无法在程序文件夹里创建 {d} 文件夹：{PROJECT_ROOT / d}（{exc.strerror or exc}）。")
+        print(f"[错误] 无法在程序文件夹里创建或写入 {d} 文件夹：{target}（{exc.strerror or exc}）。")
         print("程序需要在自己的文件夹里保存数据、日志和音频。请把整个程序文件夹移到可以写入的位置，")
         print("例如 D:\\Galgame2Voice 或你的用户文件夹，不要放在 C:\\Program Files、只读的 U 盘或压缩包预览窗口里。")
         sys.exit(1)
