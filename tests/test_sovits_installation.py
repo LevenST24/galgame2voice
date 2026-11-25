@@ -103,6 +103,7 @@ def test_half_extracted_engine_is_refused_and_not_called_valid(tmp_path):
     with pytest.raises(ValueError, match="引擎文件夹不完整，缺少 GPT_SoVITS/pretrained_models"):
         installation.save_sovits_directory(tmp_path, "engine")
     assert installation.read_sovits_directory(tmp_path) is None
+    assert run_server._check_sovits_dir(engine) is None
     (engine / "GPT_SoVITS" / "configs" / "tts_infer.yaml").unlink()
     with pytest.raises(ValueError, match="缺少 GPT_SoVITS/configs/tts_infer.yaml、GPT_SoVITS/pretrained_models"):
         installation.save_sovits_directory(tmp_path, "engine")

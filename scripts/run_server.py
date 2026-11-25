@@ -58,6 +58,7 @@ try:
     from galgame2voice.utils.hardware import get_gpu_vram_status  # noqa: E402
     from galgame2voice.services.sovits_installation import (  # noqa: E402, F401
         find_engine_python,
+        missing_engine_parts,
         read_sovits_directory,
         write_sovits_directory_hint,
     )
@@ -205,21 +206,23 @@ def _check_sovits_dir(p: Path) -> Path | None:
     """Checks if p or a nested directory inside p contains api_v2.py."""
     if not p.exists() or not p.is_dir():
         return None
-    if (p / "api_v2.py").is_file():
+    def _ready(d: Path) -> bool:
+        return (d / "api_v2.py").is_file() and not missing_engine_parts(d)
+    if _ready(p):
         return p
     # Check nested directory with same name or any subfolder containing api_v2.py
     nested_same = p / p.name
-    if (nested_same / "api_v2.py").is_file():
+    if _ready(nested_same):
         return nested_same
     try:
         for sub in p.iterdir():
             if sub.is_dir():
-                if (sub / "api_v2.py").is_file():
+                if _ready(sub):
                     return sub
                 # Check 2 levels deep (e.g. outer / nested / api_v2.py)
                 try:
                     for sub2 in sub.iterdir():
-                        if sub2.is_dir() and (sub2 / "api_v2.py").is_file():
+                        if sub2.is_dir() and _ready(sub2):
                             return sub2
                 except (PermissionError, OSError):
                     pass
@@ -868,6 +871,16 @@ def _calibrate_precision_after_ready(
             print("      [精度校准] 此设备已记录为 FP32 模式 (FP16 半精度输出纯静音)。")
 
 
+def _answers_like_sovits_sync(base_url: str) -> bool:
+    import httpx
+    from galgame2voice.services.gpt_sovits_client import HEALTH_TIMEOUT
+    try:
+        with httpx.Client(trust_env=False, timeout=HEALTH_TIMEOUT) as one_shot:
+            return one_shot.get(f"{base_url.rstrip('/')}/control").status_code in (200, 400)
+    except httpx.HTTPError:
+        return False
+
+
 def ensure_gpt_sovits_running(
     fp16: bool = False,
     fp32: bool = False,
@@ -907,7 +920,8 @@ def ensure_gpt_sovits_running(
         sovits_base_url = "http://127.0.0.1:9880"
     print(f"[1/2] 正在检测 GPT-SoVITS 语音推理引擎 ({sovits_host}:{sovits_port})...")
     if is_port_in_use(sovits_port, sovits_host):
-        print("      [OK] GPT-SoVITS 语音引擎已在运行")
+        print("      [OK] GPT-SoVITS 语音引擎已在运行" if _answers_like_sovits_sync(sovits_base_url)
+              else f"      [WARN] 端口 {sovits_port} 已被其他程序占用，运行的不是 GPT-SoVITS 语音引擎。")
         return
     if not sovits_is_local:
         print(

@@ -86,6 +86,9 @@ def owned_engine(tmp_path, monkeypatch):
     directory = tmp_path / "engine"
     directory.mkdir()
     (directory / "api_v2.py").write_text("# synthetic entrypoint, never executed")
+    (directory / "GPT_SoVITS" / "configs").mkdir(parents=True)
+    (directory / "GPT_SoVITS" / "configs" / "tts_infer.yaml").write_text("custom:\n  device: cuda\n  is_half: true\n")
+    (directory / "GPT_SoVITS" / "pretrained_models" / "chinese-hubert-base").mkdir(parents=True)
     (tmp_path / "data/sovits_dir.txt").write_text(str(directory))
     endpoint = parse_sovits_endpoint("http://127.0.0.1:19230", source="db")
     proc = MagicMock(pid=1234)
@@ -546,6 +549,9 @@ async def test_restart_local_engine_uses_settings_project_root_for_pid_cache_and
     engine_dir = tmp_path / "engine"
     engine_dir.mkdir()
     (engine_dir / "api_v2.py").write_text("# synthetic entrypoint, never executed", encoding="utf-8")
+    (engine_dir / "GPT_SoVITS" / "configs").mkdir(parents=True)
+    (engine_dir / "GPT_SoVITS" / "configs" / "tts_infer.yaml").write_text("custom:\n  device: cuda\n  is_half: true\n")
+    (engine_dir / "GPT_SoVITS" / "pretrained_models" / "chinese-hubert-base").mkdir(parents=True)
     (custom_root / "data" / "sovits_dir.txt").write_text(str(engine_dir), encoding="utf-8")
 
     (launcher_root / "gptsovits.pid").write_text("9999", encoding="utf-8")

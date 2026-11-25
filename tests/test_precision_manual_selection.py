@@ -167,6 +167,9 @@ def _setup_sovits_project(
     fake_engine = tmp_path / "dummy_sovits"
     fake_engine.mkdir()
     (fake_engine / "api_v2.py").write_text(marker)
+    (fake_engine / "GPT_SoVITS" / "configs").mkdir(parents=True)
+    (fake_engine / "GPT_SoVITS" / "configs" / "tts_infer.yaml").write_text("custom:\n  device: cuda\n  is_half: true\n")
+    (fake_engine / "GPT_SoVITS" / "pretrained_models" / "chinese-hubert-base").mkdir(parents=True)
     (tmp_path / "data" / "sovits_dir.txt").write_text(str(fake_engine), encoding="utf-8")
     return fake_engine
 

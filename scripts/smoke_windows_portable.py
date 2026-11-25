@@ -275,6 +275,9 @@ def smoke_test(
                 (engine / "runtime").mkdir(parents=True)
                 (engine / "api_v2.py").write_text("# smoke marker, never executed\n")
                 (engine / "runtime" / "python.exe").write_bytes(b"smoke marker, never executed")
+                (engine / "GPT_SoVITS" / "configs").mkdir(parents=True)
+                (engine / "GPT_SoVITS" / "configs" / "tts_infer.yaml").write_text("custom:\n  device: cuda\n  is_half: true\n")
+                (engine / "GPT_SoVITS" / "pretrained_models" / "chinese-hubert-base").mkdir(parents=True)
                 (engine / "GPT_weights").mkdir()
                 weight = engine / "GPT_weights" / "smoke.ckpt"
                 weight.write_bytes(b"smoke marker, never executed")

@@ -30,6 +30,9 @@ def engine(tmp_path, monkeypatch):
     directory = root / "engine"
     directory.mkdir()
     (directory / "api_v2.py").write_text("# test marker, never run")
+    (directory / "GPT_SoVITS" / "configs").mkdir(parents=True)
+    (directory / "GPT_SoVITS" / "configs" / "tts_infer.yaml").write_text("custom:\n  device: cuda\n  is_half: true\n")
+    (directory / "GPT_SoVITS" / "pretrained_models" / "chinese-hubert-base").mkdir(parents=True)
     (root / "data" / "sovits_dir.txt").write_text(str(directory))
     monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", None)
     monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", None)
@@ -114,14 +117,16 @@ async def test_restart_stops_only_owned_live_tree(engine, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_invalid_directory_preserves_running_engine(engine, monkeypatch):
+@pytest.mark.parametrize(("rel", "keyword"), [("api_v2.py", "重新选择"), ("GPT_SoVITS/configs/tts_infer.yaml", "可能还没解压完")])
+async def test_invalid_directory_preserves_running_engine(engine, monkeypatch, rel, keyword):
     root, directory = engine
-    (directory / "api_v2.py").unlink()
+    (directory / rel).unlink()
     terminate = MagicMock()
     monkeypatch.setattr(run_server, "terminate_process_tree", terminate)
+    monkeypatch.setattr(run_server, "_spawn_sovits_process", MagicMock(return_value=MagicMock(poll=lambda: None)))
     with pytest.raises(HTTPException) as error:
         await health.restart_sovits_endpoint(None)
-    assert error.value.status_code == 400 and "重新选择" in error.value.detail
+    assert error.value.status_code == 400 and keyword in error.value.detail
     terminate.assert_not_called()
 
 
@@ -311,8 +316,10 @@ async def test_restart_invalid_sovits_url_returns_chinese_guidance(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_restart_on_a_port_held_by_another_program_does_not_call_it_an_engine(engine, monkeypatch):
+@pytest.mark.parametrize(("port", "expected", "forbidden"), [(9880, "9881", "改回"), (19230, "改回 http://127.0.0.1:9880", "9881")])
+async def test_restart_on_a_port_held_by_another_program_does_not_call_it_an_engine(engine, monkeypatch, port, expected, forbidden):
     """A busy port whose server does not answer like api_v2 must not be reported as a running engine."""
+    monkeypatch.setattr(health, "resolve_effective_sovits_endpoint", AsyncMock(return_value=parse_sovits_endpoint(f"http://127.0.0.1:{port}", source="db")))
     monkeypatch.setattr(run_server, "is_port_in_use", lambda *args: True)
     monkeypatch.setattr(health, "_answers_like_sovits", AsyncMock(return_value=False))
     spawn = MagicMock()
@@ -320,7 +327,8 @@ async def test_restart_on_a_port_held_by_another_program_does_not_call_it_an_eng
     with pytest.raises(HTTPException) as error:
         await health.restart_sovits_endpoint(None)
     assert error.value.status_code == 409
-    assert "不是语音引擎" in error.value.detail and "其他窗口" not in error.value.detail
+    assert "不是语音引擎" in error.value.detail and "保存全局配置" in error.value.detail
+    assert expected in error.value.detail and forbidden not in error.value.detail and "其他窗口" not in error.value.detail
     spawn.assert_not_called()
 
 
@@ -338,4 +346,16 @@ async def test_answers_like_sovits_reads_the_control_endpoint(monkeypatch, statu
                         lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
     assert await health._answers_like_sovits("http://127.0.0.1:8080/") is expected
     assert seen == ["/control"]
+
+
+@pytest.mark.parametrize(("code", "must_have", "must_not"), [(400, "已在运行", "不是 GPT-SoVITS"), (404, "不是 GPT-SoVITS", "已在运行")])
+def test_launcher_checks_control_on_busy_port(monkeypatch, capsys, code, must_have, must_not):
+    endpoint = parse_sovits_endpoint("http://127.0.0.1:9874", source="db")
+    monkeypatch.setattr("galgame2voice.services.sovits_endpoint.resolve_effective_sovits_endpoint_sync", lambda: endpoint)
+    monkeypatch.setattr(run_server, "is_port_in_use", lambda *args: True)
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(lambda req: httpx.Response(code if req.url.path == "/control" else 500)), **kw))
+    run_server.ensure_gpt_sovits_running()
+    out = capsys.readouterr().out
+    assert must_have in out and must_not not in out
 

@@ -25,7 +25,7 @@ from galgame2voice import __version__
 from galgame2voice.services.engine_recovery import engine_failure_message
 from galgame2voice.services.engine_supervisor import get_engine_supervisor
 from galgame2voice.services.telemetry_jobs import TelemetryJobs, default_telemetry_jobs
-from galgame2voice.services.sovits_installation import find_engine_python
+from galgame2voice.services.sovits_installation import _incomplete_message, find_engine_python, missing_engine_parts
 from galgame2voice.config import get_settings
 from galgame2voice.database.session import get_db
 from galgame2voice.database import crud
@@ -732,6 +732,9 @@ async def _restart_local_engine(endpoint: SovitsEndpoint, payload: RestartSovits
         raise HTTPException(status_code=400, detail="所选文件夹缺少 api_v2.py。请完整解压引擎包，在「语音服务」重新选择引擎文件夹。")
     if getattr(sys, "frozen", False) and await asyncio.to_thread(find_engine_python, sovits_dir) is None:
         raise HTTPException(status_code=400, detail="所选引擎缺少自己的运行环境。请使用包含 runtime 的完整集成包，重新选择文件夹后启动。")
+    missing = await asyncio.to_thread(missing_engine_parts, sovits_dir)
+    if missing:
+        raise HTTPException(status_code=400, detail=_incomplete_message(missing))
 
     supervisor = get_engine_supervisor()
     owned = supervisor.get_owned_process()
@@ -740,11 +743,12 @@ async def _restart_local_engine(endpoint: SovitsEndpoint, payload: RestartSovits
     if not owns_endpoint and await asyncio.to_thread(supervisor.is_port_in_use, endpoint.port, endpoint.host):
         if await _answers_like_sovits(endpoint.base_url):
             raise HTTPException(status_code=409, detail="语音引擎已在其他窗口运行，可直接使用。若需重启，请先关闭该引擎窗口，再在「运行状态」页启动引擎。")
+        action = "改为其他未占用的本机地址（如 http://127.0.0.1:9881）" if endpoint.port == 9880 else f"改回 {DEFAULT_SOVITS_BASE_URL}"
         raise HTTPException(
             status_code=409,
             detail=(
                 f"端口 {endpoint.port} 已被别的程序占用，那里运行的不是语音引擎。请关闭占用这个端口的程序，"
-                "或在「设置中心 → 语音服务」把「语音服务地址」改回 http://127.0.0.1:9880 后再启动。"
+                f"或在「设置中心 → 语音服务」把「语音服务地址」{action}，点击「保存全局配置」后再启动。"
             ),
         )
     # Determine precision and device target only after validation and ownership checks.
