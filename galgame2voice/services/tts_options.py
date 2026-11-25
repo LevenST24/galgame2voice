@@ -186,7 +186,8 @@ def resolve_tts_options(options: dict[str, Any] | None = None) -> dict[str, Any]
         low, high, caster = _TTS_NUMERIC_RANGES[key]
         try:
             num = caster(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError: int(inf) or float() of an integer too large for a float.
             num = caster(fallback)
         return max(low, min(high, num))
 

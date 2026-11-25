@@ -42,14 +42,16 @@ def _clamp_float(val: Any, min_val: float, max_val: float, fallback: float, roun
         if math.isnan(num) or math.isinf(num):
             return fallback
         return max(min_val, min(max_val, round(num, round_digits)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: an integer too large for a float, e.g. a 400-digit number in a model reply.
         return fallback
 
 
 def _clamp_int(val: Any, min_val: int, max_val: int, fallback: int) -> int:
     try:
         return max(min_val, min(max_val, int(val)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: int(inf), e.g. 1e400 parsed from JSON.
         return fallback
 
 

@@ -1,0 +1,53 @@
+"""Huge or infinite numbers in voice parameters are clamped instead of crashing."""
+
+import pytest
+
+from galgame2voice.services.streaming_parser import StreamingBilingualParser
+from galgame2voice.services.tts_options import _TTS_NUMERIC_RANGES, resolve_tts_options
+from galgame2voice.utils import prosody
+
+HUGE_INT = int("1" * 400)  # too big to turn into a float
+INF = float("inf")
+
+
+@pytest.mark.parametrize("value", [HUGE_INT, -HUGE_INT, INF, -INF])
+@pytest.mark.parametrize(
+    ("clamp", "low", "high"),
+    [
+        (prosody.clamp_dynamic_speed, prosody.DYNAMIC_SPEED_MIN, prosody.DYNAMIC_SPEED_MAX),
+        (prosody.clamp_dynamic_temperature, prosody.DYNAMIC_TEMP_MIN, prosody.DYNAMIC_TEMP_MAX),
+        (prosody.clamp_dynamic_top_k, prosody.DYNAMIC_TOP_K_MIN, prosody.DYNAMIC_TOP_K_MAX),
+        (prosody.clamp_dynamic_top_p, prosody.DYNAMIC_TOP_P_MIN, prosody.DYNAMIC_TOP_P_MAX),
+        (
+            prosody.clamp_dynamic_fragment_interval,
+            prosody.DYNAMIC_FRAGMENT_INTERVAL_MIN,
+            prosody.DYNAMIC_FRAGMENT_INTERVAL_MAX,
+        ),
+        (prosody.clamp_dynamic_batch_size, prosody.DYNAMIC_BATCH_SIZE_MIN, prosody.DYNAMIC_BATCH_SIZE_MAX),
+    ],
+)
+def test_clamp_stays_in_range(clamp, low, high, value):
+    assert low <= clamp(value) <= high
+
+
+@pytest.mark.parametrize("adaptive", [False, True])
+@pytest.mark.parametrize("key", ["speed_factor", "temperature", "top_k", "top_p", "fragment_interval", "batch_size"])
+@pytest.mark.parametrize("value", [HUGE_INT, -HUGE_INT, INF, -INF])
+def test_resolve_tts_options_stays_in_range(key, value, adaptive):
+    resolved = resolve_tts_options({key: value, "ai_adaptive_voice": adaptive})
+    low, high, _ = _TTS_NUMERIC_RANGES[key]
+    assert low <= resolved[key] <= high
+
+
+def test_streamed_reply_with_huge_tts_number_keeps_parsing():
+    reply = (
+        '{"lines":[{"zh":"你好。","ja":"こんにちは。"}],'
+        '"tts":{"temperature":' + "1" * 400 + "}}"
+    )
+    parser = StreamingBilingualParser()
+    for i in range(0, len(reply), 9):
+        parser.feed_chunk(reply[i : i + 9])
+    zh, ja, _ = parser.finalize()
+    assert (zh, ja) == ("你好。", "こんにちは。")
+    assert prosody.DYNAMIC_TEMP_MIN <= parser.tts_temperature <= prosody.DYNAMIC_TEMP_MAX
+    assert len(parser.normalized_lines()) == 1
