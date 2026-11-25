@@ -524,6 +524,10 @@ def create_app(*, engine_supervisor: EngineSupervisor | None = None) -> FastAPI:
             content={"detail": "Internal Server Error", "error_type": type(exc).__name__},
         )
 
+    from galgame2voice.utils.sqlite_overflow import register_sqlite_overflow_handler
+
+    register_sqlite_overflow_handler(app)
+
     return app
 
 
