@@ -16,7 +16,7 @@ from fastapi import Request
 
 from galgame2voice.services.engine_recovery import ENGINE_LOG_START
 from galgame2voice.services.engine_runtime import EngineLaunch, prepare_engine_entrypoint
-from galgame2voice.services.sovits_endpoint import SovitsEndpoint
+from galgame2voice.services.sovits_endpoint import SovitsEndpoint, parse_sovits_endpoint
 from galgame2voice.services.sovits_installation import find_engine_python
 from galgame2voice.utils.precision import write_sovits_yaml_config
 from galgame2voice.utils.windows_runtime import kernel32
@@ -27,6 +27,7 @@ _RUNTIME_HOST: Any = None
 _SPAWNED_SOVITS_PROC: Any = None
 _SPAWNED_SOVITS_STARTED_AT: float | None = None
 _SPAWNED_SOVITS_LAUNCH: EngineLaunch | None = None
+_READY_SOVITS_LAUNCH: Any = None
 _WINDOWS_JOB_HANDLE: Any = None
 _IPV4_LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
 
@@ -102,6 +103,21 @@ def get_managed_engine_launch(endpoint: Any) -> EngineLaunch | None:
     ):
         return None
     return launch
+
+
+def get_managed_launch_for_url(base_url: str) -> EngineLaunch | None:
+    try:
+        return _host().get_managed_engine_launch(parse_sovits_endpoint(base_url, source="runtime"))
+    except ValueError:
+        return None
+
+def mark_engine_launch_ready(launch: Any, base_url: str | None = None) -> None:
+    global _READY_SOVITS_LAUNCH
+    if launch is not None and (base_url is None or get_managed_launch_for_url(base_url) is launch):
+        _READY_SOVITS_LAUNCH = launch
+
+def is_engine_launch_ready(launch: Any) -> bool:
+    return launch is not None and launch is _READY_SOVITS_LAUNCH
 
 
 def get_managed_engine_precision(endpoint: Any) -> str | None:

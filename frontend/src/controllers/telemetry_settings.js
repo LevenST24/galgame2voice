@@ -142,8 +142,9 @@ class TelemetrySettingsController {
     }
     const button = this.dom.gBtnRestartSovits;
     const idle = button && !button.disabled && !this.coordinator.isRestarting?.();
-    if (idle && (ready || status.state === 'failed' || status.state === 'unavailable')) {
-      const label = ready ? '重启 SoVITS 引擎' : '启动 SoVITS 引擎';
+    const restartable = ready || (checking && status.was_ready === true);
+    if (idle && (restartable || status.state === 'failed' || status.state === 'unavailable')) {
+      const label = restartable ? '重启 SoVITS 引擎' : '启动 SoVITS 引擎';
       button.innerHTML = `<svg class="icon"><use href="#i-play"></use></svg><span>${label}</span>`;
     }
   }

@@ -132,7 +132,7 @@ async def test_engine_that_was_ready_and_stops_answering_is_not_called_loading()
     assert (await _get_engine_status(supervisor)).json()["state"] == "ready"
     supervisor.reachable = False
     body = (await _get_engine_status(supervisor)).json()
-    assert body["state"] == "checking" and body["ready"] is False
+    assert body["state"] == "checking" and body["ready"] is False and body["was_ready"] is True
     assert "加载" not in body["message"] and "此前已就绪" in body["message"]
 
     # A new launch of the engine is loading again, so the old answer must not carry over.
