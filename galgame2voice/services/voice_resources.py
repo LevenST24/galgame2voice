@@ -12,6 +12,12 @@ _MIN_FREE_MEMORY_RATIO = 0.06
 _MIN_FREE_MEMORY_FLOOR_GB = 0.8
 _MIN_FREE_MEMORY_CEILING_GB = 1.5
 _MIN_FREE_VRAM_FLOOR_GB = 0.45
+_OFF_VALUES = frozenset({'', '0', 'false', 'no', 'off'})
+
+
+def memory_check_skipped() -> bool:
+    """True when GALGAME2VOICE_SKIP_MEM_CHECK asks to skip the check; 0, false, no and off do not."""
+    return os.getenv('GALGAME2VOICE_SKIP_MEM_CHECK', '').strip().lower() not in _OFF_VALUES
 
 
 class InsufficientMemoryError(RuntimeError):
@@ -63,7 +69,7 @@ class VoiceResourceGuard:
                 )
 
     def check(self, force: bool = False) -> None:
-        if force or os.getenv('GALGAME2VOICE_SKIP_MEM_CHECK'):
+        if force or memory_check_skipped():
             return
         self.release()
         _, free_gb = self.memory_status()

@@ -66,12 +66,14 @@ class TextSegmentationPipeline:
         base_options: dict[str, Any] | None = None,
         adaptive_enabled: bool = False,
         sentence_text: str = "",
+        emotion_override: str | None = None,
     ) -> dict[str, Any]:
         """Calculates emotion-aware, dynamic speed/temperature/top_k/top_p/fragment_interval TTS options."""
         return self.parser.get_dynamic_tts_options(
             base_options=base_options,
             adaptive_enabled=adaptive_enabled,
             sentence_text=sentence_text,
+            emotion_override=emotion_override,
         )
 
     def current_emotion(self) -> str:
