@@ -14,6 +14,7 @@ import sys
 import tarfile
 import tempfile
 from typing import Any, Callable, IO, Iterable
+import unicodedata
 import zipfile
 import zlib
 
@@ -113,6 +114,9 @@ def _decode_zip_member_name(info: zipfile.ZipInfo) -> str:
 def _resolve_safe_extract_path(member_name: str, extract_root: Path) -> Path | None:
     if not member_name:
         return None
+    # macOS stores names decomposed (NFD) while manifest.json is typed composed
+    # (NFC); Windows and Linux treat the two as different files.
+    member_name = unicodedata.normalize("NFC", member_name)
     if (
         "\x00" in member_name
         or any(ord(c) < 32 for c in member_name)
