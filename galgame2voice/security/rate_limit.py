@@ -19,15 +19,17 @@ from galgame2voice.config import get_settings
 _DEFAULT_GLOBAL_LIMIT = 240      # requests per window, all clients combined
 _DEFAULT_IP_LIMIT = 120          # requests per window, per client IP
 _WINDOW_SECONDS = 60.0
-_PROTECTED_PREFIXES = (
-    "/api/chat",
-)
-# High-risk admin/config routes. Their expensive/dangerous operations are the
-# MUTATING ones (settings writes, provider activation, network tests), so only
-# those take the strict budget; plain GETs of /api/config and /api/providers
-# stay on the normal per-IP budget so the console cannot throttle itself while
-# polling.
-_ADMIN_STRICT_PREFIXES = ("/api/config", "/api/providers")
+# Routes held to the strict budget for every method. None at present: reading
+# chat history or polling for a reply spends nothing, so a strict budget on
+# those GETs let a few quick session switches block the next message for a
+# minute.
+_PROTECTED_PREFIXES: tuple[str, ...] = ()
+# Chat and high-risk admin/config routes. Their expensive/dangerous operations
+# are the MUTATING ones (sending a chat turn, importing history, settings
+# writes, provider activation, network tests), so only those take the strict
+# budget; plain GETs stay on the normal per-IP budget so the page cannot
+# throttle itself while reading or polling.
+_ADMIN_STRICT_PREFIXES = ("/api/chat", "/api/config", "/api/providers")
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _PROTECTED_LIMIT = 30            # stricter budget for LLM/TTS-spending and high-risk admin routes
 _MAX_TRACKED_IPS = 10000
