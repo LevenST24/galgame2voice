@@ -71,6 +71,8 @@ def test_a_preference_said_as_x_is_y_keeps_only_y(memory_service, text, key, val
     "我喜欢的才不是甜食",
     "我讨厌的不是你",
     "我不喜欢的不是香菜",
+    "我讨厌的不会是你",
+    "我喜欢的不一定是猫",
 ])
 def test_a_negated_x_is_not_y_preference_is_not_saved(memory_service, text):
     assert memory_service.extract_facts_heuristic(text) == []
