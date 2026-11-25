@@ -49,6 +49,31 @@ class TestMiddleware:
         assert called
 
     @pytest.mark.asyncio
+    async def test_portrait_layer_images_do_not_use_the_budget(self, monkeypatch):
+        monkeypatch.delenv("GALGAME2VOICE_RATE_LIMIT_DISABLED", raising=False)
+        statuses = []
+
+        async def app(scope, receive, send):
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+
+        async def receive():
+            return {"type": "http.request"}
+
+        async def send(message):
+            if message["type"] == "http.response.start":
+                statuses.append(message["status"])
+
+        mw = RateLimitMiddleware(app)
+        # A few expression changes in a layered portrait, with blink and mouth frames.
+        for i in range(150):
+            await mw({"type": "http", "path": f"/api/media/portrait/1/layers/main/face_{i}.png",
+                      "method": "GET", "client": ("127.0.0.1", 1)}, receive, send)
+        await mw({"type": "http", "path": "/api/chat/history", "method": "GET",
+                  "client": ("127.0.0.1", 1)}, receive, send)
+        assert statuses == [200] * 151
+
+    @pytest.mark.asyncio
     async def test_rejects_after_burst(self, monkeypatch):
         monkeypatch.delenv("GALGAME2VOICE_RATE_LIMIT_DISABLED", raising=False)
         handled = []
