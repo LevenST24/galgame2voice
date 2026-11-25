@@ -414,8 +414,17 @@ def _backup_database_sync(resolved_path: Path) -> None:
     if not resolved_path.is_file() or resolved_path.stat().st_size == 0:
         return
     # An invalid database must fail startup visibly, never replace a good backup.
-    with closing(_open_readonly(resolved_path)) as reader:
-        version = int(reader.execute("PRAGMA user_version").fetchone()[0])
+    try:
+        with closing(_open_readonly(resolved_path)) as reader:
+            version = int(reader.execute("PRAGMA user_version").fetchone()[0])
+    except sqlite3.DatabaseError as exc:
+        if isinstance(exc, sqlite3.OperationalError):
+            raise
+        raise RuntimeError(
+            f"数据库文件已损坏，无法打开：{resolved_path}。原文件未修改。"
+            "请关闭本窗口，双击「数据恢复.bat」从自动备份恢复"
+            f"（备份在 {resolved_path.parent / 'backups'}）。"
+        ) from exc
     if version > CURRENT_SCHEMA_VERSION:
         raise RuntimeError(
             f"数据库来自较新的版本（数据库版本 {version}，当前程序最高支持 {CURRENT_SCHEMA_VERSION}），"
