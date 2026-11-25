@@ -37,7 +37,7 @@ class SettingsUpdate(BaseModel):
     active_voice_profile_id: int | None = None
     gpt_sovits_url: str | None = None
     audio_output_dir: str | None = None
-    audio_retention_minutes: int | None = Field(default=None, ge=1)
+    audio_retention_minutes: int | None = Field(default=None, ge=1, le=10080)
     audio_cleanup_interval_sec: int | None = Field(default=None, ge=10)
     speed_factor: float | None = Field(default=None, ge=0.1, le=3.0)
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
