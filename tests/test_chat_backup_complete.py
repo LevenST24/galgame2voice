@@ -88,6 +88,31 @@ async def test_oversize_backup_fails_explicitly_instead_of_truncating(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_export_limit_counts_what_the_file_carries_not_stored_audio(tmp_path, monkeypatch):
+    """Stored audio chunks are dropped from the export, so they must not push it over the limit."""
+    from galgame2voice.services import chat_backup
+    db = await _init_backup_db(tmp_path, monkeypatch, "audio.db")
+    line = _backup_line(0, "你好。", "こんにちは。", "happy", {})
+    line["audio"] = {"status": "ready", "chunks": [
+        {"index": i, "line": 0, "audio_url": f"/audio/cache/{i:04}_{'x' * 80}.wav", "sentence": "こんにちは。"}
+        for i in range(20)
+    ]}
+    async with get_db(db) as conn:
+        await crud.add_message(conn, MessageCreate(
+            session_id="s_voiced", role="assistant", content_chinese="你好。", content_japanese="こんにちは。", lines=[line],
+        ))
+    exported_line = json.dumps([_backup_line(0, "你好。", "こんにちは。", "happy", {})], ensure_ascii=False)
+    carried = len("你好。") + len("こんにちは。") + len(exported_line)
+    monkeypatch.setattr(chat_backup, "MAX_TEXT", carried)
+    async with _app_client() as client:
+        response = await client.get("/api/chat/export")
+        assert response.status_code == 200, response.text
+        assert response.json()["sessions"][0]["messages"][0]["lines"][0]["audio"] == {"status": "skipped", "chunks": []}
+        monkeypatch.setattr(chat_backup, "MAX_TEXT", carried - 1)
+        assert (await client.get("/api/chat/export")).status_code == 413
+
+
+@pytest.mark.asyncio
 async def test_removed_reply_format_setting_is_omitted_from_export_and_import(tmp_path, monkeypatch):
     from galgame2voice.services.chat_backup import SESSION_SETTINGS
 

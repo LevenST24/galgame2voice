@@ -253,6 +253,24 @@ class TestDefaultAndOldAliasUseLinesMode:
             assert messages[1].content == "你好"
 
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("menu", [None, MENU])
+    async def test_default_persona_keeps_the_contract_example_valid_json(self, temp_db_path, monkeypatch, menu):
+        """A voice with no persona uses DEFAULT_SYSTEM_TEMPLATE; filling in {character_name}
+        used to turn the contract's }} into } and send the model a broken JSON example."""
+        monkeypatch.setattr(context_builder, "_build_acting_menu", lambda name, outfit=None: menu)
+        profile = SimpleNamespace(id=1, name="小夜", system_prompt="")
+        session = SimpleNamespace(user_id="user-1")
+
+        messages = await _build_ctx(temp_db_path, "default-persona", active_profile=profile, session=session)
+
+        system = messages[0].content
+        assert system.startswith("你是一个Galgame二次元伴侣角色【小夜】。")
+        contract = render_lines_contract(menu)
+        assert system.endswith(contract)
+        json.loads(contract.splitlines()[1])
+
+
 class TestLinesModeWiring:
     def test_helper_builds_the_menu_from_the_character_portrait(self, monkeypatch):
         portrait = {
