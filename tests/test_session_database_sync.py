@@ -222,3 +222,26 @@ async def test_characters_rescan_endpoint(tmp_path, monkeypatch):
         assert "total_profiles" in data
 
 
+@pytest.mark.asyncio
+async def test_saving_a_session_bound_to_a_deleted_voice_saves_it_unbound(tmp_path, monkeypatch):
+    from galgame2voice.database.models import VoiceProfileCreate
+    db = tmp_path / "stale_voice.db"
+    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db))
+    await init_db(db)
+    async with get_db(db) as conn:
+        gone = await crud.create_voice_profile(conn, VoiceProfileCreate(
+            name="gone", gpt_weights_path="gone.ckpt", sovits_weights_path="gone.pth",
+        ))
+        await crud.delete_voice_profile(conn, gone.id)
+    async with AsyncClient(transport=ASGITransport(app=create_app(), raise_app_exceptions=False),
+                           base_url="http://127.0.0.1:8080") as client:
+        assert (await client.post("/api/chat/sessions", json={"id": "s_old", "title": "x"})).status_code == 200
+        # The page still holds the deleted voice's id in its settings and sends it with every save.
+        for session_id in ("s_old", "s_new"):
+            saved = await client.post("/api/chat/sessions", json={
+                "id": session_id, "title": "改个名", "voice_profile_id": gone.id,
+                "settings": {"voiceProfileId": gone.id},
+            })
+            assert saved.status_code == 200, saved.text
+            assert saved.json()["session"]["voice_profile_id"] is None
+            assert saved.json()["session"]["title"] == "改个名"

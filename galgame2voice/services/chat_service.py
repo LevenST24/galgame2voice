@@ -403,8 +403,8 @@ class ChatService:
                         _require_existing_session,
                     )
 
-                # Extract user memory facts and init character affection in a TRUE background task (off TTFT path)
-                async def _bg_affection_and_memory() -> None:
+                # Init the character affection record in a background task (off the TTFT path)
+                async def _bg_affection_init() -> None:
                     try:
                         async with get_db(self.db_path) as conn_bg:
                             await crud.get_or_create_character_affection(
@@ -412,7 +412,6 @@ class ChatService:
                             )
                     except Exception as exc:
                         logger.debug("Failed background affection record init: %s", exc)
-                    await self._extract_memory_safe(user_id, profile_id, prompt, user_msg.id)
 
                 (
                     adapter,
@@ -432,7 +431,7 @@ class ChatService:
                     outfit=outfit,
                     reply_format="lines",
                 )
-                self._spawn_background(_bg_affection_and_memory())
+                self._spawn_background(_bg_affection_init())
 
             coordinator = StreamCoordinator(
                 adapter=adapter,
@@ -463,6 +462,11 @@ class ChatService:
                 reply_format="lines",
                 character_name=character_name or (active_prof.name if active_prof else None),
                 acting_menu=getattr(messages, "menu", None),
+                # Learn from the prompt only once its reply is kept; a withdrawn
+                # prompt (empty reply, error, stop before any line) teaches nothing.
+                on_turn_kept=lambda: self._spawn_background(
+                    self._extract_memory_safe(user_id, profile_id, prompt, user_msg.id)
+                ),
             )
 
             stream_iter = coordinator.stream()
