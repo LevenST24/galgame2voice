@@ -393,12 +393,8 @@ export function resolveSpriteState(model, prev, intent, ctx = {}) {
       if (selectable(act.face)) {
         baseFace = act.face;
       } else {
-        const match = faceForLabel(model, lookFaces, act.face, emotion);
-        if (match) {
-          baseFace = match;
-        } else {
-          baseFace = defaultFace;
-        }
+        // An unknown face falls through to the emotion pool below, like v2 portraits.
+        baseFace = faceForLabel(model, lookFaces, act.face, emotion) || null;
       }
     }
 
