@@ -329,7 +329,12 @@ export function mountAdv(dom, deps) {
     getWorks: () => works,
     getWork: () => deps.getCharacter?.()?.work || null,
     getSelection: storedBackground,
-    saveSettings: patch => deps.saveSettings?.(patch),
+    saveSettings: patch => {
+      deps.saveSettings?.(patch);
+      // main.js sends no session update for its own save, so reread it: reopening the panel
+      // or picking a time must start from this choice, not the one loaded at mount.
+      update();
+    },
     onPreview: selection => {
       appliedBackground = shownBackground(selection);
       background.setSelection(appliedBackground);

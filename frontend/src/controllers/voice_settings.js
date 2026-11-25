@@ -414,6 +414,12 @@ async function applySessionVoice(session, { silent = false }, want, isCurrent) {
     // On the home screen, or after the user chose text only, a missing engine is not news.
     if (_callbacks.isHomeOpen?.() || _callbacks.isVoiceEnabled?.() === false) return;
     console.error('音色切换失败:', e);
+    if (e.status === 503 && e.message) {
+      // The engine runs, but this computer lacks free memory or VRAM for the
+      // model. The service's sentence says which and what to close.
+      showToast(e.message, 'error');
+      return;
+    }
     showToast('语音引擎还没准备好，现在只有文字、没有声音。可在「运行状态」查看引擎。', 'error', _callbacks.onOpenEngineStatus ? {
       actionLabel: '检查运行状态',
       onAction: () => _callbacks.onOpenEngineStatus(),
@@ -572,7 +578,7 @@ export async function populateScanOptions() {
 
 async function refreshScanOptions(revision, dom) {
   const isCurrent = () => revision === scanRevision && dom === _dom;
-  const fill = (sel, list, emptyHint) => {
+  const fill = (sel, list, emptyHint, hidden = 0) => {
     if (!sel) return;
     const previous = sel.value;
     const stillAvailable = list.some(file => file.path === previous);
@@ -600,6 +606,13 @@ async function refreshScanOptions(revision, dom) {
       opt.textContent = labelCounts.get(labels[i]) > 1 ? file.path : labels[i];
       sel.appendChild(opt);
     });
+    if (hidden > 0) {
+      const more = document.createElement('option');
+      more.value = '';
+      more.disabled = true;
+      more.textContent = `（还有 ${hidden} 个没列出，只显示前 ${list.length} 个；把要用的文件放进 data 文件夹会排在最前面）`;
+      sel.appendChild(more);
+    }
     sel.value = stillAvailable ? previous : needsChoice ? '' : list[0]?.path || '';
   };
   try {
@@ -608,9 +621,10 @@ async function refreshScanOptions(revision, dom) {
       if (!isCurrent()) return;
       scannedModels = models;
     }
-    fill(dom.sCvGpt, scannedModels.gpt_weights || [], '（未扫描到 .ckpt 文件；请先在「设置中心 → 语音服务」选择引擎目录）');
-    fill(dom.sCvSovits, scannedModels.sovits_weights || [], '（未扫描到 .pth 文件；请先在「设置中心 → 语音服务」选择引擎目录）');
-    fill(dom.sCvRef, scannedModels.audio_files || [], '（未扫描到音频文件；参考音频为必选项，无法创建自定义音色）');
+    const hidden = scannedModels.hidden || {};
+    fill(dom.sCvGpt, scannedModels.gpt_weights || [], '（未扫描到 .ckpt 文件；请先在「设置中心 → 语音服务」选择引擎目录）', hidden.gpt_weights);
+    fill(dom.sCvSovits, scannedModels.sovits_weights || [], '（未扫描到 .pth 文件；请先在「设置中心 → 语音服务」选择引擎目录）', hidden.sovits_weights);
+    fill(dom.sCvRef, scannedModels.audio_files || [], '（未扫描到音频文件；参考音频为必选项，无法创建自定义音色）', hidden.audio_files);
   } catch (e) {
     if (!isCurrent()) return;
     [dom.sCvGpt, dom.sCvSovits, dom.sCvRef].forEach((sel) => {
@@ -1224,8 +1238,12 @@ async function handleSaveSessionSettings() {
         return;
       }
     }
+    const maxTokens = Number(_dom.sMaxTokens.value);
+    if (!String(_dom.sMaxTokens.value).trim() || !Number.isInteger(maxTokens) || maxTokens < 16 || maxTokens > 32768) {
+      showToast('「最大生成长度」请填 16 到 32768 之间的整数，设置未保存。', 'error');
+      return;
+    }
     _callbacks.invalidateSessionSync?.();
-    const maxTokens = Math.round(Number(_dom.sMaxTokens.value)) || DEFAULT_SESSION_SETTINGS.maxTokens;
     const voiceListUnavailable = _dom.sVoice.value === VOICE_LIST_UNAVAILABLE;
     let profileId = _dom.sVoice.value && _dom.sVoice.value !== '__custom__'
       ? Number(_dom.sVoice.value)
@@ -1250,7 +1268,7 @@ async function handleSaveSessionSettings() {
       voiceProfileId: profileId,
       temperature: Number(_dom.sTemp.value),
       topP: Number(_dom.sTopP.value),
-      maxTokens: Math.min(32768, Math.max(16, maxTokens)),
+      maxTokens,
       freqPenalty: Number(_dom.sFreq.value),
       presPenalty: Number(_dom.sPres.value),
       maxContext: Number(_dom.sCtx.value),

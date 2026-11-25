@@ -30,7 +30,8 @@ export function describeProviderModelCheck(chatModel, models) {
     const found = list.length > 0 ? ` (发现 ${list.length} 个可用模型)` : '';
     return { ok: true, title: '连通性测试通过', body: `已成功连接至目标端点。${found}` };
   }
-  if (list.some((item) => item === name || item === `models/${name}`)) {
+  // Ollama resolves a bare name to its :latest tag, and Gemini lists names under models/.
+  if (list.some((item) => item === name || item === `models/${name}` || item === `${name}:latest`)) {
     return {
       ok: true,
       title: '连通性测试通过',
@@ -45,9 +46,11 @@ export function describeProviderModelCheck(chatModel, models) {
     };
   }
   const needle = name.toLowerCase();
-  const matched =
-    list.find((item) => item.toLowerCase() === needle) ||
+  const found =
+    list.find((item) => item.toLowerCase() === needle || item.toLowerCase() === `${needle}:latest`) ||
     list.find((item) => item.toLowerCase().endsWith(`/${needle}`));
+  // The bare Gemini name already passes, so suggest it without models/.
+  const matched = found?.replace(/^models\//, '');
   if (matched) {
     return {
       ok: false,
