@@ -90,7 +90,7 @@ def _setup_mock_uvicorn(monkeypatch, sockname):
 
 
 def test_public_bind_without_auth_fails_safety_guard_even_with_early_cache_warmup(
-    isolated_launcher_env, monkeypatch
+    isolated_launcher_env, monkeypatch, capsys
 ):
     """Early get_settings() warmup must not cause 0.0.0.0 without auth to bypass security check."""
     # Step 1: Simulate early cache warmup (e.g. from early import or ensure_gpt_sovits_running)
@@ -99,17 +99,23 @@ def test_public_bind_without_auth_fails_safety_guard_even_with_early_cache_warmu
 
     captured = _setup_mock_uvicorn(monkeypatch, ("0.0.0.0", 8080))
 
-    # Step 2: Launch with --host 0.0.0.0 and default auth (auth_disabled=True)
-    # The safety guard must reject the startup with exit code 1 and a fatal error.
+    # Step 2: Launch with --host 0.0.0.0 and default auth (auth_disabled=True).
+    # The launcher refuses before starting the engine or the server, in Chinese, without a traceback.
     with pytest.raises(SystemExit) as exc:
         run_server.main(["--no-engine", "--no-browser", "--host", "0.0.0.0", "--port", "8080"])
 
-    assert exc.value.code == 1, "Expected fatal security rejection exit code 1"
-    assert "safety_error" in captured, "Expected _init_logging_and_safety to raise error"
-    assert "FATAL: Application is configured to listen on '0.0.0.0' with auth_disabled=True" in str(
-        captured["safety_error"]
-    )
-    assert captured["settings"].host == "0.0.0.0"
+    assert exc.value.code == 2, "Expected the launcher to refuse the public bind"
+    assert "settings" not in captured, "uvicorn must not start"
+    out = capsys.readouterr().out
+    assert "GALGAME2VOICE_AUTH_DISABLED=0" in out
+    assert "--host" in out
+    assert "启动失败" not in out and "FATAL" not in out
+
+    # The app's own guard still sees the synced host and rejects it as a backstop.
+    settings = get_settings()
+    assert settings.host == "0.0.0.0"
+    with pytest.raises(RuntimeError, match="FATAL: Application is configured to listen on '0.0.0.0'"):
+        _init_logging_and_safety(settings)
 
 
 def test_cli_host_overrides_stale_high_priority_env_alias(
@@ -273,6 +279,33 @@ class TestServerLauncherCLI:
         with pytest.raises(SystemExit) as exc_info:
             rs.main(["--check-only"])
         assert exc_info.value.code == 1
+
+
+_REAL_SETUP_SIGNAL_HANDLERS = run_server.setup_signal_handlers
+
+
+def test_stop_by_signal_is_reported_as_normal_stop_not_startup_failure(
+    isolated_launcher_env, monkeypatch, capsys
+):
+    """kill / docker stop / closing the run.sh terminal stops a running server: no 「启动失败」 hint."""
+    import signal
+
+    handlers = {}
+    monkeypatch.setattr(signal, "signal", lambda sig, handler: handlers.__setitem__(sig, handler))
+    monkeypatch.setattr(run_server, "setup_signal_handlers", _REAL_SETUP_SIGNAL_HANDLERS)
+
+    _setup_mock_uvicorn(monkeypatch, ("127.0.0.1", 8080))
+    server = uvicorn.Server(None)
+    # uvicorn re-raises the signal it captured after a clean shutdown; that reaches our handler.
+    server.run.side_effect = lambda *args, **kwargs: handlers[signal.SIGTERM](signal.SIGTERM, None)
+
+    with pytest.raises(SystemExit) as exc:
+        run_server.main(["--no-engine", "--no-browser", "--port", "8080"])
+
+    assert exc.value.code == 128 + signal.SIGTERM
+    out = capsys.readouterr().out
+    assert "启动失败" not in out
+    assert "正常停止" in out
 
 
 @pytest.mark.parametrize("ctrl_type", [2, 5, 6])

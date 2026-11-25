@@ -149,6 +149,10 @@ def validate_llm_base_url(url: Optional[str], allow_private: bool = False) -> Tu
     candidate = str(url).strip()
 
     for ch in candidate:
+        if ch == "\u3000" or ch.isalnum() and "\uff00" <= ch <= "\uffef":
+            # A full-width digit, letter or space is not punctuation; name it for what it is.
+            shown = "全角空格" if ch == "\u3000" else f"全角字符「{ch}」"
+            return False, f"接口地址里有{shown}，请切换到半角（英文）输入后重新输入"
         if "\u3000" <= ch <= "\u303f" or "\uff00" <= ch <= "\uffef":
             return False, f"接口地址里有中文标点「{ch}」，请切换到英文输入法后重新输入"
 
