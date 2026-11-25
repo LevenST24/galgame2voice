@@ -5,10 +5,10 @@ Provides REST endpoints for global system configuration.
 
 import asyncio
 import logging
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel
+from fastapi import APIRouter, Body, HTTPException, status
+from pydantic import BaseModel, ValidationError
 
 from galgame2voice.database import crud
 from galgame2voice.database.models import SettingsUpdate
@@ -150,6 +150,41 @@ async def _apply_sovits_url_update(new_sovits_url: str | None) -> dict[str, Any]
     return {"base_url": target_url, "source": source}
 
 
+_SETTING_LABELS: dict[str, str] = {
+    "gpt_sovits_url": "语音引擎地址",
+    "audio_retention_minutes": "音频缓存保留时间（分钟）",
+    "audio_cleanup_interval_sec": "音频清理间隔（秒）",
+    "speed_factor": "语速",
+    "temperature": "温度",
+    "top_k": "TopK",
+    "top_p": "TopP",
+    "seed": "随机种子",
+    "batch_size": "批大小",
+    "fragment_interval": "分段间隔",
+    "max_history_messages": "历史消息条数",
+}
+
+
+def _describe_settings_error(exc: ValidationError) -> str:
+    """Names the first invalid setting and what it needs, in plain Chinese."""
+    error = exc.errors()[0]
+    field = str(error.get("loc", ("",))[0])
+    label = _SETTING_LABELS.get(field, field)
+    ctx = error.get("ctx") or {}
+    kind = error.get("type", "")
+    if kind == "greater_than_equal":
+        need = f"不能小于 {ctx.get('ge')}"
+    elif kind == "less_than_equal":
+        need = f"不能大于 {ctx.get('le')}"
+    elif kind in ("int_parsing", "int_from_float", "int_type"):
+        need = "需要填写整数"
+    elif kind in ("float_parsing", "float_type"):
+        need = "需要填写数字"
+    else:
+        need = "格式不对"
+    return f"「{label}」的值无效，{need}。设置没有保存，请修改后重试。"
+
+
 def _sync_precision_cache(new_precision: str | None, previous_precision: str | None = None) -> None:
     """Save next-start preferences without modifying the running engine or its files."""
     if not new_precision:
@@ -185,15 +220,13 @@ def _sync_precision_cache(new_precision: str | None, previous_precision: str | N
     summary="Update Global Configuration",
     description="Updates system configuration values in SQLite persistence. GPT-SoVITS URL changes are applied live (no restart needed).",
 )
-async def update_config(payload: ConfigPayload | SettingsUpdate | dict[str, Any]) -> dict[str, Any]:
-    update_data: dict[str, Any] = {}
-    if isinstance(payload, ConfigPayload) and payload.settings is not None:
-        update_data = payload.settings
-    elif isinstance(payload, SettingsUpdate):
-        update_data = payload.model_dump(exclude_unset=True)
-    elif isinstance(payload, dict):
-        raw_settings = payload.get("settings")
-        update_data = raw_settings if isinstance(raw_settings, dict) else payload
+async def update_config(payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
+    # Read the raw JSON object. Declaring a model union here let FastAPI fall
+    # back to an empty ConfigPayload whenever a flat body (what the settings
+    # page sends) held one invalid value, so nothing was saved yet the reply
+    # still said success.
+    raw_settings = payload.get("settings")
+    update_data: dict[str, Any] = raw_settings if isinstance(raw_settings, dict) else payload
 
     async with get_db() as conn:
         # Filter valid settings fields for update
@@ -216,12 +249,12 @@ async def update_config(payload: ConfigPayload | SettingsUpdate | dict[str, Any]
         if sanitized_updates:
             try:
                 update_model = SettingsUpdate(**sanitized_updates)
-            except Exception as val_err:
+            except ValidationError as val_err:
                 safe_detail = sanitize_error_detail(val_err)
                 logger.warning("Invalid configuration parameters: %s", safe_detail)
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    detail="全局配置参数格式或范围无效，请检查语音引擎地址与缓存保留时长后重试。",
+                    detail=_describe_settings_error(val_err),
                 ) from val_err
             updated_settings = await crud.update_settings(conn, update_model)
         else:
