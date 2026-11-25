@@ -794,3 +794,17 @@ test('retry and explicit voiceMeta sends are unaffected by pendingVoice', async 
   assert.equal(h.stream.requests.length, 3);
   assert.equal(h.createdUrls.length, h.revokedUrls.length, 'unconsumed pending mic URL should be revoked cleanly');
 });
+
+test('a mic refused on a LAN http address says why instead of asking for permission', t => {
+  const h = setup(t, { syncEndOnStop: false });
+  const errors = [];
+  for (const secure of [false, true]) {
+    globalThis.window.isSecureContext = secure;
+    assert.equal(startListening({ onError: message => errors.push(message) }).ok, true);
+    const recognizer = h.recognizers.at(-1);
+    recognizer.onerror({ error: 'not-allowed' });
+  }
+  delete globalThis.window.isSecureContext;
+  assert.match(errors[0], /局域网地址（http）打开时，浏览器不允许使用麦克风/);
+  assert.match(errors[1], /麦克风权限被拒绝/);
+});
