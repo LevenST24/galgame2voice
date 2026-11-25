@@ -459,6 +459,11 @@ def create_app(*, engine_supervisor: EngineSupervisor | None = None) -> FastAPI:
     # Cache headers: static assets vs user-generated audio
     app.add_middleware(StaticCacheControlMiddleware)
 
+    # Text with half a surrogate pair cannot be stored or echoed: answer 422, not 500.
+    from galgame2voice.utils.lone_surrogate import register_lone_surrogate_handler
+
+    register_lone_surrogate_handler(app)
+
     # 2. Register API Routers (every router except health gets console token auth as a
     # router-level dependency; health declares it per-route for /api/system/*, leaving
     # /api/health unauthenticated)
