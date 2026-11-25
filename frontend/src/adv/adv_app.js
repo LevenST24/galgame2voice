@@ -310,7 +310,7 @@ export function mountAdv(dom, deps) {
 
   let backgrounds = [];
   let works = [];
-  let backgroundRevision = 0, backgroundRefreshTimer = null;
+  let backgroundRevision = 0, backgroundRefreshTimer = null, backgroundHasExpiry = false;
   let appliedBackground = null;
   const storedBackground = () => normalizeBackgroundSelection({
     id: settings.advBackground, time: settings.advBgTime,
@@ -376,8 +376,10 @@ export function mountAdv(dom, deps) {
       list = Array.isArray(data?.backgrounds) ? data.backgrounds : [];
       workList = Array.isArray(data?.works) ? data.works : [];
     } catch {
-      list = [];
-      workList = [];
+      if (!destroyed && revision === backgroundRevision && backgroundHasExpiry) {
+        backgroundRefreshTimer = clock.setTimeout(() => { backgroundRefreshTimer = null; loadBackgrounds(); }, 60000);
+      }
+      return;
     }
     if (destroyed || revision !== backgroundRevision) return;
     backgrounds = list;
@@ -395,6 +397,7 @@ export function mountAdv(dom, deps) {
         return least;
       }
     }, min), 0);
+    backgroundHasExpiry = minExpiry > 0;
     if (minExpiry > 0) {
       const delay = Math.max(1000, minExpiry * 1000 - (deps.wallNow?.() ?? Date.now()) - 60000);
       backgroundRefreshTimer = clock.setTimeout(() => { backgroundRefreshTimer = null; loadBackgrounds(); }, delay);

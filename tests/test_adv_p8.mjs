@@ -181,6 +181,23 @@ test('P8 background preload keeps only the chosen background', async () => {
   view.destroy();
 });
 
+test('P8 background preload releases expired URLs after a list refresh', async () => {
+  const doc = documentFixture(), clock = fakeClock(), images = [];
+  class Image extends Element { constructor() { super('img', doc); images.push(this); } decode() { return Promise.resolve(); } }
+  const layer = doc.createElement('div');
+  const view = createBackgroundView({ layer, ImageClass: Image,
+    setTimer: (fn, ms) => clock.setTimeout(fn, ms), clearTimer: id => clock.clearTimeout(id) });
+  const list = sig => [{ key: 'w/cafe', variants: { day: `/cafe/day?sig=${sig}`, night: `/cafe/night?sig=${sig}` } }];
+  view.setList(list('s1')); view.setSelection({ id: 'w/cafe', time: 'day' }); await microtasks();
+  const first = images.filter(image => image.parentNode !== layer && image.src);
+  assert.equal(first.length, 2);
+  view.setList(list('s2')); await microtasks();
+  assert.ok(first.every(image => image.src === ''), 'refreshing signed URLs releases the old preloads');
+  const live = images.filter(image => image.parentNode !== layer && image.src);
+  assert.deepEqual(live.map(image => image.src).sort(), ['/cafe/day?sig=s2', '/cafe/night?sig=s2']);
+  view.destroy();
+});
+
 test('P8 title thumbnails resolve a stored background to its image URL', () => {
   const list = [{ key: 'w/cafe', variants: { day: '/cafe/day', night: '/cafe/night' } }];
   const noon = new Date(2026, 9, 21, 12), late = new Date(2026, 9, 21, 23);

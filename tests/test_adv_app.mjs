@@ -1443,3 +1443,26 @@ test('background links are read again a minute before they expire', async t => {
   h.clock.tick(5000 * 1000); await microtasks();
   assert.equal(lists.length, 2, 'no refresh after unmount');
 });
+
+test('failed background refresh keeps the current artwork and retries', async t => {
+  let calls = 0;
+  const fetchBackgrounds = async () => {
+    calls += 1;
+    if (calls === 2) throw new Error('offline');
+    const n = calls === 1 ? 1 : 2;
+    return { works: [], backgrounds: [{ key: 'w/cafe', work: 'w', id: 'cafe', name: '咖啡店',
+      variants: { day: `/api/media/background/w/cafe/day?v=1&exp=${1000 * n}&sig=s${n}` } }] };
+  };
+  const h = setup(t, { fetchBackgrounds, wallNow: () => 0, settings: { advBackground: 'w/cafe', advBgTime: 'day' } });
+  const visible = () => h.app.stage.background.querySelectorAll('.adv-bg-image').filter(n => n.classList.contains('is-visible')).map(n => n.src);
+  const decodeAll = async () => { for (const load of h.loads.splice(0)) load.resolve(); await microtasks(); };
+  await microtasks(); await decodeAll();
+  assert.deepEqual(visible(), ['/api/media/background/w/cafe/day?v=1&exp=1000&sig=s1']);
+  h.clock.tick(1000 * 1000 - 60000); await microtasks();
+  assert.equal(calls, 2);
+  assert.equal(h.app.listBackgrounds().length, 1, 'failed refresh keeps the background list');
+  assert.deepEqual(visible(), ['/api/media/background/w/cafe/day?v=1&exp=1000&sig=s1']);
+  h.clock.tick(60000); await microtasks(); await decodeAll();
+  assert.equal(calls, 3, 'failed refresh retries a minute later');
+  assert.deepEqual(visible(), ['/api/media/background/w/cafe/day?v=1&exp=2000&sig=s2']);
+});
