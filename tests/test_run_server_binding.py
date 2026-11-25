@@ -189,6 +189,17 @@ class TestServerLauncherCLI:
         assert args.no_browser is True
         assert args.check_only is True
 
+    @pytest.mark.parametrize("port", ["70000", "-1", "abc"])
+    def test_parse_args_rejects_a_port_outside_the_tcp_range(self, port, capsys):
+        with pytest.raises(SystemExit) as exc:
+            rs.parse_args(["--port", port])
+        assert exc.value.code == 2
+        assert "端口应" in capsys.readouterr().err
+
+    def test_parse_args_ignores_an_out_of_range_env_port(self, monkeypatch):
+        monkeypatch.setenv("PORT", "70000")
+        assert rs.parse_args([]).port == 8080
+
     def test_parse_args_env_overrides(self, monkeypatch):
         monkeypatch.setenv("GALGAME_PORT", "9999")
         monkeypatch.setenv("GALGAME_HOST", "0.0.0.0")
@@ -262,3 +273,41 @@ class TestServerLauncherCLI:
         with pytest.raises(SystemExit) as exc_info:
             rs.main(["--check-only"])
         assert exc_info.value.code == 1
+
+
+@pytest.mark.parametrize("ctrl_type", [2, 5, 6])
+def test_console_exit_events_save_streaming_turns_first(monkeypatch, ctrl_type):
+    waits = []
+    monkeypatch.setattr(rs, "stop_active_turns", lambda timeout: waits.append(timeout) or True)
+    # Returning False lets Windows go on ending the process after the save.
+    assert rs._on_console_control(ctrl_type) is False
+    assert waits == [rs._CONSOLE_EXIT_SAVE_SECONDS]
+    assert 0 < rs._CONSOLE_EXIT_SAVE_SECONDS < 5
+
+
+@pytest.mark.parametrize("ctrl_type", [0, 1])
+def test_ctrl_c_and_ctrl_break_are_left_to_python(monkeypatch, ctrl_type):
+    waits = []
+    monkeypatch.setattr(rs, "stop_active_turns", lambda timeout: waits.append(timeout) or True)
+    assert rs._on_console_control(ctrl_type) is False
+    assert waits == []
+
+
+def test_console_handler_never_raises_into_windows(monkeypatch):
+    def broken(timeout):
+        raise RuntimeError("synthetic")
+
+    monkeypatch.setattr(rs, "stop_active_turns", broken)
+    assert rs._on_console_control(2) is False
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows console API")
+def test_console_close_handler_is_registered_on_windows(monkeypatch):
+    monkeypatch.setattr(rs, "_CONSOLE_CTRL_HANDLER", None)
+    rs.setup_console_close_handler()
+    routine = rs._CONSOLE_CTRL_HANDLER
+    try:
+        assert routine is not None
+    finally:
+        if routine is not None:
+            rs.kernel32().SetConsoleCtrlHandler(routine, False)
