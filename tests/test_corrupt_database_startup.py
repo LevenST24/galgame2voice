@@ -24,6 +24,18 @@ def test_damaged_database_names_the_file_and_the_recovery_tool(tmp_path, content
     assert database.read_bytes() == content
 
 
+def test_damaged_pages_inside_a_readable_file_get_the_same_message(tmp_path):
+    database = tmp_path / "chat.db"
+    asyncio.run(session.init_db(database))
+    data = bytearray(database.read_bytes())
+    for offset in range(4096 * 2, len(data), 4096):
+        data[offset:offset + 200] = b"\xff" * 200
+    database.write_bytes(bytes(data))
+    with pytest.raises(RuntimeError, match="已损坏") as caught:
+        asyncio.run(session.init_db(database))
+    assert "数据恢复.bat" in str(caught.value)
+
+
 def test_a_locked_database_is_not_called_damaged(tmp_path, monkeypatch):
     database = tmp_path / "chat.db"
     with closing(sqlite3.connect(database)) as writer:
@@ -36,3 +48,14 @@ def test_a_locked_database_is_not_called_damaged(tmp_path, monkeypatch):
     monkeypatch.setattr("galgame2voice.database.backups._open_readonly", locked)
     with pytest.raises(sqlite3.OperationalError, match="locked"):
         session._backup_database_sync(database)
+
+
+def test_a_migration_bug_is_not_called_damaged(tmp_path, monkeypatch):
+    database = tmp_path / "chat.db"
+
+    async def broken(_conn):
+        raise sqlite3.IntegrityError("UNIQUE constraint failed: t.x")
+
+    monkeypatch.setattr("galgame2voice.database.crud.init_schema_and_seeds", broken)
+    with pytest.raises(sqlite3.IntegrityError):
+        asyncio.run(session.init_db(database))

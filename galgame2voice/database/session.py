@@ -405,6 +405,15 @@ async def set_schema_version(conn: aiosqlite.Connection, version: int) -> None:
     await conn.execute(f"PRAGMA user_version = {int(version)};")
 
 
+def _damaged_database_error(path: Path) -> RuntimeError:
+    """The startup error for a database file SQLite cannot read (a plain DatabaseError)."""
+    return RuntimeError(
+        f"数据库文件已损坏，无法打开：{path}。原文件未修改。"
+        "请关闭本窗口，双击「数据恢复.bat」从自动备份恢复"
+        f"（备份在 {path.parent / 'backups'}）。"
+    )
+
+
 def _backup_database_sync(resolved_path: Path) -> None:
     """Back up committed WAL contents before migration, or once per day."""
     from contextlib import closing
@@ -418,13 +427,9 @@ def _backup_database_sync(resolved_path: Path) -> None:
         with closing(_open_readonly(resolved_path)) as reader:
             version = int(reader.execute("PRAGMA user_version").fetchone()[0])
     except sqlite3.DatabaseError as exc:
-        if isinstance(exc, sqlite3.OperationalError):
+        if type(exc) is not sqlite3.DatabaseError:
             raise
-        raise RuntimeError(
-            f"数据库文件已损坏，无法打开：{resolved_path}。原文件未修改。"
-            "请关闭本窗口，双击「数据恢复.bat」从自动备份恢复"
-            f"（备份在 {resolved_path.parent / 'backups'}）。"
-        ) from exc
+        raise _damaged_database_error(resolved_path) from exc
     if version > CURRENT_SCHEMA_VERSION:
         raise RuntimeError(
             f"数据库来自较新的版本（数据库版本 {version}，当前程序最高支持 {CURRENT_SCHEMA_VERSION}），"
@@ -438,7 +443,8 @@ async def init_db(db_path: str | Path | None = None) -> None:
     from galgame2voice.database.crud import init_schema_and_seeds
 
     async with _init_lock:
-        await asyncio.to_thread(_backup_database_sync, Path(db_path or get_database_path()))
+        resolved_path = Path(db_path or get_database_path())
+        await asyncio.to_thread(_backup_database_sync, resolved_path)
         max_retries = 5
         for attempt in range(max_retries):
             try:
@@ -452,4 +458,10 @@ async def init_db(db_path: str | Path | None = None) -> None:
                     await asyncio.sleep(0.05 * (2 ** attempt))
                 else:
                     raise
+            except sqlite3.DatabaseError as exc:
+                # Only SQLite's own "not a database"/"malformed" errors; an
+                # IntegrityError from a migration is a bug, not a damaged file.
+                if type(exc) is not sqlite3.DatabaseError:
+                    raise
+                raise _damaged_database_error(resolved_path) from exc
 
