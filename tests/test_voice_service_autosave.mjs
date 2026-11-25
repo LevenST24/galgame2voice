@@ -8,7 +8,7 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 const settle = async () => { for (let i = 0; i < 10; i += 1) await tick(); };
 function element(value = '') {
   const listeners = {};
-  return { value, textContent: '', innerHTML: '', disabled: false, children: [], classList: { add() {}, remove() {} },
+  return { value, textContent: '', innerHTML: '', disabled: false, children: [], dataset: {}, classList: { add() {}, remove() {}, contains: () => false }, querySelectorAll() { return this.children; }, remove() {},
     addEventListener(name, handler) { (listeners[name] ||= []).push(handler); },
     removeEventListener(name, handler) { listeners[name] = (listeners[name] || []).filter(h => h !== handler); },
     dispatch(name = 'change') { return Promise.all((listeners[name] || []).map(handler => handler({ target: this }))); },
@@ -18,14 +18,16 @@ function element(value = '') {
 globalThis.document = { getElementById: () => null, createElement: () => element() };
 globalThis.localStorage = { getItem: () => null, setItem() {} };
 
-function fixture(t, { saveGate = null } = {}) {
+function fixture(t, { saveGate = null, failFirstSave = false } = {}) {
   const stored = { gpt_sovits_url: 'http://127.0.0.1:9880', audio_retention_minutes: 30, inference_precision: 'auto' };
   const writes = [];
+  const toastRoot = element(); globalThis.document.getElementById = id => (id === 'toastRoot' ? toastRoot : null);
   globalThis.fetch = async (url, options = {}) => {
     if (url === '/api/config' && options.method === 'POST') {
       const payload = JSON.parse(options.body);
       writes.push(payload);
       if (saveGate) await saveGate(payload);
+      if (failFirstSave && writes.length === 1) return response({ detail: '格式错误' }, 400);
       Object.assign(stored, payload);
       return response({ status: 'ok', settings: { ...stored } });
     }
@@ -41,8 +43,8 @@ function fixture(t, { saveGate = null } = {}) {
     gTgSave: element(),
   };
   initGlobalSettings(dom);
-  t.after(settle);
-  return { dom, stored, writes };
+  t.after(async () => { await settle(); toastRoot.children.forEach(c => clearTimeout(c._timer)); });
+  return { dom, stored, writes, toasts: toastRoot.children };
 }
 
 test('a finished edit on the voice service page is stored without pressing save', async t => {
@@ -111,16 +113,39 @@ test('restoring defaults stores them at once', async t => {
   assert.equal(state.stored.inference_precision, 'auto');
 });
 
+test('an edit made while a failing autosave runs is still saved', async t => {
+  let release; let gated = true;
+  const s = fixture(t, { failFirstSave: true, saveGate: () => (gated ? new Promise(r => { release = r; }) : undefined) });
+  await loadGlobalConfig();
+  s.dom.gParamSovitsUrl.value = 'bad-url'; await s.dom.gParamSovitsUrl.dispatch('input'); s.dom.gParamSovitsUrl.dispatch('change'); await settle();
+  s.dom.gParamSovitsUrl.value = 'http://127.0.0.1:9999'; await s.dom.gParamSovitsUrl.dispatch('input'); s.dom.gParamSovitsUrl.dispatch('change');
+  gated = false; release(); await settle();
+  assert.deepEqual(s.writes.map(w => w.gpt_sovits_url), ['bad-url', 'http://127.0.0.1:9999']);
+  assert.equal(s.stored.gpt_sovits_url, 'http://127.0.0.1:9999');
+});
+
+test('autosave before config loads reports error when offline and does not write later', async t => {
+  const s = fixture(t); const baseFetch = globalThis.fetch; let offline = true;
+  globalThis.fetch = (url, opts) => (offline && url === '/api/config' ? Promise.reject(new TypeError('Failed to fetch')) : baseFetch(url, opts));
+  s.dom.gParamSovitsUrl.value = 'http://10.0.0.2:9880';
+  await s.dom.gParamSovitsUrl.dispatch('input'); await s.dom.gParamSovitsUrl.dispatch('change'); await settle();
+  assert.ok(s.toasts.some(c => /自动保存失败/.test(c.dataset.msg)));
+  offline = false; await loadGlobalConfig(); await settle();
+  assert.equal(s.writes.length, 0);
+});
+
 test('the engine folder saves itself after typing or picking one', async () => {
   const puts = [];
+  let selectedPath = 'D:/picked', putGate = null;
   globalThis.fetch = async (url, options = {}) => {
     if (url === '/api/system/sovits-directory' && options.method === 'PUT') {
       const { directory } = JSON.parse(options.body);
       puts.push(directory);
+      if (putGate) await putGate();
       return response({ directory, message: '目录已保存。' });
     }
     if (url === '/api/system/sovits-directory') return response({ directory: 'D:/old' });
-    if (url === '/api/voice/browse-file') return response({ selected_path: 'D:/picked' });
+    if (url === '/api/voice/browse-file') return response({ selected_path: selectedPath });
     return response({});
   };
   const dom = {
@@ -148,5 +173,15 @@ test('the engine folder saves itself after typing or picking one', async () => {
   await dom.gSovitsDirectory.dispatch('change');
   await settle();
   assert.deepEqual(puts, ['D:/typed', 'D:/picked']);
+  await directory.browse(); assert.doesNotMatch(dom.gSovitsDirectoryStatus.textContent, /正在保存/);
+  await directory.load(); assert.equal(dom.gSovitsDirectory.value, 'D:/old');
+  dom.gSovitsDirectory.value = 'D:/unsaved'; await dom.gSovitsDirectory.dispatch('input');
+  selectedPath = ''; await directory.browse();
+  assert.deepEqual(puts, ['D:/typed', 'D:/picked']);
+  let releasePut; putGate = () => new Promise(r => { releasePut = r; });
+  dom.gSovitsDirectory.dispatch('change'); const dup = directory.save(); await settle(); assert.deepEqual(puts, ['D:/typed', 'D:/picked', 'D:/unsaved']);
+  selectedPath = 'D:/after'; const pick = directory.browse(); await settle();
+  putGate = null; releasePut(); await Promise.all([dup, pick]);
+  assert.deepEqual(puts, ['D:/typed', 'D:/picked', 'D:/unsaved', 'D:/after']);
   directory.dispose();
 });

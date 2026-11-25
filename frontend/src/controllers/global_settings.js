@@ -457,6 +457,10 @@ export async function loadGlobalConfig() {
     if (coordinatorRevision !== settingsCoordinatorRevision || targetDom !== _dom || load !== configLoad) return;
     const configError = $('gConfigError');
     if (configError) { configError.textContent = e.message; configError.classList.remove('hidden'); }
+    if (autosaveAfterLoad) {
+      autosaveAfterLoad = false;
+      showToast('自动保存失败：尚未读取到当前配置，请检查服务后重试。', 'error');
+    }
   }
 }
 
@@ -517,8 +521,6 @@ export async function autosaveConfig() {
         autosaveQueued = true;
       } else if (result === 'not-loaded') {
         autosaveAfterLoad = true;
-        break;
-      } else if (result !== 'saved') {
         break;
       }
     } while (autosaveQueued);
