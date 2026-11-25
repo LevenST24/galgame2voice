@@ -365,21 +365,23 @@ def _discover_gpt_sovits_roots() -> list[str]:
 
 def _scan_models_sync() -> dict[str, list[dict[str, Any]]]:
     """Blocking filesystem scan for weights & reference audio (worker thread)."""
-    # The app's own folders come first: the lists are capped, and a trained
-    # GPT-SoVITS install can hold hundreds of training slices that would
-    # otherwise push out the clip the user copied into audio/.
+    # audio/ and data/ come before GPT-SoVITS so training slices cannot push
+    # out clips the user copied there; project_root stays after GPT-SoVITS so
+    # installed character packs in characters/ cannot crowd out engine clips.
     settings = get_settings()
     candidate_roots: list[str] = []
     for root_candidate in (
         str(settings.audio_dir),
         str(settings.data_dir),
-        str(settings.project_root),
     ):
         if root_candidate not in candidate_roots:
             candidate_roots.append(root_candidate)
     for root in _discover_gpt_sovits_roots():
         if root not in candidate_roots and os.path.isdir(root):
             candidate_roots.append(root)
+    project_root_str = str(settings.project_root)
+    if project_root_str not in candidate_roots:
+        candidate_roots.append(project_root_str)
 
     excluded_cache_dirs: set[Path] = set()
     for p in (
