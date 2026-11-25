@@ -367,8 +367,8 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           return { ...model, state: conversation.busy ? 'busy' : model.state };
         },
         loadPortrait: (id, options) => portraits.get(id, options),
-        loadAffection: async (id) => {
-          const data = await requestJson('/api/characters', {}, { timeoutMs: 10000 });
+        loadAffection: async (id, options) => {
+          const data = await requestJson('/api/characters', { signal: options?.signal }, { timeoutMs: 10000 });
           const entry = (data?.characters || []).find(c => Number(c?.id) === Number(id));
           return entry?.affection?.affection_level ?? null;
         },

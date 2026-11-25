@@ -1444,3 +1444,40 @@ test('higher affection makes the portrait blush more readily, from the saved lev
   h.start('turn_1'); h.line(0, { emotion: 'gentle' });
   assert.equal((await shown()).faceUrl, '/blush.png', 'the level the turn reached applies to the next reply');
 });
+
+test('late loadAffection repaints initial portrait and survives portrait refresh', async t => {
+  const payload = portrait();
+  payload.faces.smile.blush = 'smile_blush';
+  payload.sprites.uniform.smile_blush = { file: '/blush.png', width: 800, height: 1600 };
+  let resolveAffection, portraitCalls = 0;
+  const h = setup(t, { voice: false,
+    loadPortrait: async () => { portraitCalls++; return payload; },
+    loadAffection: () => new Promise(resolve => { resolveAffection = resolve; }) });
+  await microtasks(); assert.equal(portraitCalls, 1);
+  h.loads.splice(0).forEach(load => load.reject(new Error('expired')));
+  await microtasks(); assert.equal(portraitCalls, 2);
+  h.loads.splice(0).forEach(load => load.resolve()); await microtasks(); h.flush();
+  assert.equal(h.app.sprite.getLastCommitted().faceUrl, '/art.png');
+  resolveAffection(3); await microtasks();
+  h.loads.splice(0).forEach(load => load.resolve()); await microtasks(); h.flush();
+  assert.equal(h.app.sprite.getLastCommitted().faceUrl, '/blush.png');
+});
+
+test('done affection aborts and supersedes an older in-flight loadAffection', async t => {
+  const payload = portrait();
+  payload.faces.smile.blush = 'smile_blush';
+  payload.sprites.uniform.smile_blush = { file: '/blush.png', width: 800, height: 1600 };
+  let resolveAffection, affSignal;
+  const h = setup(t, { voice: false, loadPortrait: async () => payload,
+    loadAffection: (_id, opts) => { affSignal = opts?.signal; return new Promise(resolve => { resolveAffection = resolve; }); } });
+  await microtasks(); h.loads.splice(0).forEach(load => load.resolve()); await microtasks(); h.flush();
+  h.start('turn_0'); h.line(0, { emotion: 'gentle' });
+  h.controller.busy = false;
+  h.emit('done', { originId: h.sessions[0].id, message: { id: 'turn_0', content: '你好' },
+    meta: { affection: { score: 45, level: 3, points_earned: 2 } } });
+  assert.equal(affSignal?.aborted, true);
+  resolveAffection(2); await microtasks();
+  h.start('turn_1'); h.line(0, { emotion: 'gentle' });
+  h.loads.splice(0).forEach(load => load.resolve()); await microtasks(); h.flush();
+  assert.equal(h.app.sprite.getLastCommitted().faceUrl, '/blush.png');
+});
