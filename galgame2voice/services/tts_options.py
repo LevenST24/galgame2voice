@@ -128,7 +128,8 @@ def validate_user_tts_options(options: dict[str, Any] | None = None) -> dict[str
             low, high, caster = _TTS_NUMERIC_RANGES[key]
             try:
                 num = caster(value)
-            except (TypeError, ValueError) as exc:
+            except (TypeError, ValueError, OverflowError) as exc:
+                # OverflowError: JSON numbers such as 1e400 parse to infinity, and int(inf) overflows.
                 raise ValueError(f"TTS 参数 {key} 必须是数字") from exc
             if not (low <= num <= high):
                 raise ValueError(f"TTS 参数 {key} 超出允许范围 [{low}, {high}]")
@@ -136,7 +137,7 @@ def validate_user_tts_options(options: dict[str, Any] | None = None) -> dict[str
             low, high = _INTERNAL_INT_KEYS[key]
             try:
                 num = int(value)
-            except (TypeError, ValueError) as exc:
+            except (TypeError, ValueError, OverflowError) as exc:
                 raise ValueError(f"TTS 参数 {key} 必须是整数") from exc
             if not (low <= num <= high):
                 raise ValueError(f"TTS 参数 {key} 超出允许范围 [{low}, {high}]")
