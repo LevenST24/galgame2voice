@@ -5,6 +5,10 @@ Provides type-safe environment and runtime settings via Pydantic V2.
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
+
+from pydantic import field_validator
+from pydantic_settings import NoDecode
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -122,7 +126,9 @@ class Settings(BaseSettings):
     )
 
     # CORS Security Configuration
-    cors_origins: list[str] = Field(
+    # NoDecode: an env value is split by _split_list_setting instead of being
+    # required to be JSON.
+    cors_origins: Annotated[list[str], NoDecode] = Field(
         default=["http://127.0.0.1:8080", "http://localhost:8080"],
         validation_alias=AliasChoices("GALGAME2VOICE_CORS_ORIGINS", "CORS_ORIGINS"),
         description="Allowed origins for CORS middleware",
@@ -132,12 +138,34 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("GALGAME2VOICE_CORS_ALLOW_CREDENTIALS", "CORS_ALLOW_CREDENTIALS"),
         description="Allow credentials in CORS requests",
     )
-    cors_allow_methods: list[str] = Field(
+    cors_allow_methods: Annotated[list[str], NoDecode] = Field(
         default=["*"], description="Allowed HTTP methods"
     )
-    cors_allow_headers: list[str] = Field(
+    cors_allow_headers: Annotated[list[str], NoDecode] = Field(
         default=["*"], description="Allowed HTTP headers"
     )
+
+    @field_validator("cors_origins", "cors_allow_methods", "cors_allow_headers", mode="before")
+    @classmethod
+    def _split_list_setting(cls, value):
+        """Accept a comma-separated list as well as JSON.
+
+        GALGAME2VOICE_CORS_ORIGINS=http://192.168.1.5:8080,http://localhost:8080 is how
+        most people write it, but pydantic-settings wanted a JSON array and stopped
+        startup with a SettingsError for anything else.
+        """
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        if text.startswith("["):
+            import json
+
+            try:
+                parsed = json.loads(text)
+            except ValueError as exc:
+                raise ValueError(f"无法解析列表：{text}") from exc
+            return parsed
+        return [part.strip().rstrip("/") for part in text.split(",") if part.strip()]
 
     # Audio Retention & Cleanup
     audio_retention_minutes: int = Field(
