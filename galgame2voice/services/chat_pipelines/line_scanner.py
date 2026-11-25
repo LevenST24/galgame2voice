@@ -10,6 +10,8 @@ import json
 import re
 from typing import Any
 
+from galgame2voice.services.emotion_classifier import EMOTION_NAME_MAP
+
 EMOTIONS = ("gentle", "happy", "shy", "tsundere", "cool", "sad", "angry")
 MOTIONS = ("nod", "bounce", "startle", "sigh", "fidget", "head-shake", "lean-in", "step-back")
 MOVES = ("approach", "retreat", "closeup", "left", "right", "center")
@@ -112,6 +114,9 @@ def validate_line(obj: Any, ordinal: int = 0) -> tuple[ScannedLine | None, list[
     # Validate emotion
     raw_emotion = obj.get("emotion")
     normalized_emotion = raw_emotion.strip().lower() if isinstance(raw_emotion, str) else None
+    if normalized_emotion is not None:
+        # Same aliases the legacy parser accepts, so 生气 / 开心 map to angry / happy.
+        normalized_emotion = EMOTION_NAME_MAP.get(normalized_emotion, normalized_emotion)
     if normalized_emotion in EMOTIONS:
         emotion = normalized_emotion
     else:
