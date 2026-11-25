@@ -9,7 +9,6 @@ from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 from pathlib import Path
-import re
 import time
 from typing import Any
 from fastapi import APIRouter, HTTPException, status
@@ -23,6 +22,7 @@ from galgame2voice.database.models import (
     VoiceProfileUpdate,
 )
 from galgame2voice.routers.common import validate_positive_profile_id
+from galgame2voice.services.audio_artifacts import GENERATED_AUDIO_NAME
 from galgame2voice.services.character_manager import (
     get_character_default_tts_speed,
     get_character_manager,
@@ -117,8 +117,8 @@ async def create_voice_profile(req: VoiceProfileCreateRequest) -> dict[str, Any]
     profile_dto = VoiceProfileCreate(
         name=req.name.strip(),
         description=req.description or "",
-        gpt_weights_path=req.gpt_weights_path.strip(),
-        sovits_weights_path=req.sovits_weights_path.strip(),
+        gpt_weights_path=to_project_relative_path(req.gpt_weights_path).strip(),
+        sovits_weights_path=to_project_relative_path(req.sovits_weights_path).strip(),
         ref_audio_path=ref_audio.strip(),
         prompt_text=prompt_txt.strip(),
         prompt_lang=prompt_l.strip(),
@@ -339,12 +339,12 @@ _SCAN_EXCLUDED_DIRS = frozenset({
     "pretrained_models",
     "g2pwmodel",
     "uvr5_weights",
+    # GPT-SoVITS training output: intermediate D_/G_ checkpoints the engine
+    # cannot load and thousands of resampled training slices.
+    "logs",
 })
 
-_SYNTH_AUDIO_FILENAME_PATTERN = re.compile(
-    r"^(?:chunk_\d+|full|repair|voice)_[0-9a-f]{12}\.wav$",
-    re.IGNORECASE,
-)
+_SYNTH_AUDIO_FILENAME_PATTERN = GENERATED_AUDIO_NAME
 
 
 def _is_path_or_subpath_of_any(path: Path, targets: set[Path]) -> bool:

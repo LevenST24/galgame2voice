@@ -123,6 +123,12 @@ async def upsert_session(
     """Persist metadata; update_voice_binding distinguishes explicit null from omission."""
     conn.row_factory = aiosqlite.Row
     clean_title = (title or "").strip()
+    if voice_profile_id is not None:
+        cursor = await conn.execute("SELECT 1 FROM voice_profiles WHERE id = ?;", (voice_profile_id,))
+        if await cursor.fetchone() is None:
+            # The voice was deleted (another tab, a package removal); the page still sends its id.
+            # Save the session unbound, as the delete already left it, instead of failing the foreign key.
+            voice_profile_id, update_voice_binding = None, True
     cursor = await conn.execute("SELECT * FROM sessions WHERE id = ?;", (session_id,))
     row = await cursor.fetchone()
     if row:

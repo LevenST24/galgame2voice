@@ -1246,8 +1246,12 @@ async function handleSaveSessionSettings() {
       showToast(`${tooLongMessage('角色人设', PERSONA_MAX_CHARS, persona)}设置未保存。`, 'error');
       return;
     }
+    const maxTokens = Number(_dom.sMaxTokens.value);
+    if (!String(_dom.sMaxTokens.value).trim() || !Number.isInteger(maxTokens) || maxTokens < 16 || maxTokens > 32768) {
+      showToast('「最大生成长度」请填 16 到 32768 之间的整数，设置未保存。', 'error');
+      return;
+    }
     _callbacks.invalidateSessionSync?.();
-    const maxTokens = Math.round(Number(_dom.sMaxTokens.value)) || DEFAULT_SESSION_SETTINGS.maxTokens;
     const voiceListUnavailable = _dom.sVoice.value === VOICE_LIST_UNAVAILABLE;
     let profileId = _dom.sVoice.value && _dom.sVoice.value !== '__custom__'
       ? Number(_dom.sVoice.value)
@@ -1272,7 +1276,7 @@ async function handleSaveSessionSettings() {
       voiceProfileId: profileId,
       temperature: Number(_dom.sTemp.value),
       topP: Number(_dom.sTopP.value),
-      maxTokens: Math.min(32768, Math.max(16, maxTokens)),
+      maxTokens,
       freqPenalty: Number(_dom.sFreq.value),
       presPenalty: Number(_dom.sPres.value),
       maxContext: Number(_dom.sCtx.value),
