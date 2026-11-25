@@ -31,7 +31,7 @@ async def test_out_of_range_flat_value_names_the_limit():
     async with await _client() as client:
         resp = await client.post("/api/config", json={"temperature": 5})
         assert resp.status_code == 422
-        assert "「温度」" in resp.json()["detail"] and "不能大于 2.0" in resp.json()["detail"]
+        assert "「温度」不能大于 2.0" in resp.json()["detail"]
 
 
 @pytest.mark.asyncio

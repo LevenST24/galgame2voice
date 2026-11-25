@@ -182,7 +182,7 @@ def _describe_settings_error(exc: ValidationError) -> str:
         need = "需要填写数字"
     else:
         need = "格式不对"
-    return f"「{label}」的值无效，{need}。设置没有保存，请修改后重试。"
+    return f"全局配置参数格式或范围无效：「{label}」{need}。设置没有保存，请修改后重试。"
 
 
 def _sync_precision_cache(new_precision: str | None, previous_precision: str | None = None) -> None:

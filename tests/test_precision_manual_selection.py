@@ -652,5 +652,5 @@ async def test_invalid_sovits_url_and_params_return_chinese_guidance(tmp_path, m
         )
         assert bad_param.status_code == 422
         param_detail = bad_param.json()["detail"]
-        assert "「音频缓存保留时间（分钟）」的值无效" in param_detail
+        assert "全局配置参数格式或范围无效" in param_detail
         assert "Invalid configuration parameters" not in param_detail
