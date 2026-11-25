@@ -339,6 +339,9 @@ _SCAN_EXCLUDED_DIRS = frozenset({
     "pretrained_models",
     "g2pwmodel",
     "uvr5_weights",
+    # GPT-SoVITS training output: intermediate D_/G_ checkpoints the engine
+    # cannot load and thousands of resampled training slices.
+    "logs",
 })
 
 _SYNTH_AUDIO_FILENAME_PATTERN = re.compile(
