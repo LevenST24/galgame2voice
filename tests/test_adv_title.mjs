@@ -1518,3 +1518,13 @@ test('background /api/providers retry failure stays silent while opening setting
   env.app.actions.openSettings('models'); for (let i = 0; i < 5; i++) await tick();
   assert.equal(toasts.children.length, 1);
 });
+
+test('home excerpt keeps inner quotes balanced at either end', async t => {
+  for (const [zh, expected] of [
+    ['我最讨厌的词就是「笨蛋」', '「我最讨厌的词就是「笨蛋」」'],
+    ['「笨蛋」什么的，我才没说过', '「「笨蛋」什么的，我才没说过」'],
+  ]) {
+    const h = await fixture(t, { sessions: [{ ...snapshot('a'), excerpt: homeExcerpt([{ role: 'assistant', content: zh }]) }] });
+    assert.equal(h.q('.home-quote').textContent, expected);
+  }
+});

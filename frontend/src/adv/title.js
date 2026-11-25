@@ -1,6 +1,7 @@
 // @ts-check
 /** Home is a transparent overlay on the active session's real ADV stage. */
 import { canReplayLine } from './replay.js';
+import { formatDisplayQuote } from './textbox.js';
 
 const PAGE_SIZE = 6;
 export function formatHomeTime(value, now = new Date()) {
@@ -213,7 +214,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
       const excerpt = (session?.excerpt?.zh || session?.excerpt?.ja) ? session.excerpt : { zh: '从这一刻，开始你们的故事。' };
       if (excerpt.user) pane.appendChild(el('p', 'home-you', `你：${excerpt.user}`));
       const quote = excerpt.zh || excerpt.ja || '';
-      pane.appendChild(el('blockquote', 'home-quote', `「${String(quote).replace(/^「|」$/g, '')}」`));
+      pane.appendChild(el('blockquote', 'home-quote', formatDisplayQuote(String(quote), 'character')));
       if (excerpt.zh && excerpt.ja && excerpt.zh !== excerpt.ja) pane.appendChild(el('p', 'home-ja', excerpt.ja));
       const row = el('div', 'home-actions');
       if (checking) row.appendChild(el('p', 'home-checking', '正在检查设置…'));

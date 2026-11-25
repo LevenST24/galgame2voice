@@ -7,7 +7,7 @@ import { splitGraphemes, countGraphemes } from './graphemes.js';
 import { paginate as purePaginate, pairSubtitle } from './paginate.js';
 
 const QUOTE_PAIRS = /** @type {Record<string, string>} */ ({ '「': '」', '『': '』', '“': '”', '"': '"' });
-const CLOSING_QUOTES = new Set(Object.values(QUOTE_PAIRS));
+const CLOSING_TO_OPEN = /** @type {Record<string, string>} */ ({ '」': '「', '』': '『', '”': '“', '"': '"' });
 
 /**
  * How a line's own quote marks sit around it:
@@ -23,33 +23,45 @@ function outerQuoteShape(trimmed) {
     if (open === close) {
       const count = trimmed.split(open).length - 1;
       if (count === 1) return 'open';
-      return count === 2 && trimmed.length > 1 && trimmed.endsWith(close) ? 'whole' : 'none';
+      if (count === 2 && trimmed.length > 1 && trimmed.endsWith(close)) return 'whole';
+    } else {
+      let depth = 0;
+      for (let i = 0; i < trimmed.length; i++) {
+        if (trimmed[i] === open) depth++;
+        else if (trimmed[i] === close && --depth === 0) {
+          if (i === trimmed.length - 1) return 'whole';
+          break;
+        }
+      }
+      if (depth > 0) return 'open';
     }
-    let depth = 0;
-    for (let i = 0; i < trimmed.length; i++) {
-      if (trimmed[i] === open) depth++;
-      else if (trimmed[i] === close && --depth === 0) return i === trimmed.length - 1 ? 'whole' : 'none';
-    }
-    return 'open';
   }
   const last = trimmed.at(-1) || '';
-  if (!CLOSING_QUOTES.has(last)) return 'none';
-  const opener = Object.keys(QUOTE_PAIRS).find(key => QUOTE_PAIRS[key] === last);
-  return opener && opener !== last && trimmed.includes(opener) ? 'none' : 'close';
+  const opener = CLOSING_TO_OPEN[last];
+  if (!opener) return 'none';
+  if (opener === last) return (trimmed.split(last).length - 1) % 2 === 1 ? 'close' : 'none';
+  let depth = 0;
+  for (let i = trimmed.length - 1; i >= 0; i--) {
+    if (trimmed[i] === last) depth++;
+    else if (trimmed[i] === opener && --depth === 0) return 'none';
+  }
+  return 'close';
 }
 
 /**
  * Wraps text with display-only quotation marks if it is character speech
  * and not already enclosed in quotes. Never mutates the raw stored string.
+ * @param {string} text
+ * @param {string} mode
  */
-function formatDisplayQuote(text, mode) {
+export function formatDisplayQuote(text, mode) {
   if (!text) return '';
   if (mode !== 'character') return text;
   const trimmed = text.trim();
   switch (outerQuoteShape(trimmed)) {
     case 'whole': return text;
     case 'open': return `${text}${QUOTE_PAIRS[trimmed[0]]}`;
-    case 'close': return `「${text}`;
+    case 'close': return `${CLOSING_TO_OPEN[trimmed.at(-1) || ''] || '「'}${text}`;
     default: return `「${text}」`;
   }
 }
