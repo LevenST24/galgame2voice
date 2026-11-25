@@ -17,7 +17,13 @@ from galgame2voice.database.session import (
     get_schema_version,
     set_schema_version,
 )
-from galgame2voice.security.crypto import MasterKeyError, encrypt_secret, upgrade_secret_encryption
+from galgame2voice.security.crypto import (
+    MasterKeyError,
+    decrypt_secret,
+    encrypt_secret,
+    is_encrypted_secret,
+    upgrade_secret_encryption,
+)
 from galgame2voice.adapters.registry import PROVIDER_PRESETS, RETIRED_CHAT_MODELS
 
 logger = logging.getLogger("galgame2voice.database.migrations")
@@ -101,6 +107,15 @@ async def _add_column_if_missing(
         await conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type};")
         return True
     return False
+
+
+def _read_console_token_file() -> str:
+    """The token the user copies from data/.console_token, or "" when there is none."""
+    try:
+        from galgame2voice.config import get_settings
+        return (get_settings().data_dir / ".console_token").read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return ""
 
 
 def _save_console_token_file(token: str) -> None:
@@ -624,13 +639,28 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
     try:
         cursor = await conn.execute("SELECT console_token FROM settings WHERE id = 1;")
         row = await cursor.fetchone()
-        if row is not None and not str(row["console_token"] or "").strip():
-            new_token = uuid.uuid4().hex
-            _save_console_token_file(new_token)
-            encrypted_token = encrypt_secret(new_token)
+        stored_token = str(row["console_token"] or "").strip() if row is not None else ""
+        token_to_store = ""
+        if row is not None and not stored_token:
+            token_to_store = uuid.uuid4().hex
+            _save_console_token_file(token_to_store)
+        elif is_encrypted_secret(stored_token) and not decrypt_secret(stored_token):
+            # Windows saves the token for the account that wrote it. After the data folder
+            # moves to another computer or Windows user it reads back empty, and the token
+            # in data/.console_token never matches again. Store the file's token for this
+            # account, or a new one when the file is gone.
+            token_to_store = _read_console_token_file()
+            if not token_to_store:
+                token_to_store = uuid.uuid4().hex
+                _save_console_token_file(token_to_store)
+            logger.warning(
+                "保存的访问令牌是在另一台电脑或另一个 Windows 用户下加密的，这里读不出来，"
+                "已改用 data/.console_token 里的令牌。"
+            )
+        if token_to_store:
             await conn.execute(
                 "UPDATE settings SET console_token = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1;",
-                (encrypted_token,),
+                (encrypt_secret(token_to_store),),
             )
     except MasterKeyError:
         raise
