@@ -82,6 +82,10 @@ test('an over-long persona is refused before saving, and a failed persona write 
   assert.match(toasts.at(-1).msg, /^人设没有保存：/);
   assert.match(toasts.at(-1).msg, /其他会话设置已保存$/);
   assert.doesNotMatch(toasts.at(-1).msg, /设置已保存。；/);
+  dom.sSystem.value = '';
+  await dom.sSave.click();
+  assert.equal(toasts.at(-1).type, 'toast toast-error');
+  assert.equal(toasts.at(-1).msg, '人设没有保存：人设提示词不能为空。其他会话设置已保存');
 });
 
 test('creating a voice with an over-long reference text is refused before the request', async (t) => {
@@ -102,4 +106,39 @@ test('creating a voice with an over-long reference text is refused before the re
   await dom.sCvCreate.click();
   assert.equal(toasts.at(-1).msg, '「参考音频里说的话」最多 500 字，现在有 501 字，请删减后再保存。');
   assert.deepEqual(posts, []);
+});
+
+test('unchanged over-long persona saves other settings, and failed saves do not claim saved', async (t) => {
+  const toasts = toastHarness(t);
+  loadState();
+  const session = { id: 'u', title: 'U', settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: 4 }, messages: [] };
+  state.sessions = [session]; state.activeId = session.id;
+  const dom = sessionDom();
+  const calls = [];
+  let mode = 'ok';
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push(`${options.method || 'GET'} ${url}`);
+    if (mode === 'offline') throw new TypeError('Failed to fetch');
+    if (url === '/api/characters/4/system-prompt') return { ok: false, status: 500, json: async () => ({ detail: '角色包是只读的' }) };
+    return { ok: true, status: 200, json: async () => url === '/api/voice/profiles'
+      ? { profiles: [{ id: 4, name: '角色', system_prompt: '原'.repeat(20001) }], active_profile_id: 4 } : {} };
+  };
+  initVoiceSettings(dom, {});
+  await loadSessionVoiceSelect(session);
+  dom.sTemp.value = '0.9';
+  await dom.sSave.click();
+  assert.equal(session.settings.temperature, 0.9);
+  assert.equal(toasts.at(-1).type, 'toast toast-success');
+  assert.ok(calls.includes('POST /api/chat/sessions') && !calls.includes('PUT /api/characters/4/system-prompt'));
+  mode = 'offline';
+  dom.sSystem.value = '新人设';
+  await dom.sSave.click();
+  assert.equal(toasts.at(-1).type, 'toast toast-error');
+  assert.doesNotMatch(toasts.at(-1).msg, /其他会话设置已保存/);
+  assert.equal(toasts.at(-1).msg.split('无法连接本机服务').length - 1, 1);
+  mode = 'ok';
+  globalThis.localStorage.setItem('gal2voice.chat.v1', '{"otherTab":true}');
+  await dom.sSave.click();
+  assert.match(toasts.at(-1).msg, /其他会话设置也未保存/);
+  assert.doesNotMatch(toasts.at(-1).msg, /其他会话设置已保存/);
 });

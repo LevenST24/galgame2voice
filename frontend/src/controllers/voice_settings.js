@@ -1241,11 +1241,6 @@ async function handleSaveSessionSettings() {
         return;
       }
     }
-    const persona = (_dom.sSystem?.value || '').trim();
-    if (charCount(persona) > PERSONA_MAX_CHARS) {
-      showToast(`${tooLongMessage('角色人设', PERSONA_MAX_CHARS, persona)}设置未保存。`, 'error');
-      return;
-    }
     const maxTokens = Number(_dom.sMaxTokens.value);
     if (!String(_dom.sMaxTokens.value).trim() || !Number.isInteger(maxTokens) || maxTokens < 16 || maxTokens > 32768) {
       showToast('「最大生成长度」请填 16 到 32768 之间的整数，设置未保存。', 'error');
@@ -1264,6 +1259,14 @@ async function handleSaveSessionSettings() {
     if (!voiceListUnavailable && profileId
         && !missingBinding && (_promptOwnerId !== profileId || !voiceProfiles.some(p => p.id === profileId))) {
       showToast('人设草稿与当前角色不一致，已保留编辑内容。请重新选择对应角色后再保存。', 'error');
+      return;
+    }
+    const persona = (_dom.sSystem?.value || '').trim();
+    const targetProfile = !voiceListUnavailable && !missingBinding && profileId
+      ? voiceProfiles.find((p) => p.id === profileId)
+      : null;
+    if (targetProfile && persona !== (targetProfile.system_prompt || '').trim() && charCount(persona) > PERSONA_MAX_CHARS) {
+      showToast(`${tooLongMessage('角色人设', PERSONA_MAX_CHARS, persona)}设置未保存。`, 'error');
       return;
     }
     const nextTitle = (_dom.sTitle?.value || '').trim();
@@ -1289,7 +1292,7 @@ async function handleSaveSessionSettings() {
     s.updatedAt = Math.max(Date.now(), (s.updatedAt || 0) + 1);
     const version = (s.unconfirmedSettingsVersion || 0) + 1;
     s.unconfirmedSettingsVersion = version;
-    saveState();
+    const localSaved = saveState();
 
     // 人设提示词属于角色、不属于会话：写回角色包 manifest.json，DB 镜像由后端刷新
     const { note: promptNote, confirmed: promptConfirmed, failed: promptFailed } = missingBinding
@@ -1299,7 +1302,9 @@ async function handleSaveSessionSettings() {
       : await saveCharacterPrompt(profileId, editor);
 
     let syncNote = '';
-    if (storageChangedByAnotherPage()) {
+    let syncErr = '';
+    const pausedByOtherPage = storageChangedByAnotherPage();
+    if (pausedByOtherPage) {
       syncNote = '；当前网页已暂停保存，设置未提交到本机服务';
     } else {
       try {
@@ -1312,6 +1317,7 @@ async function handleSaveSessionSettings() {
           }
         }
       } catch (err) {
+        syncErr = String(err?.message || err).replace(/[。.]$/, '');
         syncNote = `；本机服务尚未确认保存：${err.message}`;
       }
     }
@@ -1329,8 +1335,16 @@ async function handleSaveSessionSettings() {
     const nextName = voiceProfiles.find((p) => p.id === profileId)?.name;
     const lead = nextName && profileId !== previousProfileId ? `已换上「${nextName}」。` : '设置已保存。';
     if (promptFailed) {
-      // The session saved but the persona did not: say so first instead of "设置已保存。；…失败".
-      showToast(`人设没有保存：${promptFailed}。其他会话设置已保存${syncNote}${draftNote}`, 'error');
+      const msg = (pausedByOtherPage || !localSaved)
+        ? (syncErr && syncErr === promptFailed
+          ? `人设和其他会话设置都未保存：${promptFailed}`
+          : `人设没有保存：${promptFailed}。其他会话设置也未保存${syncNote}`)
+        : !syncNote
+        ? `人设没有保存：${promptFailed}。其他会话设置已保存`
+        : syncErr === promptFailed
+        ? `人设没有保存，本机服务也尚未确认其他会话设置：${promptFailed}`
+        : `人设没有保存：${promptFailed}${syncNote}`;
+      showToast(`${msg}${draftNote}`, 'error');
     } else {
       showToast(`${lead}${promptNote}${syncNote}${draftNote}`, promptNote || syncNote || draftNote ? 'info' : 'success');
     }
@@ -1346,7 +1360,7 @@ async function saveCharacterPrompt(profileId, editor) {
   if (!_dom.sSystem) return result();
   if (!profileId) {
     return (_dom.sSystem.value || '').trim()
-      ? result('；当前会话未绑定角色，人设改动未保存', false) : result();
+      ? result('；当前会话未绑定角色，人设改动未保存', false, '当前会话未绑定角色') : result();
   }
   const prof = voiceProfiles.find((p) => p.id === profileId);
   const text = (_dom.sSystem.value || '').trim();
@@ -1354,7 +1368,7 @@ async function saveCharacterPrompt(profileId, editor) {
   if (!prof) return result('；找不到对应角色包，人设改动未保存', false);
   // Unchanged first: a character created without a persona must still save its session.
   if (text === (prof.system_prompt || '').trim()) return result();
-  if (!text) return result('；人设提示词不能为空，未改动角色包', false);
+  if (!text) return result('；人设提示词不能为空，未改动角色包', false, '人设提示词不能为空');
   try {
     const saved = await requestJson(`/api/characters/${profileId}/system-prompt`, {
       method: 'PUT',
