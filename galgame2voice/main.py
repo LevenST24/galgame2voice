@@ -24,7 +24,7 @@ from galgame2voice.config import get_settings
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.routers import chat, config, health, voice, characters, metrics, system, backgrounds
-from galgame2voice.security.auth import require_auth
+from galgame2voice.security.auth import LOCAL_ONLY_HOSTS, is_local_only_host, require_auth
 from galgame2voice.security.rate_limit import RateLimitMiddleware
 from galgame2voice.services.engine_supervisor import DefaultEngineSupervisor, EngineSupervisor
 from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client, close_gpt_sovits_client
@@ -66,7 +66,7 @@ class HostValidationMiddleware:
     proxies rewrite or forward their own Host value.
     """
 
-    ALLOWED_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+    ALLOWED_LOOPBACK_HOSTS = LOCAL_ONLY_HOSTS
 
     def __init__(self, app: Any) -> None:
         self.app = app
@@ -121,7 +121,7 @@ def _init_logging_and_safety(settings) -> None:
     )
     logger.info("Initializing %s v%s...", settings.app_name, settings.app_version)
 
-    is_loopback = str(settings.host).strip().lower() in ("127.0.0.1", "localhost", "::1")
+    is_loopback = is_local_only_host(settings.host)
     from galgame2voice.security.auth import is_auth_disabled
 
     if not is_loopback and is_auth_disabled():
@@ -444,7 +444,7 @@ def create_app(*, engine_supervisor: EngineSupervisor | None = None) -> FastAPI:
     # DNS Rebinding mitigation (audit finding: Host header validation).
     from galgame2voice.security.auth import is_auth_disabled
 
-    _is_loopback_host = str(settings.host).strip().lower() in ("127.0.0.1", "localhost", "::1")
+    _is_loopback_host = is_local_only_host(settings.host)
     if (
         settings.auth_disabled
         and _is_loopback_host
