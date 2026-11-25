@@ -512,7 +512,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     opened = true; ++revision; screen.hidden = false; screen.removeAttribute('hidden');
     mode = 'home'; pane.hidden = false; load.hidden = true; textOnly = false;
     status = createInitialStatus();
-    setStageHome(true); readSessions(); recentOrder = sessions.filter(s => s.id !== mainId).map(s => s.id);
+    setStageHome(true); readSessions(); recentOrder = [];
     renderStatus(); renderPane(true); renderRecents(); focusPrimary();
     // Reconcile even a matching id: startup sync may have changed its settings
     // or the character list since the stage last rendered.
