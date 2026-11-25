@@ -67,6 +67,24 @@ def _is_plausible_nickname(text: str, start: int, value: str) -> bool:
     return not value.startswith(_NICKNAME_NON_NAME_STARTS)
 
 
+# "你还记得我喜欢什么吗？" asks about a preference instead of stating one, and a sentence-final
+# particle (我最喜欢狗了) is not part of the thing liked.
+_PREFERENCE_QUESTION_WORDS = ("什么", "啥", "哪个", "哪些", "哪里", "哪儿", "谁", "怎么")
+_PREFERENCE_TRAILING_PARTICLES = "了啊呀哦呢嘛啦"
+
+
+def _preference_value(value: str) -> str | None:
+    """The liked or disliked thing in a statement, or None when the clause is a question."""
+    if value.startswith("的是"):
+        value = value[2:]
+    elif value.startswith(("的", "是")):
+        return None
+    if value.endswith("吗") or any(word in value for word in _PREFERENCE_QUESTION_WORDS):
+        return None
+    value = value.rstrip(_PREFERENCE_TRAILING_PARTICLES)
+    return value or None
+
+
 def _opposite_preference_key(fact_key: str) -> str | None:
     """like_猫 <-> dislike_猫: the newer statement replaces the one it contradicts."""
     if fact_key.startswith("dislike_"):
@@ -187,6 +205,10 @@ class MemoryService:
             return None
         if pat["category"] == "nickname" and not _is_plausible_nickname(text, match.start(), sanitized_val):
             return None
+        if pat["category"] in ("preference", "taboo"):
+            sanitized_val = _preference_value(sanitized_val)
+            if not sanitized_val:
+                return None
 
         if "key" in pat:
             key = pat["key"]
