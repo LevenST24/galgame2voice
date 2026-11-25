@@ -128,6 +128,18 @@ def test_check_directories_reports_every_directory_writable(project_root):
     assert not list(project_root.rglob(".doctor_probe_*"))
 
 
+def test_check_directories_create_failure_hint_omits_nonexistent_env_var(project_root):
+    (project_root / "characters").write_text("occupied", encoding="utf-8")
+
+    checks = {check.name: check for check in doctor.check_directories(get_settings())}
+    check = checks["角色包目录"]
+
+    assert check.status == doctor.FAIL
+    assert "无法创建" in check.detail
+    assert "GALGAME2VOICE_DATA_DIR" not in check.hint
+    assert "写入权限" in check.hint
+
+
 def test_check_database_warns_before_first_start(tmp_path, monkeypatch):
     monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(tmp_path / "missing.db"))
     monkeypatch.setenv("GALGAME_DB_PATH", str(tmp_path / "missing.db"))

@@ -133,7 +133,7 @@ def _directory_check(label: str, path: Path) -> Check:
             f"{label}目录",
             FAIL,
             f"无法创建 {path}（{exc.__class__.__name__}: {exc}）",
-            "请把程序文件夹移到可以写入的位置，或用 GALGAME2VOICE_DATA_DIR 指定一个可写的数据目录。",
+            "请给这个文件夹写入权限，或把程序文件夹移到可以写入的位置。",
         )
 
     probe = path / f".doctor_probe_{os.getpid()}"
