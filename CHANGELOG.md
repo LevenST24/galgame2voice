@@ -120,6 +120,7 @@ All notable changes to galgame2voice are documented here. The format follows
 - 改进：配置示例文件 .env.example 改为中文说明，写明放在哪里、怎样启用某一行以及每项的作用。
 - 修复环境变量 GALGAME2VOICE_AUDIO_RETENTION_MINUTES 不起作用、临时语音始终保留 30 分钟的问题；现在首次启动时用它作为「音频缓存保留时间」的初始值，之后以网页里的设置为准。
 - 修复环境变量 GALGAME2VOICE_LOG_LEVEL 写成「 debug 」（带空格）或数字时悄悄按 INFO 记录、写错级别名时日志开头还显示成那个错名字的问题；现在不区分大小写和首尾空格，无法识别时会在日志开头提示并按 INFO 记录。
+- 修复把 GPT-SoVITS 启动时显示的地址 http://0.0.0.0:9880 填进「语音服务」后，程序把它当成远程引擎、关掉并不再启动本机引擎，Windows 上还连不上的问题；现在 0.0.0.0 按本机地址 127.0.0.1 连接。
 
 ## [3.2.11] - 2026-11-24
 ### Fixed
