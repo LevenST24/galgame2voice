@@ -646,7 +646,7 @@ def _find_custom_voice_ref_audio(
     return None, default_text, default_lang
 
 
-def _probe_engine_identity(base_url: str, *, local: bool = True, timeout: float = 3.0) -> str:
+def _probe_engine_identity(base_url: str, *, timeout: float = 3.0) -> str:
     """Asks a busy engine port whether GPT-SoVITS answers there.
 
     api_v2 answers GET /control without a command with 400 (some builds 200).
@@ -659,8 +659,11 @@ def _probe_engine_identity(base_url: str, *, local: bool = True, timeout: float 
     import urllib.error
     import urllib.request
 
-    handlers = [urllib.request.ProxyHandler({})] if local else []
-    opener = urllib.request.build_opener(*handlers)
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
     try:
         with opener.open(f"{base_url.rstrip('/')}/control", timeout=timeout) as resp:
             status = resp.status
@@ -938,7 +941,7 @@ def ensure_gpt_sovits_running(
         sovits_base_url = "http://127.0.0.1:9880"
     print(f"[1/2] 正在检测 GPT-SoVITS 语音推理引擎 ({sovits_host}:{sovits_port})...")
     if is_port_in_use(sovits_port, sovits_host):
-        identity = _probe_engine_identity(sovits_base_url, local=sovits_is_local)
+        identity = _probe_engine_identity(sovits_base_url)
         if identity == "engine":
             print("      [OK] GPT-SoVITS 语音引擎已在运行")
         elif identity == "other":

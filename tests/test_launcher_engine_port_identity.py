@@ -10,11 +10,13 @@ from galgame2voice.services.sovits_endpoint import parse_sovits_endpoint
 from scripts import run_server
 
 
-def _serve(status_for_control: int):
+def _serve(status_for_control: int, *, redirect_to: str | None = None):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802 - http.server naming
-            code = status_for_control if self.path.startswith("/control") else 404
-            self.send_response(code)
+            is_control = self.path.endswith("/control")
+            self.send_response(status_for_control if is_control else (200 if redirect_to else 404))
+            if is_control and redirect_to:
+                self.send_header("Location", redirect_to)
             self.send_header("Content-Length", "0")
             self.end_headers()
 
@@ -87,3 +89,32 @@ def test_launcher_does_not_call_an_unrelated_busy_port_a_running_engine(monkeypa
     assert "语音引擎已在运行" not in out
     assert f"端口 {port} 已被别的程序占用" in out
     assert not spawn
+
+
+def test_probe_does_not_follow_redirects_to_200():
+    server = _serve(302, redirect_to="/login")
+    try:
+        assert run_server._probe_engine_identity(f"http://127.0.0.1:{server.server_address[1]}") == "other"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_launcher_probes_non_local_endpoint_without_http_proxy(monkeypatch, capsys):
+    engine, proxy = _serve(400), _serve(502)
+    endpoint = parse_sovits_endpoint(f"http://127.0.0.1:{engine.server_address[1]}/sovits", source="db")
+    assert not endpoint.is_local
+    for name in ("HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{proxy.server_address[1]}")
+    monkeypatch.setattr(
+        "galgame2voice.services.sovits_endpoint.resolve_effective_sovits_endpoint_sync", lambda: endpoint
+    )
+    try:
+        run_server.ensure_gpt_sovits_running()
+    finally:
+        for srv in (engine, proxy):
+            srv.shutdown()
+            srv.server_close()
+    out = capsys.readouterr().out
+    assert "语音引擎已在运行" in out and "已被别的程序占用" not in out
