@@ -28,7 +28,6 @@ writable. It never modifies the database.
 import argparse
 import asyncio
 import dataclasses
-import ipaddress
 import json
 import os
 import sqlite3
@@ -38,7 +37,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from galgame2voice.config import Settings, get_settings
 from galgame2voice.database.session import get_database_path
-from galgame2voice.security.auth import is_auth_disabled
+from galgame2voice.security.auth import LOCAL_ONLY_HOSTS, is_auth_disabled, is_local_only_host
 from galgame2voice.services.sovits_endpoint import resolve_sovits_url
 from galgame2voice.utils.audio_converter import find_ffmpeg
 from galgame2voice.utils.http_client import PROXY_ENV_HINT, create_async_client, proxy_environment_is_usable
@@ -53,7 +52,6 @@ DEGRADED = "DEGRADED"
 FAILED = "FAILED"
 
 REQUIRED_PYTHON = (3, 10)
-_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"}
 _SOVITS_PROBE_TIMEOUT_SECONDS = 3.0
 
 
@@ -233,13 +231,8 @@ def check_ffmpeg() -> List[Check]:
 
 
 def check_bind_and_auth(settings: Settings) -> List[Check]:
-    host = str(settings.host).strip().lower()
-    loopback = host in _LOOPBACK_HOSTS
-    if not loopback:
-        try:
-            loopback = ipaddress.ip_address(host).is_loopback
-        except ValueError:
-            loopback = False
+    # Same rule as startup: another loopback spelling (127.0.0.2, 0:0:0:0:0:0:0:1) is refused there.
+    loopback = is_local_only_host(settings.host)
 
     auth_off = is_auth_disabled()
     bind = f"{settings.host}:{settings.port}"
@@ -259,7 +252,7 @@ def check_bind_and_auth(settings: Settings) -> List[Check]:
                 FAIL,
                 f"disabled while listening on non-loopback {bind}",
                 "The service refuses to start in this state. Set GALGAME2VOICE_AUTH_DISABLED=0, "
-                "or bind to 127.0.0.1 again.",
+                f"or bind to one of {', '.join(sorted(LOCAL_ONLY_HOSTS))} again.",
             )
         ]
     return [Check("Console auth", OK, f"enabled, listening on {bind}")]
@@ -401,10 +394,16 @@ async def collect_checks(settings: Optional[Settings] = None, *, offline: bool =
     settings = settings or get_settings()
     providers, db_sovits_url = await _load_database_state(settings)
 
-    effective_sovits_url = resolve_sovits_url(
-        db_url=db_sovits_url,
-        settings_url=str(getattr(settings, "gpt_sovits_base_url", "") or ""),
-    ).base_url
+    # A malformed address (say 127.0.0.1:9880 without http://) is a finding, not a crash.
+    sovits_url_error: Optional[str] = None
+    try:
+        effective_sovits_url = resolve_sovits_url(
+            db_url=db_sovits_url,
+            settings_url=str(getattr(settings, "gpt_sovits_base_url", "") or ""),
+        ).base_url
+    except ValueError as exc:
+        effective_sovits_url = ""
+        sovits_url_error = str(exc)
 
     checks: List[Check] = []
     checks.extend(check_runtime())
@@ -415,7 +414,18 @@ async def collect_checks(settings: Optional[Settings] = None, *, offline: bool =
     checks.extend(check_proxy_environment())
     checks.extend(check_characters(settings))
     checks.extend(check_providers(providers))
-    checks.extend(await check_gpt_sovits(effective_sovits_url, offline=offline))
+    if sovits_url_error is not None:
+        checks.append(
+            Check(
+                "GPT-SoVITS",
+                FAIL,
+                sovits_url_error,
+                "The URL must start with http:// or https://, e.g. http://127.0.0.1:9880. "
+                "Fix GALGAME2VOICE_GPT_SOVITS_BASE_URL, .env or the address in Settings.",
+            )
+        )
+    else:
+        checks.extend(await check_gpt_sovits(effective_sovits_url, offline=offline))
     return checks
 
 
