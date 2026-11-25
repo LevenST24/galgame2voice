@@ -6,7 +6,7 @@ Provides type-safe environment and runtime settings via Pydantic V2.
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import AliasChoices, Field, ValidationError
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from galgame2voice import __version__
@@ -210,7 +210,8 @@ class InvalidSettingsError(SystemExit):
     """
 
 
-def _describe_invalid_settings(exc: ValidationError) -> str:
+def _describe_invalid_settings(exc: Exception) -> str:
+    """Lists each bad setting from a pydantic ValidationError."""
     lines = ["galgame2voice 无法启动：以下配置项的值无效（来自环境变量，或程序目录下的 .env 文件）："]
     for err in exc.errors():
         name = ".".join(str(part) for part in err.get("loc", ())) or "?"
@@ -223,6 +224,8 @@ def _describe_invalid_settings(exc: ValidationError) -> str:
 @lru_cache()
 def get_settings() -> Settings:
     """Returns a cached singleton instance of Settings."""
+    from pydantic import ValidationError
+
     try:
         return Settings()
     except ValidationError as exc:
