@@ -1442,3 +1442,41 @@ test('hiding the window does not stop the line that is being voiced', t => {
   assert.equal(h.audio.stopped.length, stopped);
   assert.notEqual(h.app.player.state, 'suspended');
 });
+
+test('hidden window ignores A, F and Ctrl so voice and replay finish without skipping', async t => {
+  const h = setup(t, { settings: { advTextIntervalMs: 0 } });
+  const stage = h.app.stage.stage;
+  h.start(); h.line(0); h.line(1); h.audioEvent(0); h.audioEvent(1); h.done();
+  const stopped = h.audio.stopped.length;
+  h.app.action('hide');
+  stage.dispatchEvent({ type: 'keydown', key: 'a' }); assert.equal(h.app.player.auto, false);
+  stage.dispatchEvent({ type: 'keydown', key: 'f' }); h.app.player.setSkip(true); h.clock.tick(1000);
+  assert.equal(h.audio.stopped.length, stopped);
+  assert.equal(h.app.player.currentIndex, 0); assert.equal(h.app.player.skip, false);
+  h.endVoice('ended'); await microtasks();
+  h.app.action('unhide'); h.app.action('replay_voice'); h.app.action('hide');
+  stage.dispatchEvent({ type: 'keydown', key: 'Control' }); h.clock.tick(1000);
+  assert.equal(h.audio.stopped.length, stopped); assert.equal(h.app.player.currentIndex, 0);
+});
+
+test('hiding cancels a pending advance when interruptVoice is off', async t => {
+  const h = setup(t, { settings: { advTextIntervalMs: 0, advInterruptVoice: false } });
+  h.start(); h.line(0); h.line(1); h.audioEvent(0); h.audioEvent(1); h.done();
+  h.app.action('advance'); h.app.action('hide');
+  h.endVoice('ended'); await microtasks();
+  assert.equal(h.app.player.currentIndex, 0);
+  h.app.action('unhide'); assert.equal(h.app.player.currentIndex, 0);
+  h.app.action('advance'); assert.equal(h.app.player.currentIndex, 1);
+});
+
+test('hiding while waiting for a line or after cancel still restores with H and right-click', t => {
+  const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0 } });
+  const stage = h.app.stage.stage;
+  h.start('t1'); h.line(0); h.app.action('advance'); h.app.action('hide'); h.done();
+  assert.equal(h.app.player.state, 'waiting_line');
+  stage.dispatchEvent({ type: 'keydown', key: 'h' });
+  assert.equal(h.app.player.hidden, false); assert.equal(h.app.player.state, 'input');
+  h.start('t2'); h.line(0); h.app.action('hide'); h.done('cancelled');
+  assert.equal(h.app.player.state, 'input');
+  stage.dispatchEvent({ type: 'contextmenu' }); assert.equal(h.app.player.hidden, false);
+});

@@ -566,9 +566,10 @@ export function mountAdv(dom, deps) {
     switch (name) {
       case 'advance': stopStageReplay(); player.advance(); break;
       case 'toggle_auto':
-      case 'auto': if (stageReplaying || !['input', 'error', 'suspended'].includes(player.state)) player.setAuto(!player.auto); break;
+      case 'auto': if (!player.hidden && (stageReplaying || !['input', 'error', 'suspended'].includes(player.state))) player.setAuto(!player.auto); break;
       case 'toggle_skip':
       case 'skip':
+        if (player.hidden) break;
         stopStageReplay();
         if (!['input', 'error', 'suspended'].includes(player.state)) {
           temporarySkip = false;
@@ -579,6 +580,7 @@ export function mountAdv(dom, deps) {
         }
         break;
       case 'skip-hold-start':
+        if (player.hidden) break;
         stopStageReplay();
         if (!['input', 'error', 'suspended'].includes(player.state) && !player.skip) {
           temporarySkip = true;
