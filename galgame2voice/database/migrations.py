@@ -124,6 +124,20 @@ def _save_console_token_file(token: str) -> None:
         logger.warning("Could not write console token to file: %s", exc)
 
 
+def _initial_audio_retention_minutes() -> int:
+    """First value of the web retention setting: GALGAME2VOICE_AUDIO_RETENTION_MINUTES, else 30.
+
+    The cleanup worker reads the stored setting, so the variable only takes effect here.
+    Values outside the web page's 1 to 10080 range fall back to 30.
+    """
+    try:
+        from galgame2voice.config import get_settings
+        minutes = int(get_settings().audio_retention_minutes)
+    except Exception:
+        return 30
+    return minutes if 1 <= minutes <= 10080 else 30
+
+
 async def _migration_v1_base_schema(conn: aiosqlite.Connection) -> None:
     """Migration 1: Base table creation, primary indexes, and initial seeds."""
     await conn.execute("""
@@ -325,13 +339,13 @@ async def _migration_v1_base_schema(conn: aiosqlite.Connection) -> None:
                 telegram_proxy_enabled, telegram_enabled, console_token, console_url, max_history_messages
             ) VALUES (
                 1, 'deepseek', NULL, 'http://127.0.0.1:9880',
-                'audio', 30, 600,
+                'audio', ?, 600,
                 1.0, 1.0, 15, 1.0, -1, 1,
                 'cut1', 0.3, '',
                 'galgame2voice_bot', '127.0.0.1', 10809,
                 0, 0, ?, '', 10
             );
-        """, (encrypted_token,))
+        """, (_initial_audio_retention_minutes(), encrypted_token))
 
 
 async def _migration_v2_columns(conn: aiosqlite.Connection) -> None:
