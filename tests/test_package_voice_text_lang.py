@@ -8,8 +8,12 @@ from pathlib import Path
 import pytest
 
 from galgame2voice.config import get_settings
+from galgame2voice.database import crud
+from galgame2voice.database.session import get_db
 from galgame2voice.services.character_manager import CharacterManager
-from tests.test_character_voice_catalog import _app_http, _init_isolated_env, _install_character_package
+from tests.test_character_voice_catalog import (
+    _app_http, _create_dummy_voice_assets, _init_isolated_env, _install_character_package,
+)
 
 
 @pytest.mark.asyncio
@@ -28,4 +32,26 @@ async def test_a_chinese_reference_clip_keeps_japanese_lines(tmp_path: Path, iso
         assert mei["text_lang"] == "ja"
     finally:
         CharacterManager.reset_instance()
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_create_voice_profile_preserves_prompt_lang_without_refer_language(
+    tmp_path: Path, isolate_test_database, monkeypatch
+):
+    await _init_isolated_env(monkeypatch, tmp_path, isolate_test_database)
+    gpt_path, sovits_path, wav_path = _create_dummy_voice_assets(tmp_path, "custom_zh")
+    try:
+        async with _app_http() as http:
+            resp = await http.post("/api/voice/profiles", json={
+                "name": "CustomZh", "gpt_weights_path": gpt_path, "sovits_weights_path": sovits_path,
+                "ref_audio_path": wav_path, "prompt_text": "你好", "prompt_lang": "zh", "text_lang": "ja",
+            })
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["profile"]["prompt_lang"] == "zh" and body["profile"]["text_lang"] == "ja"
+        async with get_db(isolate_test_database) as conn:
+            stored = await crud.get_voice_profile(conn, body["id"])
+        assert stored is not None and stored.prompt_lang == "zh" and stored.text_lang == "ja"
+    finally:
         get_settings.cache_clear()

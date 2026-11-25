@@ -59,8 +59,8 @@ class VoiceProfileCreateRequest(BaseModel):
     ref_audio_path: str | None = Field(default=None, max_length=1000)
     refer_text: str | None = Field(default=None, max_length=1000)
     prompt_text: str | None = Field(default=None, max_length=1000)
-    refer_language: str | None = Field(default="ja", max_length=32)
-    prompt_lang: str | None = Field(default="ja", max_length=32)
+    refer_language: str | None = Field(default=None, max_length=32)
+    prompt_lang: str | None = Field(default=None, max_length=32)
     text_lang: str | None = Field(default="ja", max_length=32)
     system_prompt: str | None = Field(default="", max_length=10000)
     is_default: bool = False
@@ -111,7 +111,7 @@ async def list_voice_profiles() -> dict[str, Any]:
 async def create_voice_profile(req: VoiceProfileCreateRequest) -> dict[str, Any]:
     ref_audio = to_project_relative_path(req.refer_audio_path or req.ref_audio_path or "")
     prompt_txt = req.refer_text or req.prompt_text or ""
-    prompt_l = req.refer_language or req.prompt_lang or "ja"
+    prompt_l = req.prompt_lang or req.refer_language or "ja"
     text_l = req.text_lang or "ja"
 
     profile_dto = VoiceProfileCreate(
