@@ -336,6 +336,8 @@ async def activate_provider(provider_id: str):
                     # Concurrently created by parallel activation request (TOCTOU safe)
                     pass
                 except Exception as exc:
+                    if describe_database_write_error(exc):
+                        raise
                     logger.debug("Non-critical: error while creating preset provider: %s", exc)
         success = await crud.set_active_provider(conn, clean_id)
         if not success:

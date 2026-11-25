@@ -183,6 +183,8 @@ NO_WRITE_PERMISSION_MESSAGE = "没有权限读写数据目录，这次操作没�
 def describe_database_write_error(exc: Exception) -> str | None:
     """Return a Chinese sentence for a full disk, read-only storage, a busy database or a
     permission error, else None."""
+    if not isinstance(exc, (OSError, sqlite3.Error)):
+        return None
     if storage_message := describe_storage_error(exc):
         return storage_message
     if isinstance(exc, PermissionError):
@@ -191,6 +193,8 @@ def describe_database_write_error(exc: Exception) -> str | None:
         text = str(exc).lower()
         if "database is locked" in text or "database is busy" in text:
             return DATABASE_BUSY_MESSAGE
+        if "unable to open database file" in text:
+            return NO_WRITE_PERMISSION_MESSAGE
     return None
 
 

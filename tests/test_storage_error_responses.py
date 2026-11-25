@@ -30,10 +30,12 @@ async def app_client(isolate_test_database):
     ("exc", "expected"),
     [
         (sqlite3.OperationalError("database is locked"), DATABASE_BUSY_MESSAGE),
+        (sqlite3.OperationalError("unable to open database file"), NO_WRITE_PERMISSION_MESSAGE),
         (PermissionError(errno.EACCES, "Permission denied"), NO_WRITE_PERMISSION_MESSAGE),
         (OSError(errno.ENOSPC, "No space left on device"), DISK_FULL_MESSAGE),
         (sqlite3.OperationalError("no such column: foo"), None),
         (ValueError("database is locked"), None),
+        (ValueError("no space left on device"), None),
     ],
 )
 def test_describe_database_write_error(exc, expected):
@@ -50,7 +52,7 @@ async def test_locked_database_on_settings_save_returns_a_chinese_503(app_client
 
 @pytest.mark.asyncio
 async def test_full_disk_on_session_save_returns_a_chinese_507(app_client):
-    with patch.object(crud, "upsert_session", AsyncMock(side_effect=OSError(errno.ENOSPC, "No space left on device"))):
+    with patch.object(crud, "upsert_session", AsyncMock(side_effect=sqlite3.OperationalError("database or disk is full"))):
         resp = await app_client.post("/api/chat/sessions", json={"id": "s_disk", "title": "T"})
     assert resp.status_code == 507
     assert resp.json()["detail"] == DISK_FULL_MESSAGE
@@ -58,7 +60,7 @@ async def test_full_disk_on_session_save_returns_a_chinese_507(app_client):
 
 @pytest.mark.asyncio
 async def test_provider_save_storage_error_is_not_reported_as_invalid_parameters(app_client):
-    with patch.object(crud, "update_provider", AsyncMock(side_effect=PermissionError(errno.EACCES, "Permission denied"))):
+    with patch.object(crud, "update_provider", AsyncMock(side_effect=sqlite3.OperationalError("unable to open database file"))):
         resp = await app_client.post("/api/providers", json={"id": "openai", "chat_model": "gpt-4o"})
     assert resp.status_code == 503
     assert resp.json()["detail"] == NO_WRITE_PERMISSION_MESSAGE
@@ -74,3 +76,35 @@ async def test_other_database_errors_keep_the_generic_500(app_client):
         resp = await app_client.post("/api/chat/sessions", json={"id": "s_other", "title": "T"})
     assert resp.status_code == 500
     assert resp.json()["detail"] == "Internal Server Error"
+
+
+@pytest.mark.asyncio
+async def test_provider_validation_error_with_storage_text_stays_422(app_client):
+    resp = await app_client.post("/api/providers", json={"id": "openai", "reasoning_effort": "read-only file system"})
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_activate_unseeded_preset_reports_storage_error_not_404(app_client):
+    assert (await app_client.delete("/api/providers/openai")).status_code == 200
+    with patch.object(crud, "create_provider", AsyncMock(side_effect=sqlite3.OperationalError("database is locked"))):
+        resp = await app_client.post("/api/providers/openai/activate")
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == DATABASE_BUSY_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_voice_profile_writes_report_locked_database_as_503(app_client):
+    locked = AsyncMock(side_effect=sqlite3.OperationalError("database is locked"))
+    payload = {
+        "name": "音色", "gpt_weights_path": "weights/a.ckpt", "sovits_weights_path": "weights/a.pth",
+        "ref_audio_path": "audio/a.wav", "prompt_text": "こんにちは",
+    }
+    for attr, method, url, body in [
+        ("create_voice_profile", "post", "/api/voice/profiles", payload),
+        ("update_voice_profile", "put", "/api/voice/profiles/1", {"name": "新名称"}),
+        ("delete_voice_profile", "delete", "/api/voice/profiles/1", None),
+    ]:
+        with patch.object(crud, attr, locked):
+            resp = await app_client.request(method, url, json=body)
+        assert resp.status_code == 503 and resp.json()["detail"] == DATABASE_BUSY_MESSAGE
