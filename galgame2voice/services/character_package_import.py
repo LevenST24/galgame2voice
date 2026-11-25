@@ -90,7 +90,7 @@ STALE_IMPORT_TEMP_SECONDS = 24 * 3600
 
 
 def sweep_import_leftovers(data_dir: Path, *, older_than: float | None = STALE_IMPORT_TEMP_SECONDS) -> int:
-    """Delete uploads (up-*.bin) and staging folders (imp-*) a crash left behind.
+    """Delete uploads (up-*.bin), redeem links (dl-*.zip.import), and staging folders (imp-*) a crash left behind.
 
     Packages can be gigabytes, and nothing else ever removes these. With
     older_than=None (server startup, when no import can be running) every
@@ -104,7 +104,11 @@ def sweep_import_leftovers(data_dir: Path, *, older_than: float | None = STALE_I
     cutoff = None if older_than is None else time.time() - older_than
     removed = 0
     for entry in entries:
-        if not (entry.name.startswith("imp-") or (entry.name.startswith("up-") and entry.name.endswith(".bin"))):
+        if not (
+            entry.name.startswith("imp-")
+            or (entry.name.startswith("up-") and entry.name.endswith(".bin"))
+            or (entry.name.startswith("dl-") and entry.name.endswith(".zip.import"))
+        ):
             continue
         try:
             if cutoff is not None and entry.lstat().st_mtime >= cutoff:

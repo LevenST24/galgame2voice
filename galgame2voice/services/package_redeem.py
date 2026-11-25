@@ -24,6 +24,7 @@ from galgame2voice.services.character_package_import import (
     MAX_IMPORT_BYTES,
     SIZE_LIMIT_EXCEEDED_DETAIL,
     import_character_archive_file,
+    sweep_import_leftovers,
 )
 from galgame2voice.utils.http_client import create_async_client
 from galgame2voice.utils.logger import describe_storage_error, sanitize_error_detail
@@ -281,6 +282,7 @@ async def redeem_download(request: Request, *, code: str, package_id: str, overw
         try:
             listed = next((item for item in await _packages(parsed) if item["id"] == package_id), None)
             await asyncio.to_thread(root.mkdir, parents=True, exist_ok=True)
+            await asyncio.to_thread(sweep_import_leftovers, root.parent)
             action, pkg = await asyncio.to_thread(_prepare_local, root, part, package_id, listed)
             if pkg is None:
                 raise HTTPException(400, "该角色包不存在、无权下载或下载次数已用完")
