@@ -158,6 +158,27 @@ def setup_signal_handlers():
             pass
 
 
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def lan_bind_is_allowed(host: str) -> bool:
+    """A non-loopback bind needs console token auth, the same rule the app's lifespan enforces."""
+    if str(host).strip().lower() in _LOOPBACK_HOSTS:
+        return True
+    from galgame2voice.security.auth import is_auth_disabled
+
+    return not is_auth_disabled()
+
+
+def print_lan_bind_needs_token(host: str) -> None:
+    print(
+        f"\n[无法启动] 你让服务监听 {host}，局域网里的其他设备都能访问它，但访问令牌没有开启，任何人都能控制这台电脑上的服务。\n"
+        "      要在局域网使用：在程序文件夹的 .env 里加一行 GALGAME2VOICE_AUTH_DISABLED=0 后重新启动，"
+        "网页会要求输入访问令牌，令牌保存在 data/.console_token。\n"
+        "      只在本机使用：去掉 --host 参数即可。"
+    )
+
+
 def _on_console_control(ctrl_type: int) -> bool:
     """Save the replies still streaming before Windows ends the process."""
     if ctrl_type in _CONSOLE_EXIT_EVENTS:
@@ -1254,6 +1275,10 @@ def main(args: list[str] | None = None):
     if parsed.check_only:
         print("[巡检通过] 所有前置依赖与硬件诊断均已就绪，系统运行状态正常。")
         sys.exit(0)
+
+    if not lan_bind_is_allowed(parsed.host):
+        print_lan_bind_needs_token(parsed.host)
+        sys.exit(2)
 
     setup_windows_job_object()
     setup_signal_handlers()
