@@ -32,7 +32,6 @@ from galgame2voice.services.telemetry_jobs import TelemetryJobs
 from galgame2voice.services.audio_cleaner import _audio_cleanup_loop
 from galgame2voice.utils.http_client import close_shared_async_clients
 from galgame2voice.utils.logger import setup_logger
-from galgame2voice.utils.validation_errors import register_validation_error_handler
 
 __all__ = [
     "app",
@@ -515,6 +514,8 @@ def create_app(*, engine_supervisor: EngineSupervisor | None = None) -> FastAPI:
         query = request.url.query
         target_url = f"/?settings=1&{query}" if query else "/?settings=1"
         return RedirectResponse(url=target_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+
+    from galgame2voice.utils.validation_errors import register_validation_error_handler
 
     register_validation_error_handler(app)
 
