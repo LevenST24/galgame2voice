@@ -55,6 +55,8 @@ export function createLinePlayer({
   const lineAudio = new Map(); // index -> { status, chunks }
   let turnSettled = false;
   let isPlayerEditing = false;
+  // The server said the reply text is final and only voice is still being made.
+  let textDone = false;
   let voicePlaying = false;
   let voiceEnded = false;
   let pendingAdvance = false;
@@ -423,11 +425,32 @@ export function createLinePlayer({
         changeState('input');
         render?.enterInput?.({ canSend: true });
         emit('input', { canSend: true });
+      } else if (textDone) {
+        enterVoiceTail();
       } else {
         changeState('waiting_line');
         render?.thinking?.(true);
       }
     }
+  }
+
+  // Every line is shown and no more text is coming, but the reply is not settled
+  // because its last voice lines are still being made. Let the player write the next
+  // message now; settle() opens sending, and the draft stays as typed.
+  function enterVoiceTail() {
+    isPlayerEditing = true;
+    render?.glyph?.(false);
+    render?.thinking?.(false);
+    changeState('input');
+    render?.enterInput?.({ canSend: false, voicePending: true });
+    emit('input', { canSend: false });
+  }
+
+  function textComplete(turnId) {
+    if (turnId !== currentTurnId || turnSettled || textDone) return;
+    textDone = true;
+    if (state !== 'waiting_line' || hidden || currentIndex === null) return;
+    if (!lines[currentIndex + 1]) enterVoiceTail();
   }
 
   function advance() {
@@ -580,6 +603,8 @@ export function createLinePlayer({
         changeState('input');
         render?.enterInput?.({ canSend: true });
         emit('input', { canSend: true });
+      } else if (textDone && currentIndex !== null) {
+        enterVoiceTail();
       }
     } else if (auto && state === 'waiting_advance') {
       startAutoTimer();
@@ -661,6 +686,8 @@ export function createLinePlayer({
         changeState('input');
         render?.enterInput?.({ canSend: true });
         emit('input', { canSend: true });
+      } else if (textDone && currentIndex !== null) {
+        enterVoiceTail();
       } else {
         changeState('waiting_line');
         render?.thinking?.(true);
@@ -668,7 +695,7 @@ export function createLinePlayer({
     } else {
       changeState(restoreTo || 'idle');
       if (restoreTo === 'input') {
-        render?.enterInput?.({ canSend: turnSettled });
+        render?.enterInput?.({ canSend: turnSettled, voicePending: textDone && !turnSettled });
         emit('input', { canSend: turnSettled });
       }
     }
@@ -705,7 +732,7 @@ export function createLinePlayer({
 
     changeState('input');
     const canSend = !!turnSettled;
-    render?.enterInput?.({ canSend });
+    render?.enterInput?.({ canSend, voicePending: textDone && !canSend });
     emit('input', { canSend });
   }
 
@@ -729,6 +756,7 @@ export function createLinePlayer({
     skip = false;
     hidden = false;
     isPlayerEditing = false;
+    textDone = false;
     turnSettled = false;
     voiceEnded = false;
     pendingAdvance = false;
@@ -760,6 +788,7 @@ export function createLinePlayer({
     lineAudio.clear();
     turnSettled = false;
     isPlayerEditing = false;
+    textDone = false;
     voiceEnded = false;
     pendingAdvance = false;
     suspendedFrom = null;
@@ -970,6 +999,7 @@ export function createLinePlayer({
     pushLine,
     setLineAudio,
     settle,
+    textComplete,
 
     // User input
     advance,

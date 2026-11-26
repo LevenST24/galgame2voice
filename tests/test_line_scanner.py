@@ -582,6 +582,31 @@ def test_flat_root_object_emits_single_line() -> None:
     assert non_str.lines == []
 
 
+def test_one_flat_object_per_line_keeps_every_line() -> None:
+    # A model that drops the lines wrapper and writes one object per line (JSONL) used to keep
+    # only the first line; the rest went to trailing_text, which nothing reads.
+    first = json.dumps({"zh": "你好。", "ja": "こんにちは。", "emotion": "gentle"}, ensure_ascii=False)
+    second = json.dumps({"zh": "再见。", "ja": "またね。", "emotion": "happy"}, ensure_ascii=False)
+    for sep in ("\n", "\r\n", ",\n", ""):
+        raw = first + sep + second
+        for step in (None, 1, 7):
+            emitted, result = _feed_by_step(raw, step)
+            assert result.format == "lines"
+            assert result.truncated is False
+            assert emitted == result.lines
+            assert [(line.ordinal, line.zh) for line in result.lines] == [(0, "你好。"), (1, "再见。")]
+            assert result.trailing_text == ""
+
+    # Prose after a flat line is still trailing text, and a lines-wrapped root still ends the reply.
+    _, prose = _feed_by_step(first + "\n希望你喜欢 {笑}", 1)
+    assert [line.zh for line in prose.lines] == ["你好。"]
+    assert prose.trailing_text == "\n希望你喜欢 {笑}"
+    wrapped = json.dumps({"lines": [json.loads(first)]}, ensure_ascii=False)
+    _, after_wrapped = _feed_by_step(wrapped + "\n" + second, 1)
+    assert [line.zh for line in after_wrapped.lines] == ["你好。"]
+    assert after_wrapped.trailing_text == "\n" + second
+
+
 def test_bracketed_emotion_plain_text_and_legacy_format_unchanged() -> None:
     from galgame2voice.services.streaming_parser import StreamingBilingualParser
 
