@@ -2,7 +2,7 @@
 #advRoot[hidden] { display: none; }
 .toast-root { bottom: calc((100dvh - 1080 * var(--u)) / 2 + 300 * var(--u)); }
 /* An open dialog hides the message band, and a toast up there would cover the dialog's own buttons. */
-body:has(#globalModal:not(.hidden), #sessionModal:not(.hidden), #tokenModal:not([hidden])) .toast-root { bottom: 8px; }
+body:has(#globalModal:not(.hidden), #sessionModal:not(.hidden), #tokenModal:not([hidden]), #ownVoiceClashModal:not([hidden])) .toast-root { bottom: 8px; }
 .adv-app-tools { position: absolute; top: calc(28 * var(--u)); left: calc(32 * var(--u)); z-index: 50; display: flex; gap: calc(12 * var(--u)); }
 .adv-app-tools[hidden] { display: none; }
 .adv-app-tools button, .adv-art-status, .adv-drawer > button {

@@ -17,7 +17,13 @@ from galgame2voice.database.session import (
     get_schema_version,
     set_schema_version,
 )
-from galgame2voice.security.crypto import MasterKeyError, encrypt_secret, upgrade_secret_encryption
+from galgame2voice.security.crypto import (
+    MasterKeyError,
+    decrypt_secret,
+    encrypt_secret,
+    is_encrypted_secret,
+    upgrade_secret_encryption,
+)
 from galgame2voice.adapters.registry import PROVIDER_PRESETS, RETIRED_CHAT_MODELS
 
 logger = logging.getLogger("galgame2voice.database.migrations")
@@ -103,6 +109,15 @@ async def _add_column_if_missing(
     return False
 
 
+def _read_console_token_file() -> str:
+    """The token the user copies from data/.console_token, or "" when there is none."""
+    try:
+        from galgame2voice.config import get_settings
+        return (get_settings().data_dir / ".console_token").read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
 def _save_console_token_file(token: str) -> None:
     """Securely writes console token to data/.console_token (0600 permissions)."""
     try:
@@ -122,6 +137,20 @@ def _save_console_token_file(token: str) -> None:
         )
     except Exception as exc:
         logger.warning("Could not write console token to file: %s", exc)
+
+
+def _initial_audio_retention_minutes() -> int:
+    """First value of the web retention setting: GALGAME2VOICE_AUDIO_RETENTION_MINUTES, else 30.
+
+    The cleanup worker reads the stored setting, so the variable only takes effect here.
+    Values outside the web page's 1 to 10080 range fall back to 30.
+    """
+    try:
+        from galgame2voice.config import get_settings
+        minutes = int(get_settings().audio_retention_minutes)
+    except Exception:
+        return 30
+    return minutes if 1 <= minutes <= 10080 else 30
 
 
 async def _migration_v1_base_schema(conn: aiosqlite.Connection) -> None:
@@ -325,13 +354,13 @@ async def _migration_v1_base_schema(conn: aiosqlite.Connection) -> None:
                 telegram_proxy_enabled, telegram_enabled, console_token, console_url, max_history_messages
             ) VALUES (
                 1, 'deepseek', NULL, 'http://127.0.0.1:9880',
-                'audio', 30, 600,
+                'audio', ?, 600,
                 1.0, 1.0, 15, 1.0, -1, 1,
                 'cut1', 0.3, '',
                 'galgame2voice_bot', '127.0.0.1', 10809,
                 0, 0, ?, '', 10
             );
-        """, (encrypted_token,))
+        """, (_initial_audio_retention_minutes(), encrypted_token))
 
 
 async def _migration_v2_columns(conn: aiosqlite.Connection) -> None:
@@ -556,6 +585,7 @@ async def run_schema_migrations(conn: aiosqlite.Connection) -> int:
     await _add_column_if_missing(conn, "messages", "lines_json", "TEXT DEFAULT NULL")
     await _add_column_if_missing(conn, "messages", "reply_to_message_id", "INTEGER DEFAULT NULL")
     await _add_column_if_missing(conn, "providers", "reasoning_effort", "TEXT DEFAULT NULL")
+    await _add_column_if_missing(conn, "voice_profiles", "package_id", "TEXT DEFAULT NULL")
     try:
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session_reply_to ON messages(session_id, reply_to_message_id);")
     except Exception as exc:
@@ -624,13 +654,28 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
     try:
         cursor = await conn.execute("SELECT console_token FROM settings WHERE id = 1;")
         row = await cursor.fetchone()
-        if row is not None and not str(row["console_token"] or "").strip():
-            new_token = uuid.uuid4().hex
-            _save_console_token_file(new_token)
-            encrypted_token = encrypt_secret(new_token)
+        stored_token = str(row["console_token"] or "").strip() if row is not None else ""
+        token_to_store = ""
+        if row is not None and not stored_token:
+            token_to_store = uuid.uuid4().hex
+            _save_console_token_file(token_to_store)
+        elif is_encrypted_secret(stored_token) and not decrypt_secret(stored_token):
+            # Windows saves the token for the account that wrote it. After the data folder
+            # moves to another computer or Windows user it reads back empty, and the token
+            # in data/.console_token never matches again. Store the file's token for this
+            # account, or a new one when the file is gone.
+            token_to_store = _read_console_token_file()
+            if not token_to_store:
+                token_to_store = uuid.uuid4().hex
+                _save_console_token_file(token_to_store)
+            logger.warning(
+                "保存的访问令牌是在另一台电脑或另一个 Windows 用户下加密的，这里读不出来，"
+                "已改用 data/.console_token 里的令牌。"
+            )
+        if token_to_store:
             await conn.execute(
                 "UPDATE settings SET console_token = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1;",
-                (encrypted_token,),
+                (encrypt_secret(token_to_store),),
             )
     except MasterKeyError:
         raise

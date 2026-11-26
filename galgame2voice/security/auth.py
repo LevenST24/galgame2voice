@@ -26,6 +26,14 @@ logger = logging.getLogger("galgame2voice.security.auth")
 ENV_TOKEN_VAR = "GALGAME2VOICE_CONSOLE_TOKEN"
 AUTH_DISABLED_VAR = "GALGAME2VOICE_AUTH_DISABLED"
 
+# The only hosts the app treats as local-only: auth may be off there and the Host
+# header is checked. Startup, the Host check and doctor must all use this one list.
+LOCAL_ONLY_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def is_local_only_host(host: object) -> bool:
+    return str(host or "").strip().lower() in LOCAL_ONLY_HOSTS
+
 
 def get_env_console_token() -> Optional[str]:
     env_value = os.getenv(ENV_TOKEN_VAR, "").strip()
@@ -58,7 +66,8 @@ async def verify_console_token(token: str) -> bool:
     env_token = get_env_console_token()
     if env_token:
         import hmac
-        return hmac.compare_digest(token, env_token)
+        # Compare bytes: compare_digest raises TypeError on non-ASCII str, which became a 500.
+        return hmac.compare_digest(token.encode("utf-8"), env_token.encode("utf-8"))
     async with get_db() as conn:
         return await crud.verify_console_token(conn, token)
 

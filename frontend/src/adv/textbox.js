@@ -4,7 +4,7 @@
  */
 
 import { splitGraphemes, countGraphemes } from './graphemes.js';
-import { paginate as purePaginate, pairSubtitle } from './paginate.js';
+import { paginate as purePaginate, pairSubtitle, pairToFit } from './paginate.js';
 
 /**
  * Wraps text with display-only quotation marks if it is character speech
@@ -146,7 +146,11 @@ export function createTextbox(container, opts = {}) {
   textareaEl.className = 'adv-player-textarea';
   textareaEl.rows = 2;
   textareaEl.maxLength = 4000;
-  textareaEl.placeholder = '请输入你的回答（Enter 发送，Shift+Enter 换行）';
+  const INPUT_PLACEHOLDER = '请输入你的回答（Enter 发送，Shift+Enter 换行）';
+  // The reply text is all in but its last voice lines are still being made: the player
+  // may write now, and sending opens once the reply settles.
+  const VOICE_PENDING_PLACEHOLDER = '语音还在准备，可以先写下一句';
+  textareaEl.placeholder = INPUT_PLACEHOLDER;
 
   function isOverlayBlocked() {
     /** @type {any} */
@@ -277,6 +281,8 @@ export function createTextbox(container, opts = {}) {
   let typewriterTimerId = null;
   let isHidden = false;
   let canSendInput = false;
+  let voicePendingInput = false;
+  let showingVoiceNote = false;
 
   let boundPlayer = opts.player || null;
   function getBoundPlayer() {
@@ -596,9 +602,10 @@ export function createTextbox(container, opts = {}) {
     waitHintEl.classList.toggle('is-hidden', !on);
   }
 
-  function enterInput({ canSend = true } = {}) {
+  function enterInput({ canSend = true, voicePending = false } = {}) {
     pageRevealed = false;
     clearTypewriter();
+    voicePendingInput = Boolean(voicePending);
     setCanSend(canSend);
     clearError();
 
@@ -621,6 +628,7 @@ export function createTextbox(container, opts = {}) {
   function prepareInput({ canSend = false } = {}) {
     clearError();
     glyph(false);
+    voicePendingInput = false;
     setCanSend(canSend);
     speechViewEl.classList.add('is-hidden');
     errorWrapEl.classList.add('is-hidden');
@@ -690,12 +698,12 @@ export function createTextbox(container, opts = {}) {
 
     let finalPrimaryPages = pPages;
     if (pPages.length < targetCount) {
-      finalPrimaryPages = pairSubtitle(primaryText, targetCount);
+      finalPrimaryPages = pairToFit(primaryText, targetCount, fitsPrimary);
     }
 
     let finalSubPages = sPages;
     if (sPages.length < targetCount) {
-      finalSubPages = pairSubtitle(subText, targetCount);
+      finalSubPages = pairToFit(subText, targetCount, fitsSubtitle);
     }
 
     currentSubPages = finalSubPages;
@@ -762,9 +770,17 @@ export function createTextbox(container, opts = {}) {
     speechViewEl.classList.remove('is-hidden');
   }
 
+  // Kept until sending opens, so a later setCanSend(false) from the app keeps the note.
   function setCanSend(value) {
     canSendInput = Boolean(value);
+    if (canSendInput) voicePendingInput = false;
     sendBtn.disabled = !canSendInput;
+    const waitingForVoice = !canSendInput && voicePendingInput;
+    if (waitingForVoice === showingVoiceNote) return;
+    // Only swap our own note in and out: the mic writes its listening text here too.
+    showingVoiceNote = waitingForVoice;
+    textareaEl.placeholder = waitingForVoice ? VOICE_PENDING_PLACEHOLDER : INPUT_PLACEHOLDER;
+    sendBtn.title = waitingForVoice ? '语音准备好后可发送' : '发送 (Enter)';
   }
 
   function setHidden(bool) {

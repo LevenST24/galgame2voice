@@ -6,6 +6,7 @@ and LRU cached TTS audio fragments while strictly protecting reference audio fil
 
 import asyncio
 from datetime import datetime, timezone
+from functools import lru_cache
 import logging
 import sys
 import time
@@ -16,13 +17,14 @@ import aiosqlite
 
 from galgame2voice.database.session import get_db, immediate_transaction
 import galgame2voice.database.crud as crud
-from galgame2voice.services.audio_artifacts import is_repair_audio_name
+from galgame2voice.services.audio_artifacts import is_generated_audio_name, is_repair_audio_name
 
 logger = logging.getLogger("galgame2voice.services.audio_cleaner")
 
 # TTS cache retention in days: balances compute savings against disk storage
 CACHE_RETENTION_DAYS = 7
 PURGE_BATCH_SIZE: int = 100
+MIN_CLEANUP_INTERVAL_SECONDS = 60
 _CACHE_AUDIO_EXTENSIONS = frozenset({".wav", ".ogg", ".mp3", ".opus"})
 
 
@@ -93,8 +95,9 @@ def _scan_and_clean(
             # Strictly protect reference audio files (*.ogg) and registered voice profile references
             if f.suffix.lower() == ".ogg" or f.name.lower() in protected_audio_names:
                 continue
-            # Target ephemeral synthesized audio files (e.g. chunk_*.wav, full_*.wav)
-            if f.is_file() and f.suffix.lower() in (".wav", ".mp3", ".opus"):
+            # Target only audio the app synthesized (chunk_*, full_*, repair_*, voice_*).
+            # Any other clip here was put there by the user as a reference and is theirs.
+            if f.is_file() and is_generated_audio_name(f.name):
                 try:
                     retention_cutoff = cache_cutoff if is_repair_audio_name(f.name) else cutoff
                     if f.stat().st_mtime < retention_cutoff:
@@ -258,18 +261,47 @@ async def _run_audio_cleanup_cycle(audio_dir: Path) -> None:
             logger.debug("Failed releasing system memory during audio cleanup: %s", mem_err)
 
 
+@lru_cache(maxsize=8)
+def _cleanup_interval_seconds(configured: int) -> int:
+    """Seconds between cleanup cycles, never under a minute.
+
+    0 or a negative value made asyncio.sleep return at once, so the loop rescanned
+    the audio folder and the database without pause and kept a CPU core busy.
+    Cached so the warning appears once per configured value, not every cycle.
+    """
+    if configured < MIN_CLEANUP_INTERVAL_SECONDS:
+        logger.warning(
+            "GALGAME2VOICE_AUDIO_CLEANUP_INTERVAL_SECONDS=%s 过小，已按 %d 秒执行音频清理；"
+            "清理无法关闭，保留时长请在网页设置中调整。",
+            configured,
+            MIN_CLEANUP_INTERVAL_SECONDS,
+        )
+        return MIN_CLEANUP_INTERVAL_SECONDS
+    return configured
+
+
 async def _audio_cleanup_loop(audio_dir: Path, interval_seconds: int) -> None:
     """Periodically removes ephemeral audio files exceeding retention duration while protecting persistent cache.
 
     The retention duration is re-read from DB settings each cycle so console
     edits to audio_retention_minutes take effect without a restart."""
+    from galgame2voice.database.backups import ensure_daily_database_backup
+    from galgame2voice.database.session import get_database_path
+
     logger.info("Started background audio cleanup worker (interval=%d sec)", interval_seconds)
     while True:
         try:
-            await asyncio.sleep(interval_seconds)
+            await asyncio.sleep(_cleanup_interval_seconds(interval_seconds))
             await _run_audio_cleanup_cycle(audio_dir)
         except asyncio.CancelledError:
             break
         except Exception as exc:
             logger.warning("Error in audio cleanup loop: %s", exc)
+        try:
+            # The README promises a daily snapshot; startup alone misses days the app stays open.
+            await asyncio.to_thread(ensure_daily_database_backup, Path(get_database_path()))
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.warning("Daily database snapshot check failed: %s", exc)
 

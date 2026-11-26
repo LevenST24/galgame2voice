@@ -72,6 +72,12 @@ class SovitsEndpoint:
         return self.is_loopback and self.scheme == "http" and self.path in ("", "/")
 
 
+# GPT-SoVITS started with "-a 0.0.0.0" prints "http://0.0.0.0:9880". That is a listen-on-all
+# address, not a place to connect: Windows refuses it, and it would be taken for a remote engine
+# the app neither starts nor keeps. It always means this computer, so connect over loopback.
+_BIND_ALL_TO_LOOPBACK = {"0.0.0.0": "127.0.0.1", "::": "::1"}
+
+
 def parse_sovits_endpoint(value: str, *, source: str) -> SovitsEndpoint:
     """Parses and validates a GPT-SoVITS base URL.
 
@@ -93,7 +99,7 @@ def parse_sovits_endpoint(value: str, *, source: str) -> SovitsEndpoint:
         raise ValueError(
             f"invalid GPT-SoVITS URL (source: {source}): embedded credentials are not allowed"
         )
-    host = parsed.hostname
+    host = _BIND_ALL_TO_LOOPBACK.get(parsed.hostname, parsed.hostname)
     port = parsed.port
     if port is None:
         # Preserves the historical launcher behavior of `parsed.port or 9880`.
