@@ -20,7 +20,7 @@ from starlette.requests import ClientDisconnect
 
 from galgame2voice.services.character_identity import identity_key
 from galgame2voice.services.chat_service import ChatService
-from galgame2voice.services.chat_pipelines.line_scanner import FX, MOTIONS
+from galgame2voice.services.chat_pipelines.line_scanner import FX, MOTIONS, MOVES
 from galgame2voice.services.chat_pipelines.tts_pipeline import TTS_JOB_TIMEOUT_SECONDS
 from galgame2voice.services.chat_backup import export_chat_backup, import_timestamp, is_valid_outfit_id, validate_adv_settings
 from galgame2voice.services.gpt_sovits_client import validate_user_tts_options
@@ -28,6 +28,7 @@ from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, get_database_path, immediate_transaction
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.sse import format_sse_frame
+from galgame2voice.utils.active_turns import begin_turn, end_turn
 from galgame2voice.utils.async_tasks import await_protected, cancel_and_drain
 
 logger = logging.getLogger("galgame2voice.routers.chat")
@@ -107,6 +108,7 @@ class ChatStreamingResponse(StreamingResponse):
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         # One response-owned listener consumes ASGI receive in all protocol
         # versions; it also covers disconnects while the next event is pending.
+        turn = begin_turn(self.cancel_event)
         sender = asyncio.create_task(self.stream_response(send))
         watcher = asyncio.create_task(self.listen_for_disconnect(receive))
         try:
@@ -123,9 +125,12 @@ class ChatStreamingResponse(StreamingResponse):
             try:
                 await cancel_and_drain((sender, watcher))
             finally:
-                close = getattr(self.body_iterator, "aclose", None)
-                if close is not None:
-                    await await_protected(close())
+                try:
+                    close = getattr(self.body_iterator, "aclose", None)
+                    if close is not None:
+                        await await_protected(close())
+                finally:
+                    end_turn(turn)
 
     async def stream_response(self, send: Any) -> None:
         try:
@@ -263,8 +268,9 @@ class SessionUpsertRequest(BaseModel):
     settings: dict[str, Any] | None = Field(default=None, description="Session-specific generation & voice parameters")
 
 
-ALLOWED_ACT_KEYS = frozenset({"face", "pose", "motion", "blush", "fx"})
+ALLOWED_ACT_KEYS = frozenset({"face", "pose", "motion", "move", "blush", "fx"})
 _ALLOWED_ACT_MOTIONS = frozenset(MOTIONS)
+_ALLOWED_ACT_MOVES = frozenset(MOVES)
 _ALLOWED_ACT_FX = frozenset(FX)
 
 
@@ -273,6 +279,8 @@ def _valid_imported_act_item(key: Any, val: Any) -> bool:
         return isinstance(val, str) and bool(val)
     if key == "motion":
         return isinstance(val, str) and val in _ALLOWED_ACT_MOTIONS
+    if key == "move":
+        return isinstance(val, str) and val in _ALLOWED_ACT_MOVES
     if key == "fx":
         return isinstance(val, str) and val in _ALLOWED_ACT_FX
     if key == "blush":

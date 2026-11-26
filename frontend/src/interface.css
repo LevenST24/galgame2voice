@@ -20,7 +20,7 @@
 
 /* ---------- Dialogs: settings center, session editor, token prompt ---------- */
 
-:is(#globalModal, #sessionModal, #tokenModal, .toast-root, .adv-drawer) {
+:is(#globalModal, #sessionModal, #tokenModal, #ownVoiceClashModal, .toast-root, .adv-drawer) {
   --bg: #0b0d16;
   --panel: #10131f;
   --panel-soft: rgba(255, 255, 255, .05);
@@ -43,9 +43,9 @@
   color-scheme: dark;
 }
 :is(#globalModal, #sessionModal) { background: rgba(5, 6, 12, .62); }
-#tokenModal { background: rgba(5, 6, 12, .72); }
+:is(#tokenModal, #ownVoiceClashModal) { background: rgba(5, 6, 12, .72); }
 
-:is(#globalModal, #sessionModal, #tokenModal) .modal {
+:is(#globalModal, #sessionModal, #tokenModal, #ownVoiceClashModal) .modal {
   background: linear-gradient(180deg, #131626 0%, #0d0f1a 100%);
   color: #fff;
   border: 1px solid rgba(255, 255, 255, .12);
@@ -57,7 +57,7 @@
   height: min(780px, 90dvh);
   grid-template-columns: 216px minmax(0, 1fr);
 }
-:is(#globalModal, #sessionModal, #tokenModal) .modal-head {
+:is(#globalModal, #sessionModal, #tokenModal, #ownVoiceClashModal) .modal-head {
   min-height: 88px;
   padding: 22px 28px;
   background: transparent;
@@ -68,14 +68,14 @@
 #globalModal .settings-header-actions { gap: 10px; }
 #globalModal .settings-header-actions .btn.ghost { border-color: transparent; color: var(--night-text-2); padding-inline: 12px; }
 #globalModal .settings-header-actions .btn.ghost::before { content: "← "; }
-:is(#globalModal, #sessionModal, #tokenModal) .icon-btn {
+:is(#globalModal, #sessionModal, #tokenModal, #ownVoiceClashModal) .icon-btn {
   width: 38px; height: 38px;
   border: 1px solid var(--night-line-2);
   border-radius: 50%;
   background: transparent;
   color: var(--night-text-2);
 }
-:is(#globalModal, #sessionModal, #tokenModal) .icon-btn:hover { background: rgba(255, 255, 255, .08); color: #fff; }
+:is(#globalModal, #sessionModal, #tokenModal, #ownVoiceClashModal) .icon-btn:hover { background: rgba(255, 255, 255, .08); color: #fff; }
 
 /* Category rail: the current page carries the same coral rule as the home quote. */
 #globalModal .modal-tabs {
@@ -117,7 +117,7 @@
   background: var(--night-line);
 }
 
-:is(#globalModal, #sessionModal, #tokenModal) .modal-body {
+:is(#globalModal, #sessionModal, #tokenModal, #ownVoiceClashModal) .modal-body {
   padding: 30px 36px 40px;
   background: transparent;
   color: var(--night-text-2);
@@ -134,7 +134,7 @@
 }
 #globalModal .settings-intro p { margin-top: 8px; font-size: 14px; line-height: 1.75; color: var(--night-text-3); }
 
-:is(#globalModal, #sessionModal, #tokenModal) .modal-foot {
+:is(#globalModal, #sessionModal, #tokenModal, #ownVoiceClashModal) .modal-foot {
   padding: 16px 28px;
   gap: 12px;
   background: rgba(0, 0, 0, .2);
@@ -186,7 +186,7 @@
 }
 
 /* Buttons: white pill leads, outlined pills follow, danger stays quiet until hovered. */
-:is(#globalModal, #sessionModal, #tokenModal) .btn {
+:is(#globalModal, #sessionModal, #tokenModal, #ownVoiceClashModal) .btn {
   min-height: 40px;
   padding: 9px 22px;
   border-radius: 999px;
@@ -194,21 +194,21 @@
   font-weight: 600;
   transition: background-color .15s ease, border-color .15s ease, color .15s ease;
 }
-:is(#globalModal, #sessionModal, #tokenModal) .btn.primary {
+:is(#globalModal, #sessionModal, #tokenModal, #ownVoiceClashModal) .btn.primary {
   background: #fff;
   border: 1px solid #fff;
   color: #12141f;
   box-shadow: 0 8px 24px rgba(0, 0, 0, .35);
 }
-:is(#globalModal, #sessionModal, #tokenModal) .btn.primary:hover:not(:disabled) { background: #fff4f0; border-color: #fff4f0; }
-:is(#globalModal, #sessionModal, #tokenModal) :is(.btn.ghost, .btn.secondary, .btn-input-action, .btn-card-action, .btn-diag-refresh) {
+:is(#globalModal, #sessionModal, #tokenModal, #ownVoiceClashModal) .btn.primary:hover:not(:disabled) { background: #fff4f0; border-color: #fff4f0; }
+:is(#globalModal, #sessionModal, #tokenModal, #ownVoiceClashModal) :is(.btn.ghost, .btn.secondary, .btn-input-action, .btn-card-action, .btn-diag-refresh) {
   background: transparent;
   border: 1px solid rgba(255, 255, 255, .22);
   border-radius: 999px;
   color: rgba(255, 255, 255, .88);
   box-shadow: none;
 }
-:is(#globalModal, #sessionModal, #tokenModal) :is(.btn.ghost, .btn.secondary, .btn-input-action, .btn-card-action, .btn-diag-refresh):hover:not(:disabled) {
+:is(#globalModal, #sessionModal, #tokenModal, #ownVoiceClashModal) :is(.btn.ghost, .btn.secondary, .btn-input-action, .btn-card-action, .btn-diag-refresh):hover:not(:disabled) {
   background: rgba(255, 255, 255, .08);
   border-color: rgba(255, 255, 255, .38);
   color: #fff;
@@ -224,7 +224,7 @@
 #globalModal #gResetBtn { border-color: transparent; padding-inline: 6px; }
 :is(#globalModal, #sessionModal) .btn-text-link { color: var(--night-accent); background: none; border: 0; }
 :is(#globalModal, #sessionModal, #tokenModal) :is(button, .btn):disabled { opacity: .45; cursor: not-allowed; }
-:is(#globalModal, #sessionModal, #tokenModal) :is(button, select, input, textarea, summary):focus-visible { outline: 2px solid var(--night-accent); outline-offset: 2px; }
+:is(#globalModal, #sessionModal, #tokenModal, #ownVoiceClashModal) :is(button, select, input, textarea, summary):focus-visible { outline: 2px solid var(--night-accent); outline-offset: 2px; }
 
 /* Status: the same capsule and dot as the home's top-right pills. */
 #globalModal .badge-status-pill {

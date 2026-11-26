@@ -234,6 +234,18 @@ export function normalizeLines(lines) {
   return result;
 }
 
+const LONE_SURROGATE_RE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
+
+/**
+ * Drops half emoji that older versions cut into session titles. The local
+ * service rejects such text, so the session could not be saved or imported.
+ * @param {string} text
+ * @returns {string}
+ */
+export function wellFormedText(text) {
+  return text.replace(LONE_SURROGATE_RE, '');
+}
+
 /**
  * @param {any} data
  * @param {SessionSettings} sessionDefaults
@@ -278,7 +290,7 @@ export function normalizeSnapshot(data, sessionDefaults, globalDefaults) {
     });
     /** @type {ChatSession} */
     const normalizedSession = {
-      id: session.id, title: session.title, messages,
+      id: session.id, title: wellFormedText(session.title), messages,
       createdAt: timestamp(session.createdAt), updatedAt: timestamp(session.updatedAt),
       settings: pickSettings(session.settings, sessionDefaults),
     };

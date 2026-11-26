@@ -152,8 +152,7 @@ async def export_chat_backup() -> dict:
                 async for row in cursor:
                     count += 1
                     content, japanese = row["content_chinese"] or "", row["content_japanese"] or ""
-                    size += len(content) + len(japanese) + len(row["lines_json"] or "")
-                    if count > MAX_MESSAGES or size > MAX_TEXT:
+                    if count > MAX_MESSAGES:
                         raise _too_large()
                     messages = sessions[row["session_id"]]["messages"]
                     if len(messages) >= 10000:
@@ -173,6 +172,13 @@ async def export_chat_backup() -> dict:
                         ]
                     else:
                         lines = None
+                    # Measure what the file carries, the same way import does: the stored audio
+                    # chunks are dropped above, so they must not count toward the limit.
+                    size += len(content) + len(japanese)
+                    if lines is not None:
+                        size += len(json.dumps(lines, ensure_ascii=False))
+                    if size > MAX_TEXT:
+                        raise _too_large()
                     messages.append({
                         "id": f"m_{row['id']}", "role": row["role"], "content": content,
                         "japanese": japanese, "ts": _timestamp(row["created_at"]),
