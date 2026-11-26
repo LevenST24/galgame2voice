@@ -247,6 +247,45 @@ async def test_native_directory_picker_destroys_window_on_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_browse_file_rejects_remote_client_without_opening_tkinter(tmp_path, monkeypatch):
+    import sys
+    import types
+    monkeypatch.setattr(get_settings(), "project_root", tmp_path)
+    fake_dialog = types.ModuleType("tkinter.filedialog")
+    fake_dialog.askdirectory = lambda **_kw: pytest.fail("tkinter filedialog called for remote client")
+    fake_tk, tk_ctor = types.ModuleType("tkinter"), MagicMock()
+    fake_tk.Tk, fake_tk.filedialog = tk_ctor, fake_dialog
+    monkeypatch.setitem(sys.modules, "tkinter", fake_tk)
+    monkeypatch.setitem(sys.modules, "tkinter.filedialog", fake_dialog)
+    transport = ASGITransport(app=create_app(), client=("192.168.1.20", 54321))
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+        resp = await client.post("/api/voice/browse-file", json={"file_type": "directory"})
+    assert resp.status_code == 200
+    assert resp.json() == {"selected_path": "", "picker_unavailable": True}
+    tk_ctor.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_browse_file_allows_loopback_clients(tmp_path, monkeypatch):
+    import sys
+    import types
+    monkeypatch.setattr(get_settings(), "project_root", tmp_path)
+    fake_dialog = types.ModuleType("tkinter.filedialog")
+    fake_dialog.askdirectory = lambda **_kw: "D:/GPT-SoVITS"
+    fake_tk = types.ModuleType("tkinter")
+    fake_tk.Tk, fake_tk.filedialog = lambda: MagicMock(), fake_dialog
+    monkeypatch.setitem(sys.modules, "tkinter", fake_tk)
+    monkeypatch.setitem(sys.modules, "tkinter.filedialog", fake_dialog)
+    app = create_app()
+    for client_ip in ("127.0.0.1", "::ffff:127.0.0.1"):
+        transport = ASGITransport(app=app, client=(client_ip, 54321))
+        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+            resp = await client.post("/api/voice/browse-file", json={"file_type": "directory"})
+        assert resp.status_code == 200
+        assert resp.json() == {"selected_path": "D:/GPT-SoVITS"}
+
+
+@pytest.mark.asyncio
 async def test_saving_directory_discards_inflight_scan_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(get_settings(), "project_root", tmp_path)
     monkeypatch.setattr(voice, "_scan_cache", {})
