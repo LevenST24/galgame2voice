@@ -36,9 +36,10 @@ function createInitialStatus() {
  * @param {any} [options.matchMedia]
  * @param {any} [options.clock]
  * @param {() => Date} [options.now]
+ * @param {boolean} [options.deferMediaRelease]
  */
 export function createTitleScreen(root, { actions = {}, documentObj = globalThis.document,
-  matchMedia = globalThis.matchMedia, clock = globalThis, now = () => new Date() } = {}) {
+  matchMedia = globalThis.matchMedia, clock = globalThis, now = () => new Date(), deferMediaRelease = false } = {}) {
   const doc = documentObj || root.ownerDocument;
   const stage = root.closest?.('.adv-stage');
   const screen = el('section', 'adv-title-screen');
@@ -344,8 +345,21 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
   }
   // The first whole character: slice(0, 1) cut an emoji title such as 🌸花火大会 in half.
   const avatarInitial = session => splitGraphemes(session.characterName || session.title)[0] || '';
+  function clearImages(container) {
+    for (const image of container.querySelectorAll('img')) {
+      image.onload = null; image.onerror = null;
+      if (image.removeAttribute) image.removeAttribute('src');
+      else image.src = '';
+    }
+    container.replaceChildren();
+  }
+  function releaseMedia() {
+    clearImages(recents); delete recents.dataset.key;
+    clearImages(grid); delete grid.dataset.key;
+    failedAudio.clear();
+  }
   function renderRecents() {
-    recents.replaceChildren();
+    clearImages(recents);
     const others = [...new Set([...recentOrder, ...sessions.map(s => s.id)])]
       .filter(id => id !== mainId).map(id => sessions.find(s => s.id === id)).filter(Boolean);
     recents.hidden = !others.length || mode === 'all';
@@ -419,6 +433,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
   }
   function returnHome() {
     closePopup(); closeDropdown(); mode = 'home'; load.hidden = true; pane.hidden = false;
+    clearImages(grid); delete grid.dataset.key;
     renderPane(true); renderRecents(); focusPrimary();
   }
   function gridSignature() {
@@ -430,7 +445,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     // A poll that changes the page rebuilds it; the focused session keeps focus.
     const focusedId = doc.activeElement?.closest('.adv-title-slot')?.getAttribute('data-session');
     grid.dataset.key = gridSignature();
-    grid.replaceChildren();
+    clearImages(grid);
     for (const session of sessions.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)) {
       const slot = btn('adv-title-slot', '', () => enter(session.id)); slot.setAttribute('data-session', session.id);
       if (session.background) { const image = el('img', 'adv-title-thumb-image'); image.src = session.background; image.alt = ''; slot.appendChild(image); }
@@ -535,6 +550,8 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     clock.clearTimeout(timer); timer = null; unsubscribe?.(); unsubscribe = null;
     pendingFocus = null;
     screen.hidden = true; setStageHome(false);
+    if (!deferMediaRelease) releaseMedia();
+    else if (mode !== 'all') { clearImages(grid); delete grid.dataset.key; }
   }
   function keydown(event) {
     if (!opened || event.isComposing || event.keyCode === 229) return;
@@ -552,7 +569,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
   doc.addEventListener?.('visibilitychange', onVisibility);
   disposers.push(() => screen.removeEventListener('keydown', keydown), () => doc.removeEventListener('click', outside),
     () => doc.removeEventListener?.('visibilitychange', onVisibility));
-  return { element: screen, menuScreen: screen, loadScreen: load, open, close, refresh,
-    get isOpen() { return opened; }, destroy() { close(); destroyed = true; for (const off of disposers) off(); screen.remove(); } };
+  return { element: screen, menuScreen: screen, loadScreen: load, open, close, refresh, releaseMedia,
+    get isOpen() { return opened; }, destroy() { close(); releaseMedia(); destroyed = true; for (const off of disposers) off(); screen.remove(); } };
 }
 
