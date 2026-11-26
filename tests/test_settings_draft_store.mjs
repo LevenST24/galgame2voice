@@ -101,9 +101,74 @@ test('a refused audio retention value saves nothing, not even a dirty engine dir
     isConfigDirty: () => false,
     refreshTelemetry: () => {},
   });
-  await store.commitAll();
+  // The autosave loop stops on 'failed', so a refused value is not retried behind the user's back.
+  assert.equal(await store.commitAll(), 'failed');
+  assert.equal(await store.commitAll({ autosave: true }), 'failed');
   assert.deepEqual(order, []);
-  assert.equal(toasts.length, 1);
-  assert.equal(toasts[0].type, 'error');
+  assert.equal(toasts.length, 2);
+  assert.ok(toasts.every((toast) => toast.type === 'error'));
   assert.match(toasts[0].msg, /音频缓存保留时间/);
+});
+
+for (const [source, where] of [['dotenv', /\.env/], ['env', /环境变量/]]) {
+  test(`saving a 语音服务地址 that ${source} overrides says it did not take effect`, async () => {
+    const { createSettingsDraftStore } = await import('../frontend/src/controllers/settings_draft_store.js');
+    const toasts = [];
+    const store = createSettingsDraftStore({
+      isConfigSaving: () => false,
+      getProviderController: () => null,
+      isConfigLoaded: () => true,
+      showToast: (message, type) => toasts.push({ message, type }),
+      reloadConfig: () => {},
+      getEngineDirectory: () => null,
+      getCoordinatorRevision: () => 1,
+      setConfigSaving: () => {},
+      getConfigRevision: () => 1,
+      readConfigPayload: () => ({ gpt_sovits_url: 'http://127.0.0.1:9880' }),
+      // What POST /api/config answers when .env or an environment variable keeps another address.
+      runSettingsMutation: (operation) => operation(async () => ({
+        status: 'success', settings: { gpt_sovits_url: 'http://127.0.0.1:9880' },
+        effective_sovits_url: 'http://192.168.1.50:9880', effective_sovits_source: source,
+      })),
+      clearConfigDirtyIfUnchanged: () => {},
+      isConfigDirty: () => false,
+      refreshTelemetry: () => {},
+    });
+    await store.commitAll();
+    assert.equal(toasts.length, 1);
+    assert.notEqual(toasts[0].type, 'success');
+    assert.match(toasts[0].message, /未生效/);
+    assert.match(toasts[0].message, /192\.168\.1\.50:9880/);
+    assert.match(toasts[0].message, where);
+    assert.match(toasts[0].message, /\bGPT_SOVITS_BASE_URL\b/);
+  });
+}
+
+test('saving a 语音服务地址 that takes effect is a plain success', async () => {
+  const { sovitsUrlOverrideNotice } = await import('../frontend/src/controllers/settings_draft_store.js');
+  assert.equal(sovitsUrlOverrideNotice(
+    { gpt_sovits_url: 'http://127.0.0.1:9880/' },
+    { effective_sovits_url: 'http://127.0.0.1:9880', effective_sovits_source: 'db' },
+  ), '');
+  assert.equal(sovitsUrlOverrideNotice({ audio_retention_minutes: 30 }, { effective_sovits_url: 'http://x:1' }), '');
+});
+
+test('saving the same 语音服务地址 with omitted default port or different case is not reported as overridden', async () => {
+  const { sovitsUrlOverrideNotice } = await import('../frontend/src/controllers/settings_draft_store.js');
+  assert.equal(sovitsUrlOverrideNotice(
+    { gpt_sovits_url: 'https://sovits.example.com' },
+    { effective_sovits_url: 'https://sovits.example.com:443', effective_sovits_source: 'env' },
+  ), '');
+  assert.equal(sovitsUrlOverrideNotice(
+    { gpt_sovits_url: 'http://192.168.1.50' },
+    { effective_sovits_url: 'http://192.168.1.50:9880', effective_sovits_source: 'env' },
+  ), '');
+  assert.equal(sovitsUrlOverrideNotice(
+    { gpt_sovits_url: 'HTTP://LOCALHOST:9880/' },
+    { effective_sovits_url: 'http://localhost:9880', effective_sovits_source: 'env' },
+  ), '');
+  assert.match(sovitsUrlOverrideNotice(
+    { gpt_sovits_url: 'http://192.168.1.50:80' },
+    { effective_sovits_url: 'http://192.168.1.50:9880', effective_sovits_source: 'env' },
+  ), /未生效/);
 });

@@ -171,7 +171,7 @@ class DynamicBatchScheduler:
                 # If user passed a positive integer that isn't sentinel 0
                 if ubs > 0:
                     return clamp_dynamic_batch_size(ubs)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 pass
 
         # 2. Streaming mode priority: lowest TTFA is paramount

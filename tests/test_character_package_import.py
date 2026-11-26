@@ -30,6 +30,7 @@ def _make_package_bytes(
     valid: bool = True,
     include_weights: bool = True,
     extra_entries: dict[str, bytes] | None = None,
+    ref_text: str | None = None,
 ) -> bytes:
     wav_buf = io.BytesIO()
     with wave.open(wav_buf, "wb") as audio:
@@ -43,7 +44,7 @@ def _make_package_bytes(
             {
                 "gpt_weights": "gpt.ckpt",
                 "sovits_weights": "sovits.pth",
-                "emotions": {"gentle": {"audio": "refs/gentle.wav", "text": f"{name}の優しい声。", "lang": "ja"}},
+                "emotions": {"gentle": {"audio": "refs/gentle.wav", "text": ref_text or f"{name}の優しい声。", "lang": "ja"}},
             }
         )
     asset_entries: dict[str, bytes] = {}
@@ -213,6 +214,86 @@ async def test_conflict_409_overwrite_backup_and_failed_overwrite_restore(tmp_pa
         assert len(backups) == 1
         assert json.loads((backups[0] / "manifest.json").read_text("utf-8"))["system_prompt"] == "第二版人设"
     _assert_temp_empty()
+
+
+@pytest.mark.asyncio
+async def test_update_under_another_file_name_asks_to_overwrite_the_installed_character(tmp_path, monkeypatch):
+    """A browser saves a second download as 「爱丽丝 (1).zip」; that is still an update of 爱丽丝."""
+    root, app = _setup_app(tmp_path, monkeypatch)
+    await init_db()
+    v1 = _make_package_bytes("zip", "alice", "爱丽丝", system_prompt="第一版人设")
+    v2 = _make_package_bytes("zip", "alice", "爱丽丝", system_prompt="第二版人设")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
+        first = await client.post("/api/characters/import", params={"filename": "爱丽丝.zip"}, content=v1)
+        assert first.status_code == 200, first.text
+        asked = await client.post("/api/characters/import", params={"filename": "爱丽丝 (1).zip"}, content=v2)
+        assert asked.status_code == 409, asked.text
+        assert asked.json()["code"] == "package_exists" and asked.json()["names"] == ["爱丽丝"]
+        replaced = await client.post(
+            "/api/characters/import", params={"filename": "爱丽丝 (1).zip", "overwrite": "1"}, content=v2
+        )
+        assert replaced.status_code == 200, replaced.text
+        assert replaced.json()["imported"][0]["profile_id"] == first.json()["imported"][0]["profile_id"]
+    assert sorted(p.name for p in (root / "characters").iterdir()) == ["爱丽丝"]
+    manifest = json.loads((root / "characters" / "爱丽丝" / "manifest.json").read_text("utf-8"))
+    assert manifest["system_prompt"] == "第二版人设"
+    _assert_temp_empty()
+
+
+@pytest.mark.asyncio
+async def test_update_under_another_file_name_replaces_invalid_package(tmp_path, monkeypatch):
+    root, app = _setup_app(tmp_path, monkeypatch)
+    await init_db()
+    broken_dir = root / "characters" / "爱丽丝"
+    broken_dir.mkdir(parents=True)
+    (broken_dir / "manifest.json").write_text(json.dumps({"id": "alice", "name": "爱丽丝"}), encoding="utf-8")
+    CharacterManager.get_instance().discover_characters()
+    fixed = _make_package_bytes("zip", "alice", "爱丽丝", system_prompt="修复版人设")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
+        asked = await client.post("/api/characters/import", params={"filename": "爱丽丝 (1).zip"}, content=fixed)
+        assert asked.status_code == 409 and asked.json()["names"] == ["爱丽丝"]
+        replaced = await client.post(
+            "/api/characters/import", params={"filename": "爱丽丝 (1).zip", "overwrite": "1"}, content=fixed
+        )
+        assert replaced.status_code == 200, replaced.text
+    assert sorted(p.name for p in (root / "characters").iterdir()) == ["爱丽丝"]
+    assert json.loads((broken_dir / "manifest.json").read_text("utf-8"))["system_prompt"] == "修复版人设"
+
+
+@pytest.mark.asyncio
+async def test_update_follows_disk_when_folder_changed_without_rescan(tmp_path, monkeypatch):
+    root, app = _setup_app(tmp_path, monkeypatch)
+    await init_db()
+    v1 = _make_package_bytes("zip", "alice", "爱丽丝")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
+        assert (await client.post("/api/characters/import", params={"filename": "爱丽丝.zip"}, content=v1)).status_code == 200
+        manifest_path = root / "characters" / "爱丽丝" / "manifest.json"
+        data = json.loads(manifest_path.read_text("utf-8"))
+        manifest_path.write_text(json.dumps({**data, "id": "bob", "name": "鲍勃"}), encoding="utf-8")
+        res = await client.post("/api/characters/import", params={"filename": "alice_v2.zip"}, content=v1)
+        assert res.status_code == 200, res.text
+    assert sorted(p.name for p in (root / "characters").iterdir()) == ["alice_v2", "爱丽丝"]
+    assert json.loads(manifest_path.read_text("utf-8"))["id"] == "bob"
+
+
+@pytest.mark.asyncio
+async def test_package_update_refreshes_the_reference_transcript(tmp_path, monkeypatch):
+    """An update that keeps refs/gentle.wav but changes its text must not leave the old transcript."""
+    from galgame2voice.database import crud
+    from galgame2voice.database.session import get_db
+
+    _, app = _setup_app(tmp_path, monkeypatch)
+    await init_db()
+    old = _make_package_bytes("zip", "alice", "爱丽丝", prefix="alice/", ref_text="古い文章です。")
+    new = _make_package_bytes("zip", "alice", "爱丽丝", prefix="alice/", ref_text="新しい文章です。")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
+        assert (await client.post("/api/characters/import", params={"filename": "a.zip"}, content=old)).status_code == 200
+        updated = await client.post("/api/characters/import", params={"filename": "a.zip", "overwrite": "1"}, content=new)
+        assert updated.status_code == 200, updated.text
+    async with get_db() as conn:
+        (profile,) = [p for p in await crud.list_voice_profiles(conn) if p.name == "爱丽丝"]
+    assert profile.ref_audio_path.endswith("refs/gentle.wav")
+    assert profile.prompt_text == "新しい文章です。"
 
 
 @pytest.mark.asyncio

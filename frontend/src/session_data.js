@@ -105,6 +105,18 @@ const validId = (value) => typeof value === 'string' && value.length > 0 && valu
 /** @param {any} value @returns {number} */
 const timestamp = (value) => Number.isFinite(value) && value >= 0 ? value : Date.now();
 
+/**
+ * Replaces lone UTF-16 surrogates, which the server cannot decode, with U+FFFD.
+ * @template T
+ * @param {T} text
+ * @returns {T}
+ */
+export function wellFormed(text) {
+  return /** @type {T} */ (typeof text === 'string'
+    ? text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD')
+    : text);
+}
+
 // SQLite CURRENT_TIMESTAMP is UTC even though it has no explicit zone suffix.
 /**
  * @param {any} value
@@ -170,8 +182,14 @@ export function validAdvSetting(key, value) {
       ? [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(value)].length : [...value].length;
     return count <= 40;
   }
-  // Outfit IDs are manifest keys, never paths. Missing installed IDs remain portable.
-  if (key === 'advOutfit') return typeof value === 'string' && (value === '' || /^[\p{L}\p{N}_-]{1,200}$/u.test(value));
+  // Outfit IDs are manifest keys, never paths: the same rule the portrait loader uses,
+  // so any outfit a pack lists can be picked. Missing installed IDs remain portable.
+  if (key === 'advOutfit') {
+    return typeof value === 'string' && (value === '' || (
+      Boolean(value.trim()) && value !== '.' && [...value].length <= 200
+      && !value.includes('..') && !/[/\\\p{Cc}]/u.test(value)
+    ));
+  }
   // advBackground is "" (follow the character's work), "none" (plain sky) or a global "<work>/<id>" key.
   if (key === 'advBackground') {
     if (typeof value !== 'string') return false;
@@ -228,6 +246,18 @@ export function normalizeLines(lines) {
   return result;
 }
 
+const LONE_SURROGATE_RE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
+
+/**
+ * Drops half emoji that older versions cut into session titles. The local
+ * service rejects such text, so the session could not be saved or imported.
+ * @param {string} text
+ * @returns {string}
+ */
+export function wellFormedText(text) {
+  return text.replace(LONE_SURROGATE_RE, '');
+}
+
 /**
  * @param {any} data
  * @param {SessionSettings} sessionDefaults
@@ -272,7 +302,7 @@ export function normalizeSnapshot(data, sessionDefaults, globalDefaults) {
     });
     /** @type {ChatSession} */
     const normalizedSession = {
-      id: session.id, title: session.title, messages,
+      id: session.id, title: wellFormedText(session.title), messages,
       createdAt: timestamp(session.createdAt), updatedAt: timestamp(session.updatedAt),
       settings: pickSettings(session.settings, sessionDefaults),
     };

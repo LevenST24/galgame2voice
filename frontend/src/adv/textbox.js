@@ -4,26 +4,66 @@
  */
 
 import { splitGraphemes, countGraphemes } from './graphemes.js';
-import { paginate as purePaginate, pairSubtitle } from './paginate.js';
+import { paginate as purePaginate, pairSubtitle, pairToFit } from './paginate.js';
+
+const QUOTE_PAIRS = /** @type {Record<string, string>} */ ({ '「': '」', '『': '』', '“': '”', '"': '"' });
+const CLOSING_TO_OPEN = /** @type {Record<string, string>} */ ({ '」': '「', '』': '『', '”': '“', '"': '"' });
+
+/**
+ * How a line's own quote marks sit around it:
+ * 'whole' when one pair encloses the whole line, 'open' when the first opener is never closed,
+ * 'close' when the line ends on a closer that has no opener, and 'none' otherwise.
+ * An inner quotation at either end (「笨蛋」什么的 / 就是「笨蛋」) is 'none'.
+ * @param {string} trimmed
+ */
+function outerQuoteShape(trimmed) {
+  const open = trimmed[0];
+  const close = QUOTE_PAIRS[open];
+  if (close) {
+    if (open === close) {
+      const count = trimmed.split(open).length - 1;
+      if (count === 1) return 'open';
+      if (count === 2 && trimmed.length > 1 && trimmed.endsWith(close)) return 'whole';
+    } else {
+      let depth = 0;
+      for (let i = 0; i < trimmed.length; i++) {
+        if (trimmed[i] === open) depth++;
+        else if (trimmed[i] === close && --depth === 0) {
+          if (i === trimmed.length - 1) return 'whole';
+          break;
+        }
+      }
+      if (depth > 0) return 'open';
+    }
+  }
+  const last = trimmed.at(-1) || '';
+  const opener = CLOSING_TO_OPEN[last];
+  if (!opener) return 'none';
+  if (opener === last) return (trimmed.split(last).length - 1) % 2 === 1 ? 'close' : 'none';
+  let depth = 0;
+  for (let i = trimmed.length - 1; i >= 0; i--) {
+    if (trimmed[i] === last) depth++;
+    else if (trimmed[i] === opener && --depth === 0) return 'none';
+  }
+  return 'close';
+}
 
 /**
  * Wraps text with display-only quotation marks if it is character speech
  * and not already enclosed in quotes. Never mutates the raw stored string.
+ * @param {string} text
+ * @param {string} mode
  */
-function formatDisplayQuote(text, mode) {
+export function formatDisplayQuote(text, mode) {
   if (!text) return '';
   if (mode !== 'character') return text;
   const trimmed = text.trim();
-  const startsWithQuote = /^[「“"『]/.test(trimmed);
-  const endsWithQuote = /[」”"』]$/.test(trimmed);
-  let res = text;
-  if (!startsWithQuote) {
-    res = `「${res}`;
+  switch (outerQuoteShape(trimmed)) {
+    case 'whole': return text;
+    case 'open': return `${text}${QUOTE_PAIRS[trimmed[0]]}`;
+    case 'close': return `${CLOSING_TO_OPEN[trimmed.at(-1) || ''] || '「'}${text}`;
+    default: return `「${text}」`;
   }
-  if (!endsWithQuote) {
-    res = `${res}」`;
-  }
-  return res;
 }
 
 /**
@@ -146,7 +186,11 @@ export function createTextbox(container, opts = {}) {
   textareaEl.className = 'adv-player-textarea';
   textareaEl.rows = 2;
   textareaEl.maxLength = 4000;
-  textareaEl.placeholder = '请输入你的回答（Enter 发送，Shift+Enter 换行）';
+  const INPUT_PLACEHOLDER = '请输入你的回答（Enter 发送，Shift+Enter 换行）';
+  // The reply text is all in but its last voice lines are still being made: the player
+  // may write now, and sending opens once the reply settles.
+  const VOICE_PENDING_PLACEHOLDER = '语音还在准备，可以先写下一句';
+  textareaEl.placeholder = INPUT_PLACEHOLDER;
 
   function isOverlayBlocked() {
     /** @type {any} */
@@ -277,6 +321,8 @@ export function createTextbox(container, opts = {}) {
   let typewriterTimerId = null;
   let isHidden = false;
   let canSendInput = false;
+  let voicePendingInput = false;
+  let showingVoiceNote = false;
 
   let boundPlayer = opts.player || null;
   function getBoundPlayer() {
@@ -596,8 +642,10 @@ export function createTextbox(container, opts = {}) {
     waitHintEl.classList.toggle('is-hidden', !on);
   }
 
-  function enterInput({ canSend = true } = {}) {
+  function enterInput({ canSend = true, voicePending = false } = {}) {
+    pageRevealed = false;
     clearTypewriter();
+    voicePendingInput = Boolean(voicePending);
     setCanSend(canSend);
     clearError();
 
@@ -620,6 +668,7 @@ export function createTextbox(container, opts = {}) {
   function prepareInput({ canSend = false } = {}) {
     clearError();
     glyph(false);
+    voicePendingInput = false;
     setCanSend(canSend);
     speechViewEl.classList.add('is-hidden');
     errorWrapEl.classList.add('is-hidden');
@@ -689,12 +738,12 @@ export function createTextbox(container, opts = {}) {
 
     let finalPrimaryPages = pPages;
     if (pPages.length < targetCount) {
-      finalPrimaryPages = pairSubtitle(primaryText, targetCount);
+      finalPrimaryPages = pairToFit(primaryText, targetCount, fitsPrimary);
     }
 
     let finalSubPages = sPages;
     if (sPages.length < targetCount) {
-      finalSubPages = pairSubtitle(subText, targetCount);
+      finalSubPages = pairToFit(subText, targetCount, fitsSubtitle);
     }
 
     currentSubPages = finalSubPages;
@@ -728,6 +777,7 @@ export function createTextbox(container, opts = {}) {
   }
 
   function showError({ message = '', actions = [] } = {}) {
+    pageRevealed = false;
     clearError();
     clearTypewriter();
     glyph(false);
@@ -760,9 +810,17 @@ export function createTextbox(container, opts = {}) {
     speechViewEl.classList.remove('is-hidden');
   }
 
+  // Kept until sending opens, so a later setCanSend(false) from the app keeps the note.
   function setCanSend(value) {
     canSendInput = Boolean(value);
+    if (canSendInput) voicePendingInput = false;
     sendBtn.disabled = !canSendInput;
+    const waitingForVoice = !canSendInput && voicePendingInput;
+    if (waitingForVoice === showingVoiceNote) return;
+    // Only swap our own note in and out: the mic writes its listening text here too.
+    showingVoiceNote = waitingForVoice;
+    textareaEl.placeholder = waitingForVoice ? VOICE_PENDING_PLACEHOLDER : INPUT_PLACEHOLDER;
+    sendBtn.title = waitingForVoice ? '语音准备好后可发送' : '发送 (Enter)';
   }
 
   function setHidden(bool) {

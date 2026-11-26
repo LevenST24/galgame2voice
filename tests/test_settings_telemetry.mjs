@@ -170,3 +170,17 @@ test('backgrounding the page aborts reads and foregrounding refreshes once', asy
   document.hidden = false; listeners.get('visibilitychange')?.(); await settle();
   assert.equal(pending.length, 6, 'foregrounding should immediately start exactly one new batch');
 });
+
+test('first settings open shows restart label for previously ready quiet engine, not plain checking', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let reply = { state: 'checking', ready: false, was_ready: true, message: '语音引擎此前已就绪' };
+  globalThis.fetch = async url => response(url.endsWith('/engine-status') ? reply : {});
+  for (const [next, expected] of [[reply, /重启 SoVITS 引擎/], [{ state: 'checking', ready: false, message: '核对中' }, /启动 SoVITS 引擎/]]) {
+    reply = next;
+    const dom = { globalModal: element(), gDashSovitsBadge: element(), gDashSovitsStatus: element(),
+      gBtnRestartSovits: { ...element(), disabled: false, innerHTML: '<span>启动 SoVITS 引擎</span>' } };
+    initGlobalSettings(dom, { openModal, closeModal });
+    openGlobalSettings(); await settle(); closeModal(dom.globalModal);
+    assert.match(dom.gBtnRestartSovits.innerHTML, expected);
+  }
+});

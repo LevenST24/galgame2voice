@@ -22,6 +22,7 @@ import httpx
 from galgame2voice.config import get_settings
 from galgame2voice.services.audio_identity import SourceFile, VoicePreparation, bind_audio_options
 from galgame2voice.services.voice_resources import VoiceResourceGuard
+from galgame2voice.services.engine_supervisor import get_managed_launch_for_url, mark_engine_launch_ready
 from galgame2voice.utils.path_guard import resolve_existing_audio_path
 
 from galgame2voice.utils.audio_spec import (
@@ -97,6 +98,17 @@ ENDPOINT_SET_SOVITS_WEIGHTS = "/set_sovits_weights"
 ENDPOINT_SET_REFER_AUDIO = "/set_refer_audio"
 ENDPOINT_CONTROL = "/control"
 ENDPOINT_TTS = "/tts"
+
+# api_v2 answers /tts with WAV by default; any other 200 body (a proxy's sign-in page,
+# another web app on the same port) must not be saved or cached as audio.
+NON_AUDIO_RESPONSE_ERROR = (
+    "语音引擎返回的内容不是音频（可能是网页或错误信息），已丢弃。"
+    "请确认语音引擎地址指向 GPT-SoVITS 的 api_v2 服务（默认 http://127.0.0.1:9880）后重试。"
+)
+
+
+def _is_wav_payload(data: bytes) -> bool:
+    return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"
 
 PARAM_WEIGHTS_PATH = "weights_path"
 PARAM_REFER_AUDIO_PATH = "refer_audio_path"
@@ -286,20 +298,24 @@ class GptSovitsClient:
         client: httpx.AsyncClient | None = None,
     ) -> httpx.Response:
         """Internal HTTP request dispatcher supporting mock server or pooled httpx."""
+        base_url = self.base_url
+        before_launch = get_managed_launch_for_url(base_url)
         generation = self._endpoint_generation
         revision = self._model_state_revision
         try:
             if self.server is not None and hasattr(self.server, "handle_request"):
-                return await self.server.handle_request(method, path, json_data=json_data, params=params)
-
-            url = f"{self.base_url}{path}"
-            http_client = client if client is not None else self._get_http_client()
-            # An explicit None would disable every timeout; fall back to the
-            # pooled client's TTS_TIMEOUT instead.
-            return await http_client.request(
-                method, url, json=json_data, params=params,
-                timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
-            )
+                resp = await self.server.handle_request(method, path, json_data=json_data, params=params)
+            else:
+                http_client = client if client is not None else self._get_http_client()
+                # An explicit None would disable every timeout; fall back to the
+                # pooled client's TTS_TIMEOUT instead.
+                resp = await http_client.request(
+                    method, f"{base_url}{path}", json=json_data, params=params,
+                    timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
+                )
+            if resp.status_code in (200, 400):
+                mark_engine_launch_ready(before_launch, base_url)
+            return resp
         except (httpx.NetworkError, httpx.ConnectTimeout, httpx.RemoteProtocolError):
             self._observe_connection_loss(generation, revision)
             raise
@@ -319,6 +335,7 @@ class GptSovitsClient:
         Dispatches through the mock server when one is configured (tests).
         """
         base_url = self.base_url
+        before_launch = get_managed_launch_for_url(base_url)
         generation = self._endpoint_generation
         revision = self._model_state_revision
         try:
@@ -354,6 +371,7 @@ class GptSovitsClient:
                 resp = await probe("/")
 
             if resp.status_code in (200, 400):
+                mark_engine_launch_ready(before_launch, base_url)
                 return {
                     "connected": True,
                     "status": "running",
@@ -815,6 +833,8 @@ class GptSovitsClient:
                         raise RuntimeError(f"TTS synthesis failed with status {resp.status_code}: {resp.text[:300]}")
                     if not resp.content:
                         raise RuntimeError("TTS synthesis returned empty audio payload")
+                    if not _is_wav_payload(resp.content):
+                        raise RuntimeError(NON_AUDIO_RESPONSE_ERROR)
                     if wav_is_silent(resp.content):
                         raise RuntimeError(SILENT_AUDIO_ERROR)
 
@@ -874,11 +894,15 @@ class GptSovitsClient:
             async with self.lock:
                 if options is not None:
                     await self._validate_audio_options(options)
+                base_url = url.removesuffix(ENDPOINT_TTS)
+                before_launch = get_managed_launch_for_url(base_url)
                 generation = self._endpoint_generation
                 revision = self._model_state_revision
                 self._inc_inflight(client)
                 try:
                     async with client.stream("POST", url, json=payload, timeout=TTS_TIMEOUT) as resp:
+                        if resp.status_code in (200, 400):
+                            mark_engine_launch_ready(before_launch, base_url)
                         if resp.status_code != 200:
                             err_bytes = await resp.aread()
                             raise RuntimeError(
@@ -971,6 +995,8 @@ class GptSovitsClient:
 
                 if not checked_silence:
                     pre_buffer.extend(item)
+                    if len(pre_buffer) >= 12 and not _is_wav_payload(bytes(pre_buffer[:12])):
+                        raise RuntimeError(NON_AUDIO_RESPONSE_ERROR)
                     # Inspect initial WAV PCM samples
                     peak = wav_peak_amplitude(bytes(pre_buffer))
                     if peak is not None and peak > 0.0:
@@ -987,6 +1013,8 @@ class GptSovitsClient:
                     yield item
 
             if not checked_silence and pre_buffer:
+                if not _is_wav_payload(bytes(pre_buffer)):
+                    raise RuntimeError(NON_AUDIO_RESPONSE_ERROR)
                 if wav_is_silent(bytes(pre_buffer)):
                     raise RuntimeError(SILENT_AUDIO_ERROR)
                 if profiler and hasattr(profiler, "record_app_first_chunk"):

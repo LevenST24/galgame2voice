@@ -46,6 +46,12 @@ let privateEndpointSaving = false;
 let precisionSavedRevision = 0;
 let gpuAvailable = true;
 const CONFIG_FIELDS = ['gParamSovitsUrl', 'gPrecision', 'gAudioRetention'];
+// The precision dropdown saves through its own handler; these fields autosave here.
+const AUTOSAVE_CONFIG_FIELDS = ['gParamSovitsUrl', 'gAudioRetention'];
+let autosaveRunning = false;
+let autosaveQueued = false;
+let autosaveAfterLoad = false;
+const AUTOSAVE_RETRY_MS = 300;
 
 // A blank, fractional or out-of-range value is refused instead of being saved as another number.
 export function readRetentionMinutes(raw) {
@@ -163,6 +169,9 @@ export function initGlobalSettings(dom, callbacks = {}) {
   privateEndpointSaving = false;
   precisionSavedRevision += 1;
   gpuAvailable = true;
+  autosaveRunning = false;
+  autosaveQueued = false;
+  autosaveAfterLoad = false;
 
   // 3. Instantiate domain controllers
   providerController = createProviderSettingsController(_dom, {
@@ -225,6 +234,9 @@ export function initGlobalSettings(dom, callbacks = {}) {
         });
       }
     }
+  });
+  AUTOSAVE_CONFIG_FIELDS.forEach((field) => {
+    if (_dom[field]) _bindCoordinator(_dom[field], 'change', () => { autosaveConfig(); });
   });
 
   engineDirectory = initEngineDirectory(
@@ -300,7 +312,7 @@ export function initGlobalSettings(dom, callbacks = {}) {
       RESET_CONFIG_FIELDS.forEach((field) => dirtyConfigFields.add(field));
       if (_dom.gPrecision) _dom.gPrecision.value = 'auto';
       if (_dom.gAudioRetention) _dom.gAudioRetention.value = '30';
-      showToast('已恢复推荐数值，请点击【保存全局配置】生效', 'info');
+      autosaveConfig();
     });
   }
 
@@ -446,10 +458,18 @@ export async function loadGlobalConfig() {
     if (targetDom.gDashRetentionVal) targetDom.gDashRetentionVal.textContent = `保留时长：${s.audio_retention_minutes || 30} 分钟`;
 
     configLoaded = true;
+    if (autosaveAfterLoad) {
+      autosaveAfterLoad = false;
+      autosaveConfig();
+    }
   } catch (e) {
     if (coordinatorRevision !== settingsCoordinatorRevision || targetDom !== _dom || load !== configLoad) return;
     const configError = $('gConfigError');
     if (configError) { configError.textContent = e.message; configError.classList.remove('hidden'); }
+    if (autosaveAfterLoad) {
+      autosaveAfterLoad = false;
+      showToast('自动保存失败：尚未读取到当前配置，请检查服务后重试。', 'error');
+    }
   }
 }
 
@@ -484,4 +504,36 @@ const settingsDraftStore = createSettingsDraftStore({
 
 export async function saveGlobalConfig() {
   return settingsDraftStore.commitAll();
+}
+
+/**
+ * Save the voice service page as soon as an edit is finished, so closing the settings never
+ * leaves a value on screen that was not stored. Edits made while a save runs are saved next.
+ */
+export async function autosaveConfig() {
+  if (autosaveRunning) {
+    autosaveQueued = true;
+    return;
+  }
+  const revision = settingsCoordinatorRevision;
+  autosaveRunning = true;
+  try {
+    do {
+      autosaveQueued = false;
+      if (!configDirty) break;
+      const result = await settingsDraftStore.commitAll({ autosave: true });
+      if (revision !== settingsCoordinatorRevision) return;
+      if (result === 'busy') {
+        // Another save holds the config; try again once it is done.
+        await new Promise((resolve) => setTimeout(resolve, AUTOSAVE_RETRY_MS));
+        if (revision !== settingsCoordinatorRevision) return;
+        autosaveQueued = true;
+      } else if (result === 'not-loaded') {
+        autosaveAfterLoad = true;
+        break;
+      }
+    } while (autosaveQueued);
+  } finally {
+    if (revision === settingsCoordinatorRevision) autosaveRunning = false;
+  }
 }

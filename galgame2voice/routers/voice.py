@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import time
 from typing import Any
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from galgame2voice.config import get_settings
@@ -34,7 +34,7 @@ from galgame2voice.services.character_voice_catalog import (
 )
 from galgame2voice.services.voice_manager import get_voice_manager
 from galgame2voice.routers.line_audio import router as line_audio_router
-from galgame2voice.utils.logger import sanitize_error_detail
+from galgame2voice.utils.logger import describe_database_write_error, sanitize_error_detail
 from galgame2voice.utils.path_guard import (
     discover_gpt_sovits_roots,
     to_project_relative_path,
@@ -57,12 +57,12 @@ class VoiceProfileCreateRequest(BaseModel):
     sovits_weights_path: str = Field(..., min_length=1, max_length=1000)
     refer_audio_path: str | None = Field(default=None, max_length=1000)
     ref_audio_path: str | None = Field(default=None, max_length=1000)
-    refer_text: str | None = Field(default=None, max_length=1000)
-    prompt_text: str | None = Field(default=None, max_length=1000)
-    refer_language: str | None = Field(default="ja", max_length=32)
-    prompt_lang: str | None = Field(default="ja", max_length=32)
+    refer_text: str | None = Field(default=None, max_length=500)
+    prompt_text: str | None = Field(default=None, max_length=500)
+    refer_language: str | None = Field(default=None, max_length=32)
+    prompt_lang: str | None = Field(default=None, max_length=32)
     text_lang: str | None = Field(default="ja", max_length=32)
-    system_prompt: str | None = Field(default="", max_length=10000)
+    system_prompt: str | None = Field(default="", max_length=20000)
     is_default: bool = False
 
 
@@ -142,6 +142,8 @@ async def create_voice_profile(req: VoiceProfileCreateRequest) -> dict[str, Any]
     except HTTPException:
         raise
     except Exception as exc:
+        if describe_database_write_error(exc):
+            raise
         logger.error("Failed to create voice profile '%s': %s", req.name, exc)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=sanitize_error_detail(exc)) from exc
 
@@ -186,6 +188,8 @@ async def update_voice_profile(profile_id: int, req: VoiceProfileUpdate) -> dict
     except HTTPException:
         raise
     except Exception as exc:
+        if describe_database_write_error(exc):
+            raise
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=sanitize_error_detail(exc),
@@ -197,20 +201,24 @@ async def update_voice_profile(profile_id: int, req: VoiceProfileUpdate) -> dict
     summary="Delete Voice Profile",
     description="Deletes a voice profile by ID.",
 )
-async def delete_voice_profile(profile_id: int) -> dict[str, Any]:
+async def delete_voice_profile(profile_id: int, request: Request) -> dict[str, Any]:
     validate_positive_profile_id(profile_id)
     try:
-        success = await get_character_voice_catalog().delete_profile(
+        lock = getattr(request.app.state, "character_rescan_lock", None)
+        if lock is None:
+            lock = request.app.state.character_rescan_lock = asyncio.Lock()
+        result = await get_character_voice_catalog().delete_profile(
             profile_id,
+            lock=lock,
             voice_manager=get_voice_manager(),
             db_factory=get_db,
         )
-        if not success:
+        if result is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Voice profile ID {profile_id} not found",
             )
-        return {"status": "deleted", "profile_id": profile_id}
+        return {"status": "deleted", "profile_id": profile_id, "moved_to": result["moved_to"]}
     except VoiceProfileBusyError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -219,6 +227,8 @@ async def delete_voice_profile(profile_id: int) -> dict[str, Any]:
     except HTTPException:
         raise
     except Exception as exc:
+        if describe_database_write_error(exc):
+            raise
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=sanitize_error_detail(exc),
@@ -280,7 +290,7 @@ _NATIVE_FILE_PICKER_CONFIG: dict[str, tuple[str, list[tuple[str, str]]]] = {
     description="Opens native OS file dialog to let the user select a file (.ckpt, .pth, audio).",
 )
 async def open_native_file_dialog(req: BrowseFileRequest) -> dict[str, Any]:
-    def _run_picker() -> str:
+    def _run_picker() -> str | None:
         root = None
         try:
             import tkinter as tk
@@ -302,7 +312,7 @@ async def open_native_file_dialog(req: BrowseFileRequest) -> dict[str, Any]:
             return selected or ""
         except Exception as err:
             logger.warning("Native file dialog failed or unavailable: %s", err)
-            return ""
+            return None
         finally:
             if root is not None:
                 try:
@@ -314,6 +324,9 @@ async def open_native_file_dialog(req: BrowseFileRequest) -> dict[str, Any]:
             # Drop the interpreter reference on the owning thread immediately.
 
     path = await asyncio.wrap_future(_NATIVE_PICKER_EXECUTOR.submit(_run_picker))
+    if path is None:
+        # Tell a dialog that could not open apart from one the user cancelled.
+        return {"selected_path": "", "picker_unavailable": True}
     return {"selected_path": path}
 
 
@@ -363,27 +376,29 @@ def _discover_gpt_sovits_roots() -> list[str]:
     return [str(p) for p in discover_gpt_sovits_roots(get_settings().project_root)]
 
 
-def _scan_models_sync() -> dict[str, list[dict[str, Any]]]:
-    """Blocking filesystem scan for weights & reference audio (worker thread)."""
-    candidate_roots: list[str] = []
-    for root in _discover_gpt_sovits_roots():
-        if root not in candidate_roots and os.path.isdir(root):
-            candidate_roots.append(root)
+_SCAN_LIST_LIMIT = 50
 
-    # Also scan the app's own directories for user-copied assets.
+
+def _scan_models_sync() -> dict[str, Any]:
+    """Blocking filesystem scan for weights & reference audio (worker thread)."""
     settings = get_settings()
-    for root_candidate in (
-        str(settings.project_root),
+    # The user's own data/ and audio/ come first: only the first 50 of each
+    # kind are listed, and an engine's training folders can hold hundreds.
+    candidate_roots: list[str] = []
+    for root in (
         str(settings.data_dir),
         str(settings.audio_dir),
+        *_discover_gpt_sovits_roots(),
+        str(settings.project_root),
     ):
-        if root_candidate not in candidate_roots:
-            candidate_roots.append(root_candidate)
+        if root not in candidate_roots and os.path.isdir(root):
+            candidate_roots.append(root)
 
     excluded_cache_dirs: set[Path] = set()
     for p in (
         settings.audio_dir / "cache",
         settings.data_dir / "engine_cache",
+        settings.data_dir / "deleted_characters",
     ):
         try:
             excluded_cache_dirs.add(p.resolve())
@@ -456,10 +471,11 @@ def _scan_models_sync() -> dict[str, list[dict[str, Any]]]:
         except OSError:
             continue
 
+    found = {"gpt_weights": gpt_weights, "sovits_weights": sovits_weights, "audio_files": audio_files}
     return {
-        "gpt_weights": gpt_weights[:50],
-        "sovits_weights": sovits_weights[:50],
-        "audio_files": audio_files[:50],
+        **{key: items[:_SCAN_LIST_LIMIT] for key, items in found.items()},
+        # How many of each kind were found but not listed, so the page can say so.
+        "hidden": {key: len(items) - _SCAN_LIST_LIMIT for key, items in found.items() if len(items) > _SCAN_LIST_LIMIT},
     }
 
 

@@ -59,6 +59,18 @@ let passed = 0;
   assert.equal(dom.sCvCreate.disabled, false); passed++;
 }
 {
+  // A Chinese reference clip still voices the Japanese lines as Japanese.
+  const { dom } = setup(); let body = null;
+  dom.sCvLang.value = 'zh';
+  globalThis.fetch = async (url, options) => {
+    if (url === '/api/voice/profiles' && options.method === 'POST') body = JSON.parse(options.body);
+    return response({ id: 44, name: 'New voice' });
+  };
+  await createCustomVoice();
+  assert.equal(body.prompt_lang, 'zh');
+  assert.equal(body.text_lang, 'ja'); passed++;
+}
+{
   const { first, second } = setup(); let complete; const writes = [];
   globalThis.fetch = async (url, options) => {
     writes.push(url);
@@ -393,7 +405,8 @@ const models = {
   assert.equal(saves.at(-1).voice_profile_id, 1); passed++;
 }
 {
-  // Deleting a voice also clears the server copies, or the next sync binds it again.
+  // The server clears its copies in the same delete; saving them again would only
+  // move these chats to the top of the recents.
   const { first, second, dom } = setup();
   dom.sVoiceDelete = element();
   initVoiceSettings(dom);
@@ -407,7 +420,10 @@ const models = {
   await loadSessionVoiceSelect(first);
   dom.sVoice.value = '5';
   await dom.sVoiceDelete.click(); await tick();
-  assert.deepEqual(saves.map(s => [s.id, s.voice_profile_id]).sort(), [['first', null], ['second', null]]); passed++;
+  assert.equal(first.settings.voiceProfileId, null);
+  assert.equal(second.settings.voiceProfileId, null);
+  assert.deepEqual(saves.filter(s => s.voice_profile_id === 5), [], 'the deleted voice must not be saved back');
+  assert.ok(!saves.some(s => s.id === 'second'), 'an unbound old chat is not saved again'); passed++;
 }
 {
   // A missing binding stays explicit until the user chooses a replacement.
@@ -546,6 +562,25 @@ await withToastEnv(async ({ dom, toastRoot, errors }) => {
   passed++;
 }, { captureError: true });
 await withToastEnv(async ({ dom, toastRoot }) => {
+  await prepareDeleteProfileError(dom, '');
+  dom.sCustomVoiceBox = element(); dom.sCvGpt = modelSelect(); let scans = 0;
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/voice/scan-models') return response({ gpt_weights: ++scans === 1 ? [{ path: 'characters/b/b.ckpt', name: 'b.ckpt' }] : [], sovits_weights: [], audio_files: [] });
+    if (url === '/api/voice/profiles') return response({ profiles: [], active_profile_id: null });
+    if (url === '/api/voice/profiles/2' && options.method === 'DELETE') {
+      return response({ status: 'deleted', profile_id: 2, moved_to: 'data/deleted_characters/b-20261124-120000' });
+    }
+    return response({});
+  };
+  invalidateScannedModels(); await populateScanOptions();
+  await deleteVoiceProfile(); await populateScanOptions();
+  const msg = toastRoot.children.at(-1).dataset.msg;
+  assert.match(msg, /^音色「B」已删除/);
+  assert.match(msg, /角色包文件夹已移到「data\/deleted_characters\/b-20261124-120000」/);
+  assert.equal(scans, 2); assert.equal(dom.sCvGpt.value, '');
+  passed++;
+}, { captureError: true });
+await withToastEnv(async ({ dom, toastRoot }) => {
   const full = '本机磁盘空间不足，数据没能保存。请清理磁盘空间后重试。';
   await prepareDeleteProfileError(dom, full);
   await deleteVoiceProfile();
@@ -553,6 +588,29 @@ await withToastEnv(async ({ dom, toastRoot }) => {
   assert.equal(toastRoot.children[0].dataset.msg, full);
   passed++;
 }, { captureError: true });
+await withToastEnv(async ({ first, second, dom, toastRoot }) => {
+  // Deleting a voice unbinds its old chats without making them the most recent ones.
+  globalThis.window = { confirm: () => true };
+  dom.sVoiceDelete = element();
+  initVoiceSettings(dom);
+  first.settings.voiceProfileId = 1; first.updatedAt = 3000;
+  second.settings.voiceProfileId = 2; second.updatedAt = 1000;
+  const saved = [];
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/voice/profiles') return response({ profiles: [{ id: 1, name: 'A' }, { id: 2, name: 'B' }], active_profile_id: 1 });
+    if (url === '/api/chat/sessions' && options.method === 'POST') saved.push(JSON.parse(options.body).id);
+    return response({});
+  };
+  await loadSessionVoiceSelect(first);
+  dom.sVoice.value = '2';
+  await dom.sVoiceDelete.click(); await tick();
+  assert.equal(second.settings.voiceProfileId, null, 'the deleted voice is unbound locally');
+  assert.equal(second.updatedAt, 1000, 'an old chat must not become the most recent one');
+  assert.equal(first.updatedAt, 3000);
+  assert.ok(!saved.includes(second.id), 'the server already unbound its copy; saving again would reorder it');
+  assert.match(toastRoot.children.at(-1).dataset.msg, /解除了 1 个会话的绑定/);
+  passed++;
+});
 await withToastEnv(async ({ first, second, dom, toastRoot }) => {
   // 1. Initial catalog load to populate voiceProfiles cache
   globalThis.fetch = async () => response({ profiles: cnProfiles, active_profile_id: 1 });
@@ -1080,7 +1138,7 @@ await withToastEnv(async ({ first, toastRoot }) => {
 for (const voiceOn of [false, true]) {
   await withToastEnv(async ({ first, toastRoot }) => {
     globalThis.fetch = async url => (String(url).includes('/switch')
-      ? response({ detail: 'GPT-SoVITS 未启动' }, 503)
+      ? response({ detail: '语音模型尚未加载。' }, 502)
       : response({ profiles: [{ id: 1, name: 'A' }], active_profile_id: null }));
     first.settings.voiceProfileId = 1;
     await ensureSessionVoice(first);
@@ -1089,6 +1147,18 @@ for (const voiceOn of [false, true]) {
     passed++;
   }, { captureError: true, callbacks: { isVoiceEnabled: () => voiceOn } });
 }
+// Free memory or VRAM too low to load the model: say so instead of blaming the engine.
+await withToastEnv(async ({ first, toastRoot }) => {
+  const lowMemory = '系统空闲内存不足（0.62 GB < 1.50 GB），加载新模型权重可能导致语音引擎崩溃。请关闭占内存的程序后重试。';
+  globalThis.fetch = async url => (String(url).includes('/switch')
+    ? response({ detail: lowMemory }, 503)
+    : response({ profiles: [{ id: 1, name: 'A' }], active_profile_id: null }));
+  first.settings.voiceProfileId = 1;
+  await ensureSessionVoice(first);
+  const messages = toastRoot.children.map(toast => String(toast.dataset.msg));
+  assert.deepEqual(messages, [lowMemory]);
+  passed++;
+}, { captureError: true, callbacks: { isVoiceEnabled: () => true } });
 {
   // Auto adaptive voice mode disables the four manual TTS sliders and explains why;
   // switching to fixed mode enables them, and clicking reset disables them again.
@@ -1420,5 +1490,34 @@ async function testSaveUnlocksWhileVoiceSwitchPending() {
 }
 
 await testSaveUnlocksWhileVoiceSwitchPending();
+
+{
+  const tag = fs.readFileSync(new URL('../frontend/index.html', import.meta.url), 'utf8').match(/<input\b[^>]*id="sTtsSpeed"[^>]*>/)?.[0] || '';
+  const [min, max, step] = ['min', 'max', 'step'].map(k => Number(tag.match(new RegExp(`\\b${k}="([^"]+)"`))?.[1]));
+  const snap = v => String(Number((min + Math.round(Number(((Math.min(max, Math.max(min, Number(v))) - min) / step).toFixed(10))) * step).toFixed(10)));
+  const { first, dom } = setup();
+  let speedVal = snap(1);
+  Object.defineProperty(dom.sTtsSpeed, 'value', { get: () => speedVal, set: v => { speedVal = snap(v); }, enumerable: true });
+  dom.sTtsSpeedVal = element(); dom.sTitle = element();
+  first.settings.voiceProfileId = 1; first.settings.ttsSpeed = 0.875;
+  globalThis.fetch = async url => (url === '/api/voice/profiles'
+    ? response({ profiles: [{ id: 1, name: '高楯欧丽叶', system_prompt: 'P' }], active_profile_id: 1 })
+    : response({}));
+  await loadSessionVoiceSelect(first);
+  await openSessionSettings();
+  assert.equal(dom.sTtsSpeed.value, '0.88');
+  dom.sTitle.value = '重命名会话';
+  await dom.sSave.click();
+  assert.equal(first.settings.ttsSpeed, 0.875);
+  dom.sAiAdaptiveVoice.value = 'false'; await dom.sAiAdaptiveVoice.fire('change');
+  dom.sTtsSpeed.value = '1.23'; await dom.sTtsSpeed.fire('input');
+  await dom.sSave.click();
+  assert.equal(first.settings.ttsSpeed, 1.23);
+  first.settings.ttsSpeed = 1.004;
+  await openSessionSettings();
+  await dom.sReset.click(); await dom.sSave.click();
+  assert.equal(first.settings.ttsSpeed, DEFAULT_SESSION_SETTINGS.ttsSpeed);
+  passed++;
+}
 
 console.log(`Voice settings recovery: ${passed} scenarios passed`);

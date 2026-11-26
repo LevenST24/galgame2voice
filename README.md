@@ -142,7 +142,7 @@ docker compose up -d --build
 
 1. **配置对话模型**：设置中心 →「对话模型」，在「模型服务」中选择服务，填写「API 密钥」和「模型名称」，点「测试连通性」，成功后点「保存并启用此模型」。
    - 本机或局域网模型（Ollama、LM Studio、vLLM）：选择「自定义 / 本地模型 (Ollama / vLLM)」，填写「接口地址」（Ollama 一般是 `http://127.0.0.1:11434/v1`，LM Studio 一般是 `http://127.0.0.1:1234/v1`），并勾选「允许连接本机或局域网的模型服务」，等待保存成功后再测试并启用模型。这个开关默认关闭，只用于你信任的地址。
-2. **接入 GPT-SoVITS**（需要语音时）：设置中心 →「语音服务」，点「选择文件夹」，选中包含 `api_v2.py` 的 GPT-SoVITS 目录，再点「保存目录」，然后在「运行状态」中点「启动 SoVITS 引擎」（引擎已在运行时按钮为「重启 SoVITS 引擎」）。如果引擎已经在别处运行，填写「语音服务地址」（默认 `http://127.0.0.1:9880`）并点「保存全局配置」即可。
+2. **接入 GPT-SoVITS**（需要语音时）：设置中心 →「语音服务」，点「选择文件夹」，选中包含 `api_v2.py` 的 GPT-SoVITS 目录（选定后自动保存），然后在「运行状态」中点「启动 SoVITS 引擎」（引擎已在运行时按钮为「重启 SoVITS 引擎」）。如果引擎已经在别处运行，填写「语音服务地址」（默认 `http://127.0.0.1:9880`）即可，改完自动保存。
    - Windows 建议使用 [GPT-SoVITS 官方整合包](https://github.com/RVC-Boss/GPT-SoVITS#windows)（自带运行环境）。本项目通过 HTTP API 对接，按 V2 Pro Plus 整合包开发；CI 不运行真实引擎，其它版本只要提供同样的 API 通常也能使用。
 3. **选择角色**：设置中心 →「角色与会话」→「角色音色」，点「导入角色包」（`.zip`）或「选择文件夹」，或直接把角色包拖进设置窗口（也可通过「兑换码」下载导入，或手动放进 `characters/` 后点「扫描」）；已有角色时直接在下拉框中选；没有角色包时选「＋ 新建自定义音色（选择 ckpt / pth / 参考音频）…」，填写「音色名称」，挑选 GPT 模型（`.ckpt`）、SoVITS 模型（`.pth`）、参考音频并填写「参考音频里说的话」，点「创建并绑定」。最后点「保存」。
 4. **开始聊天**：在标题画面点「开始聊天」（有过对话后是「接着聊 →」）。轮到你时在文本框里输入，`Enter` 发送，`Shift + Enter` 换行，也可以点文本框里的「语音输入」（麦克风）说话。左上角的「语音开关」决定是否自动播放语音。推进、记录（LOG）、快进等操作见上文「ADV 界面与手机使用」。
@@ -247,13 +247,13 @@ python -m galgame2voice.main doctor --json     # 机器可读，方便贴进 iss
 | `GPT_SOVITS_DIR` | | | 查找本机引擎时的候选目录；网页中保存的引擎目录优先 |
 | `GPT_SOVITS_PRECISION` | | | 启动时的默认推理精度：`fp16`、`fp32` 或 `cpu`。在网页「运行状态」手动切换精度并重启引擎后，本次运行以网页选择为准（本进程的该变量会被改写）；下次启动仍按环境变量或启动参数 |
 | `GPT_SOVITS_DEVICE` | | | 设为 `cpu` 时等同于 `GPT_SOVITS_PRECISION=cpu`，同样只是启动时的默认值 |
-| `GALGAME2VOICE_HOST` / `GALGAME2VOICE_PORT` | ✓ | `127.0.0.1` / `8080` | 直接运行 `python -m galgame2voice.main` 或 Docker 时的监听地址；启动脚本请用 `--host` / `--port` |
+| `GALGAME2VOICE_HOST` / `GALGAME2VOICE_PORT` | ✓ | `127.0.0.1` / `8080` | 监听地址和端口。`python -m galgame2voice.main`、启动脚本、便携版和 Docker 都会读取；启动参数 `--host` / `--port` 优先 |
 | `GALGAME2VOICE_AUTH_DISABLED` | ✓ | `1` | 设为 `0` 启用访问令牌。本机默认免令牌，Docker 默认开启 |
 | `GALGAME2VOICE_CONSOLE_TOKEN` | ✓ | 自动生成 | 访问令牌；留空时首次启动生成并写入 `data/.console_token` |
-| `GALGAME2VOICE_AUDIO_RETENTION_MINUTES` | ✓ | `30` | 临时合成音频的保留时间（分钟） |
+| `GALGAME2VOICE_AUDIO_RETENTION_MINUTES` | ✓ | `30` | 临时合成音频保留时间（分钟）的初始值，只在首次启动建立数据库时写入；之后以网页「语音服务」中的「音频缓存保留时间」为准 |
 | `GALGAME2VOICE_PRIVACY_MODE` | ✓ | `false` | 关闭语音缓存：合成结果不写入也不复用磁盘缓存 |
-| `GALGAME2VOICE_LOG_LEVEL` | ✓ | `INFO` | 日志级别 |
-| `GALGAME2VOICE_ENABLE_DOCS` | ✓ | `false` | 开放 `/docs` 接口文档 |
+| `GALGAME2VOICE_LOG_LEVEL` | ✓ | `INFO` | 日志级别：`DEBUG`、`INFO`、`WARNING`、`ERROR` 或 `CRITICAL`，不区分大小写；无法识别时按 `INFO` 记录，并在日志开头提示 |
+| `GALGAME2VOICE_ENABLE_DOCS` | ✓ | `false` | 开放 `/docs`、`/redoc` 接口文档和 `/openapi.json`；关闭时三者都不提供 |
 | `GALGAME2VOICE_SKIP_MEM_CHECK` | | | 设为 `1` 跳过切换角色前的内存检查；`0`、`false` 或留空时照常检查 |
 
 ## 常见问题

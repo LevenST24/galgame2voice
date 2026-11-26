@@ -60,9 +60,22 @@ let passed = 0;
   });
   await test.controller.browse();
   assert.equal(test.dom.gSovitsDirectory.value, 'D:/chosen');
-  assert.equal(requests.length, 1);
+  // A picked folder saves itself right after the pick.
+  assert.equal(requests.length, 2);
   assert.equal(requests[0].body.file_type, 'directory');
+  assert.deepEqual(requests[1], { url: '/api/system/sovits-directory', body: { directory: 'D:/chosen' } });
   assert.equal(test.dom.gBrowseSovitsDirectory.disabled, false);
+  passed++;
+}
+{
+  // The dialog could not open at all: say so instead of looking like a cancel.
+  const test = setup(async () => response({ selected_path: '', picker_unavailable: true }));
+  test.dom.gSovitsDirectory.value = 'keep current';
+  await test.controller.browse();
+  assert.equal(test.dom.gSovitsDirectory.value, 'keep current');
+  assert.equal(test.notifications.length, 1);
+  assert.match(test.notifications[0][0], /无法打开文件夹选择窗口/);
+  assert.match(test.notifications[0][0], /粘贴/);
   passed++;
 }
 {

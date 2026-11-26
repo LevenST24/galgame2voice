@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { state, loadState, saveState, getStorageStatus, onStorageStatus, getDamagedSessionData, resumeLocalSaving,
   exportSessionData, prepareSessionImport, applySessionImport, deleteSession, getSession,
-  DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL } from '../frontend/src/store.js';
+  DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL, GREETING, LEGACY_GREETINGS } from '../frontend/src/store.js';
 import { deletePersistedSession, persistSession } from '../frontend/src/session_api.js';
 import { normalizeSnapshot } from '../frontend/src/session_data.js';
 import { initSessionBackup } from '../frontend/src/controllers/session_backup.js';
@@ -325,6 +325,37 @@ function importDom() {
   assert.ok(toasts.some((message) => message === '导入结果未确认，请刷新页面查看会话是否已经导入；再次导入同一个文件不会重复写入。'));
   assert.equal(imported(), 1);
   assert.deepEqual(state.sessions.map((session) => session.id).slice(1), before);
+  passed++;
+}
+
+// the starter how-to line in a browser-made backup is not written into the database as a reply
+{
+  storage(saved()); loadState();
+  const { choose, clearToasts } = importDom();
+  let sent = null;
+  globalThis.fetch = async (url, options = {}) => {
+    if (String(url) === '/api/chat/import' && options.method === 'POST') {
+      sent = JSON.parse(options.body).sessions;
+      return { ok: true, status: 200, json: async () => ({ status: 'ok', count: 1 }) };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  const withGreeting = (content, extra = { noVoice: true }) => JSON.stringify({
+    format: 'galgame2voice.chat', version: 1, global: {},
+    sessions: [{ id: 's_g', title: '带欢迎语', createdAt: 1, updatedAt: 2, settings: {}, messages: [
+      { id: 'm0', role: 'assistant', content, ts: 1, ...extra },
+      { id: 'm1', role: 'user', content: '你好', ts: 2 },
+      { id: 'm2', role: 'assistant', content: '你好呀。', ts: 3 },
+    ] }],
+  });
+  await choose(withGreeting(GREETING));
+  assert.deepEqual(sent[0].messages.map((message) => message.content), ['你好', '你好呀。']);
+  await choose(withGreeting(LEGACY_GREETINGS[0]));
+  assert.deepEqual(sent[0].messages.map((message) => message.content), ['你好', '你好呀。']);
+  // The same words said by the character (not the starter line) are real history and stay.
+  await choose(withGreeting(GREETING, {}));
+  assert.deepEqual(sent[0].messages.map((message) => message.content), [GREETING, '你好', '你好呀。']);
+  clearToasts();
   passed++;
 }
 

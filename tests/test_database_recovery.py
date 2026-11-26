@@ -542,3 +542,20 @@ class TestDatabaseSchemaMigrations:
             row = await cur.fetchone()
             assert row is not None
             assert row[0] == "你好夏目"
+
+
+def test_recovery_lists_backups_by_the_time_they_were_taken(tmp_path, monkeypatch, capsys):
+    database, selected, _originals = recovery_fixture(tmp_path)
+    monkeypatch.setattr(database_recovery, "get_database_path", lambda: str(database))
+    monkeypatch.setattr("builtins.input", lambda _prompt: "")
+    assert database_recovery.recover_interactively() == 0
+    out = capsys.readouterr().out
+    stamp = selected.name.rpartition(".bak_")[2]
+    expected = f"{int(stamp[0:4])}年{int(stamp[4:6])}月{int(stamp[6:8])}日 {stamp[9:11]}:{stamp[11:13]}:{stamp[13:15]}"
+    assert f"1. {expected}  (" in out
+    assert ".bak_" not in out
+
+
+def test_describe_backup_falls_back_to_the_file_name(tmp_path):
+    odd = tmp_path / "chat.db.bak_manual"
+    assert database_recovery.describe_backup(odd) == "chat.db.bak_manual"

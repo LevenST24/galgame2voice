@@ -16,6 +16,7 @@ class TelemetrySettingsController {
     this.telemetryController = null;
     this.engineStatusRevision = 0;
     this.lastEngineState = null;
+    this.lockedForLoading = false;
     this.unsubscribeVisibility = null;
     this.disposed = false;
     this.cleanups = [];
@@ -141,9 +142,32 @@ class TelemetrySettingsController {
       this.dom.gDashSovitsUrl.textContent = status.base_url;
     }
     const button = this.dom.gBtnRestartSovits;
-    const idle = button && !button.disabled && !this.coordinator.isRestarting?.();
-    if (idle && (ready || status.state === 'failed' || status.state === 'unavailable')) {
-      const label = ready ? '重启 SoVITS 引擎' : '启动 SoVITS 引擎';
+    const restarting = Boolean(this.coordinator.isRestarting?.());
+    const restartable = ready || (checking && status.was_ready === true);
+    // While a fresh launch is still loading (started from another tab or before a reload),
+    // pressing 启动/重启 would kill it and load from scratch. Lock both buttons until it
+    // settles; a slow or unconfirmed load unlocks them so a stuck engine can be restarted.
+    const lock = !restarting && status.state === 'starting';
+    if (lock && !this.lockedForLoading) {
+      this.lockedForLoading = true;
+      if (button) {
+        button.disabled = true;
+        button.innerHTML = '<svg class="icon"><use href="#i-play"></use></svg><span>正在加载模型…</span>';
+      }
+      if (this.dom.gBtnTogglePrecision) this.dom.gBtnTogglePrecision.disabled = true;
+    } else if (!lock && this.lockedForLoading) {
+      this.lockedForLoading = false;
+      if (button && !restarting) {
+        button.disabled = false;
+        if (!(restartable || status.state === 'failed' || status.state === 'unavailable')) {
+          button.innerHTML = '<svg class="icon"><use href="#i-play"></use></svg><span>重启 SoVITS 引擎</span>';
+        }
+      }
+      if (this.dom.gBtnTogglePrecision && !restarting) this.dom.gBtnTogglePrecision.disabled = false;
+    }
+    const idle = button && !button.disabled && !restarting;
+    if (idle && (restartable || status.state === 'failed' || status.state === 'unavailable')) {
+      const label = restartable ? '重启 SoVITS 引擎' : '启动 SoVITS 引擎';
       button.innerHTML = `<svg class="icon"><use href="#i-play"></use></svg><span>${label}</span>`;
     }
   }

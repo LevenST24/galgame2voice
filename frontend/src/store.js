@@ -1,6 +1,7 @@
 // @ts-check
 // 会话状态管理 + localStorage 持久化（含会话级设置与全局设置）
 import { normalizeSnapshot, portableSnapshot } from './session_data.js';
+import { splitGraphemes } from './adv/graphemes.js';
 
 /**
  * @typedef {import('./session_data.js').DialogueLine} DialogueLine
@@ -122,6 +123,15 @@ export const LEGACY_GREETINGS = [
   '你好，我是 **Gal2Voice**。\n\n支持语音输入与朗读回复：点输入框旁的麦克风说话会自动转成文字，点顶栏喇叭可以朗读我的回复。右上角`会话设置`可配置专属人设与采样参数，侧边栏底部齿轮可切换音色与对话模型。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。',
   '你好，我是 **Gal2Voice**。\n\n支持语音输入与朗读回复：点输入框旁的麦克风说话会自动转成文字，点顶栏喇叭可以朗读我的回复。右上角`会话设置`可绑定角色音色并配置人设与采样参数，侧边栏底部齿轮可切换对话模型。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。',
 ];
+
+/**
+ * The how-to line a new session opens with. It lives only in the browser, never in the database.
+ * @param {{ role?: string, content?: string, noVoice?: boolean } | null | undefined} message
+ */
+export function isStarterGreeting(message) {
+  return Boolean(message && message.noVoice && message.role === 'assistant'
+    && (message.content === GREETING || LEGACY_GREETINGS.includes(/** @type {string} */ (message.content))));
+}
 
 /**
  * @template {ChatSession | null | undefined} T
@@ -311,10 +321,10 @@ export function loadState() {
 
 /**
  * @param {Array<{ id?: number | string | null, name?: string | null }>} [profiles]
- * @returns {string}
+ * @returns {PortableChatSnapshot}
  */
-export function exportSessionData(profiles = []) {
-  const portable = portableSnapshot(normalizeSnapshot(snapshot(), DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL));
+export function buildLocalBackupSnapshot(profiles = []) {
+  const local = normalizeSnapshot(snapshot(), DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL);
   const nameById = new Map();
   if (Array.isArray(profiles)) {
     for (const profile of profiles) {
@@ -325,7 +335,7 @@ export function exportSessionData(profiles = []) {
       }
     }
   }
-  for (const session of portable.sessions) {
+  for (const session of local.sessions) {
     const voiceId = session.settings.voiceProfileId;
     const resolvedName = voiceId !== null ? nameById.get(voiceId) : undefined;
     if (resolvedName) {
@@ -334,6 +344,15 @@ export function exportSessionData(profiles = []) {
       delete session.characterName;
     }
   }
+  return local;
+}
+
+/**
+ * @param {Array<{ id?: number | string | null, name?: string | null }>} [profiles]
+ * @returns {string}
+ */
+export function exportSessionData(profiles = []) {
+  const portable = portableSnapshot(buildLocalBackupSnapshot(profiles));
   return JSON.stringify({
     format: 'galgame2voice.chat',
     version: 1,
@@ -453,12 +472,21 @@ export function createSession(title = '新对话') {
 }
 
 /**
+ * A copy of the sessions with the most recently used first, the order home uses.
+ * @param {ChatSession[]} sessions
+ * @returns {ChatSession[]}
+ */
+export function sessionsByRecent(sessions) {
+  return [...sessions].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+}
+
+/**
  * @param {string} id
  * @returns {void}
  */
 export function deleteSession(id) {
   state.sessions = state.sessions.filter((s) => s.id !== id);
-  if (state.activeId === id) state.activeId = state.sessions[0]?.id ?? null;
+  if (state.activeId === id) state.activeId = sessionsByRecent(state.sessions)[0]?.id ?? null;
   if (!state.sessions.length) makeStarterSession();
   saveState();
 }
@@ -493,7 +521,9 @@ export function autoTitle(session) {
   if (!firstUser) return false;
   const t = firstUser.content.replace(/[\r\n\t]+/g, ' ').trim();
   if (!t) return false;
-  session.title = t.length > 20 ? `${t.slice(0, 20)}…` : t;
+  // Count whole characters so an emoji at the cut is never split in half.
+  const chars = splitGraphemes(t);
+  session.title = chars.length > 20 ? `${chars.slice(0, 20).join('')}…` : t;
   return true;
 }
 

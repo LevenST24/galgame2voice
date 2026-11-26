@@ -94,7 +94,7 @@ test('delete button follows real voice selection and recomputes after failed del
   }
 });
 
-test('creating or deleting a voice profile bumps session updatedAt for complete chat backup', async (t) => {
+test('voice create and delete keep complete chat backups consistent', async (t) => {
   t.mock.method(console, 'error', () => {});
   globalThis.document = { getElementById: () => null, createElement: () => element() };
   globalThis.window = { confirm: () => true };
@@ -132,13 +132,15 @@ test('creating or deleting a voice profile bumps session updatedAt for complete 
   initVoiceSettings(dom, {});
   await loadSessionVoiceSelect(s);
 
-  // 1. Delete bound voice while /api/chat/sessions fails -> backup must preserve unbound null.
+  // 1. Delete the bound voice. The server unbinds its own copy in the same delete
+  //    and keeps its updated_at, so the chat keeps its place and the backup agrees.
   await dom.sVoiceDelete.click();
   assert.equal(s.settings.voiceProfileId, null);
+  assert.equal(s.updatedAt, serverUpdatedAt, 'deleting a voice must not make its chats the most recent');
   let merged = mergeChatBackup({
     format: 'galgame2voice.chat', version: 1,
     sessions: [{ id: s.id, title: s.title, createdAt: 1, updatedAt: serverUpdatedAt,
-      settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: 2 }, messages: [] }],
+      settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null }, messages: [] }],
   }, JSON.parse(exportSessionData()));
   assert.equal(JSON.parse(merged.content).sessions[0].settings.voiceProfileId, null);
 

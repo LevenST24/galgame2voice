@@ -5,6 +5,7 @@ Provider CRUD and API key masking module for SQLite persistence in galgame2voice
 import json
 import logging
 from typing import Any
+from urllib.parse import urlparse
 
 import aiosqlite
 
@@ -36,6 +37,7 @@ __all__ = [
     "update_provider",
     "set_active_provider",
     "delete_provider",
+    "clear_provider_api_key",
 ]
 
 
@@ -66,6 +68,22 @@ def is_masked_key(key: str | None) -> bool:
     if not key:
         return False
     return "****" in str(key)
+
+
+def same_url_origin(url_a: str | None, url_b: str | None) -> bool:
+    """Return True if two URLs share the same scheme, host, and effective port."""
+    origins = []
+    for raw in (url_a, url_b):
+        try:
+            p = urlparse(str(raw or "").strip())
+            port = p.port
+        except ValueError:
+            return False
+        scheme, host = p.scheme.lower(), (p.hostname or "").lower().rstrip(".")
+        if not scheme or not host:
+            return False
+        origins.append((scheme, host, port if port is not None else {"http": 80, "https": 443}.get(scheme)))
+    return origins[0] == origins[1]
 
 
 def mask_custom_headers(headers: dict[str, Any] | None) -> dict[str, Any]:
@@ -188,6 +206,15 @@ async def update_provider(conn: aiosqlite.Connection, provider_id: str, updates:
     up_dict = updates.model_dump(exclude_unset=True)
     if up_dict.keys() - _UPDATE_COLUMNS:
         raise ValueError("Unsupported provider update columns")
+    new_key = str(up_dict.get("api_key") or "").strip()
+    new_url = up_dict.get("api_base_url")
+    if (provider_id == "custom" and current.api_key and new_url and current.api_base_url
+            and (not new_key or is_masked_key(new_key)) and not same_url_origin(new_url, current.api_base_url)):
+        # A saved key belongs to the address it was saved with. Moving to a new address
+        # without a new key drops it, so it is never sent to the new host; the
+        # connectivity test applies the same rule.
+        fields.append("api_key = ?")
+        values.append("")
 
     for k, v in up_dict.items():
         if k == "reasoning_effort":
@@ -242,6 +269,20 @@ async def set_active_provider(conn: aiosqlite.Connection, provider_id: str) -> b
         if cur.rowcount == 0:
             await conn.execute("INSERT OR IGNORE INTO settings (id, active_provider_id) VALUES (1, ?);", (provider_id,))
     return True
+
+
+async def clear_provider_api_key(conn: aiosqlite.Connection, provider_id: str) -> bool:
+    """Removes the saved API key of a provider, keeping the rest of its settings.
+
+    update_provider() treats an empty key as "keep the saved one", so this is the
+    only way to take a key back out of the database.
+    """
+    async with immediate_transaction(conn):
+        cursor = await conn.execute(
+            "UPDATE providers SET api_key = '', updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
+            (provider_id,),
+        )
+    return cursor.rowcount > 0
 
 
 async def delete_provider(conn: aiosqlite.Connection, provider_id: str) -> bool:

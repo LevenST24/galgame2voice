@@ -1,10 +1,28 @@
 // @ts-check
 import { requestJson } from './api.js';
+import { splitGraphemes } from './adv/graphemes.js';
 import { normalizeSnapshot, portableSnapshot } from './session_data.js';
-import { exportSessionData, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL, GREETING, LEGACY_GREETINGS, uid } from './store.js';
+import { buildLocalBackupSnapshot, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL, GREETING, LEGACY_GREETINGS, uid } from './store.js';
 
 const normalize = data => portableSnapshot(normalizeSnapshot(data, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL));
+
+// A question that failed or was stopped before any reply stays in the browser for 重新发送,
+// but the server drops that user row. Compare the rest, so the session is not copied whole.
+function lastQuestionFailed(session) {
+  const last = session.messages.at(-1);
+  return last?.role === 'user' && Boolean(last.failed);
+}
 const messageKey = message => JSON.stringify([message.role, message.content]);
+
+/** @param {string} title */
+function trimCopyTitle(title, maxUnits = 180) {
+  let result = '';
+  for (const grapheme of splitGraphemes(title)) {
+    if (result.length + grapheme.length > maxUnits) break;
+    result += grapheme;
+  }
+  return result;
+}
 
 // Match occurrences in order, never a set: repeated identical lines are real messages.
 function containsLocalMessages(server, local) {
@@ -27,6 +45,9 @@ export function mergeChatBackup(serverData, localData) {
   }
   const server = normalize(serverData);
   const local = normalize(localData);
+  // portableSnapshot drops the failed flag, so read it from the browser data itself.
+  const failedLast = new Set(normalizeSnapshot(localData, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL)
+    .sessions.filter(lastQuestionFailed).map(session => session.id));
   const byId = new Map(server.sessions.map(session => [session.id, session]));
   let browserCopies = 0;
   for (const session of local.sessions) {
@@ -34,7 +55,8 @@ export function mergeChatBackup(serverData, localData) {
     if (!stored) {
       server.sessions.push(session);
       byId.set(session.id, session);
-    } else if (containsLocalMessages(stored.messages, session.messages)) {
+    } else if (containsLocalMessages(stored.messages,
+      failedLast.has(session.id) ? session.messages.slice(0, -1) : session.messages)) {
       // These lines are already in the database. Keep the settings saved later, including the voice binding.
       if (session.updatedAt > stored.updatedAt) {
         const sameVoice = session.settings.voiceProfileId === stored.settings.voiceProfileId;
@@ -51,7 +73,7 @@ export function mergeChatBackup(serverData, localData) {
       // Keep the complete local sequence separately so neither version is lost.
       let copyId;
       do { copyId = uid('s_browser_backup'); } while (byId.has(copyId));
-      const copy = { ...session, id: copyId, title: `${session.title.slice(0, 180)}（浏览器副本）` };
+      const copy = { ...session, id: copyId, title: `${trimCopyTitle(session.title)}（浏览器副本）` };
       server.sessions.push(copy);
       byId.set(copyId, copy);
       browserCopies++;
@@ -77,5 +99,5 @@ export function mergeChatBackup(serverData, localData) {
  */
 export async function exportCompleteChatBackup(profiles = []) {
   const server = await requestJson('/api/chat/export', {}, { timeoutMs: 60000 });
-  return mergeChatBackup(server, JSON.parse(exportSessionData(profiles)));
+  return mergeChatBackup(server, buildLocalBackupSnapshot(profiles));
 }

@@ -24,7 +24,8 @@ from pydantic import BaseModel, Field
 
 from galgame2voice import __version__
 from galgame2voice.services.engine_recovery import engine_failure_message
-from galgame2voice.services.engine_supervisor import get_engine_supervisor
+from galgame2voice.services.engine_supervisor import (get_engine_supervisor, get_managed_launch_for_url,
+    is_engine_launch_ready, mark_engine_launch_ready)
 from galgame2voice.services.telemetry_jobs import TelemetryJobs, default_telemetry_jobs
 from galgame2voice.services.sovits_installation import find_engine_python
 from galgame2voice.config import get_settings
@@ -210,13 +211,19 @@ async def _probe_gpt_sovits(base_url: str) -> GptSovitsTelemetry:
     try:
         from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client
         client = get_gpt_sovits_client()
+        before_launch = get_managed_launch_for_url(target)
 
         if target and target != client.base_url.rstrip("/"):
-            return await _probe_custom_gpt_sovits_target(target, base_url, t0)
+            telemetry = await _probe_custom_gpt_sovits_target(target, base_url, t0)
+            if telemetry.status == "reachable":
+                mark_engine_launch_ready(before_launch, target)
+            return telemetry
 
         result = await client.check_health()
         latency = round((time.perf_counter() - t0) * 1000, 2)
         reachable = bool(result.get("connected"))
+        if reachable:
+            mark_engine_launch_ready(before_launch, target)
         raw_err = result.get("error")
         safe_err = sanitize_error_detail(raw_err) if raw_err else None
         return GptSovitsTelemetry(
@@ -335,7 +342,11 @@ def _collect_hardware_telemetry_sync(
     gpu_avail, gpu_name = gpu_snapshot if gpu_snapshot is not None else _get_gpu_telemetry_cached()
     settings = get_settings()
     project_root = settings.project_root
-    sovits_dir = read_sovits_directory(project_root) or project_root
+    try:
+        sovits_dir = read_sovits_directory(project_root) or project_root
+    except (OSError, ValueError, UnicodeError):
+        # The directory card explains an unreadable hint; telemetry must still load.
+        sovits_dir = project_root
 
     device, is_half, source = resolve_initial_device_and_half(
         project_root, sovits_dir, db_path=settings.db_path, gpu_available=gpu_avail,
@@ -638,6 +649,7 @@ async def engine_status_endpoint(request: Request = None) -> dict[str, Any]:  # 
     if launch is not before_launch:
         return _engine_state(endpoint, "checking", "引擎进程已变更，正在重新核对服务状态。请稍候，无需再次重启。")
     if reachable:
+        mark_engine_launch_ready(launch)
         return _engine_state(endpoint, "ready", "语音引擎已就绪。可在“角色与会话”中选择音色。")
     if launch is not None and launch.process.poll() is not None:
         message = await asyncio.to_thread(engine_failure_message, supervisor.engine_log_path())
@@ -646,6 +658,10 @@ async def engine_status_endpoint(request: Request = None) -> dict[str, Any]:  # 
         if launch is not supervisor.get_managed_launch(endpoint):
             return _engine_state(endpoint, "checking", "引擎进程已变更，正在重新核对服务状态。请稍候，无需再次重启。")
         return _engine_state(endpoint, "failed", message)
+    if is_engine_launch_ready(launch):
+        return {**_engine_state(endpoint, "checking",
+                "语音引擎此前已就绪，现在暂时没有响应，可能正在合成较长的语音。请稍后点击「刷新状态」；若一直没有响应，可重启引擎。文字聊天可继续使用。"),
+                "was_ready": True}
     if launch is not None:
         started_at = launch.started_at
         if started_at is not None and supervisor.monotonic() - started_at >= 180:

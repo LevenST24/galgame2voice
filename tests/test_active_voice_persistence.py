@@ -214,7 +214,7 @@ async def test_delete_active_voice_profile_clears_settings_and_manager(stack, mo
         # 1. Deleting an inactive profile must keep active settings and active manager intact
         del_inactive = await client.delete(f"/api/voice/profiles/{stack.new.id}")
         assert del_inactive.status_code == 200, del_inactive.text
-        assert del_inactive.json() == {"status": "deleted", "profile_id": stack.new.id}
+        assert del_inactive.json() == {"status": "deleted", "profile_id": stack.new.id, "moved_to": None}
 
         assert stack.manager.active_profile is not None
         assert stack.manager.active_profile.id == stack.old.id
@@ -229,7 +229,7 @@ async def test_delete_active_voice_profile_clears_settings_and_manager(stack, mo
         # 2. Deleting the currently active voice profile must clear settings and manager active profile
         resp = await client.delete(f"/api/voice/profiles/{stack.old.id}")
         assert resp.status_code == 200, resp.text
-        assert resp.json() == {"status": "deleted", "profile_id": stack.old.id}
+        assert resp.json() == {"status": "deleted", "profile_id": stack.old.id, "moved_to": None}
 
         # 3. /api/config must now report active_voice_profile_id as None (not a dangling ID)
         cfg_resp2 = await client.get("/api/config")
@@ -299,3 +299,16 @@ async def test_switch_active_profile_alias_and_crud_by_name(temp_db_path, mock_g
     success = await manager.switch_active_profile(sample_voice_profile["name"], persist=True)
     assert success is True
     assert manager.active_profile.name == sample_voice_profile["name"]
+
+
+def test_create_request_limits_match_the_persona_editor_and_the_synthesis_limit():
+    """Creating a voice accepts the same persona length as editing it, and no reference text TTS would cut."""
+    from pydantic import ValidationError
+
+    from galgame2voice.routers.voice import VoiceProfileCreateRequest
+
+    base = {"name": "v", "gpt_weights_path": "a.ckpt", "sovits_weights_path": "a.pth"}
+    assert VoiceProfileCreateRequest(**base, system_prompt="人" * 20000).system_prompt
+    for field in ("prompt_text", "refer_text"):
+        with pytest.raises(ValidationError):
+            VoiceProfileCreateRequest(**base, **{field: "あ" * 501})

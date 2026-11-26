@@ -76,6 +76,7 @@ _TTS_NUMERIC_RANGES = {
     "top_k": (1, 100, int),
     "top_p": (0.0, 1.0, float),
     "temperature": (0.0, 2.0, float),
+    "temp": (0.0, 2.0, float),
     "batch_size": (1, 16, int),
     "fragment_interval": (0.0, 5.0, float),
     "seed": (-1, 2**31 - 1, int),
@@ -97,7 +98,7 @@ _TTS_STRING_MAXLEN = {
 }
 
 _ALLOWED_TTS_KEYS = set(_TTS_NUMERIC_RANGES.keys()) | set(_TTS_STRING_MAXLEN.keys()) | {
-    "preset", "temp", "ai_adaptive_voice", "aiAdaptiveVoice",
+    "preset", "ai_adaptive_voice", "aiAdaptiveVoice",
     # 内部音色路由键：routers/voice.py 与 tts_service.py 都会把它写进 options，
     # 不入白名单会被自己的边界校验判为非法参数。
     "voice_profile_id",
@@ -128,7 +129,7 @@ def validate_user_tts_options(options: dict[str, Any] | None = None) -> dict[str
             low, high, caster = _TTS_NUMERIC_RANGES[key]
             try:
                 num = caster(value)
-            except (TypeError, ValueError) as exc:
+            except (TypeError, ValueError, OverflowError) as exc:
                 raise ValueError(f"TTS 参数 {key} 必须是数字") from exc
             if not (low <= num <= high):
                 raise ValueError(f"TTS 参数 {key} 超出允许范围 [{low}, {high}]")
@@ -186,7 +187,8 @@ def resolve_tts_options(options: dict[str, Any] | None = None) -> dict[str, Any]
         low, high, caster = _TTS_NUMERIC_RANGES[key]
         try:
             num = caster(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError: int(inf) or float() of an integer too large for a float.
             num = caster(fallback)
         return max(low, min(high, num))
 
