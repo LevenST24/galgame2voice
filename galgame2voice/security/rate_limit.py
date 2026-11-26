@@ -55,10 +55,14 @@ class SlidingWindowCounter:
         self.window = window_seconds
         self.events: Deque[float] = deque()
 
-    def allow(self, now: float) -> bool:
+    def has_room(self, now: float) -> bool:
+        """Reports whether one more request fits, without recording it."""
         while self.events and now - self.events[0] >= self.window:
             self.events.popleft()
-        if len(self.events) >= self.limit:
+        return len(self.events) < self.limit
+
+    def allow(self, now: float) -> bool:
+        if not self.has_room(now):
             return False
         self.events.append(now)
         return True
@@ -92,30 +96,26 @@ class RateLimitMiddleware:
         now = time.monotonic()
         ip = self._client_ip(scope)
 
-        if not self.global_counter.allow(now):
-            await self._reject(send)
-            return
-
         is_protected = path.startswith(_PROTECTED_PREFIXES) or (
             path.startswith(_ADMIN_STRICT_PREFIXES)
             and str(scope.get("method", "GET")).upper() in _MUTATING_METHODS
         )
-        if is_protected:
-            counter = self.protected_counters.get(ip)
-            if counter is None:
-                if len(self.protected_counters) >= _MAX_TRACKED_IPS:
-                    _evict_oldest(self.protected_counters)
-                counter = self.protected_counters[ip] = SlidingWindowCounter(_PROTECTED_LIMIT)
-        else:
-            counter = self.ip_counters.get(ip)
-            if counter is None:
-                if len(self.ip_counters) >= _MAX_TRACKED_IPS:
-                    _evict_oldest(self.ip_counters)
-                counter = self.ip_counters[ip] = SlidingWindowCounter(_DEFAULT_IP_LIMIT)
+        counters = self.protected_counters if is_protected else self.ip_counters
+        limit = _PROTECTED_LIMIT if is_protected else _DEFAULT_IP_LIMIT
+        counter = counters.get(ip)
 
-        if not counter.allow(now):
+        # Check both budgets before mutating either or tracking a new IP:
+        # a rejected request must not spend the other budget or churn the IP table.
+        if not ((counter is None or counter.has_room(now)) and self.global_counter.has_room(now)):
             await self._reject(send)
             return
+
+        if counter is None:
+            if len(counters) >= _MAX_TRACKED_IPS:
+                _evict_oldest(counters)
+            counter = counters[ip] = SlidingWindowCounter(limit)
+        counter.events.append(now)
+        self.global_counter.events.append(now)
 
         await self.app(scope, receive, send)
 
