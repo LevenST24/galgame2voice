@@ -7,9 +7,10 @@ import re
 import sys
 import time
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from fastapi import HTTPException
+import httpx
 import pytest
 
 from galgame2voice.config import get_settings
@@ -29,6 +30,9 @@ def engine(tmp_path, monkeypatch):
     directory = root / "engine"
     directory.mkdir()
     (directory / "api_v2.py").write_text("# test marker, never run")
+    (directory / "GPT_SoVITS" / "configs").mkdir(parents=True)
+    (directory / "GPT_SoVITS" / "configs" / "tts_infer.yaml").write_text("custom:\n  device: cuda\n  is_half: true\n")
+    (directory / "GPT_SoVITS" / "pretrained_models" / "chinese-hubert-base").mkdir(parents=True)
     (root / "data" / "sovits_dir.txt").write_text(str(directory))
     monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", None)
     monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", None)
@@ -82,6 +86,7 @@ async def test_restart_starts_without_trusting_a_stale_pid(engine, monkeypatch):
 @pytest.mark.asyncio
 async def test_restart_does_not_touch_external_process_or_config(engine, monkeypatch):
     monkeypatch.setattr(run_server, "is_port_in_use", lambda *args: True)
+    monkeypatch.setattr(health, "_answers_like_sovits", AsyncMock(return_value=True))
     spawn = MagicMock()
     monkeypatch.setattr(run_server, "_spawn_sovits_process", spawn)
     changed = False
@@ -112,14 +117,16 @@ async def test_restart_stops_only_owned_live_tree(engine, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_invalid_directory_preserves_running_engine(engine, monkeypatch):
+@pytest.mark.parametrize(("rel", "keyword"), [("api_v2.py", "重新选择"), ("GPT_SoVITS/configs/tts_infer.yaml", "可能还没解压完")])
+async def test_invalid_directory_preserves_running_engine(engine, monkeypatch, rel, keyword):
     root, directory = engine
-    (directory / "api_v2.py").unlink()
+    (directory / rel).unlink()
     terminate = MagicMock()
     monkeypatch.setattr(run_server, "terminate_process_tree", terminate)
+    monkeypatch.setattr(run_server, "_spawn_sovits_process", MagicMock(return_value=MagicMock(poll=lambda: None)))
     with pytest.raises(HTTPException) as error:
         await health.restart_sovits_endpoint(None)
-    assert error.value.status_code == 400 and "重新选择" in error.value.detail
+    assert error.value.status_code == 400 and keyword in error.value.detail
     terminate.assert_not_called()
 
 
@@ -326,3 +333,37 @@ async def test_restart_invalid_sovits_url_returns_chinese_guidance(monkeypatch):
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail == "语音引擎服务地址无效。请在「语音服务」填写以 http:// 或 https:// 开头的完整地址并保存。"
     assert "invalid GPT-SoVITS URL" not in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("port", "expected", "forbidden"), [(9880, "9881", "改回"), (19230, "改回 http://127.0.0.1:9880", "9881")])
+async def test_restart_on_a_port_held_by_another_program_does_not_call_it_an_engine(engine, monkeypatch, port, expected, forbidden):
+    """A busy port whose server does not answer like api_v2 must not be reported as a running engine."""
+    monkeypatch.setattr(health, "resolve_effective_sovits_endpoint", AsyncMock(return_value=parse_sovits_endpoint(f"http://127.0.0.1:{port}", source="db")))
+    monkeypatch.setattr(run_server, "is_port_in_use", lambda *args: True)
+    monkeypatch.setattr(health, "_answers_like_sovits", AsyncMock(return_value=False))
+    spawn = MagicMock()
+    monkeypatch.setattr(run_server, "_spawn_sovits_process", spawn)
+    with pytest.raises(HTTPException) as error:
+        await health.restart_sovits_endpoint(None)
+    assert error.value.status_code == 409
+    assert "不是语音引擎" in error.value.detail and "保存全局配置" in error.value.detail
+    assert expected in error.value.detail and forbidden not in error.value.detail and "其他窗口" not in error.value.detail
+    spawn.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("status_code", "expected"), [(400, True), (200, True), (404, False)])
+async def test_answers_like_sovits_reads_the_control_endpoint(monkeypatch, status_code, expected):
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.path)
+        return httpx.Response(status_code)
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(health.httpx, "AsyncClient",
+                        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+    assert await health._answers_like_sovits("http://127.0.0.1:8080/") is expected
+    assert seen == ["/control"]
+

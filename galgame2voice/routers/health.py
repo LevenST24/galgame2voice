@@ -27,7 +27,7 @@ from galgame2voice.services.engine_recovery import engine_failure_message
 from galgame2voice.services.engine_supervisor import (get_engine_supervisor, get_managed_launch_for_url,
     is_engine_launch_ready, mark_engine_launch_ready)
 from galgame2voice.services.telemetry_jobs import TelemetryJobs, default_telemetry_jobs
-from galgame2voice.services.sovits_installation import find_engine_python
+from galgame2voice.services.sovits_installation import _incomplete_message, find_engine_python, missing_engine_parts
 from galgame2voice.config import get_settings
 from galgame2voice.database.session import get_db
 from galgame2voice.database import crud
@@ -730,6 +730,18 @@ async def restart_sovits_endpoint(payload: RestartSovitsPayload | None = None) -
         raise HTTPException(status_code=500, detail="无法准备语音引擎。请确认程序和引擎目录可写，在「语音服务」重新选择完整引擎包后再试。") from exc
 
 
+async def _answers_like_sovits(base_url: str) -> bool:
+    """api_v2 answers GET /control without a command with 400; other servers on the port do not."""
+    from galgame2voice.services.gpt_sovits_client import HEALTH_TIMEOUT
+
+    try:
+        async with httpx.AsyncClient(trust_env=False, timeout=HEALTH_TIMEOUT) as one_shot:
+            response = await one_shot.get(f"{base_url.rstrip('/')}/control")
+    except httpx.HTTPError:
+        return False
+    return response.status_code in (status.HTTP_200_OK, status.HTTP_400_BAD_REQUEST)
+
+
 async def _restart_local_engine(endpoint: SovitsEndpoint, payload: RestartSovitsPayload | None) -> dict[str, Any]:
     settings = get_settings()
     sovits_dir = await asyncio.to_thread(_resolve_sovits_directory, settings.project_root)
@@ -737,13 +749,25 @@ async def _restart_local_engine(endpoint: SovitsEndpoint, payload: RestartSovits
         raise HTTPException(status_code=400, detail="所选文件夹缺少 api_v2.py。请完整解压引擎包，在「语音服务」重新选择引擎文件夹。")
     if getattr(sys, "frozen", False) and await asyncio.to_thread(find_engine_python, sovits_dir) is None:
         raise HTTPException(status_code=400, detail="所选引擎缺少自己的运行环境。请使用包含 runtime 的完整集成包，重新选择文件夹后启动。")
+    missing = await asyncio.to_thread(missing_engine_parts, sovits_dir)
+    if missing:
+        raise HTTPException(status_code=400, detail=_incomplete_message(missing))
 
     supervisor = get_engine_supervisor()
     owned = supervisor.get_owned_process()
     live_owned = owned is not None and owned.poll() is None
     owns_endpoint = live_owned and supervisor.get_managed_launch(endpoint) is not None
     if not owns_endpoint and await asyncio.to_thread(supervisor.is_port_in_use, endpoint.port, endpoint.host):
-        raise HTTPException(status_code=409, detail="语音引擎已在其他窗口运行，可直接使用。若需重启，请先关闭该引擎窗口，再在「运行状态」页启动引擎。")
+        if await _answers_like_sovits(endpoint.base_url):
+            raise HTTPException(status_code=409, detail="语音引擎已在其他窗口运行，可直接使用。若需重启，请先关闭该引擎窗口，再在「运行状态」页启动引擎。")
+        action = "改为其他未占用的本机地址（如 http://127.0.0.1:9881）" if endpoint.port == 9880 else f"改回 {DEFAULT_SOVITS_BASE_URL}"
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"端口 {endpoint.port} 已被别的程序占用，那里运行的不是语音引擎。请关闭占用这个端口的程序，"
+                f"或在「设置中心 → 语音服务」把「语音服务地址」{action}，点击「保存全局配置」后再启动。"
+            ),
+        )
     # Determine precision and device target only after validation and ownership checks.
     req_prec = str(payload.precision).strip().lower() if (payload and payload.precision) else None
     device, is_half, source = await _apply_sovits_precision_config(settings.project_root, sovits_dir, req_prec)

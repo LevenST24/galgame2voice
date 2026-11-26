@@ -69,6 +69,9 @@ def test_nested_gpt_sovits_discovery(tmp_path):
     inner = outer / "GPT-SoVITS-v2pro-20250604"
     inner.mkdir(parents=True, exist_ok=True)
     (inner / "api_v2.py").write_text("# mock api", encoding="utf-8")
+    (inner / "GPT_SoVITS" / "configs").mkdir(parents=True)
+    (inner / "GPT_SoVITS" / "configs" / "tts_infer.yaml").write_text("custom:\n  device: cuda\n  is_half: true\n")
+    (inner / "GPT_SoVITS" / "pretrained_models" / "chinese-hubert-base").mkdir(parents=True)
 
     # Probing outer folder should find inner folder with api_v2.py
     found = _check_sovits_dir(outer)

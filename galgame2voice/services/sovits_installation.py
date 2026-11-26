@@ -41,15 +41,42 @@ def find_engine_python(directory: Path) -> Path | None:
     return next((candidate for candidate in candidates if candidate.is_file()), None)
 
 
+def missing_engine_parts(directory: Path) -> list[str]:
+    """Parts every complete GPT-SoVITS package ships; a half-extracted folder lacks them."""
+    missing = []
+    engine = directory / "GPT_SoVITS"
+    if not any((folder / "configs" / "tts_infer.yaml").is_file() for folder in (engine, directory)):
+        missing.append("GPT_SoVITS/configs/tts_infer.yaml")
+    pretrained = engine / "pretrained_models"
+    try:
+        has_models = pretrained.is_dir() and any(pretrained.iterdir())
+    except OSError:
+        has_models = False
+    if not has_models:
+        missing.append("GPT_SoVITS/pretrained_models")
+    return missing
+
+
+def _incomplete_message(missing: list[str]) -> str:
+    return (
+        f"引擎文件夹不完整，缺少 {'、'.join(missing)}。可能还没解压完，"
+        "请等解压完成或重新完整解压 GPT-SoVITS 集成包后再选择。"
+    )
+
+
 def inspect_sovits_directory(project_root: Path) -> dict:
     try:
         directory = read_sovits_directory(project_root)
         if directory is None:
             return {"directory": "", "valid": False, "runtime_available": False, "message": "尚未设置本机语音引擎目录；连接远端引擎时无需设置。"}
         valid = directory.is_dir() and (directory / "api_v2.py").is_file()
+        missing = missing_engine_parts(directory) if valid else []
         runtime = find_engine_python(directory) is not None if valid else False
         message = "引擎目录有效，可在「运行状态」中启动或重启引擎。" if valid else "目录已失效或缺少 api_v2.py，请重新选择解压后的引擎文件夹。"
-        if valid and not runtime:
+        if missing:
+            valid = False
+            message = _incomplete_message(missing)
+        elif valid and not runtime:
             message = "目录有效，但未找到引擎自带的 Python；便携版需使用包含 runtime 的完整集成包。"
         return {"directory": str(directory), "valid": valid, "runtime_available": runtime, "message": message}
     except (OSError, ValueError, UnicodeError):
@@ -138,6 +165,9 @@ def save_sovits_directory(project_root: Path, value: str) -> dict:
             raise ValueError(detail)
         if getattr(sys, "frozen", False) and find_engine_python(directory) is None:
             raise ValueError("所选引擎缺少 runtime/python.exe，请选择包含运行环境的完整集成包。")
+        missing = missing_engine_parts(directory)
+        if missing:
+            raise ValueError(_incomplete_message(missing))
     except OSError as exc:
         raise ValueError(
             "无法打开所选文件夹。请确认路径正确、当前账户能打开这个文件夹（网络盘需先连接），再重新选择。"

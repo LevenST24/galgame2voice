@@ -23,6 +23,9 @@ def make_engine(path):
     (path / "runtime").mkdir()
     name = "python.exe" if installation.sys.platform == "win32" else "python"
     (path / "runtime" / name).write_bytes(b"test interpreter marker, never executed")
+    (path / "GPT_SoVITS" / "configs").mkdir(parents=True)
+    (path / "GPT_SoVITS" / "configs" / "tts_infer.yaml").write_text("custom:\n  device: cpu\n")
+    (path / "GPT_SoVITS" / "pretrained_models" / "chinese-hubert-base").mkdir(parents=True)
     return path
 
 
@@ -115,6 +118,24 @@ async def test_nested_engine_directory_names_the_only_child(tmp_path, monkeypatc
     assert installation.read_sovits_directory(root) is None
 
 
+def test_half_extracted_engine_is_refused_and_not_called_valid(tmp_path):
+    engine = make_engine(tmp_path / "engine")
+    shutil.rmtree(engine / "GPT_SoVITS" / "pretrained_models")
+    (engine / "GPT_SoVITS" / "pretrained_models").mkdir()
+    with pytest.raises(ValueError, match="引擎文件夹不完整，缺少 GPT_SoVITS/pretrained_models"):
+        installation.save_sovits_directory(tmp_path, "engine")
+    assert installation.read_sovits_directory(tmp_path) is None
+    assert run_server._check_sovits_dir(engine) is None
+    (engine / "GPT_SoVITS" / "configs" / "tts_infer.yaml").unlink()
+    with pytest.raises(ValueError, match="缺少 GPT_SoVITS/configs/tts_infer.yaml、GPT_SoVITS/pretrained_models"):
+        installation.save_sovits_directory(tmp_path, "engine")
+    # A folder saved before it was emptied must not be reported as a valid engine either.
+    installation.write_sovits_directory_hint(tmp_path, engine)
+    status = installation.inspect_sovits_directory(tmp_path)
+    assert status["valid"] is False
+    assert "可能还没解压完" in status["message"]
+
+
 @pytest.mark.asyncio
 async def test_engine_subdirectory_points_to_parent_without_saving(tmp_path, monkeypatch):
     root = tmp_path / "app"
@@ -122,7 +143,6 @@ async def test_engine_subdirectory_points_to_parent_without_saving(tmp_path, mon
     monkeypatch.setattr(get_settings(), "project_root", root)
     engine = make_engine(tmp_path / "GPT-SoVITS")
     subdir = engine / "GPT_SoVITS"
-    subdir.mkdir()
     unrelated = tmp_path / "unrelated"
     unrelated.mkdir()
     async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:

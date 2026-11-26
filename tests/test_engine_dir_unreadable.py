@@ -51,6 +51,9 @@ async def test_failure_writing_the_hint_still_asks_for_write_permission(tmp_path
     engine = tmp_path / "GPT-SoVITS"
     engine.mkdir()
     (engine / "api_v2.py").write_text("# marker\n", encoding="utf-8")
+    (engine / "GPT_SoVITS" / "configs").mkdir(parents=True)
+    (engine / "GPT_SoVITS" / "configs" / "tts_infer.yaml").write_text("custom:\n  device: cpu\n", encoding="utf-8")
+    (engine / "GPT_SoVITS" / "pretrained_models" / "chinese-hubert-base").mkdir(parents=True)
     result = await _save(str(engine))
     assert result.status_code == 500
     assert result.json()["detail"] == "无法保存引擎目录，请确认程序目录有写入权限。"
