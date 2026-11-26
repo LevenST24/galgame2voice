@@ -1391,6 +1391,31 @@ def _run_main(parsed: argparse.Namespace):
         print_lan_bind_needs_token(parsed.host)
         sys.exit(2)
 
+    if getattr(sys, "frozen", False) and parsed.port != 0 and is_port_in_use(parsed.port):
+        import http.client
+
+        conn = None
+        other_running = False
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", parsed.port, timeout=1.5)
+            conn.request("GET", "/api/health")
+            resp = conn.getresponse()
+            if resp.status == 200:
+                health = json.loads(resp.read(4096))
+                other_running = isinstance(health, dict) and health.get("app") == "galgame2voice"
+        except (OSError, ValueError, http.client.HTTPException):
+            pass
+        finally:
+            if conn is not None:
+                conn.close()
+        if other_running:
+            print(
+                f"[提示] 端口 {parsed.port} 上已经有另一个 Galgame2Voice 在运行（多半是旧版本，或另一个文件夹里的程序）。"
+            )
+            print("请先关掉它的黑色启动窗口，再重新双击这个文件夹里的「启动.bat」。")
+            print("两个同时开着时，这个会换到别的端口，浏览器里的本地记录和录音会看不到。")
+            sys.exit(1)
+
     setup_windows_job_object()
     setup_signal_handlers()
     setup_console_close_handler()

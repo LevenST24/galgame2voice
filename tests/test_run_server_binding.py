@@ -5,7 +5,10 @@ environment variable aliases and Pydantic Settings cache, preventing
 unauthenticated public network exposure or binding mismatch.
 """
 
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
+import threading
 from unittest.mock import MagicMock
 import pytest
 import uvicorn
@@ -348,6 +351,41 @@ def test_console_close_handler_is_registered_on_windows(monkeypatch):
             rs.kernel32().SetConsoleCtrlHandler(routine, False)
 
 
+@contextmanager
+def _busy_port(payload: bytes | None):
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if payload is not None:
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(payload)
+        def log_message(self, *args): return
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            yield server.server_address[1]
+        finally:
+            server.shutdown()
+
+
+def test_frozen_launcher_stops_when_galgame2voice_holds_port(isolated_launcher_env, monkeypatch, capsys):
+    monkeypatch.setattr(rs.sys, "frozen", True, raising=False)
+    monkeypatch.setenv("GALGAME2VOICE_AUTH_DISABLED", "0")
+    monkeypatch.setattr(rs, "ensure_gpt_sovits_running", engine := MagicMock())
+    captured = _setup_mock_uvicorn(monkeypatch, ("0.0.0.0", 8081))
+    with _busy_port(b'{"status":"ok","app":"galgame2voice"}') as port, pytest.raises(SystemExit) as exc:
+        rs.main(["--no-browser", "--host", "0.0.0.0", "--port", str(port)])
+    assert exc.value.code == 1 and f"端口 {port} 上已经有另一个 Galgame2Voice" in capsys.readouterr().out
+    assert not engine.called and "settings" not in captured
+
+
+@pytest.mark.parametrize("payload", [None, b'{"status":"ok","app":"other"}'])
+def test_frozen_launcher_switches_port_when_holder_is_other(isolated_launcher_env, monkeypatch, payload):
+    monkeypatch.setattr(rs.sys, "frozen", True, raising=False)
+    captured = _setup_mock_uvicorn(monkeypatch, ("127.0.0.1", 8081))
+    with _busy_port(payload) as port, pytest.raises(SystemExit) as exc:
+        rs.main(["--no-engine", "--no-browser", "--port", str(port)])
+    assert exc.value.code == 0 and captured["settings"].port == 8081
 _REAL_DISABLE_CONSOLE_QUICK_EDIT = run_server.disable_console_quick_edit
 
 
