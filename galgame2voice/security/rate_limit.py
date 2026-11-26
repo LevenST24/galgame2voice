@@ -81,7 +81,11 @@ class RateLimitMiddleware:
             return
 
         path = scope.get("path", "")
-        if path.startswith(("/static/", "/audio/")):
+        # Plain file reads: portrait layers, sprites and backgrounds come from
+        # /api/media, and one expression change in a layered portrait loads a
+        # dozen or more layer images, so counting them used up the budget and
+        # broke images and API calls alike.
+        if path.startswith(("/static/", "/audio/", "/api/media/")):
             await self.app(scope, receive, send)
             return
 
