@@ -1107,7 +1107,7 @@ await withToastEnv(async ({ first, toastRoot }) => {
 for (const voiceOn of [false, true]) {
   await withToastEnv(async ({ first, toastRoot }) => {
     globalThis.fetch = async url => (String(url).includes('/switch')
-      ? response({ detail: 'GPT-SoVITS 未启动' }, 503)
+      ? response({ detail: '语音模型尚未加载。' }, 502)
       : response({ profiles: [{ id: 1, name: 'A' }], active_profile_id: null }));
     first.settings.voiceProfileId = 1;
     await ensureSessionVoice(first);
@@ -1116,6 +1116,18 @@ for (const voiceOn of [false, true]) {
     passed++;
   }, { captureError: true, callbacks: { isVoiceEnabled: () => voiceOn } });
 }
+// Free memory or VRAM too low to load the model: say so instead of blaming the engine.
+await withToastEnv(async ({ first, toastRoot }) => {
+  const lowMemory = '系统空闲内存不足（0.62 GB < 1.50 GB），加载新模型权重可能导致语音引擎崩溃。请关闭占内存的程序后重试。';
+  globalThis.fetch = async url => (String(url).includes('/switch')
+    ? response({ detail: lowMemory }, 503)
+    : response({ profiles: [{ id: 1, name: 'A' }], active_profile_id: null }));
+  first.settings.voiceProfileId = 1;
+  await ensureSessionVoice(first);
+  const messages = toastRoot.children.map(toast => String(toast.dataset.msg));
+  assert.deepEqual(messages, [lowMemory]);
+  passed++;
+}, { captureError: true, callbacks: { isVoiceEnabled: () => true } });
 {
   // Auto adaptive voice mode disables the four manual TTS sliders and explains why;
   // switching to fixed mode enables them, and clicking reset disables them again.

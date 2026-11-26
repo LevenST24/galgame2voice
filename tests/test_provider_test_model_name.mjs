@@ -82,3 +82,16 @@ test('model name missing vendor prefix suggests full prefixed name instead of re
     '地址和密钥可用，但列表里的写法是「deepseek-ai/DeepSeek-V3」（大小写和前缀都要一致），请照这个写法修改后再保存。',
   );
 });
+
+test('a bare Ollama name passes when the list has its :latest tag', async (t) => {
+  const view = await shown(t, 'qwen3', ['llama3.2:latest', 'qwen3:latest']);
+  assert.equal(view.title, '连通性测试通过');
+  assert.match(view.body, /模型 qwen3 就绪/);
+});
+
+test('a name in the wrong case is shown the spelling that passes', async (t) => {
+  const ollama = await shown(t, 'Qwen3', ['qwen3:latest']);
+  assert.equal(ollama.title, '模型名称应写成「qwen3:latest」');
+  const gemini = await shown(t, 'Gemini-3.8-Flash', ['models/gemini-3.8-flash']);
+  assert.equal(gemini.title, '模型名称应写成「gemini-3.8-flash」');
+});
