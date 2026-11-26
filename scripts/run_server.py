@@ -79,7 +79,7 @@ try:
     )
     from galgame2voice.config import get_settings, require_settings  # noqa: E402
     from galgame2voice.utils.active_turns import stop_active_turns  # noqa: E402
-    from galgame2voice.utils.windows_runtime import kernel32  # noqa: E402
+    from galgame2voice.utils.windows_runtime import disable_console_quick_edit, kernel32  # noqa: E402
     from scripts.launcher_address import browser_hosts  # noqa: E402
     from scripts import desktop_instance  # noqa: E402
 except ImportError as exc:
@@ -1394,6 +1394,7 @@ def _run_main(parsed: argparse.Namespace):
     setup_windows_job_object()
     setup_signal_handlers()
     setup_console_close_handler()
+    disable_console_quick_edit()
     atexit.register(cleanup_subprocesses)
 
     listener = None
