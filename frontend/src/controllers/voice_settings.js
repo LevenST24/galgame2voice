@@ -5,7 +5,7 @@ import { showToast } from '../ui.js';
 import { requestJson } from '../api.js';
 import { getErrorMessage } from '../request.js';
 import { persistSession } from '../session_api.js';
-import { getConsoleToken, promptConsoleToken } from '../auth.js';
+import { getConsoleToken, isUsableConsoleToken, promptConsoleToken } from '../auth.js';
 import { packTarBlob } from '../tar_pack.js';
 
 export const FIRST_USE_VOICE_HINT =
@@ -763,7 +763,7 @@ function sendImportArchiveXhr(blob, filename, { overwrite = false, retriedAuth =
     xhr.open('POST', `/api/characters/import${qs ? `?${qs}` : ''}`);
     xhr.setRequestHeader('Content-Type', blob.type || 'application/octet-stream');
     const token = getConsoleToken();
-    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    if (token && isUsableConsoleToken(token)) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
     if (xhr.upload) xhr.upload.onprogress = (ev) => {
       if (ev.lengthComputable && ev.total > 0 && _dom.sVoiceImport) {
         _dom.sVoiceImport.textContent = `正在导入…${Math.min(100, Math.max(0, Math.round((ev.loaded / ev.total) * 100)))}%`;
