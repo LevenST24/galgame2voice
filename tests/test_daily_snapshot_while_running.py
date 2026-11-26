@@ -56,6 +56,7 @@ async def test_cleanup_loop_checks_the_daily_snapshot(monkeypatch, tmp_path):
         seen.append(path)
         raise asyncio.CancelledError
 
+    monkeypatch.setattr(audio_cleaner, "_cleanup_interval_seconds", lambda _configured: 0)  # the real floor is 60 s
     monkeypatch.setattr(audio_cleaner, "_run_audio_cleanup_cycle", no_cycle)
     monkeypatch.setattr(backups, "ensure_daily_database_backup", record)
     await asyncio.wait_for(audio_cleaner._audio_cleanup_loop(tmp_path, 0), timeout=5)
