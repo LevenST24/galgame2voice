@@ -352,6 +352,14 @@ async def get_character_portrait(character_id: int) -> dict[str, Any]:
         return {"enabled": True, **portrait}
 
 
+_PORTRAIT_IMAGE_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+}
+
+
 @router.get(
     "/{character_id}/portrait/file/{costume}/{file_name}",
     summary="Get Character Portrait Sprite Image",
@@ -359,8 +367,18 @@ async def get_character_portrait(character_id: int) -> dict[str, Any]:
 )
 async def get_character_portrait_file(character_id: int, costume: str, file_name: str) -> FileResponse:
     # 安全：拒绝路径遍历
-    if ".." in costume or ".." in file_name or "/" in file_name or "\\" in file_name:
+    if (
+        not costume
+        or not file_name
+        or ".." in costume
+        or ".." in file_name
+        or any(ch in costume or ch in file_name for ch in ("/", "\\", ":", "\0"))
+    ):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid sprite path")
+
+    media_type = _PORTRAIT_IMAGE_MEDIA_TYPES.get(Path(file_name).suffix.lower())
+    if media_type is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sprite image not found")
 
     async with get_db() as conn:
         prof = await _get_voice_profile_or_404(conn, character_id)
@@ -375,7 +393,11 @@ async def get_character_portrait_file(character_id: int, costume: str, file_name
     if not file_path.is_relative_to(portraits_root) or not file_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sprite image not found")
 
-    return FileResponse(str(file_path))
+    return FileResponse(
+        str(file_path),
+        media_type=media_type,
+        headers={"X-Content-Type-Options": "nosniff"},
+    )
 
 
 @media_router.get(
