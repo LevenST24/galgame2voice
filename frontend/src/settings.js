@@ -261,7 +261,7 @@ export function formatUpdateStatus(data) {
 
   if (data.has_update && data.latest_version) {
     const desc = data.current_branch === 'portable'
-      ? `当前版本为 v${data.current_version}。更新方法：先点「前往下载页」下载新版便携包，然后关闭当前程序的启动窗口；把新包解压到一个新文件夹，再把旧文件夹里的 data、audio、characters、backgrounds（以及自己改过的 .env）复制到新版的 Galgame2Voice 文件夹里，然后启动新版。如果新版提示找不到语音引擎，到「设置中心 → 语音服务」重新选择「本机 GPT-SoVITS 引擎文件夹」并保存。`
+      ? `当前版本为 v${data.current_version}。更新方法：先点「前往下载页」，下载文件名带 windows-x64 的 .zip 新版便携包（不要下 Source code），然后关闭当前程序的启动窗口；把新包解压到一个新文件夹，再把旧文件夹里的 data、audio、characters、backgrounds（以及自己改过的 .env）复制到新版的 Galgame2Voice 文件夹里，然后启动新版。如果新版提示找不到语音引擎，到「设置中心 → 语音服务」重新选择「本机 GPT-SoVITS 引擎文件夹」并保存。`
       : `当前版本为 v${data.current_version}。请点击「前往下载页」查看更新说明并下载新版发布包，或在终端使用 git pull 手动更新源码。`;
     return {
       tagText: `发现新版本 v${data.latest_version}`,

@@ -6,6 +6,7 @@ All notable changes to galgame2voice are documented here. The format follows
 
 ## [Unreleased]
 ### Fixed
+- 修复便携版提示有新版本时没说明要下载文件名带 windows-x64 的压缩包，误下 Source code 并双击里面的「启动.bat」只看到找不到 python 的问题；现在提示会写明文件名，源码包在找不到 Python 时也会说明该下哪个包。
 - 修复语音出错和删除角色包音色等几处提示里写的「CPU 稳定模式」「音色设置」在界面上找不到的问题；现在都写成「设置中心」里真实的页面和选项名。
 
 ## [3.2.12] - 2026-11-26
