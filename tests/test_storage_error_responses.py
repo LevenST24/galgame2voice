@@ -103,7 +103,8 @@ async def test_voice_profile_writes_report_locked_database_as_503(app_client):
     for attr, method, url, body in [
         ("create_voice_profile", "post", "/api/voice/profiles", payload),
         ("update_voice_profile", "put", "/api/voice/profiles/1", {"name": "新名称"}),
-        ("delete_voice_profile", "delete", "/api/voice/profiles/1", None),
+        # Deleting reads the voice first (to find a package folder), so that read meets the lock.
+        ("get_voice_profile", "delete", "/api/voice/profiles/1", None),
     ]:
         with patch.object(crud, attr, locked):
             resp = await app_client.request(method, url, json=body)
