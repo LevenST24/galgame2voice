@@ -704,7 +704,16 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
     except Exception as exc:
         logger.debug("Provider presets sync during schema init skipped: %s", exc)
 
-    for (p_id, old_model), (new_model, effort) in RETIRED_CHAT_MODELS.items():
+    from galgame2voice.database.crud_modules.providers import same_url_origin  # crud_modules imports this module
+
+    cursor = await conn.execute("SELECT id, chat_model, api_base_url FROM providers;")
+    for p_id, old_model, base_url in await cursor.fetchall():
+        target = RETIRED_CHAT_MODELS.get((p_id, old_model))
+        # Only the official endpoint retired the old name; a relay may still serve it.
+        official = PROVIDER_PRESETS[p_id]["default_base_url"] if target else ""
+        if not target or ((base_url or "").strip() and not same_url_origin(base_url, official)):
+            continue
+        new_model, effort = target
         await conn.execute(
             "UPDATE providers SET chat_model = ?, reasoning_effort = COALESCE(?, reasoning_effort), "
             "updated_at = CURRENT_TIMESTAMP WHERE id = ? AND chat_model = ?;",
