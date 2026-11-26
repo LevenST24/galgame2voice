@@ -109,3 +109,14 @@ async def test_voice_profile_writes_report_locked_database_as_503(app_client):
         with patch.object(crud, attr, locked):
             resp = await app_client.request(method, url, json=body)
         assert resp.status_code == 503 and resp.json()["detail"] == DATABASE_BUSY_MESSAGE
+
+
+@pytest.mark.parametrize("winerror", [32, 33])
+def test_windows_file_in_use_permission_error_is_not_reported_as_no_permission(winerror):
+    exc = PermissionError(13, "The process cannot access the file")
+    exc.winerror = winerror
+    msg = describe_database_write_error(exc)
+    assert msg is not None and "被其他程序占用" in msg
+
+    plain = PermissionError(13, "Permission denied")
+    assert describe_database_write_error(plain) == NO_WRITE_PERMISSION_MESSAGE

@@ -178,6 +178,7 @@ def describe_storage_error(exc_or_msg: Exception | str | None) -> str | None:
 
 DATABASE_BUSY_MESSAGE = "数据库正被另一个操作占用，这次操作没有完成。请等几秒后重试。"
 NO_WRITE_PERMISSION_MESSAGE = "没有权限读写数据目录，这次操作没有完成。请检查数据文件夹的权限后重试。"
+FILE_IN_USE_MESSAGE = "文件正被其他程序占用（例如杀毒软件或 OneDrive 同步），这次操作没有完成。请稍等几秒后重试。"
 
 
 def describe_database_write_error(exc: Exception) -> str | None:
@@ -187,6 +188,8 @@ def describe_database_write_error(exc: Exception) -> str | None:
         return None
     if storage_message := describe_storage_error(exc):
         return storage_message
+    if getattr(exc, "winerror", None) in (32, 33):
+        return FILE_IN_USE_MESSAGE
     if isinstance(exc, PermissionError):
         return NO_WRITE_PERMISSION_MESSAGE
     if isinstance(exc, sqlite3.OperationalError):
