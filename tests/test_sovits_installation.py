@@ -53,6 +53,28 @@ def test_bom_quoted_hint_resolves_against_install_not_cwd(tmp_path, monkeypatch)
     assert installation.read_sovits_directory(tmp_path) == engine
 
 
+def test_hint_saved_as_ansi_gbk_resolves_to_the_chinese_folder(tmp_path):
+    """Notepad's 「ANSI」 save on Chinese Windows writes GBK; the folder must still be found."""
+    engine = make_engine(tmp_path / "语音引擎")
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "sovits_dir.txt").write_bytes(str(engine).encode("gbk"))
+    assert installation.read_sovits_directory(tmp_path) == engine
+
+
+@pytest.mark.asyncio
+async def test_system_status_loads_when_engine_hint_cannot_be_read(tmp_path, monkeypatch):
+    monkeypatch.setattr(get_settings(), "project_root", tmp_path)
+
+    def unreadable(*args, **kwargs):
+        raise PermissionError(13, "拒绝访问。")
+
+    monkeypatch.setattr(health, "read_sovits_directory", unreadable)
+    transport = ASGITransport(app=create_app())
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+        result = await client.get("/api/system/status")
+    assert result.status_code == 200
+
+
 @pytest.mark.parametrize("value", ["", " \n ", "invalid\x00folder", "missing", "data"])
 def test_invalid_selection_preserves_saved_directory(tmp_path, value):
     make_engine(tmp_path / "engine")
@@ -342,6 +364,28 @@ def test_launcher_discovery_migrates_legacy_absolute_hint_for_sibling(tmp_path, 
     assert inspected["valid"] is True
     assert Path(inspected["directory"]).resolve() == new_engine.resolve()
     assert Path(inspected["directory"]).resolve() != engine.resolve()
+
+
+def test_launcher_discovery_migrates_ansi_gbk_absolute_hint_for_sibling(tmp_path, monkeypatch):
+    parent = tmp_path / "中文目录"
+    g2v = parent / "Galgame2Voice"
+    engine = make_engine(parent / "语音引擎")
+    g2v.mkdir(parents=True)
+    (g2v / "data").mkdir()
+
+    cache_file = g2v / "data" / "sovits_dir.txt"
+    cache_file.write_bytes(str(engine.resolve()).encode("gbk"))
+
+    monkeypatch.setattr(run_server, "PROJECT_ROOT", g2v)
+    monkeypatch.delenv("GPT_SOVITS_DIR", raising=False)
+    monkeypatch.delenv("GALGAME2VOICE_DATA_ROOT", raising=False)
+
+    discovered = run_server.find_gpt_sovits_directory()
+    assert discovered == engine.resolve()
+
+    migrated_text = cache_file.read_text(encoding="utf-8").strip()
+    assert not Path(migrated_text).is_absolute()
+    assert migrated_text in ("..\\语音引擎", "../语音引擎")
 
 
 def test_launcher_discovery_handles_quoted_env_override(tmp_path, monkeypatch):
