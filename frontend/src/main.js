@@ -166,6 +166,17 @@ function retainLocalOnlyMessages(messages = []) {
   );
 }
 
+/** @param {Record<string, any> | null | undefined} msg */
+function isUnpersistedLocalReply(msg) {
+  return Boolean(
+    msg &&
+    msg.role === 'assistant' &&
+    extractServerId(msg) === null &&
+    Number.isSafeInteger(msg.serverUserMessageId) &&
+    !msg.turnConflict
+  );
+}
+
 // 可注入存储、流和渲染器，测试无需启动鉴权或麦克风。
 /** @param {Record<string, any>} [options] */
 export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = {}) {
@@ -596,6 +607,15 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
             }
             incoming.push(lastLocalMsg);
           }
+          for (const localMsg of session.messages) {
+            if (!isUnpersistedLocalReply(localMsg)) continue;
+            const userIdx = incoming.findIndex(
+              (m) => m.role === 'user' && extractServerId(m) === localMsg.serverUserMessageId
+            );
+            if (userIdx !== -1 && incoming[userIdx + 1]?.role !== 'assistant') {
+              incoming.splice(userIdx + 1, 0, localMsg);
+            }
+          }
         }
         // 服务端历史停在无回复提问且后面没有更新的本地提问时，去掉服务端身份并保留「重新发送」。
         if (incoming[incoming.length - 1] === serverTail && serverTail.role === 'user') {
@@ -1020,6 +1040,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
             }
             markInterruptedPrompt(local, bs.message_count);
             const localOnlyMessages = retainLocalOnlyMessages(local.messages);
+            const unpersistedReplies = local.messages.filter(isUnpersistedLocalReply).length;
             const lastMsg = local.messages ? local.messages[local.messages.length - 1] : null;
             const hasUnpersistedTailPrompt = Boolean(
               lastMsg &&
@@ -1027,7 +1048,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
               !lastMsg.failed &&
               extractServerId(lastMsg) === null
             );
-            const persistedLocalCount = local.messages.length - localOnlyMessages.length - (hasUnpersistedTailPrompt ? 1 : 0);
+            const persistedLocalCount = local.messages.length - localOnlyMessages.length - unpersistedReplies - (hasUnpersistedTailPrompt ? 1 : 0);
             if (bs.message_count === 0 && persistedLocalCount > 0) {
               local.messages = localOnlyMessages;
               local.hasMoreHistory = false;

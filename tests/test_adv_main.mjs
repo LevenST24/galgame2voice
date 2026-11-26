@@ -2557,3 +2557,39 @@ test('retrying a recovered single-turn question that fails and gets pruned still
   app2 = initApp({ dom: { advRoot: root }, renderSessionList() {} }); await app2.ready; for (let i = 0; i < 5; i++) await tick();
   assert.deepEqual(storedActive().messages.map(m => [m.id, app2.conversation.canRetry(m)]), [['m_local_first', true]]);
 });
+
+test('startup sync preserves unpersisted local reply with serverUserMessageId without marking user prompt failed', async t => {
+  const lines = [{ index: 0, zh: '一起做咖喱吧。', ja: 'カレーを作ろう。', emotion: 'gentle', act: {}, audio: { status: 'failed', chunks: [] } }];
+  const { session, storage, app } = await bootActiveHistory(t, {
+    id: 's_keep_local_reply', title: '保留本地回复', updatedAt: 1_700_000_100_000,
+    messages: [
+      storedLine('m_11', 11, 'user', '今晚吃什么', { ts: 1_700_000_050_000 }),
+      localMsg('m_local_a1', 'assistant', '一起做咖喱吧。', { serverUserMessageId: 11, lines, ts: 1_700_000_080_000 }),
+    ],
+    updated_at: '2024-06-01 00:00:01', message_count: 1, last_message: '今晚吃什么',
+    historyMessages: [srv(11, 'user', '今晚吃什么')],
+  });
+  await app.actions.loadSession(session.id);
+  for (const msgs of [storedActive().messages, JSON.parse(storage.get('gal2voice.chat.v1')).sessions[0].messages]) {
+    assert.equal(msgs.length, 2);
+    assert.equal(msgs[0].failed, undefined);
+    assert.equal(msgs[1].content, '一起做咖喱吧。');
+    assert.deepEqual(msgs[1].lines, lines);
+  }
+});
+
+test('startup sync re-inserts mid-session unpersisted local reply when loading newer server history', async t => {
+  const { session, app } = await bootActiveHistory(t, {
+    id: 's_keep_mid_reply', title: '保留中间本地回复', updatedAt: 1_700_000_200_000,
+    messages: [
+      storedLine('m_11', 11, 'user', 'u1'),
+      localMsg('m_local_a1', 'assistant', 'a1', { serverUserMessageId: 11 }),
+      storedLine('m_13', 13, 'user', 'u2'),
+      storedLine('m_14', 14, 'assistant', 'a2'),
+    ],
+    updated_at: '2024-06-01 00:00:05', message_count: 5, last_message: 'a3',
+    historyMessages: [srv(11, 'user', 'u1'), srv(13, 'user', 'u2'), srv(14, 'assistant', 'a2'), srv(15, 'user', 'u3'), srv(16, 'assistant', 'a3')],
+  });
+  await app.actions.loadSession(session.id);
+  assert.deepEqual(storedActive().messages.map(m => m.content), ['u1', 'a1', 'u2', 'a2', 'u3', 'a3']);
+});
