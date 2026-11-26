@@ -247,12 +247,12 @@ python -m galgame2voice.main doctor --json     # 机器可读，方便贴进 iss
 | `GPT_SOVITS_DIR` | | | 查找本机引擎时的候选目录；网页中保存的引擎目录优先 |
 | `GPT_SOVITS_PRECISION` | | | 启动时的默认推理精度：`fp16`、`fp32` 或 `cpu`。在网页「运行状态」手动切换精度并重启引擎后，本次运行以网页选择为准（本进程的该变量会被改写）；下次启动仍按环境变量或启动参数 |
 | `GPT_SOVITS_DEVICE` | | | 设为 `cpu` 时等同于 `GPT_SOVITS_PRECISION=cpu`，同样只是启动时的默认值 |
-| `GALGAME2VOICE_HOST` / `GALGAME2VOICE_PORT` | ✓ | `127.0.0.1` / `8080` | 直接运行 `python -m galgame2voice.main` 或 Docker 时的监听地址；启动脚本请用 `--host` / `--port` |
+| `GALGAME2VOICE_HOST` / `GALGAME2VOICE_PORT` | ✓ | `127.0.0.1` / `8080` | 监听地址和端口。`python -m galgame2voice.main`、启动脚本、便携版和 Docker 都会读取；启动参数 `--host` / `--port` 优先 |
 | `GALGAME2VOICE_AUTH_DISABLED` | ✓ | `1` | 设为 `0` 启用访问令牌。本机默认免令牌，Docker 默认开启 |
 | `GALGAME2VOICE_CONSOLE_TOKEN` | ✓ | 自动生成 | 访问令牌；留空时首次启动生成并写入 `data/.console_token` |
-| `GALGAME2VOICE_AUDIO_RETENTION_MINUTES` | ✓ | `30` | 临时合成音频的保留时间（分钟） |
+| `GALGAME2VOICE_AUDIO_RETENTION_MINUTES` | ✓ | `30` | 临时合成音频保留时间（分钟）的初始值，只在首次启动建立数据库时写入；之后以网页「语音服务」中的「音频缓存保留时间」为准 |
 | `GALGAME2VOICE_PRIVACY_MODE` | ✓ | `false` | 关闭语音缓存：合成结果不写入也不复用磁盘缓存 |
-| `GALGAME2VOICE_LOG_LEVEL` | ✓ | `INFO` | 日志级别 |
+| `GALGAME2VOICE_LOG_LEVEL` | ✓ | `INFO` | 日志级别：`DEBUG`、`INFO`、`WARNING`、`ERROR` 或 `CRITICAL`，不区分大小写；无法识别时按 `INFO` 记录，并在日志开头提示 |
 | `GALGAME2VOICE_ENABLE_DOCS` | ✓ | `false` | 开放 `/docs`、`/redoc` 接口文档和 `/openapi.json`；关闭时三者都不提供 |
 | `GALGAME2VOICE_SKIP_MEM_CHECK` | | | 设为 `1` 跳过切换角色前的内存检查；`0`、`false` 或留空时照常检查 |
 

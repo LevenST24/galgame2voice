@@ -75,6 +75,27 @@ def contains_traversal_payload(raw_path: str) -> bool:
     return False
 
 
+def _env_sovits_dir(project_root: Path) -> Path | None:
+    """GPT_SOVITS_DIR read the way the launcher reads it.
+
+    The launcher strips spaces and quotes (set GPT_SOVITS_DIR="D:\\GPT-SoVITS" keeps
+    them on Windows) and resolves a relative folder against the program folder.
+    Reading the raw value here made the engine start but left its weights out of
+    the model list and its reference clips outside the allowed folders.
+    """
+    raw = os.environ.get("GPT_SOVITS_DIR")
+    value = raw.strip().strip("\"'") if raw else ""
+    if not value:
+        return None
+    try:
+        directory = Path(value).expanduser()
+        if not directory.is_absolute():
+            directory = project_root / directory
+        return directory.resolve()
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
 def get_effective_sovits_dir(project_root: Path | None = None) -> Path | None:
     """
     Returns the resolved Path of the explicitly configured GPT-SoVITS directory,
@@ -104,14 +125,12 @@ def get_effective_sovits_dir(project_root: Path | None = None) -> Path | None:
         except (OSError, UnicodeError, ValueError):
             pass
 
-    env_sovits = os.environ.get("GPT_SOVITS_DIR")
-    if env_sovits:
-        try:
-            cand = Path(env_sovits).resolve()
-            if cand.is_dir():
-                return cand
-        except (OSError, ValueError):
-            pass
+    cand = _env_sovits_dir(p_root)
+    try:
+        if cand is not None and cand.is_dir():
+            return cand
+    except OSError:
+        pass
 
     return None
 
@@ -141,8 +160,8 @@ def discover_gpt_sovits_roots(project_root: Path | None = None) -> list[Path]:
     effective = get_effective_sovits_dir(p_root)
     if effective is not None:
         _add_cand(effective)
-    env_sovits = os.environ.get("GPT_SOVITS_DIR")
-    if env_sovits:
+    env_sovits = _env_sovits_dir(p_root)
+    if env_sovits is not None:
         _add_cand(env_sovits)
 
     # 2. project_root / "GPT-SoVITS"
