@@ -643,6 +643,7 @@ export function createTextbox(container, opts = {}) {
   }
 
   function enterInput({ canSend = true, voicePending = false } = {}) {
+    pageRevealed = false;
     clearTypewriter();
     voicePendingInput = Boolean(voicePending);
     setCanSend(canSend);
@@ -776,6 +777,7 @@ export function createTextbox(container, opts = {}) {
   }
 
   function showError({ message = '', actions = [] } = {}) {
+    pageRevealed = false;
     clearError();
     clearTypewriter();
     glyph(false);
