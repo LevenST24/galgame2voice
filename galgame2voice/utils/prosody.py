@@ -252,11 +252,16 @@ def calculate_adaptive_prosody(
     base_opts = dict(base_params or {})
 
     # Start with baseline archetype or explicit base values
-    speed = float(base_opts.get(PARAM_SPEED, base_opts.get("speed_factor", archetype[PARAM_SPEED])))
-    temperature = float(base_opts.get(PARAM_TEMPERATURE, base_opts.get("temp", archetype[PARAM_TEMPERATURE])))
-    top_k = int(base_opts.get(PARAM_TOP_K, archetype[PARAM_TOP_K]))
-    top_p = float(base_opts.get(PARAM_TOP_P, archetype[PARAM_TOP_P]))
-    frag_interval = float(base_opts.get(PARAM_FRAGMENT_INTERVAL, archetype[PARAM_FRAGMENT_INTERVAL]))
+    raw_speed = base_opts.get(PARAM_SPEED, base_opts.get("speed_factor", archetype[PARAM_SPEED]))
+    raw_temp = base_opts.get(PARAM_TEMPERATURE, base_opts.get("temp", archetype[PARAM_TEMPERATURE]))
+    speed = clamp_dynamic_speed(raw_speed, fallback=archetype[PARAM_SPEED])
+    temperature = clamp_dynamic_temperature(raw_temp, fallback=archetype[PARAM_TEMPERATURE])
+    top_k = clamp_dynamic_top_k(base_opts.get(PARAM_TOP_K, archetype[PARAM_TOP_K]), fallback=archetype[PARAM_TOP_K])
+    top_p = clamp_dynamic_top_p(base_opts.get(PARAM_TOP_P, archetype[PARAM_TOP_P]), fallback=archetype[PARAM_TOP_P])
+    frag_interval = clamp_dynamic_fragment_interval(
+        base_opts.get(PARAM_FRAGMENT_INTERVAL, archetype[PARAM_FRAGMENT_INTERVAL]),
+        fallback=archetype[PARAM_FRAGMENT_INTERVAL],
+    )
 
     cleaned_text = (text or "").strip()
     if cleaned_text:

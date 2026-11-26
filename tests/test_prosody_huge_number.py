@@ -2,8 +2,9 @@
 
 import pytest
 
+from galgame2voice.services.gpt_sovits_client import GptSovitsClient
 from galgame2voice.services.streaming_parser import StreamingBilingualParser
-from galgame2voice.services.tts_options import _TTS_NUMERIC_RANGES, resolve_tts_options
+from galgame2voice.services.tts_options import _TTS_NUMERIC_RANGES, resolve_tts_options, validate_user_tts_options
 from galgame2voice.utils import prosody
 
 HUGE_INT = int("1" * 400)  # too big to turn into a float
@@ -51,3 +52,29 @@ def test_streamed_reply_with_huge_tts_number_keeps_parsing():
     assert (zh, ja) == ("你好。", "こんにちは。")
     assert prosody.DYNAMIC_TEMP_MIN <= parser.tts_temperature <= prosody.DYNAMIC_TEMP_MAX
     assert len(parser.normalized_lines()) == 1
+
+
+@pytest.mark.parametrize("bad_temp", [HUGE_INT, INF, 99, "bad"])
+def test_validate_user_tts_options_rejects_invalid_temp_alias(bad_temp):
+    with pytest.raises(ValueError):
+        validate_user_tts_options({"temp": bad_temp})
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("speed", HUGE_INT), ("temp", HUGE_INT), ("top_k", INF), ("top_p", HUGE_INT), ("fragment_interval", HUGE_INT)],
+)
+def test_calculate_adaptive_prosody_falls_back_on_overflow(key, value):
+    result = prosody.calculate_adaptive_prosody("普通の発言です", emotion="happy", base_params={key: value})
+    expected = prosody.EMOTION_PROSODY_MATRIX["happy"]
+    assert result["speed"] == expected["speed"]
+    assert result["temperature"] == expected["temperature"]
+    assert result["top_k"] == expected["top_k"]
+    assert result["top_p"] == expected["top_p"]
+    assert result["fragment_interval"] == expected["fragment_interval"]
+
+
+@pytest.mark.parametrize("value", [INF, -INF])
+def test_build_tts_payload_clamps_infinite_batch_size(value):
+    payload = GptSovitsClient()._build_tts_payload("こんにちは。", {"batch_size": value, "ref_audio_path": "ref.wav"})
+    assert prosody.DYNAMIC_BATCH_SIZE_MIN <= payload["batch_size"] <= prosody.DYNAMIC_BATCH_SIZE_MAX
