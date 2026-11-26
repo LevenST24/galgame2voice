@@ -264,6 +264,9 @@ async def _audio_cleanup_loop(audio_dir: Path, interval_seconds: int) -> None:
 
     The retention duration is re-read from DB settings each cycle so console
     edits to audio_retention_minutes take effect without a restart."""
+    from galgame2voice.database.backups import ensure_daily_database_backup
+    from galgame2voice.database.session import get_database_path
+
     logger.info("Started background audio cleanup worker (interval=%d sec)", interval_seconds)
     while True:
         try:
@@ -273,4 +276,11 @@ async def _audio_cleanup_loop(audio_dir: Path, interval_seconds: int) -> None:
             break
         except Exception as exc:
             logger.warning("Error in audio cleanup loop: %s", exc)
+        try:
+            # The README promises a daily snapshot; startup alone misses days the app stays open.
+            await asyncio.to_thread(ensure_daily_database_backup, Path(get_database_path()))
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.warning("Daily database snapshot check failed: %s", exc)
 
