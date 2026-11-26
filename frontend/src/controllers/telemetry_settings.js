@@ -314,6 +314,14 @@ class TelemetrySettingsController {
           }
         } else if (!statusRes && this.dom.gDashSovitsStatus) {
           this.lastEngineState = 'checking';
+          if (this.lockedForLoading) {
+            this.lockedForLoading = false;
+            if (this.dom.gBtnRestartSovits) {
+              this.dom.gBtnRestartSovits.disabled = false;
+              this.dom.gBtnRestartSovits.innerHTML = '<svg class="icon"><use href="#i-play"></use></svg><span>重启 SoVITS 引擎</span>';
+            }
+            if (this.dom.gBtnTogglePrecision) this.dom.gBtnTogglePrecision.disabled = false;
+          }
           this.dom.gDashSovitsStatus.textContent = '无法刷新状态，请保留启动窗口；若已关闭，请重新双击启动。';
           if (this.dom.gDashSovitsBadge) {
             this.dom.gDashSovitsBadge.textContent = '待检查';

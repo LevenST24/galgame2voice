@@ -37,3 +37,32 @@ test('the start button is locked while another launch is still loading, and unlo
   telemetry.renderEngineStatus({ state: 'ready', ready: true, message: '语音引擎已就绪。' });
   assert.equal(dom.gBtnRestartSovits.disabled, false);
 });
+
+test('engine buttons unlock when backend disconnects while engine was starting', async () => {
+  const prevFetch = globalThis.fetch;
+  try {
+    const dom = {
+      gBtnRestartSovits: button(),
+      gBtnTogglePrecision: button(),
+      gDashSovitsBadge: {},
+      gDashSovitsStatus: {},
+    };
+    const telemetry = createTelemetrySettingsController(dom, {
+      isRestarting: () => false,
+      settingsVisible: () => true,
+    });
+    telemetry.renderEngineStatus({ state: 'starting', ready: false, message: '引擎正在加载模型，请稍候。' });
+    assert.equal(dom.gBtnRestartSovits.disabled, true);
+    assert.equal(dom.gBtnTogglePrecision.disabled, true);
+
+    globalThis.fetch = async () => { throw new TypeError('Failed to fetch'); };
+    await telemetry.fetchSystemTelemetry();
+
+    assert.equal(dom.gBtnRestartSovits.disabled, false);
+    assert.equal(dom.gBtnTogglePrecision.disabled, false);
+    assert.doesNotMatch(dom.gBtnRestartSovits.innerHTML, /正在加载模型/);
+    assert.match(dom.gDashSovitsStatus.textContent, /无法刷新状态/);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
