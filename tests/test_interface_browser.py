@@ -101,3 +101,40 @@ def test_history_tolerates_delayed_session_bootstrap(tmp_path, width, height):
     assert state["title"] == "对话记录"
     assert len(state["entries"]) == 2
     assert state["panelVisible"] and state["closed"]
+
+
+def _mobile_script(body):
+    return NAVIGATION_SCRIPT.split("const state={};")[0] + (
+        "const state={left:0,right:innerWidth,viewport:innerWidth,overflow:0};"
+        "try{await wait();await wait();" + body
+        + "state.overflow=document.documentElement.scrollWidth-innerWidth;}"
+        "catch(e){state.error=String(e.stack||e);}"
+        "const o=document.createElement('pre');o.id='engine-result';o.hidden=true;"
+        "o.textContent=JSON.stringify(state);parent.document.body.append(o);"
+    )
+
+
+@pytest.mark.requires_piped_subprocess
+def test_mobile_settings_models_api_key_width(tmp_path):
+    script = _mobile_script(
+        "click('.home-gear');await wait();"
+        "document.querySelector('[data-gtab=\"models\"]').scrollIntoView({inline:'center'});"
+        "click('[data-gtab=\"models\"]');await wait();"
+        "state.keyWidth=document.getElementById('gApiKey').getBoundingClientRect().width;"
+    )
+    state = render_engine_case(tmp_path, 375, 812, script, 7000)
+    assert "error" not in state, state["error"]
+    assert state["keyWidth"] >= 250, state
+
+
+@pytest.mark.requires_piped_subprocess
+def test_touch_session_delete_button_is_visible(tmp_path):
+    script = _mobile_script(
+        "settle();click('.home-continue');click('[data-action=\"sessions\"]');await wait();"
+        "const d=document.querySelector('.si-del');"
+        "state.delOpacity=d?parseFloat(getComputedStyle(d).opacity):0;"
+    )
+    touch_args = ("--blink-settings=primaryPointerType=2,primaryHoverType=1",)
+    state = render_engine_case(tmp_path, 375, 812, script, 7000, touch_args)
+    assert "error" not in state, state["error"]
+    assert state["delOpacity"] > 0, state
