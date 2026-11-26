@@ -22,7 +22,7 @@ def fresh_settings():
         ("GALGAME2VOICE_PORT", "abc", "GALGAME2VOICE_PORT", "整数"),
         ("GALGAME2VOICE_DEBUG", "maybe", "GALGAME2VOICE_DEBUG", "true 或 false"),
         ("DEBUG", "maybe", "GALGAME2VOICE_DEBUG / DEBUG", "true 或 false"),
-        ("GALGAME2VOICE_CORS_ORIGINS", "http://localhost:3000", "CORS_ORIGINS", "JSON 数组"),
+        ("GALGAME2VOICE_CORS_ORIGINS", "[http://localhost:3000", "CORS_ORIGINS", "无法解析列表"),
     ],
 )
 def test_bad_setting_names_the_variable(monkeypatch, fresh_settings, name, value, expected_name, reason):

@@ -6,13 +6,18 @@ Provides type-safe environment and runtime settings via Pydantic V2.
 import codecs
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from galgame2voice import __version__
 from galgame2voice.runtime_paths import get_install_root
+
+# Imported after the main pydantic lines above so a missing or outdated package
+# is still reported by its own name (see the launcher's dependency check).
+from pydantic import field_validator
+from pydantic_settings import NoDecode
 
 _DEFAULT_ENV_FILE = object()
 
@@ -147,7 +152,9 @@ class Settings(BaseSettings):
     )
 
     # CORS Security Configuration
-    cors_origins: list[str] = Field(
+    # NoDecode: an env value is split by _split_list_setting instead of being
+    # required to be JSON.
+    cors_origins: Annotated[list[str], NoDecode] = Field(
         default=["http://127.0.0.1:8080", "http://localhost:8080"],
         validation_alias=AliasChoices("GALGAME2VOICE_CORS_ORIGINS", "CORS_ORIGINS"),
         description="Allowed origins for CORS middleware",
@@ -157,12 +164,39 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("GALGAME2VOICE_CORS_ALLOW_CREDENTIALS", "CORS_ALLOW_CREDENTIALS"),
         description="Allow credentials in CORS requests",
     )
-    cors_allow_methods: list[str] = Field(
+    cors_allow_methods: Annotated[list[str], NoDecode] = Field(
         default=["*"], description="Allowed HTTP methods"
     )
-    cors_allow_headers: list[str] = Field(
+    cors_allow_headers: Annotated[list[str], NoDecode] = Field(
         default=["*"], description="Allowed HTTP headers"
     )
+
+    @field_validator("cors_origins", "cors_allow_methods", "cors_allow_headers", mode="before")
+    @classmethod
+    def _split_list_setting(cls, value):
+        """Accept a comma-separated list as well as JSON.
+
+        GALGAME2VOICE_CORS_ORIGINS=http://192.168.1.5:8080,http://localhost:8080 is how
+        most people write it, but pydantic-settings wanted a JSON array and stopped
+        startup with a SettingsError for anything else.
+        """
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        if text.startswith("["):
+            import json
+
+            try:
+                items = json.loads(text)
+            except ValueError as exc:
+                raise ValueError(f"无法解析列表：{text}") from exc
+        else:
+            items = text.split(",")
+        return [
+            cleaned
+            for item in items
+            if (cleaned := item.strip().rstrip("/") if isinstance(item, str) else item) != ""
+        ]
 
     # Audio Retention & Cleanup
     audio_retention_minutes: int = Field(
@@ -183,6 +217,9 @@ class Settings(BaseSettings):
         env_file=None,
         env_file_encoding="utf-8",
         extra="ignore",
+        # GALGAME2VOICE_PORT= left empty in .env means "not set", as auth.py already
+        # treats an empty GALGAME2VOICE_AUTH_DISABLED; it used to stop startup.
+        env_ignore_empty=True,
         case_sensitive=False,
     )
 

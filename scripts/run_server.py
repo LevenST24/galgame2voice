@@ -60,6 +60,7 @@ try:
         find_engine_python,
         missing_engine_parts,
         read_sovits_directory,
+        read_sovits_directory_hint,
         write_sovits_directory_hint,
     )
     from galgame2voice.services.engine_runtime import EngineLaunch, prepare_engine_entrypoint  # noqa: E402, F401
@@ -80,6 +81,7 @@ try:
     from galgame2voice.utils.active_turns import stop_active_turns  # noqa: E402
     from galgame2voice.utils.windows_runtime import kernel32  # noqa: E402
     from scripts.launcher_address import browser_hosts  # noqa: E402
+    from scripts import desktop_instance  # noqa: E402
 except ImportError as exc:
     # Config imports Pydantic before main() can run the ordinary dependency
     # check. Give source-checkout users a recovery path, but keep missing local
@@ -323,7 +325,7 @@ def find_gpt_sovits_directory() -> Path | None:
                     valid_cached = _check_sovits_dir(cached_path)
                     if valid_cached:
                         try:
-                            raw_hint = cache_file.read_text(encoding="utf-8-sig").strip().strip("\"'")
+                            raw_hint = read_sovits_directory_hint(cache_file)
                             if Path(raw_hint).is_absolute() and valid_cached.resolve().is_relative_to(hint_root.resolve().parent):
                                 write_sovits_directory_hint(hint_root, valid_cached)
                         except Exception:
@@ -1337,7 +1339,23 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
 
 def main(args: list[str] | None = None):
     parsed = parse_args(args)
+    if not parsed.check_only and not getattr(sys, "frozen", False):
+        require_settings()  # an invalid setting stops here with its Chinese message, not as a crash
+        root = _resolve_project_root()
+        instance = desktop_instance.DesktopInstance(root)
+        if not instance.acquire():
+            instance.close()
+            desktop_instance.open_existing_instance(root, no_browser=parsed.no_browser)
+            sys.exit(0)
+        (root / "data" / "desktop_instance.json").unlink(missing_ok=True)
+        try:
+            return _run_main(parsed)
+        finally:
+            instance.close()
+    return _run_main(parsed)
 
+
+def _run_main(parsed: argparse.Namespace):
     # Immediately synchronize the requested host/port across all environment aliases
     # and clear any early-cached Settings before any diagnostic or engine setup runs.
     sync_runtime_address(host=parsed.host, port=parsed.port)
@@ -1409,9 +1427,7 @@ def main(args: list[str] | None = None):
         except Exception:
             pass
 
-        if getattr(sys, "frozen", False):
-            from scripts.desktop_instance import write_instance_address
-            write_instance_address(runtime_root, bind_host, active_port)
+        desktop_instance.write_instance_address(runtime_root, bind_host, active_port)
 
         # Step 3: Auto Open Browser
         _, display_host = browser_hosts(bind_host)

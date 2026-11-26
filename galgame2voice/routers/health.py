@@ -335,7 +335,11 @@ def _collect_hardware_telemetry_sync(
     gpu_avail, gpu_name = gpu_snapshot if gpu_snapshot is not None else _get_gpu_telemetry_cached()
     settings = get_settings()
     project_root = settings.project_root
-    sovits_dir = read_sovits_directory(project_root) or project_root
+    try:
+        sovits_dir = read_sovits_directory(project_root) or project_root
+    except (OSError, ValueError, UnicodeError):
+        # The directory card explains an unreadable hint; telemetry must still load.
+        sovits_dir = project_root
 
     device, is_half, source = resolve_initial_device_and_half(
         project_root, sovits_dir, db_path=settings.db_path, gpu_available=gpu_avail,
