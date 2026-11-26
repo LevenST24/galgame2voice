@@ -2,9 +2,11 @@
 
 import ctypes
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 from time import monotonic, sleep
 import urllib.request
@@ -20,8 +22,21 @@ class DesktopInstance:
         self.name = "Local\\Galgame2Voice-" + hashlib.sha256(identity).hexdigest()
         self.handle = None
         self.acquired = False
+        self.root = root.resolve()
 
     def acquire(self) -> bool:
+        if sys.platform != "win32":
+            import fcntl
+
+            (self.root / "data").mkdir(parents=True, exist_ok=True)
+            handle = (self.root / "data" / "instance.lock").open("a+")
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                handle.close()
+                return False
+            self.handle, self.acquired = handle, True
+            return True
         api = kernel32()
         ctypes.set_last_error(0)
         self.handle = api.CreateMutexW(None, True, self.name)
@@ -33,6 +48,10 @@ class DesktopInstance:
 
     def close(self) -> None:
         if self.handle:
+            if sys.platform != "win32":
+                self.handle.close()
+                self.handle, self.acquired = None, False
+                return
             if self.acquired:
                 kernel32().ReleaseMutex(self.handle)
             kernel32().CloseHandle(self.handle)
@@ -83,6 +102,6 @@ def open_existing_instance(root: Path, *, no_browser: bool, timeout: float = 8.0
                 except Exception:
                     print(f"[提示] 未能自动打开浏览器，请手动访问：{url}")
             return
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, http.client.HTTPException):
             sleep(0.2)
     print("[提示] Galgame2Voice 已启动，正在准备网页。请保留原启动窗口，稍候访问。")

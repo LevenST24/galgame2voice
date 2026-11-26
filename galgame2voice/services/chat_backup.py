@@ -37,6 +37,21 @@ _PLAYER_NAME_MAX_CODEPOINTS = 400
 _JS_WHITESPACE = "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
 
 
+def is_valid_outfit_id(value: object) -> bool:
+    """Manifest keys, never paths: the same rule the portrait loader and the frontend use."""
+    if not isinstance(value, str):
+        return False
+    if value == "":
+        return True
+    return (
+        bool(value.strip(_JS_WHITESPACE))
+        and value != "."
+        and len(value) <= 200
+        and ".." not in value
+        and not any(char in "/\\" or unicodedata.category(char) == "Cc" for char in value)
+    )
+
+
 def _valid_adv_setting(key: str, value) -> bool:
     if key in {"advInterruptVoice", "advBlink", "advLipSync"}:
         return type(value) is bool
@@ -48,9 +63,7 @@ def _valid_adv_setting(key: str, value) -> bool:
     if key == "advPlayerName":
         return isinstance(value, str) and bool(value.strip(_JS_WHITESPACE)) and len(value) <= _PLAYER_NAME_MAX_CODEPOINTS
     if key == "advOutfit":
-        return isinstance(value, str) and len(value) <= 200 and all(
-            char in "_-" or unicodedata.category(char)[0] in "LN" for char in value
-        )
+        return is_valid_outfit_id(value)
     if key == "advBackground":
         # "" (follow the character's work), "none" (plain sky) or a global "<work>/<id>" key.
         if not isinstance(value, str):
@@ -139,8 +152,7 @@ async def export_chat_backup() -> dict:
                 async for row in cursor:
                     count += 1
                     content, japanese = row["content_chinese"] or "", row["content_japanese"] or ""
-                    size += len(content) + len(japanese) + len(row["lines_json"] or "")
-                    if count > MAX_MESSAGES or size > MAX_TEXT:
+                    if count > MAX_MESSAGES:
                         raise _too_large()
                     messages = sessions[row["session_id"]]["messages"]
                     if len(messages) >= 10000:
@@ -160,6 +172,13 @@ async def export_chat_backup() -> dict:
                         ]
                     else:
                         lines = None
+                    # Measure what the file carries, the same way import does: the stored audio
+                    # chunks are dropped above, so they must not count toward the limit.
+                    size += len(content) + len(japanese)
+                    if lines is not None:
+                        size += len(json.dumps(lines, ensure_ascii=False))
+                    if size > MAX_TEXT:
+                        raise _too_large()
                     messages.append({
                         "id": f"m_{row['id']}", "role": row["role"], "content": content,
                         "japanese": japanese, "ts": _timestamp(row["created_at"]),

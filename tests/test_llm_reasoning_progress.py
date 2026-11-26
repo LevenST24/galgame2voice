@@ -129,7 +129,10 @@ async def test_reasoning_chunks_emit_throttled_progress_and_stay_out_of_the_repl
         body = response.text
         assert SECRET not in body
         events = _parse_sse(body)
-        progress = [data for name, data in events if name == "progress"]
+        progress = [
+            data for name, data in events
+            if name == "progress" and data != {"stage": "voice"}
+        ]
         assert stand_in.chunk_count >= 8
         assert 2 <= len(progress) < stand_in.chunk_count, (
             "思考分片期间应节流发出进度，而不是每个分片一次或只有保活："

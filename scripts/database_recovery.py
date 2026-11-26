@@ -3,7 +3,22 @@
 from galgame2voice.database.backups import list_database_backups, restore_database, validate_backup
 from galgame2voice.database.migrations import CURRENT_SCHEMA_VERSION
 from galgame2voice.database.session import get_database_path
+from datetime import datetime
 from pathlib import Path
+
+
+def describe_backup(path: Path) -> str:
+    """「2026年11月25日 10:22:33」 for a .bak_YYYYMMDD_HHMMSS_ffffff snapshot, else its file name."""
+    stamp = path.name.rpartition(".bak_")[2]
+    try:
+        taken = datetime.strptime(stamp[:15], "%Y%m%d_%H%M%S")
+    except ValueError:
+        return path.name
+    return f"{taken.year}年{taken.month}月{taken.day}日 {taken:%H:%M:%S}"
+
+
+def _size_label(size: int) -> str:
+    return f"{size / (1024 * 1024):.1f} MB" if size >= 1024 * 1024 else f"{max(1, size // 1024)} KB"
 
 
 def recover_interactively() -> int:
@@ -18,7 +33,7 @@ def recover_interactively() -> int:
         except Exception:
             continue
         usable.append(candidate)
-        print(f"  {len(usable)}. {candidate.name}  ({candidate.stat().st_size // 1024} KB)")
+        print(f"  {len(usable)}. {describe_backup(candidate)}  ({_size_label(candidate.stat().st_size)})")
     if not usable:
         print("没有可用的数据库备份。原文件未修改，请保留整个 data 目录并反馈启动日志。")
         return 1
@@ -29,7 +44,7 @@ def recover_interactively() -> int:
     if not choice.isdecimal() or not 1 <= int(choice) <= len(usable):
         print("序号无效，原文件未修改。请重新运行「数据恢复.bat」。")
         return 1
-    print("恢复后配置和后端记录会回到该备份的时间。现有数据库及日志文件会另存，不会删除。")
+    print(f"恢复后配置和后端记录会回到 {describe_backup(usable[int(choice) - 1])} 的状态。现有数据库及日志文件会另存，不会删除。")
     if input("确认恢复请输入「恢复」，直接回车取消：").strip() != "恢复":
         print("已取消，原文件未修改。")
         return 0
