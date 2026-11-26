@@ -167,7 +167,10 @@ test('audio availability, stop toggle, natural completion and playback failure',
   h.q('.home-listen').click(); assert.equal(h.calls.at(-1), 'stop'); assert.equal(textTree(h.q('.home-listen')), '▶ 试听这句');
   h.finish('ended'); await microtasks();
   h.q('.home-listen').click(); h.finish('ended'); await microtasks(); assert.equal(textTree(h.q('.home-listen')), '▶ 试听这句');
-  h.q('.home-listen').click(); h.finish('failed'); await microtasks(); assert.equal(h.q('.home-listen').hidden, true);
+  h.q('.home-listen').click(); h.finish('failed'); await microtasks();
+  assert.equal(h.q('.home-listen'), null);
+  assert.equal(h.q('.home-listen-note').textContent, '这句语音已过期或不可用');
+  assert.equal(h.doc.activeElement, h.q('.home-continue'));
 });
 
 test('opening settings center stops excerpt playback immediately via gear, capsule popover, or modal subscriber', async t => {
@@ -393,6 +396,20 @@ test('status colors/text, explanations, settings tabs, polling and disposal with
   pills[1].click(); assert.match(textTree(h.q('.home-popover')), /假引擎失败原因/);
   h.ui.close(); const count = h.calls.length; h.clock.tick(20000); await microtasks(); h.notify();
   assert.equal(h.calls.length, count); assert.equal(h.clock.timers.size, 0);
+});
+
+test('a hidden tab stops reading status on the home screen and refreshes once it is shown', async t => {
+  const h = await fixture(t);
+  const reads = () => h.calls.filter(c => c === 'status').length;
+  assert.equal(reads(), 1);
+  h.doc.hidden = true;
+  h.clock.tick(30000); await microtasks();
+  assert.equal(reads(), 1, 'a hidden tab must not keep polling');
+  h.doc.hidden = false;
+  h.doc.dispatchEvent({ type: 'visibilitychange' }); await microtasks();
+  assert.equal(reads(), 2, 'showing the tab refreshes at once');
+  h.clock.tick(5000); await microtasks();
+  assert.equal(reads(), 3);
 });
 
 const SLOW_ENGINE = '引擎加载时间较长，尚未确认就绪。无需反复重启；请点击「刷新状态」稍后检查。文字聊天可继续使用。';
@@ -1517,4 +1534,12 @@ test('background /api/providers retry failure stays silent while opening setting
   assert.equal(calls, 2); assert.equal(toasts.children.length, 0);
   env.app.actions.openSettings('models'); for (let i = 0; i < 5; i++) await tick();
   assert.equal(toasts.children.length, 1);
+});
+
+test('a session title that starts with an emoji keeps the whole emoji as its avatar letter', async t => {
+  const sessions = [snapshot('a'), { ...snapshot('b', 1), title: '🌸花火大会', characterName: '' }];
+  const h = await fixture(t, { sessions, actions: { getAvatar: async () => null } });
+  const avatar = h.q('.home-avatar').textContent;
+  assert.equal(avatar, '🌸');
+  assert.ok(avatar.isWellFormed());
 });
