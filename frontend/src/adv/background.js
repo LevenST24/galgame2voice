@@ -84,6 +84,7 @@ export function normalizeBackgroundSelection(value) {
  * @param {(query: string) => any} [options.matchMedia]
  * @param {any} [options.ImageClass]
  * @param {Document} [options.documentObj]
+ * @param {() => void} [options.onLoadFailed] called when an artwork image fails to load
  * @returns {{ setList: (list: any[]) => void, setSelection: (s: { id?: string, time?: string }) => void, destroy: () => void }}
  */
 export function createBackgroundView({
@@ -94,6 +95,7 @@ export function createBackgroundView({
   matchMedia = query => globalThis.matchMedia?.(query),
   ImageClass = globalThis.Image,
   documentObj,
+  onLoadFailed,
 } = {}) {
   const doc = documentObj || layer?.ownerDocument || globalThis.document;
 
@@ -193,6 +195,7 @@ export function createBackgroundView({
       pendingUrl = null;
       if (!ok) {
         release(incoming);
+        onLoadFailed?.();
         return;
       }
       const instant = reducedMotion();

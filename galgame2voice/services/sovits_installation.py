@@ -6,12 +6,23 @@ import sys
 import tempfile
 
 
+def read_sovits_directory_hint(file: Path) -> str:
+    """Read a hint file as UTF-8 (with optional BOM) or GBK, stripping whitespace and quotes."""
+    raw = file.read_bytes()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        # Notepad's "ANSI" save on Chinese Windows writes the path in GBK.
+        text = raw.decode("gb18030")
+    return text.strip().strip("\"'")
+
+
 def read_sovits_directory(project_root: Path, hint_file: Path | None = None) -> Path | None:
     """Resolve quoted/BOM/relative hints against the install root, never the cwd."""
     file = hint_file if hint_file is not None else project_root / "data" / "sovits_dir.txt"
     if not file.is_file():
         return None
-    value = file.read_text(encoding="utf-8-sig").strip().strip("\"'")
+    value = read_sovits_directory_hint(file)
     if not value:
         return None
     directory = Path(value).expanduser()
@@ -110,18 +121,26 @@ def save_sovits_directory(project_root: Path, value: str) -> dict:
     directory = Path(value).expanduser()
     if not directory.is_absolute():
         directory = project_root / directory
-    directory = directory.resolve()
-    if not directory.is_dir() or not (directory / "api_v2.py").is_file():
-        if directory.is_dir() and (directory.parent / "api_v2.py").is_file():
-            raise ValueError(
-                f"你选的是引擎里面的“{directory.name}”，请改选它的上一级文件夹“{directory.parent}”。"
-            )
-        detail = "所选文件夹需包含 api_v2.py。请先完整解压 GPT-SoVITS，再选择引擎目录。"
-        nested = _single_nested_engine_name(directory)
-        if nested:
-            detail += f"请再进入“{nested}”。"
-        raise ValueError(detail)
-    if getattr(sys, "frozen", False) and find_engine_python(directory) is None:
-        raise ValueError("所选引擎缺少 runtime/python.exe，请选择包含运行环境的完整集成包。")
+    try:
+        directory = directory.resolve()
+        if directory.is_file() and (directory.parent / "api_v2.py").is_file():
+            # Explorer's "复制文件地址" on api_v2.py (or any file in the engine) pastes a file path.
+            directory = directory.parent
+        if not directory.is_dir() or not (directory / "api_v2.py").is_file():
+            if directory.is_dir() and (directory.parent / "api_v2.py").is_file():
+                raise ValueError(
+                    f"你选的是引擎里面的“{directory.name}”，请改选它的上一级文件夹“{directory.parent}”。"
+                )
+            detail = "所选文件夹需包含 api_v2.py。请先完整解压 GPT-SoVITS，再选择引擎目录。"
+            nested = _single_nested_engine_name(directory)
+            if nested:
+                detail += f"请再进入“{nested}”。"
+            raise ValueError(detail)
+        if getattr(sys, "frozen", False) and find_engine_python(directory) is None:
+            raise ValueError("所选引擎缺少 runtime/python.exe，请选择包含运行环境的完整集成包。")
+    except OSError as exc:
+        raise ValueError(
+            "无法打开所选文件夹。请确认路径正确、当前账户能打开这个文件夹（网络盘需先连接），再重新选择。"
+        ) from exc
     write_sovits_directory_hint(project_root, directory)
     return inspect_sovits_directory(project_root)

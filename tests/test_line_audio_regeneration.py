@@ -360,7 +360,7 @@ async def test_repaired_history_survives_temporary_audio_cleanup_for_seven_days(
     path = repair.root / response.json()["audio"]["chunks"][0]["audio_url"].lstrip("/")
     old = time.time() - age
     os.utime(path, (old, old))
-    temporary = repair.root / "audio/voice_unpublished.wav"
+    temporary = repair.root / "audio/voice_0123456789ab.wav"
     temporary.write_bytes(b"temporary synthesis")
     os.utime(temporary, (old, old))
     protected = repair.root / "audio/repair_ffffffffffff.wav"

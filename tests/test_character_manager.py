@@ -478,9 +478,10 @@ async def test_character_manager_sync_with_db_all_characters_and_default(tmp_pat
             (default_rows[0]["id"],),
         )
         await conn.commit()
-        assert await mgr.sync_with_db(conn) == 0
+        assert await mgr.sync_with_db(conn) == 1
         cur = await conn.execute("SELECT prompt_text FROM voice_profiles WHERE id = ?;", (default_rows[0]["id"],))
-        assert (await cur.fetchone())["prompt_text"] == "User Custom Text"
+        assert (await cur.fetchone())["prompt_text"] == natsume.manifest.emotions["gentle"].text
+        assert await mgr.sync_with_db(conn) == 0
 
 
 @pytest.mark.requires_character_assets
