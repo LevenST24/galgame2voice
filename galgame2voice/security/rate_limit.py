@@ -94,25 +94,20 @@ class RateLimitMiddleware:
             path.startswith(_ADMIN_STRICT_PREFIXES)
             and str(scope.get("method", "GET")).upper() in _MUTATING_METHODS
         )
-        if is_protected:
-            counter = self.protected_counters.get(ip)
-            if counter is None:
-                if len(self.protected_counters) >= _MAX_TRACKED_IPS:
-                    _evict_oldest(self.protected_counters)
-                counter = self.protected_counters[ip] = SlidingWindowCounter(_PROTECTED_LIMIT)
-        else:
-            counter = self.ip_counters.get(ip)
-            if counter is None:
-                if len(self.ip_counters) >= _MAX_TRACKED_IPS:
-                    _evict_oldest(self.ip_counters)
-                counter = self.ip_counters[ip] = SlidingWindowCounter(_DEFAULT_IP_LIMIT)
+        counters = self.protected_counters if is_protected else self.ip_counters
+        limit = _PROTECTED_LIMIT if is_protected else _DEFAULT_IP_LIMIT
+        counter = counters.get(ip)
 
-        # Check both budgets before recording in either: a request turned away
-        # by its own client's budget must not eat the shared global budget, or
-        # one runaway client on the LAN would lock every other client out.
-        if not (counter.has_room(now) and self.global_counter.has_room(now)):
+        # Check both budgets before mutating either or tracking a new IP:
+        # a rejected request must not spend the other budget or churn the IP table.
+        if not ((counter is None or counter.has_room(now)) and self.global_counter.has_room(now)):
             await self._reject(send)
             return
+
+        if counter is None:
+            if len(counters) >= _MAX_TRACKED_IPS:
+                _evict_oldest(counters)
+            counter = counters[ip] = SlidingWindowCounter(limit)
         counter.events.append(now)
         self.global_counter.events.append(now)
 

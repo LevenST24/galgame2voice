@@ -2,6 +2,7 @@
 
 import pytest
 
+from galgame2voice.security import rate_limit
 from galgame2voice.security.rate_limit import RateLimitMiddleware, SlidingWindowCounter
 
 
@@ -132,8 +133,16 @@ class TestRejectedRequestsSpareOtherBudgets:
     @pytest.mark.asyncio
     async def test_global_rejection_does_not_spend_client_budget(self, monkeypatch):
         monkeypatch.delenv("GALGAME2VOICE_RATE_LIMIT_DISABLED", raising=False)
+        monkeypatch.setattr(rate_limit, "_MAX_TRACKED_IPS", 3)
         mw = RateLimitMiddleware(None)
-        mw.global_counter = SlidingWindowCounter(limit=1)
-        assert await self._call(mw, "10.0.0.1") == 200
-        assert await self._call(mw, "10.0.0.2") == 429
-        assert len(mw.ip_counters["10.0.0.2"].events) == 0
+        # Fill the 240-request global window across 3 clients (80 each < 120 per-IP).
+        for ip in ("10.0.0.1", "10.0.0.2", "10.0.0.3"):
+            for _ in range(80):
+                assert await self._call(mw, ip) == 200
+        # Global rejection must not insert a new IP, evict tracked IPs, or spend client budget.
+        assert await self._call(mw, "10.0.0.4") == 429
+        assert set(mw.ip_counters) == {"10.0.0.1", "10.0.0.2", "10.0.0.3"}
+        assert await self._call(mw, "10.0.0.5", path="/api/chat/stream") == 429
+        assert "10.0.0.5" not in mw.protected_counters
+        assert await self._call(mw, "10.0.0.1") == 429
+        assert len(mw.ip_counters["10.0.0.1"].events) == 80
