@@ -490,3 +490,40 @@ def test_find_gpt_sovits_directory_prefers_hint_in_configured_project_root(tmp_p
     assert not Path((custom / "data" / "sovits_dir.txt").read_text(encoding="utf-8").strip()).is_absolute()
     assert installation.read_sovits_directory(install) == stale.resolve()
 
+
+
+@pytest.mark.asyncio
+async def test_engine_directory_and_restart_report_disk_full_as_507(tmp_path, monkeypatch):
+    import errno
+    engine = make_engine(tmp_path / "engine")
+    monkeypatch.setattr(get_settings(), "project_root", tmp_path)
+    transport = ASGITransport(app=create_app())
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+        monkeypatch.setattr(health, "save_sovits_directory", lambda *a, **kw: (_ for _ in ()).throw(OSError(errno.ENOSPC, "No space left on device")))
+        resp = await client.put("/api/system/sovits-directory", json={"directory": str(engine)})
+        assert resp.status_code == 507 and "磁盘空间不足" in resp.json()["detail"]
+
+        monkeypatch.setattr(health, "save_sovits_directory", lambda *a, **kw: (_ for _ in ()).throw(PermissionError(13, "denied")))
+        assert (await client.put("/api/system/sovits-directory", json={"directory": str(engine)})).status_code == 500
+
+        monkeypatch.setattr(health, "_resolve_sovits_directory", lambda _root: engine)
+        supervisor = MagicMock(get_owned_process=lambda: None, is_port_in_use=lambda *a: False)
+        monkeypatch.setattr(health, "get_engine_supervisor", lambda: supervisor)
+
+        async def full_disk_precision(*_args):
+            raise RuntimeError("无法写入精度配置") from OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(health, "_apply_sovits_precision_config", full_disk_precision)
+        resp = await client.post("/api/system/restart_sovits", json={})
+        assert resp.status_code == 507 and "磁盘空间不足" in resp.json()["detail"]
+
+        async def ok_precision(*_args):
+            return ("cpu", False, "test")
+
+        monkeypatch.setattr(health, "_apply_sovits_precision_config", ok_precision)
+        supervisor.spawn_process.side_effect = OSError(errno.ENOSPC, "No space left on device")
+        resp = await client.post("/api/system/restart_sovits", json={})
+        assert resp.status_code == 507 and "磁盘空间不足" in resp.json()["detail"]
+
+        supervisor.spawn_process.side_effect = RuntimeError("unexpected")
+        assert (await client.post("/api/system/restart_sovits", json={})).status_code == 500
