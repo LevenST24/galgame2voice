@@ -167,7 +167,10 @@ test('audio availability, stop toggle, natural completion and playback failure',
   h.q('.home-listen').click(); assert.equal(h.calls.at(-1), 'stop'); assert.equal(textTree(h.q('.home-listen')), '▶ 试听这句');
   h.finish('ended'); await microtasks();
   h.q('.home-listen').click(); h.finish('ended'); await microtasks(); assert.equal(textTree(h.q('.home-listen')), '▶ 试听这句');
-  h.q('.home-listen').click(); h.finish('failed'); await microtasks(); assert.equal(h.q('.home-listen').hidden, true);
+  h.q('.home-listen').click(); h.finish('failed'); await microtasks();
+  assert.equal(h.q('.home-listen'), null);
+  assert.equal(h.q('.home-listen-note').textContent, '这句语音已过期或不可用');
+  assert.equal(h.doc.activeElement, h.q('.home-continue'));
 });
 
 test('opening settings center stops excerpt playback immediately via gear, capsule popover, or modal subscriber', async t => {
@@ -393,6 +396,20 @@ test('status colors/text, explanations, settings tabs, polling and disposal with
   pills[1].click(); assert.match(textTree(h.q('.home-popover')), /假引擎失败原因/);
   h.ui.close(); const count = h.calls.length; h.clock.tick(20000); await microtasks(); h.notify();
   assert.equal(h.calls.length, count); assert.equal(h.clock.timers.size, 0);
+});
+
+test('a hidden tab stops reading status on the home screen and refreshes once it is shown', async t => {
+  const h = await fixture(t);
+  const reads = () => h.calls.filter(c => c === 'status').length;
+  assert.equal(reads(), 1);
+  h.doc.hidden = true;
+  h.clock.tick(30000); await microtasks();
+  assert.equal(reads(), 1, 'a hidden tab must not keep polling');
+  h.doc.hidden = false;
+  h.doc.dispatchEvent({ type: 'visibilitychange' }); await microtasks();
+  assert.equal(reads(), 2, 'showing the tab refreshes at once');
+  h.clock.tick(5000); await microtasks();
+  assert.equal(reads(), 3);
 });
 
 const SLOW_ENGINE = '引擎加载时间较长，尚未确认就绪。无需反复重启；请点击「刷新状态」稍后检查。文字聊天可继续使用。';
@@ -1517,4 +1534,52 @@ test('background /api/providers retry failure stays silent while opening setting
   assert.equal(calls, 2); assert.equal(toasts.children.length, 0);
   env.app.actions.openSettings('models'); for (let i = 0; i < 5; i++) await tick();
   assert.equal(toasts.children.length, 1);
+});
+
+function bootRetryEnv(t, { storageEntries = [], onSessions, onHistory } = {}) {
+  if (!console.debug.mock) t.mock.method(console, 'debug', () => {});
+  const ts = new Date(Date.now() - 60000).toISOString();
+  const s = { id: 's_server', title: '星夜的约定', last_message: '晚安。', message_count: 2, created_at: ts, updated_at: ts, voice_profile_id: 7, settings: {} };
+  const hist = { session_id: 's_server', has_more: false, oldest_id: 1, messages: [{ id: 1, role: 'user', content_chinese: '睡了吗？', created_at: ts }, { id: 2, role: 'assistant', content_chinese: '晚安。', created_at: ts }] };
+  return bootTitleStartupEnv(t, { storageEntries, fetchImpl: async (url, opt = {}) => {
+    const p = String(url), m = (opt.method || 'GET').toUpperCase();
+    if (p === '/api/chat/sessions' || p.startsWith('/api/chat/sessions?')) return onSessions(m, opt, s);
+    if (p.startsWith('/api/chat/history')) return onHistory ? onHistory(hist) : Response.json(hist);
+    if (p === '/api/providers') return Response.json({ providers: [{ id: 'deepseek', name: 'DeepSeek', chat_model: 'deepseek-chat', api_key: 'sk-****', is_active: true }], presets: [] });
+    return Response.json({ state: 'ready', base_url: 'http://127.0.0.1:9880', profiles: [{ id: 7, name: '星野' }], active_profile_id: 7, backgrounds: [], settings: {} });
+  } });
+}
+test('home retry deduplicates in-flight reads, renders server history, and carries draft if chat opens early', async t => {
+  let calls = 0, releaseList, releaseHist;
+  const onSessions = async (_m, _o, s) => (++calls === 1 ? Response.json({ detail: 'down' }, { status: 503 }) : (await new Promise(r => { releaseList = r; }), Response.json({ sessions: [s], has_more: false })));
+  const env1 = bootRetryEnv(t, { onSessions }); await env1.app.ready;
+  const home1 = env1.app.returnHome(); t.after(() => home1?.destroy());
+  for (let i = 0; i < 10; i++) await tick(); await home1.refresh(); for (let i = 0; i < 5; i++) await tick();
+  assert.equal(calls, 2); releaseList(); for (let i = 0; i < 10; i++) await tick();
+  assert.equal(home1.element.querySelector('.home-meta').children[0].textContent, '星野'); assert.equal(home1.element.querySelector('.home-quote').textContent, '「晚安。」');
+  await home1.refresh(); for (let i = 0; i < 5; i++) await tick(); assert.equal(calls, 2); home1.destroy(); env1.cleanup();
+  calls = 0; const env2 = bootRetryEnv(t, { onSessions, onHistory: async h => (await new Promise(r => { releaseHist = r; }), Response.json(h)) });
+  await env2.app.ready; const home2 = env2.app.returnHome(); t.after(() => home2?.destroy());
+  for (let i = 0; i < 5; i++) await tick(); releaseList(); for (let i = 0; i < 5; i++) await tick(); home2.element.querySelector('.home-continue').click();
+  const input = env2.app.adv.textbox.inputElement; input.value = '刚写的草稿'; input.dispatchEvent({ type: 'input' });
+  releaseHist(); for (let i = 0; i < 10; i++) await tick(); assert.equal(env2.app.adv.textbox.draft, '刚写的草稿'); assert.equal(env2.doc.activeElement, input);
+});
+test('home retry keeps an unconfirmed new chat and ranks a newer server session first in recents', async t => {
+  let up = false; const posted = [], nowMs = Date.now(), iso = ms => new Date(ms).toISOString();
+  const cached = [1, 2, 3, 4].map(n => ({ id: `s_c${n}`, title: `旧${n}`, createdAt: nowMs - (6 - n) * 60000, updatedAt: nowMs - (6 - n) * 60000, messages: [{ id: `m_${n}`, serverMessageId: n, role: 'user', content: 'hi' }], settings: {} }));
+  const env = bootRetryEnv(t, {
+    storageEntries: [['gal2voice.chat.v1', JSON.stringify({ sessions: cached, activeId: 's_c4', global: { voiceMode: true, ttsPreset: '' } })]],
+    onSessions: (m, opt, s) => !up ? Response.json({ detail: 'down' }, { status: 503 }) : m === 'POST' ? (posted.push(JSON.parse(opt.body).id), Response.json({ status: 'ok' }))
+      : Response.json({ sessions: [s, ...cached.map(c => ({ id: c.id, title: c.title, last_message: 'hi', message_count: 1, created_at: iso(c.createdAt), updated_at: iso(c.updatedAt), voice_profile_id: null, settings: {} }))], has_more: false }),
+    onHistory: () => Response.json({ messages: [], has_more: false }) });
+  await env.app.ready; const created = env.app.actions.startNewWith({ voiceProfileId: 7, advBackground: 'w/sea', advBgTime: 'night' });
+  for (let i = 0; i < 5; i++) await tick(); up = true; const home = env.app.returnHome(); t.after(() => home?.destroy());
+  for (let i = 0; i < 10; i++) await tick(); assert.equal(env.app.actions.getActiveId(), created.id); assert.deepEqual(posted, [created.id]);
+  assert.deepEqual(home.element.querySelectorAll('.home-recent').map(n => n.dataset.session), ['s_server', 's_c4', 's_c3']); });
+test('a session title that starts with an emoji keeps the whole emoji as its avatar letter', async t => {
+  const sessions = [snapshot('a'), { ...snapshot('b', 1), title: '🌸花火大会', characterName: '' }];
+  const h = await fixture(t, { sessions, actions: { getAvatar: async () => null } });
+  const avatar = h.q('.home-avatar').textContent;
+  assert.equal(avatar, '🌸');
+  assert.ok(avatar.isWellFormed());
 });
