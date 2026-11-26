@@ -31,7 +31,7 @@ import { advActions, createTitleActions } from './adv/actions.js';
 import { showTitle } from './adv/title_hook.js';
 import { createPortraitCache } from './adv/portrait_cache.js';
 
-import { initAuthInterceptor } from './auth.js';
+import { initAuthInterceptor, promptConsoleToken } from './auth.js';
 import { createSettingsCenter } from './controllers/settings_center.js';
 import { initSessionBackup } from './controllers/session_backup.js';
 import { requestJson } from './api.js';
@@ -1122,11 +1122,18 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     startupSessionSwitched || Boolean(advApp?.textbox.draft || advApp?.textbox.composing)
   );
   // The first protected request completes token authentication before title UI.
-  app.ready = syncSessionsFromBackend().then(synced => (
+  const startTitleSync = () => syncSessionsFromBackend().then(synced => (
     synced && !hasStartupUserActivity() ? showTitleScreen(actions) : null
   )).catch(error => {
     console.debug('Title startup deferred:', error);
-  }).finally(() => { homeStarting = false; });
+    if (error?.status === 401) {
+      showToast('需要输入访问令牌才能读取对话，请点右侧按钮重新输入。', 'error', {
+        actionLabel: '输入访问令牌',
+        onAction: () => { promptConsoleToken().then(token => { if (token) void startTitleSync(); }); },
+      });
+    }
+  });
+  app.ready = startTitleSync().finally(() => { homeStarting = false; });
 
   const urlParams = new URLSearchParams(window.location.search);
   if (urlParams.get('settings') === '1' || window.location.hash === '#settings') {

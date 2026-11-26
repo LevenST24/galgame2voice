@@ -87,8 +87,13 @@ export function promptConsoleToken(reason = '') {
     return Promise.resolve(null);
   }
 
+  const reasonEl = document.getElementById('tokenModalReason');
   _pendingAuthPromise = new Promise((resolve) => {
     input.value = getConsoleToken();
+    if (reasonEl) {
+      reasonEl.textContent = reason || '';
+      reasonEl.hidden = !reason;
+    }
     openModal(modal, { focus: input });
 
     const cleanup = () => {
@@ -181,14 +186,18 @@ export function initAuthInterceptor() {
 
     const modifiedInit = { ...init, headers };
 
-    const res = await nativeFetch(input, modifiedInit);
+    let res = await nativeFetch(input, modifiedInit);
+    let reason = '';
 
-    // 捕获 401 Unauthorized：拦截并提示输入 Token，然后重试单次
-    if (res.status === 401 && !url.includes('/api/providers/test')) {
-      const newToken = await promptConsoleToken('服务需要访问令牌验证');
-      if (newToken && isUsableConsoleToken(newToken)) {
-        headers.set('Authorization', `Bearer ${newToken}`);
-        return nativeFetch(input, { ...init, headers });
+    // 捕获 401 Unauthorized：拦截并提示输入 Token，输错清空并带原因重弹，点取消立即结束
+    while (res.status === 401 && !url.includes('/api/providers/test')) {
+      const newToken = await promptConsoleToken(reason);
+      if (!newToken || !isUsableConsoleToken(newToken)) break;
+      headers.set('Authorization', `Bearer ${newToken}`);
+      res = await nativeFetch(input, { ...init, headers });
+      if (res.status === 401) {
+        if (getConsoleToken() === newToken) setConsoleToken('');
+        reason = '令牌不对，请对照电脑上 data\\.console_token 里的内容重新输入。';
       }
     }
 

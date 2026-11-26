@@ -1690,3 +1690,24 @@ test('a session title that starts with an emoji keeps the whole emoji as its ava
   assert.equal(avatar, '🌸');
   assert.ok(avatar.isWellFormed());
 });
+
+test('startup 401 after cancelling token prompt shows action toast to re-enter token and retry sync', async t => {
+  let listCalls = 0, tok = '';
+  const env = bootTitleStartupEnv(t, {
+    fetchImpl: async (url, init = {}) => String(url).startsWith('/api/chat/sessions')
+      ? (++listCalls, init.headers?.get?.('Authorization') === 'Bearer ok-tok'
+        ? Response.json({ sessions: [], has_more: false })
+        : Response.json({ detail: 'unauthorized' }, { status: 401 }))
+      : Response.json({ providers: [], presets: [], profiles: [], backgrounds: [], state: 'ready', settings: {} }),
+  });
+  globalThis.window.sessionStorage = { getItem: () => tok, setItem: (_k, v) => { tok = String(v); }, removeItem: () => { tok = ''; } };
+  globalThis.window.prompt = () => null;
+  t.mock.method(console, 'debug', () => {});
+  await env.app.ready;
+  const btn = env.doc.getElementById('toastRoot').querySelector('.toast-action-btn');
+  assert.equal(btn?.textContent, '输入访问令牌');
+  globalThis.window.prompt = () => 'ok-tok';
+  btn.click();
+  for (let i = 0; i < 6; i++) await tick();
+  assert.equal(listCalls, 2);
+});
