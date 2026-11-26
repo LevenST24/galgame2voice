@@ -1,6 +1,7 @@
 // @ts-check
 /** Home is a transparent overlay on the active session's real ADV stage. */
 import { canReplayLine } from './replay.js';
+import { splitGraphemes } from './graphemes.js';
 
 const PAGE_SIZE = 6;
 export function formatHomeTime(value, now = new Date()) {
@@ -337,6 +338,8 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     add(row, btn('home-primary home-start', '开始新对话', () => { const settings = { ...draft }; close(); actions.startNewWith?.(settings); }),
       btn('home-link home-cancel', '取消', returnHome)); pane.appendChild(row);
   }
+  // The first whole character: slice(0, 1) cut an emoji title such as 🌸花火大会 in half.
+  const avatarInitial = session => splitGraphemes(session.characterName || session.title)[0] || '';
   function renderRecents() {
     recents.replaceChildren();
     const others = [...new Set([...recentOrder, ...sessions.map(s => s.id)])]
@@ -348,7 +351,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
       const button = btn('home-recent', '', () => preview(session.id));
       button.setAttribute('aria-label', `切换到${session.characterName || session.title}`);
       button.dataset.session = session.id;
-      const avatar = el('span', 'home-avatar', (session.characterName || session.title).slice(0, 1));
+      const avatar = el('span', 'home-avatar', avatarInitial(session));
       const text = el('span', 'home-recent-text');
       add(text, el('b', '', session.characterName || session.title), el('span', '', formatHomeTime(session.updatedAt, now())));
       button.replaceChildren(avatar, text); recents.appendChild(button);
@@ -376,7 +379,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
         image.style.height = r.height ? `${r.height / rect.width * 100}%` : 'auto';
         if (!r.width) { image.style.height = 'auto'; image.style.width = 'auto'; image.onload = () => { image.style.width = `${image.naturalWidth / rect.width * 100}%`; }; }
         image.style.opacity = String(layer.opacity ?? 1);
-        image.onerror = () => { delete avatar.dataset.art; avatar.replaceChildren(); avatar.textContent = (session.characterName || session.title).slice(0, 1); };
+        image.onerror = () => { delete avatar.dataset.art; avatar.replaceChildren(); avatar.textContent = avatarInitial(session); };
         return image;
       });
       avatar.dataset.art = key; avatar.textContent = ''; avatar.replaceChildren(...images);
@@ -494,7 +497,8 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     } finally { if (polling === request) polling = null; }
   }
   function schedule() {
-    timer = clock.setTimeout(() => { timer = null; refresh().catch(() => {}); if (opened) schedule(); }, 5000);
+    // A hidden tab keeps the home screen open; skip its status reads until it is shown again.
+    timer = clock.setTimeout(() => { timer = null; if (!doc?.hidden) refresh().catch(() => {}); if (opened) schedule(); }, 5000);
     timer?.unref?.();
   }
   function setStageHome(on) {
@@ -540,7 +544,10 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
   }
   function outside(event) { if (!screen.contains(event.target) || !event.target.closest?.('.home-pill-wrap')) closePopup(); if (!event.target.closest?.('.home-pick-wrap')) closeDropdown(); }
   screen.addEventListener('keydown', keydown); doc.addEventListener('click', outside);
-  disposers.push(() => screen.removeEventListener('keydown', keydown), () => doc.removeEventListener('click', outside));
+  const onVisibility = () => { if (opened && !doc.hidden) refresh().catch(() => {}); };
+  doc.addEventListener?.('visibilitychange', onVisibility);
+  disposers.push(() => screen.removeEventListener('keydown', keydown), () => doc.removeEventListener('click', outside),
+    () => doc.removeEventListener?.('visibilitychange', onVisibility));
   return { element: screen, menuScreen: screen, loadScreen: load, open, close, refresh,
     get isOpen() { return opened; }, destroy() { close(); destroyed = true; for (const off of disposers) off(); screen.remove(); } };
 }
