@@ -13,6 +13,7 @@ from collections import deque
 from typing import Deque, Dict
 
 from galgame2voice.config import get_settings
+from galgame2voice.security.auth import is_auth_disabled
 
 # Long-lived SSE requests only count once at request start, so generous
 # window sizes keep interactive use unaffected.
@@ -115,9 +116,16 @@ class RateLimitMiddleware:
                 _evict_oldest(counters)
             counter = counters[ip] = SlidingWindowCounter(limit)
         counter.events.append(now)
-        self.global_counter.events.append(now)
 
-        await self.app(scope, receive, send)
+        trusted = ip in ("127.0.0.1", "::1") or is_auth_disabled()
+        if trusted:
+            self.global_counter.events.append(now)
+            await self.app(scope, receive, send)
+        else:
+            state = scope.setdefault("state", {})
+            await self.app(scope, receive, send)
+            if state.get("auth_verified"):
+                self.global_counter.events.append(time.monotonic())
 
     async def _reject(self, send) -> None:
         retry_after = str(int(_WINDOW_SECONDS))
