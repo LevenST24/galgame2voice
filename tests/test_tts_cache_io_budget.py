@@ -455,3 +455,24 @@ async def test_failed_bytes_read_is_not_reused_as_a_file_hit(stack, monkeypatch)
     _, repaired, _ = await service.synthesize_to_file("こんにちは。", {"_pre_resolved": True})
     assert repaired.read_bytes() == b"fresh audio"
     client.synthesize.assert_awaited_once()
+
+
+async def test_cache_put_uses_short_temp_filename_within_path_limit(stack, monkeypatch):
+    _, cache, _ = stack
+    key, clean, params = cache.compute_cache_key("こんにちは。", options={"_pre_resolved": True})
+    final_path = cache.cache_dir / f"{key}.wav"
+    max_path_len = len(str(final_path)) + 5
+    real_write_bytes = Path.write_bytes
+
+    def guarded_write_bytes(self, data):
+        if len(str(self)) > max_path_len:
+            raise FileNotFoundError(f"path exceeds simulated limit: {len(str(self))} > {max_path_len}")
+        return real_write_bytes(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", guarded_write_bytes)
+    payload = b"RIFFtest-audio"
+    _, written_path, _ = await cache.put(key, "こんにちは。", clean, 1, params, payload)
+    assert written_path == final_path
+    assert final_path.is_file()
+    assert final_path.read_bytes() == payload
+    assert not list(cache.cache_dir.glob("*.tmp.*"))
