@@ -149,11 +149,12 @@ export function decide(event, context = {}) {
       return null;
     }
 
+    const key = event.key ? event.key.toLowerCase() : '';
+    if (hidden && key === 'h') return 'unhide';
+
     if (inInput) {
       return null;
     }
-
-    const key = event.key ? event.key.toLowerCase() : '';
     switch (key) {
       case 'a':
         return 'toggle_auto';
@@ -174,6 +175,7 @@ export function decide(event, context = {}) {
   // Right click (contextmenu)
   if (overlayOpen) return null;
   if (event.type === 'contextmenu') {
+    if (hidden) return 'unhide';
     if (inInput) {
       // Keep native context menu inside editor
       return null;

@@ -125,6 +125,15 @@ export const LEGACY_GREETINGS = [
 ];
 
 /**
+ * The how-to line a new session opens with. It lives only in the browser, never in the database.
+ * @param {{ role?: string, content?: string, noVoice?: boolean } | null | undefined} message
+ */
+export function isStarterGreeting(message) {
+  return Boolean(message && message.noVoice && message.role === 'assistant'
+    && (message.content === GREETING || LEGACY_GREETINGS.includes(/** @type {string} */ (message.content))));
+}
+
+/**
  * @template {ChatSession | null | undefined} T
  * @param {T} session
  * @returns {T}
@@ -312,10 +321,10 @@ export function loadState() {
 
 /**
  * @param {Array<{ id?: number | string | null, name?: string | null }>} [profiles]
- * @returns {string}
+ * @returns {PortableChatSnapshot}
  */
-export function exportSessionData(profiles = []) {
-  const portable = portableSnapshot(normalizeSnapshot(snapshot(), DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL));
+export function buildLocalBackupSnapshot(profiles = []) {
+  const local = normalizeSnapshot(snapshot(), DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL);
   const nameById = new Map();
   if (Array.isArray(profiles)) {
     for (const profile of profiles) {
@@ -326,7 +335,7 @@ export function exportSessionData(profiles = []) {
       }
     }
   }
-  for (const session of portable.sessions) {
+  for (const session of local.sessions) {
     const voiceId = session.settings.voiceProfileId;
     const resolvedName = voiceId !== null ? nameById.get(voiceId) : undefined;
     if (resolvedName) {
@@ -335,6 +344,15 @@ export function exportSessionData(profiles = []) {
       delete session.characterName;
     }
   }
+  return local;
+}
+
+/**
+ * @param {Array<{ id?: number | string | null, name?: string | null }>} [profiles]
+ * @returns {string}
+ */
+export function exportSessionData(profiles = []) {
+  const portable = portableSnapshot(buildLocalBackupSnapshot(profiles));
   return JSON.stringify({
     format: 'galgame2voice.chat',
     version: 1,
@@ -454,12 +472,21 @@ export function createSession(title = '新对话') {
 }
 
 /**
+ * A copy of the sessions with the most recently used first, the order home uses.
+ * @param {ChatSession[]} sessions
+ * @returns {ChatSession[]}
+ */
+export function sessionsByRecent(sessions) {
+  return [...sessions].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+}
+
+/**
  * @param {string} id
  * @returns {void}
  */
 export function deleteSession(id) {
   state.sessions = state.sessions.filter((s) => s.id !== id);
-  if (state.activeId === id) state.activeId = state.sessions[0]?.id ?? null;
+  if (state.activeId === id) state.activeId = sessionsByRecent(state.sessions)[0]?.id ?? null;
   if (!state.sessions.length) makeStarterSession();
   saveState();
 }

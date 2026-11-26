@@ -6,6 +6,7 @@ Manages application lifespan, CORS, static routing, and router registration.
 import asyncio
 import logging
 import mimetypes
+import sqlite3
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -20,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import MutableHeaders
 from starlette.types import Receive, Scope, Send
 
-from galgame2voice.config import get_settings
+from galgame2voice.config import get_settings, require_settings
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.routers import chat, config, health, voice, characters, metrics, system, backgrounds
@@ -30,8 +31,9 @@ from galgame2voice.services.engine_supervisor import DefaultEngineSupervisor, En
 from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client, close_gpt_sovits_client
 from galgame2voice.services.telemetry_jobs import TelemetryJobs
 from galgame2voice.services.audio_cleaner import _audio_cleanup_loop
+from galgame2voice.services.character_package_import import sweep_import_leftovers
 from galgame2voice.utils.http_client import close_shared_async_clients
-from galgame2voice.utils.logger import setup_logger
+from galgame2voice.utils.logger import DISK_FULL_MESSAGE, describe_database_write_error, setup_logger
 
 __all__ = [
     "app",
@@ -126,9 +128,11 @@ def _init_logging_and_safety(settings) -> None:
 
     if not is_loopback and is_auth_disabled():
         err_msg = (
-            f"FATAL: Application is configured to listen on '{settings.host}' with auth_disabled=True. "
-            "Network exposure strictly requires console token authentication enabled. "
-            "Set GALGAME2VOICE_AUTH_DISABLED=0 in your environment or docker-compose.yml to proceed."
+            f"无法监听 {settings.host}：未开启访问令牌时只允许本机（127.0.0.1）访问。"
+            "如需让局域网或其他设备访问，请在程序目录的 .env 中加入 GALGAME2VOICE_AUTH_DISABLED=0"
+            "（Docker 部署写在 docker-compose.yml 中）后重新启动；令牌保存在 data/.console_token。"
+            "只在本机使用时，请把监听地址改回 127.0.0.1。\n"
+            f"FATAL: Application is configured to listen on '{settings.host}' with auth_disabled=True."
         )
         logger.critical(err_msg)
         raise RuntimeError(err_msg)
@@ -367,6 +371,8 @@ async def lifespan(app: FastAPI):
 
     _init_logging_and_safety(settings)
     _init_directories(settings)
+    # No import can be running yet, so whatever a crash left behind can go.
+    await asyncio.to_thread(sweep_import_leftovers, settings.data_dir, older_than=None)
     await _init_database_and_characters(settings)
     await _announce_console_token(settings)
     await _init_gpt_sovits_client(settings)
@@ -574,10 +580,24 @@ def create_app(*, engine_supervisor: EngineSupervisor | None = None) -> FastAPI:
             content={"detail": "Internal Server Error", "error_type": type(exc).__name__},
         )
 
+    # Storage errors get their own handler so the user sees why, not a generic 500.
+    @app.exception_handler(sqlite3.Error)
+    @app.exception_handler(OSError)
+    async def storage_exception_handler(request: Request, exc: Exception):
+        message = describe_database_write_error(exc)
+        if message is None:
+            return await global_exception_handler(request, exc)
+        logger.error("Storage error on %s %s: %s", request.method, request.url.path, exc, exc_info=True)
+        return JSONResponse(
+            status_code=507 if message == DISK_FULL_MESSAGE else 503,
+            content={"detail": message, "error_type": type(exc).__name__},
+        )
+
     return app
 
 
 # Application singleton instance for Uvicorn
+require_settings()
 app = create_app()
 
 
