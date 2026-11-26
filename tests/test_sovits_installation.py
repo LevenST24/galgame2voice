@@ -182,6 +182,15 @@ async def test_directory_api_requires_authentication(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_native_picker_reports_when_it_cannot_open(monkeypatch):
+    # A Python without tkinter (or a headless server) used to answer exactly like a cancel.
+    import sys
+
+    monkeypatch.setitem(sys.modules, "tkinter", None)
+    result = await voice.open_native_file_dialog(voice.BrowseFileRequest(file_type="directory"))
+    assert result == {"selected_path": "", "picker_unavailable": True}
+
+@pytest.mark.asyncio
 async def test_native_directory_picker_destroys_window_on_failure(monkeypatch):
     tkinter = pytest.importorskip("tkinter")
     from tkinter import filedialog
@@ -190,7 +199,7 @@ async def test_native_directory_picker_destroys_window_on_failure(monkeypatch):
     picker = MagicMock(side_effect=RuntimeError("dialog failed"))
     monkeypatch.setattr(filedialog, "askdirectory", picker)
     result = await voice.open_native_file_dialog(voice.BrowseFileRequest(file_type="directory"))
-    assert result == {"selected_path": ""}
+    assert result == {"selected_path": "", "picker_unavailable": True}
     picker.assert_called_once()
     root.destroy.assert_called_once()
 

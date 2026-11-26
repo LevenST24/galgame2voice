@@ -395,6 +395,20 @@ test('status colors/text, explanations, settings tabs, polling and disposal with
   assert.equal(h.calls.length, count); assert.equal(h.clock.timers.size, 0);
 });
 
+test('a hidden tab stops reading status on the home screen and refreshes once it is shown', async t => {
+  const h = await fixture(t);
+  const reads = () => h.calls.filter(c => c === 'status').length;
+  assert.equal(reads(), 1);
+  h.doc.hidden = true;
+  h.clock.tick(30000); await microtasks();
+  assert.equal(reads(), 1, 'a hidden tab must not keep polling');
+  h.doc.hidden = false;
+  h.doc.dispatchEvent({ type: 'visibilitychange' }); await microtasks();
+  assert.equal(reads(), 2, 'showing the tab refreshes at once');
+  h.clock.tick(5000); await microtasks();
+  assert.equal(reads(), 3);
+});
+
 const SLOW_ENGINE = '引擎加载时间较长，尚未确认就绪。无需反复重启；请点击「刷新状态」稍后检查。文字聊天可继续使用。';
 const CHECKING_ENGINE = '引擎进程已变更，正在重新核对服务状态。请稍候，无需再次重启。';
 const readyModel = { model: { state: 'ok', label: '测试模型' }, modelLoaded: true, hasModel: true };
