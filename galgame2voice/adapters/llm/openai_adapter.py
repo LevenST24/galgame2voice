@@ -23,7 +23,7 @@ from galgame2voice.adapters.base import (
     validate_stream_completion,
     is_html_response,
 )
-from galgame2voice.utils.error_diagnostics import WebpageEndpointError
+from galgame2voice.utils.error_diagnostics import WebpageEndpointError, is_out_of_balance
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.http_client import create_async_client, get_shared_async_client
 
@@ -312,7 +312,10 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 finally:
                     await aclose_stream_context(stream_ctx)
                 retry_after = parse_retry_after(response.headers)
-                if attempt < max_retries:
+                out_of_balance = response.status_code == 429 and is_out_of_balance(
+                    error_body.decode("utf-8", errors="ignore")
+                )
+                if attempt < max_retries and not out_of_balance:
                     delay = calculate_backoff_delay(attempt, base_delay, retry_after)
                     logger.warning(
                         "Streaming endpoint %s returned HTTP %d. Retrying (%d/%d) in %.2fs...",

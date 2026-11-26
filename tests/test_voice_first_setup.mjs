@@ -81,3 +81,22 @@ console.log('Model scan invalidation: 1 scenario passed');
   assert.deepEqual(dom.sCvGpt.options.map(o => [o.value, o.title]), gpt.map(f => [f.path, f.path]));
 }
 console.log('Same-named weight disambiguation: 1 scenario passed');
+
+// A list cut at 50 says how many more were found and where to put the file.
+{
+  const dom = { sCvGpt: makeSelect(), sCvSovits: makeSelect(), sCvRef: makeSelect() };
+  initVoiceSettings(dom);
+  invalidateScannedModels();
+  const refs = Array.from({ length: 50 }, (_, i) => ({ name: `r${i}.wav`, path: `/a/r${i}.wav` }));
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({ gpt_weights: [], sovits_weights: [], audio_files: refs, hidden: { audio_files: 120 } }),
+  });
+  await populateScanOptions();
+  const last = dom.sCvRef.options.at(-1);
+  assert.equal(dom.sCvRef.options.length, 51);
+  assert.equal(last.disabled, true);
+  assert.match(last.textContent, /还有 120 个没列出，只显示前 50 个/);
+  assert.equal(dom.sCvRef.value, '/a/r0.wav');
+}
+console.log('Cut-off scan list hint: 1 scenario passed');
