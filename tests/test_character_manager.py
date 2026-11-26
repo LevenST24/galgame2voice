@@ -786,3 +786,41 @@ def test_character_manifest_v2_model():
     assert m.manifest_version == "2.0"
     assert "gentle" in m.emotions
     assert m.default_voice_params.speed == 1.05
+
+
+def test_probe_rejects_oversized_reference_audio_without_reading_or_probing(tmp_path, monkeypatch):
+    from galgame2voice.services import character_manager as cm
+    from galgame2voice.services.tts_service import TtsService
+
+    monkeypatch.setattr(cm, "MAX_REFERENCE_AUDIO_BYTES", 1024)
+    pkg_dir = tmp_path / "huge_audio"
+    (pkg_dir / "refs").mkdir(parents=True)
+    (pkg_dir / "refs" / "gentle.wav").write_bytes(b"RIFF" + b"\x00" * 2044)
+    (pkg_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "id": "huge_audio",
+                "name": "超大音频",
+                "emotions": {"gentle": {"audio": "refs/gentle.wav", "text": "声。", "lang": "ja"}},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    called: list[str] = []
+
+    def _forbid(label: str):
+        def _boom(*_args, **_kwargs):
+            called.append(label)
+            raise AssertionError(f"{label} must not be called")
+        return _boom
+
+    monkeypatch.setattr(Path, "read_bytes", _forbid("read_bytes"))
+    monkeypatch.setattr(TtsService, "get_audio_duration", staticmethod(_forbid("get_audio_duration")))
+
+    mgr = CharacterManager(characters_dir=tmp_path)
+    pkg = mgr._load_and_validate_package(pkg_dir, pkg_dir / "manifest.json")
+    assert not pkg.is_valid
+    assert called == []
+    assert any("文件太大" in err for err in pkg.validation_errors), pkg.validation_errors

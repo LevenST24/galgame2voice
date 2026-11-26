@@ -50,6 +50,8 @@ from galgame2voice.services.character_identity import (
 
 logger = logging.getLogger("galgame2voice.services.character_manager")
 
+MAX_REFERENCE_AUDIO_BYTES = 64 * 1024 * 1024  # 64 MiB
+
 
 # ============================================================================
 # Character Manager Service
@@ -272,7 +274,11 @@ class CharacterManager:
             st = resolved_audio.stat()
             cache_key = (str(canonical_path), st.st_size, st.st_mtime)
         except Exception:
+            st = None
             cache_key = None
+
+        if st is not None and st.st_size > MAX_REFERENCE_AUDIO_BYTES:
+            return None, None, ValueError("文件太大（超过 64 MiB），参考音频应为 3 到 10 秒")
 
         cached_probe = _AUDIO_PROBE_CACHE.get(cache_key) if cache_key else None
         if cached_probe is not None:
