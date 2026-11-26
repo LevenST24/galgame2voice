@@ -33,6 +33,18 @@ function validAffectionLevel(value) {
  * deps: { controller, audio, getSession, voiceEnabled, loadPortrait, loadAffection?, getCharacter,
  *   clock?, raf?, cancelRaf?, matchMedia?, subscribe?, subscribeOverlay?, ...actions }
  */
+// The earliest `exp` (seconds) among signed media URLs, or 0 when none is signed.
+function earliestExpiry(urls) {
+  return urls.reduce((min, url) => {
+    try {
+      const exp = Number(new URL(url, 'http://local').searchParams.get('exp'));
+      return exp > 0 ? (min ? Math.min(min, exp) : exp) : min;
+    } catch {
+      return min;
+    }
+  }, 0);
+}
+
 export function mountAdv(dom, deps) {
   const { controller, audio } = deps;
   const doc = dom.root.ownerDocument || globalThis.document;
@@ -105,6 +117,8 @@ export function mountAdv(dom, deps) {
   // outside the player's timer set instead of the injected clock.
   const background = createBackgroundView({
     layer: stage.background, matchMedia, ImageClass: deps.ImageClass || globalThis.Image,
+    // An image that will not load may only have an expired signed URL.
+    onLoadFailed: () => { renewBackgroundsIfExpiring(); },
   });
   const playerSettings = () => ({
     primary: settings.advPrimaryLanguage, subtitle: settings.advSubtitleLanguage,
@@ -336,7 +350,12 @@ export function mountAdv(dom, deps) {
     getWorks: () => works,
     getWork: () => deps.getCharacter?.()?.work || null,
     getSelection: storedBackground,
-    saveSettings: patch => deps.saveSettings?.(patch),
+    saveSettings: patch => {
+      deps.saveSettings?.(patch);
+      // main.js sends no session update for its own save, so reread it: reopening the panel
+      // or picking a time must start from this choice, not the one loaded at mount.
+      update();
+    },
     onPreview: selection => {
       appliedBackground = shownBackground(selection);
       background.setSelection(appliedBackground);
@@ -363,16 +382,26 @@ export function mountAdv(dom, deps) {
     },
     documentObj: doc,
   });
+  let bgPanelOpenToken = 0;
   function openBgPanel() {
     closeDrawer();
     closeLog();
     if (configPanel?.isOpen) configPanel.close({ revert: true });
-    bgPanel.open();
+    const token = ++bgPanelOpenToken;
+    // The panel's thumbnails are built from the list, so renew expiring URLs first.
+    const renewal = renewBackgroundsIfExpiring();
+    if (renewal) renewal.then(() => {
+      if (destroyed || token !== bgPanelOpenToken) return;
+      if (stage.stage.classList.contains('is-home') || drawer || backlog || externalOverlay || configPanel?.isOpen) return;
+      bgPanel.open();
+    });
+    else bgPanel.open();
   }
   function closeBgPanel() {
+    ++bgPanelOpenToken;
     if (bgPanel?.isOpen) bgPanel.close();
   }
-  async function loadBackgrounds() {
+  async function loadBackgrounds({ keepOnError = false } = {}) {
     let list = [];
     let workList = [];
     try {
@@ -380,16 +409,34 @@ export function mountAdv(dom, deps) {
       list = Array.isArray(data?.backgrounds) ? data.backgrounds : [];
       workList = Array.isArray(data?.works) ? data.works : [];
     } catch {
+      if (keepOnError) return;
       list = [];
       workList = [];
     }
     if (destroyed) return;
     backgrounds = list;
     works = workList;
+    backgroundsExpireAt = earliestExpiry(list.flatMap(item =>
+      item?.variants && typeof item.variants === 'object' ? Object.values(item.variants) : []));
     background.setList(list);
     // Auto resolves against the list, so re-check once it arrives.
     if (settings) syncBackground();
+    if (bgPanel?.isOpen) bgPanel.refresh();
   }
+  // Background image URLs are signed for about 12 hours. Check the wall clock when
+  // they are about to be used (a timer would not run while the computer sleeps),
+  // and read the list again if they expire within a minute.
+  let backgroundsExpireAt = 0;
+  /** @type {Promise<void> | null} */
+  let backgroundRenewal = null;
+  function renewBackgroundsIfExpiring() {
+    if (backgroundRenewal) return backgroundRenewal;
+    if (destroyed || !backgroundsExpireAt) return null;
+    if ((deps.wallNow?.() ?? Date.now()) < backgroundsExpireAt * 1000 - 60000) return null;
+    backgroundRenewal = loadBackgrounds({ keepOnError: true }).finally(() => { backgroundRenewal = null; });
+    return backgroundRenewal;
+  }
+  listen(doc, 'visibilitychange', () => { if (doc.visibilityState === 'visible') renewBackgroundsIfExpiring(); });
 
   function paint(line = currentLine || { emotion: 'gentle', act: {} }, options = {}) {
     if (!line || !model) return;
@@ -440,7 +487,8 @@ export function mountAdv(dom, deps) {
     stage.stage.classList.toggle('is-window-hidden', player.hidden);
     stage.stage.classList.toggle('reduced-motion', reducedMotion);
     quickMenu.setModelStatus(deps.getModelStatus?.() || { label: '对话模型', state: controller.busy ? 'busy' : 'ok' });
-    if (configPanel?.isOpen && !configPanel.element.contains(doc.activeElement)) {
+    // Embedded in the settings center, the dialog owns focus; pulling it back would yank the user off its tabs and buttons.
+    if (configPanel?.isOpen && !deps.readingSettingsContainer && !configPanel.element.contains(doc.activeElement)) {
       configPanel.focusFirstControl?.();
     }
   }
@@ -573,9 +621,10 @@ export function mountAdv(dom, deps) {
     switch (name) {
       case 'advance': stopStageReplay(); player.advance(); break;
       case 'toggle_auto':
-      case 'auto': if (stageReplaying || !['input', 'error', 'suspended'].includes(player.state)) player.setAuto(!player.auto); break;
+      case 'auto': if (!player.hidden && (stageReplaying || !['input', 'error', 'suspended'].includes(player.state))) player.setAuto(!player.auto); break;
       case 'toggle_skip':
       case 'skip':
+        if (player.hidden) break;
         stopStageReplay();
         if (!['input', 'error', 'suspended'].includes(player.state)) {
           temporarySkip = false;
@@ -586,6 +635,7 @@ export function mountAdv(dom, deps) {
         }
         break;
       case 'skip-hold-start':
+        if (player.hidden) break;
         stopStageReplay();
         if (!['input', 'error', 'suspended'].includes(player.state) && !player.skip) {
           temporarySkip = true;
@@ -605,13 +655,15 @@ export function mountAdv(dom, deps) {
       case 'toggle_hide':
       case 'hide':
         if (player.hidden) unhide();
-        else { player.hide(); player.suspend('hidden'); stopStageReplay(); sprite.suspend(); }
+        // Hiding pauses AUTO and the next line, but a voice already playing (or replaying) finishes.
+        else { player.hide(); sprite.suspend(); }
         break;
       case 'unhide': unhide(); break;
       case 'log': openLog(); break;
       case 'background': openBgPanel(); break;
       case 'sessions': openDrawer('sessions'); break;
       case 'close_overlay':
+        ++bgPanelOpenToken;
         if (backlog) closeLog();
         else if (configPanel?.isOpen) configPanel.close({ revert: true });
         else if (bgPanel?.isOpen) bgPanel.close();
@@ -638,11 +690,20 @@ export function mountAdv(dom, deps) {
       case 'swap_languages': textbox.swapLanguages(); break;
       case 'new_session': deps.onNewSession?.(); break;
       case 'stop':
+        ++bgPanelOpenToken;
         stopStageReplay();
         controller.stop();
         if (player.isPresenting()) player.beginPlayerEdit();
         break;
-      case 'input': textbox.prepareInput({ canSend: !controller.busy }); break;
+      case 'input':
+        // AUTO or SKIP would advance to the next line and hide the box the player just opened.
+        // Lines stay queued; they are only dropped once the player actually starts typing.
+        temporarySkip = false;
+        if (player.skip) { player.setSkip(false); restoreSprite(); }
+        player.setAuto(false);
+        textbox.prepareInput({ canSend: !controller.busy });
+        syncControls();
+        break;
       case 'voice_mode': deps.toggleVoice?.(); if (!deps.voiceEnabled?.()) stopStageReplay(); backlog?.stopReplay(); update(); break;
       case 'replay_voice': {
         const line = currentLine;
@@ -665,7 +726,6 @@ export function mountAdv(dom, deps) {
     syncControls();
   }
   function unhide() {
-    player.resume('hidden');
     player.unhide();
     restoreSprite();
   }
@@ -717,7 +777,7 @@ export function mountAdv(dom, deps) {
   else if (mql?.addListener) { mql.addListener(motionChange); disposers.push(() => mql.removeListener(motionChange)); }
   function setOverlay(open) {
     externalOverlay = open;
-    if (open) { deps.cancelMic?.(); player.suspend('dialog'); stopStageReplay(); sprite.suspend(); textbox.completeReveal(); textbox.glyph(false); }
+    if (open) { ++bgPanelOpenToken; deps.cancelMic?.(); player.suspend('dialog'); stopStageReplay(); sprite.suspend(); textbox.completeReveal(); textbox.glyph(false); }
     else { player.resume('dialog'); if (!drawer && !backlog && !configPanel?.isOpen) restoreSprite(); }
     syncControls();
   }
@@ -779,14 +839,7 @@ export function mountAdv(dom, deps) {
         faces && typeof faces === 'object' ? Object.values(faces) : []
       );
       const layerFiles = Object.values(model?.layers || {});
-      const minExpiry = [...spriteFiles, ...layerFiles].reduce((min, item) => {
-        try {
-          const exp = Number(new URL(item?.file, 'http://local').searchParams.get('exp'));
-          return exp > 0 ? (min ? Math.min(min, exp) : exp) : min;
-        } catch {
-          return min;
-        }
-      }, 0);
+      const minExpiry = earliestExpiry([...spriteFiles, ...layerFiles].map(item => item?.file));
       if (minExpiry > 0) {
         const delay = Math.max(1000, minExpiry * 1000 - (deps.wallNow?.() ?? Date.now()) - 60000);
         refreshTimer = clock.setTimeout(() => { refreshTimer = null; loadPortrait(true); }, delay);
@@ -918,6 +971,9 @@ export function mountAdv(dom, deps) {
       preloadNextLine();
     }
   }));
+  disposers.push(controller.on('text_complete', event => {
+    if (event.messageId === turnId && deps.getSession()?.id === sessionId) player.textComplete(turnId);
+  }));
   disposers.push(controller.on('line_audio', event => {
     if (event.messageId === turnId && deps.getSession()?.id === sessionId) player.setLineAudio(turnId, event.line, event);
   }));
@@ -982,11 +1038,15 @@ export function mountAdv(dom, deps) {
     getRecentTurnTimelines: () => recentTurnTimelines.map(item => ({ ...item })),
     prepareHome() {
       configPanel.close({ revert: true }); closeBgPanel(); closeLog(); closeDrawer();
+      renewBackgroundsIfExpiring();
       temporarySkip = false;
       resetInput(); ++replayToken; turnId = null; currentLine = null;
       sprite.suspend(); syncControls();
     },
-    backgroundUrl: (id, time, work) => selectionUrl(backgrounds, { id: backgroundKey(id ?? '', work || null), time }),
+    backgroundUrl: (id, time, work) => {
+      renewBackgroundsIfExpiring();
+      return selectionUrl(backgrounds, { id: backgroundKey(id ?? '', work || null), time });
+    },
     listBackgrounds: () => backgrounds.map(({ key, name, work }) => ({ key, name, work })),
     get backlog() { return backlog; },
     unmount() {

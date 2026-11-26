@@ -195,7 +195,50 @@ class Settings(BaseSettings):
         return self.project_root / self.backgrounds_dir_name
 
 
+_SETTING_ERROR_REASONS = {
+    "int_parsing": "不是有效的整数",
+    "int_from_float": "不是有效的整数",
+    "float_parsing": "不是有效的数字",
+    "bool_parsing": "不是有效的开关值，请填 true 或 false",
+    "list_type": '不是有效的列表，请填 JSON 数组（例如 ["http://localhost:3000"]）',
+}
+
+
+class InvalidSettingsError(ValueError):
+    """A setting from the environment or .env cannot be used."""
+
+
+def _describe_invalid_settings(exc: Exception) -> str:
+    """Lists each bad setting from a pydantic ValidationError."""
+    lines = ["galgame2voice 无法启动：以下配置项的值无效（来自环境变量，或程序目录下的 .env 文件）："]
+    aliases: dict[str, str] = {}
+    for k, f in Settings.model_fields.items():
+        names = [str(c) for c in f.validation_alias.choices] if isinstance(f.validation_alias, AliasChoices) else [k.upper()]
+        aliases.update(dict.fromkeys((k, *names), " / ".join(names)))
+    errs = exc.errors() if hasattr(exc, "errors") else [{"loc": (next((k for k in Settings.model_fields if f'"{k}"' in str(exc)), str(exc)),), "type": "list_type" if hasattr(exc.__cause__, "doc") else "", "input": getattr(exc.__cause__, "doc", ""), "msg": str(exc)}]
+    for err in errs:
+        name = ".".join(str(part) for part in err.get("loc", ())) or "?"
+        reason = _SETTING_ERROR_REASONS.get(err.get("type", ""), err.get("msg", "格式不对"))
+        lines.append(f"- {aliases.get(name, name)} = {str(err.get('input', ''))[:80]!r}：{reason}")
+    lines.append("请改正或删除这些配置项后重新启动。")
+    return "\n".join(lines)
+
+
 @lru_cache()
 def get_settings() -> Settings:
     """Returns a cached singleton instance of Settings."""
-    return Settings()
+    from pydantic import ValidationError
+    from pydantic_settings import SettingsError
+
+    try:
+        return Settings()
+    except (ValidationError, SettingsError) as exc:
+        raise InvalidSettingsError(_describe_invalid_settings(exc)) from None
+
+
+def require_settings() -> Settings:
+    """Returns settings or exits with status 1 with the formatted Chinese message."""
+    try:
+        return get_settings()
+    except InvalidSettingsError as exc:
+        raise SystemExit(str(exc)) from None

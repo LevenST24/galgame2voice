@@ -63,7 +63,9 @@ export function initEngineDirectory(dom, notify, onSaved = () => {}, onOpenDashb
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file_type: 'directory', initial_dir: input.value.trim() || null }),
       });
-      if (!disposed && data.selected_path) {
+      if (!disposed && data.picker_unavailable) {
+        notify('无法打开文件夹选择窗口（例如从其他设备访问，或系统缺少图形界面组件）。请直接把引擎文件夹路径粘贴到输入框，再点击「保存目录」。', 'error');
+      } else if (!disposed && data.selected_path) {
         input.value = data.selected_path;
         edited = true;
         revision += 1;
