@@ -62,6 +62,8 @@ _retired_clients_by_loop: weakref.WeakKeyDictionary[
 ] = weakref.WeakKeyDictionary()
 _no_loop_shared_clients: dict[Any, tuple[tuple[tuple[str, str], ...], httpx.AsyncClient]] = {}
 _no_loop_retired_clients: list[httpx.AsyncClient] = []
+_retire_tasks_by_loop: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, set[asyncio.Task[Any]]] = weakref.WeakKeyDictionary()
+_RETIRED_CLIENT_POLL_SECONDS: float = 0.25
 
 PROXY_ENV_HINT = (
     "Check NO_PROXY/HTTP_PROXY/HTTPS_PROXY for malformed entries such as the "
@@ -149,6 +151,35 @@ def _loop_client_stores() -> tuple[
     return bucket, retired
 
 
+def _client_is_busy(client: httpx.AsyncClient) -> bool:
+    for transport in (getattr(client, "_transport", None), *getattr(client, "_mounts", {}).values()):
+        pool = getattr(transport, "_pool", None)
+        if pool is not None and (getattr(pool, "_requests", None) or any(not c.is_idle() and not c.is_closed() for c in getattr(pool, "connections", ()))):
+            return True
+    return False
+
+def _schedule_retired_close(retired: list[httpx.AsyncClient], client: httpx.AsyncClient) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    async def _drain_and_close() -> None:
+        try:
+            await asyncio.sleep(0)
+            while not getattr(client, "is_closed", False) and _client_is_busy(client):  # noqa: ASYNC110
+                await asyncio.sleep(_RETIRED_CLIENT_POLL_SECONDS)
+            if not getattr(client, "is_closed", False):
+                await client.aclose()
+        except Exception as exc:
+            logger.debug("Failed closing retired shared HTTP client: %s", exc)
+        finally:
+            if client in retired:
+                retired.remove(client)
+    tasks = _retire_tasks_by_loop.setdefault(loop, set())
+    task = loop.create_task(_drain_and_close())
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
+
 def get_shared_async_client(*, factory: Any = None) -> httpx.AsyncClient:
     """
     Returns a long-lived ``httpx.AsyncClient`` keyed by running event loop and
@@ -168,6 +199,7 @@ def get_shared_async_client(*, factory: Any = None) -> httpx.AsyncClient:
             return cached_client
         if not getattr(cached_client, "is_closed", False):
             retired.append(cached_client)
+            _schedule_retired_close(retired, cached_client)
 
     limits = httpx.Limits(
         max_keepalive_connections=20,
@@ -186,6 +218,11 @@ async def close_shared_async_clients() -> None:
     to_close.extend(retired)
     bucket.clear()
     retired.clear()
+    pending = list(_retire_tasks_by_loop.pop(asyncio.get_running_loop(), ()))
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
 
     if bucket is not _no_loop_shared_clients:
         to_close.extend(client for _, client in _no_loop_shared_clients.values())

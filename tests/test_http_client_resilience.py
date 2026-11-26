@@ -220,3 +220,43 @@ async def test_consecutive_stream_chat_reuses_one_open_shared_client(monkeypatch
     finally:
         await close_shared_async_clients()
     assert clients[0].is_closed
+
+async def test_retired_shared_clients_drain_inflight_then_close_and_drop(clean_proxy_environment, monkeypatch):
+    """Retired shared clients wait for in-flight streams, then close and leave the retired list."""
+    import asyncio
+    from galgame2voice.utils import http_client
+    release = asyncio.Event()
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.readuntil(b"\r\n\r\n")
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nhi")
+        await writer.drain()
+        await release.wait()
+        writer.write(b"!!")
+        await writer.drain()
+        writer.close()
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    proxies: dict[str, str] = {}
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: dict(proxies))
+    try:
+        c1 = get_shared_async_client()
+        retired = [c1]
+        async with c1.stream("GET", f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}/") as resp:
+            for i in range(10):
+                proxies["https"] = f"http://127.0.0.1:{7800 + i}"
+                retired.append(get_shared_async_client())
+            proxies.clear()
+            active = get_shared_async_client()
+            await asyncio.sleep(0.05)
+            assert not c1.is_closed
+            release.set()
+            assert await resp.aread() == b"hi!!"
+        for _ in range(40):
+            await asyncio.sleep(0.02)
+            if all(c.is_closed for c in retired) and not http_client._retired_clients_by_loop.get(asyncio.get_running_loop()):
+                break
+        assert all(c.is_closed for c in retired) and not active.is_closed
+        assert not http_client._retired_clients_by_loop.get(asyncio.get_running_loop())
+    finally:
+        server.close()
+        await server.wait_closed()
+        await close_shared_async_clients()
