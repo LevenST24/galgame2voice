@@ -5,6 +5,8 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [3.2.12] - 2026-11-26
 ### Fixed
 - 修复「最大生成长度」填负数、0、留空、小数或带全角标点时被悄悄改成 16 或 1024，「音频缓存保留时间」填负数时被改成 1 分钟，却仍提示保存成功的问题；现在会说明可填的范围（分别为 16 到 32768、1 到 10080 分钟）并且不保存。
 - 修复 Anthropic 的「测试连通性」只返回固定的三个模型名，用其他可用的模型（较早的 Claude 或中转站的模型名）测试通过后仍提示「模型列表里没有」的问题；现在测试成功的模型会出现在列表里。
@@ -359,7 +361,8 @@ All notable changes to galgame2voice are documented here. The format follows
 - 修复聊天输入框超过 4000 字发送时清空草稿且报错失真，以及打开设置中心时未立即停止首页正在播放的试听语音的问题。
 - 修复在输入框使用中文/日文输入法组字时按 Esc 取消候选词会直接关闭弹窗，以及在背景选择对话框按 Tab 或 Shift+Tab 时焦点跳出对话框的问题。
 
-[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.11...HEAD
+[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.12...HEAD
+[3.2.12]: https://github.com/LevenST24/galgame2voice/compare/v3.2.11...v3.2.12
 [3.2.11]: https://github.com/LevenST24/galgame2voice/compare/v3.2.10...v3.2.11
 [3.2.10]: https://github.com/LevenST24/galgame2voice/compare/v3.2.9...v3.2.10
 [3.2.9]: https://github.com/LevenST24/galgame2voice/compare/v3.2.8...v3.2.9
