@@ -102,10 +102,10 @@ def test_exit_code_only_fails_on_fail(status, expected):
 def test_render_includes_status_detail_hint_and_overall():
     text = doctor.render([doctor.Check("Thing", doctor.WARN, "not great", hint="do this")])
 
-    assert "[WARN]" in text
-    assert "Thing: not great" in text
+    assert "[注意]" in text
+    assert "Thing：not great" in text
     assert "-> do this" in text
-    assert text.rstrip().endswith("Overall: DEGRADED")
+    assert text.rstrip().endswith("总体结果：能运行，但有需要注意的项（DEGRADED）")
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +117,7 @@ def test_check_runtime_passes_on_this_interpreter():
     (check,) = doctor.check_runtime()
 
     assert check.status == doctor.OK
-    assert "requires >= 3.10" in check.detail
+    assert "需要 >= 3.10" in check.detail
 
 
 def test_check_directories_reports_every_directory_writable(project_root):
@@ -128,6 +128,18 @@ def test_check_directories_reports_every_directory_writable(project_root):
     assert not list(project_root.rglob(".doctor_probe_*"))
 
 
+def test_check_directories_create_failure_hint_omits_nonexistent_env_var(project_root):
+    (project_root / "characters").write_text("occupied", encoding="utf-8")
+
+    checks = {check.name: check for check in doctor.check_directories(get_settings())}
+    check = checks["角色包目录"]
+
+    assert check.status == doctor.FAIL
+    assert "无法创建" in check.detail
+    assert "GALGAME2VOICE_DATA_DIR" not in check.hint
+    assert "写入权限" in check.hint
+
+
 def test_check_database_warns_before_first_start(tmp_path, monkeypatch):
     monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(tmp_path / "missing.db"))
     monkeypatch.setenv("GALGAME_DB_PATH", str(tmp_path / "missing.db"))
@@ -135,7 +147,7 @@ def test_check_database_warns_before_first_start(tmp_path, monkeypatch):
     (check,) = doctor.check_database(get_settings())
 
     assert check.status == doctor.WARN
-    assert "not created yet" in check.detail
+    assert "还没有创建" in check.detail
 
 
 def test_check_database_recognises_a_wal_database(tmp_path, monkeypatch):
@@ -154,7 +166,7 @@ def test_check_database_recognises_a_wal_database(tmp_path, monkeypatch):
     (check,) = doctor.check_database(get_settings())
 
     assert check.status == doctor.OK
-    assert "WAL enabled" in check.detail
+    assert "已启用 WAL" in check.detail
 
 
 def test_check_database_reports_the_env_overridden_path(tmp_path, monkeypatch):
@@ -238,7 +250,7 @@ async def test_check_database_and_endpoint_with_special_chars_in_path(
     # 3. doctor.check_database must succeed with OK and WAL enabled
     (check,) = doctor.check_database(get_settings())
     assert check.status == doctor.OK
-    assert "WAL enabled" in check.detail
+    assert "已启用 WAL" in check.detail
 
     if stray_prefix:
         stray_file = tmp_path / stray_prefix
@@ -277,7 +289,7 @@ async def test_project_root_with_special_chars_resolves_endpoint_and_doctor(
 
     (check,) = doctor.check_database(get_settings())
     assert check.status == doctor.OK
-    assert "WAL enabled" in check.detail
+    assert "已启用 WAL" in check.detail
 
     stray_file = tmp_path / "Gal"
     assert not stray_file.exists(), f"Stray file was created at {stray_file}"
@@ -309,7 +321,7 @@ def test_bind_check_allows_loopback_without_auth(monkeypatch):
     (check,) = doctor.check_bind_and_auth(settings)
 
     assert check.status == doctor.OK
-    assert "loopback" in check.detail
+    assert "只在本机" in check.detail
 
 
 def test_bind_check_fails_on_exposed_listener_without_auth(monkeypatch):
@@ -320,7 +332,7 @@ def test_bind_check_fails_on_exposed_listener_without_auth(monkeypatch):
     (check,) = doctor.check_bind_and_auth(settings)
 
     assert check.status == doctor.FAIL
-    assert "refuses to start" in check.hint
+    assert "拒绝启动" in check.hint
 
 
 def test_bind_check_allows_exposed_listener_with_auth(monkeypatch):
@@ -331,7 +343,7 @@ def test_bind_check_allows_exposed_listener_with_auth(monkeypatch):
     (check,) = doctor.check_bind_and_auth(settings)
 
     assert check.status == doctor.OK
-    assert "enabled" in check.detail
+    assert "已开启" in check.detail
 
 
 def test_proxy_check_reports_ok_when_environment_is_clean(monkeypatch):
@@ -361,7 +373,7 @@ def test_check_characters_counts_packages_by_manifest(project_root):
     (check,) = doctor.check_characters(get_settings())
 
     assert check.status == doctor.OK
-    assert "2 discovered" in check.detail
+    assert "找到 2 个" in check.detail
     assert "not_a_character" not in check.detail
 
 
@@ -383,7 +395,7 @@ def test_check_providers_warns_when_none_configured():
     (check,) = doctor.check_providers([])
 
     assert check.status == doctor.WARN
-    assert "none configured" in check.detail
+    assert "还没有配置" in check.detail
 
 
 async def test_sovits_probe_is_skipped_in_offline_mode():
@@ -404,7 +416,7 @@ async def test_sovits_probe_accepts_a_reachable_server(monkeypatch):
     (check,) = await doctor.check_gpt_sovits("http://127.0.0.1:9880")
 
     assert check.status == doctor.OK
-    assert "reachable" in check.detail
+    assert "可以连接" in check.detail
 
 
 async def test_sovits_probe_recognizes_an_api_v2_server(monkeypatch):
@@ -439,7 +451,7 @@ async def test_sovits_probe_warns_when_unreachable(monkeypatch):
     (check,) = await doctor.check_gpt_sovits("http://127.0.0.1:9880")
 
     assert check.status == doctor.WARN
-    assert "unreachable" in check.detail
+    assert "连接不上" in check.detail
 
 
 # ---------------------------------------------------------------------------
@@ -463,6 +475,28 @@ def test_main_emits_json_and_exits_zero(tmp_path, monkeypatch, capsys):
     assert code == 0
 
 
+def test_human_report_is_chinese_and_json_keeps_stable_codes(tmp_path, monkeypatch, capsys):
+    """README asks users to run doctor and paste the result; the report must be readable for them."""
+    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(tmp_path / "data" / "galgame2voice.db"))
+    monkeypatch.setenv("GALGAME_DB_PATH", str(tmp_path / "data" / "galgame2voice.db"))
+    monkeypatch.setenv("GALGAME2VOICE_HOST", "127.0.0.1")
+    monkeypatch.setenv("GALGAME2VOICE_AUTH_DISABLED", "1")
+    get_settings.cache_clear()
+
+    doctor.main(["--offline"])
+    report = capsys.readouterr().out
+    for english in ("Overall:", "directory", "not created yet", "none found", "probe skipped", "[OK"):
+        assert english not in report, english
+    assert "总体结果：" in report
+    assert "[正常] 数据目录：" in report
+
+    doctor.main(["--offline", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["overall"] in (doctor.HEALTHY, doctor.DEGRADED)
+    assert {check["status"] for check in payload["checks"]} <= {doctor.OK, doctor.WARN, doctor.FAIL, doctor.SKIP}
+
+
 def test_main_returns_failure_exit_code_when_a_check_fails(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(tmp_path / "data" / "galgame2voice.db"))
@@ -475,7 +509,7 @@ def test_main_returns_failure_exit_code_when_a_check_fails(tmp_path, monkeypatch
 
     output = capsys.readouterr().out
     assert code == 1
-    assert "Overall: FAILED" in output
+    assert "总体结果：有错误" in output
 
 
 def test_cli_entrypoint_dispatches_doctor_without_starting_the_server(monkeypatch):

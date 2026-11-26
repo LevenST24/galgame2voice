@@ -9,6 +9,7 @@ frontend's on-demand status requests never block the event loop.
 import asyncio
 import logging
 import os
+import subprocess
 import sys
 import time
 import threading
@@ -334,7 +335,11 @@ def _collect_hardware_telemetry_sync(
     gpu_avail, gpu_name = gpu_snapshot if gpu_snapshot is not None else _get_gpu_telemetry_cached()
     settings = get_settings()
     project_root = settings.project_root
-    sovits_dir = read_sovits_directory(project_root) or project_root
+    try:
+        sovits_dir = read_sovits_directory(project_root) or project_root
+    except (OSError, ValueError, UnicodeError):
+        # The directory card explains an unreadable hint; telemetry must still load.
+        sovits_dir = project_root
 
     device, is_half, source = resolve_initial_device_and_half(
         project_root, sovits_dir, db_path=settings.db_path, gpu_available=gpu_avail,
@@ -741,11 +746,18 @@ async def _restart_local_engine(endpoint: SovitsEndpoint, payload: RestartSovits
         # process. A failed spawn cannot restore the stopped engine's models.
         client.invalidate_model_state()
 
+    old_still_exiting = False
     if owned is not None:
         if live_owned:
             await asyncio.to_thread(supervisor.terminate_process_tree, owned.pid)
-            await asyncio.to_thread(owned.wait, timeout=3)
-        supervisor.clear_owned_process(project_root=settings.project_root)
+            try:
+                await asyncio.to_thread(owned.wait, timeout=3)
+            except subprocess.TimeoutExpired:
+                # A large model can take longer than 3s to unload. Keep owning it so a
+                # retry can stop it again, and let the port wait below decide.
+                old_still_exiting = True
+        if not old_still_exiting:
+            supervisor.clear_owned_process(project_root=settings.project_root)
 
     # Bounded wait for the old process to release the port (replaces the old
     # fixed sleep): poll up to ~5s at 0.25s intervals, off the event loop.
@@ -755,6 +767,8 @@ async def _restart_local_engine(endpoint: SovitsEndpoint, payload: RestartSovits
             port_released = True
             break
         await asyncio.sleep(0.25)
+    if port_released and old_still_exiting:
+        supervisor.clear_owned_process(project_root=settings.project_root)
     if not port_released:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
