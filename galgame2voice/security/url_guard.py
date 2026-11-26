@@ -20,6 +20,7 @@ Policy:
 
 import collections
 import ipaddress
+import re
 import socket
 import threading
 import time
@@ -148,6 +149,10 @@ def validate_llm_base_url(url: Optional[str], allow_private: bool = False) -> Tu
     candidate = str(url).strip()
 
     for ch in candidate:
+        if ch == "\u3000" or ch.isalnum() and "\uff00" <= ch <= "\uffef":
+            # A full-width digit, letter or space is not punctuation; name it for what it is.
+            shown = "全角空格" if ch == "\u3000" else f"全角字符「{ch}」"
+            return False, f"接口地址里有{shown}，请切换到半角（英文）输入后重新输入"
         if "\u3000" <= ch <= "\u303f" or "\uff00" <= ch <= "\uffef":
             return False, f"接口地址里有中文标点「{ch}」，请切换到英文输入法后重新输入"
 
@@ -189,15 +194,43 @@ def validate_llm_base_url(url: Optional[str], allow_private: bool = False) -> Tu
     return True, ""
 
 
+# Docker service names may use underscores, so allow them alongside DNS letters, digits and hyphens.
+_SERVICE_HOST_LABEL = re.compile(r"[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?")
+
+
 def validate_local_service_url(url: Optional[str]) -> Tuple[bool, str]:
     """Validates a local/LAN service URL (e.g. the GPT-SoVITS inference server).
 
     Allows private/loopback hosts (the service legitimately lives on the LAN),
     but rejects non-http(s) schemes (file://, gopher://, ...), embedded
     credentials, and URLs without a hostname. No DNS resolution is performed.
+    Also rejects typos that urlparse tolerates, such as a comma instead of the
+    port colon, a stray space, or port 0, which would otherwise be saved as a
+    "remote" engine the app can neither reach nor start.
     Returns (ok, reason).
     """
-    return validate_llm_base_url(url, allow_private=True)
+    ok, reason = validate_llm_base_url(url, allow_private=True)
+    if not ok:
+        return ok, reason
+    candidate = str(url).strip()
+    if any(ch.isspace() for ch in candidate):
+        return False, "接口地址中间不能有空格"
+    parsed = urlparse(candidate)
+    if parsed.port == 0:
+        return False, "端口需在 1 到 65535 之间"
+    if not _is_valid_service_host(parsed.hostname or ""):
+        return False, "接口地址主机名格式无效（主机名和端口之间要用英文冒号）"
+    return True, ""
+
+
+def _is_valid_service_host(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host.split("%")[0])
+        return True
+    except ValueError:
+        pass
+    name = host[:-1] if host.endswith(".") else host
+    return 0 < len(name) <= 253 and all(_SERVICE_HOST_LABEL.fullmatch(label) for label in name.split("."))
 
 
 def _invalidate_host_cache(url: Optional[str]) -> None:
