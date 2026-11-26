@@ -7,7 +7,7 @@ import asyncio
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote, unquote
 import aiosqlite
 from fastapi import APIRouter, HTTPException, Query, Request, status
@@ -238,12 +238,16 @@ async def import_character_packages(
     request: Request,
     filename: str = Query(default="", max_length=512, description="Original archive or folder name"),
     overwrite: bool = Query(default=False, description="Backup and overwrite existing folder(s) with the same name"),
+    same_name: Literal["", "replace", "keep_both"] = Query(
+        default="", description="A voice the user made has the package's name: replace it, or rename it and keep both"
+    ),
 ) -> Any:
     try:
         return await import_character_archive(
             request,
             filename=filename,
             overwrite=overwrite,
+            same_name=same_name,
         )
     except HTTPException:
         raise
@@ -259,6 +263,7 @@ class RedeemCodeRequest(BaseModel):
     code: str = Field(default="", max_length=2048)
     package_id: str = Field(default="", max_length=128)
     overwrite: bool = False
+    same_name: Literal["", "replace", "keep_both"] = ""
 
 
 @router.post("/redeem/list")
@@ -268,7 +273,9 @@ async def list_redeem_packages(req: RedeemCodeRequest) -> dict[str, Any]:
 
 @router.post("/redeem/download", response_model=None)
 async def download_redeem_package(request: Request, req: RedeemCodeRequest) -> Any:
-    return await redeem_download(request, code=req.code, package_id=req.package_id, overwrite=req.overwrite)
+    return await redeem_download(
+        request, code=req.code, package_id=req.package_id, overwrite=req.overwrite, same_name=req.same_name
+    )
 
 
 @router.get("/redeem/progress")

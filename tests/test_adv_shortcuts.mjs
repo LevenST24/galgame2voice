@@ -3,8 +3,8 @@ import { test } from 'node:test';
 import { decide, createShortcuts } from '../frontend/src/adv/shortcuts.js';
 import { fakeDocument } from './helpers/adv_dom.mjs';
 
-test('hidden restore precedes player input exclusion for stage click and Enter', () => {
-  for (const event of [{ type: 'click', button: 0 }, { type: 'keydown', key: 'Enter' }]) {
+test('hidden restore precedes player input exclusion for stage click, Enter, H and right-click', () => {
+  for (const event of [{ type: 'click', button: 0 }, { type: 'keydown', key: 'Enter' }, { type: 'keydown', key: 'h' }, { type: 'contextmenu' }]) {
     assert.equal(decide(event, { hidden: true, playerInput: true }), 'unhide');
   }
 });

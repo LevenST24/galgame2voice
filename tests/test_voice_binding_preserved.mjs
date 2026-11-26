@@ -94,7 +94,7 @@ test('delete button follows real voice selection and recomputes after failed del
   }
 });
 
-test('creating or deleting a voice profile bumps session updatedAt for complete chat backup', async (t) => {
+test('voice create and delete keep complete chat backups consistent', async (t) => {
   t.mock.method(console, 'error', () => {});
   globalThis.document = { getElementById: () => null, createElement: () => element() };
   globalThis.window = { confirm: () => true };
@@ -132,13 +132,15 @@ test('creating or deleting a voice profile bumps session updatedAt for complete 
   initVoiceSettings(dom, {});
   await loadSessionVoiceSelect(s);
 
-  // 1. Delete bound voice while /api/chat/sessions fails -> backup must preserve unbound null.
+  // 1. Delete the bound voice. The server unbinds its own copy in the same delete
+  //    and keeps its updated_at, so the chat keeps its place and the backup agrees.
   await dom.sVoiceDelete.click();
   assert.equal(s.settings.voiceProfileId, null);
+  assert.equal(s.updatedAt, serverUpdatedAt, 'deleting a voice must not make its chats the most recent');
   let merged = mergeChatBackup({
     format: 'galgame2voice.chat', version: 1,
     sessions: [{ id: s.id, title: s.title, createdAt: 1, updatedAt: serverUpdatedAt,
-      settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: 2 }, messages: [] }],
+      settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null }, messages: [] }],
   }, JSON.parse(exportSessionData()));
   assert.equal(JSON.parse(merged.content).sessions[0].settings.voiceProfileId, null);
 
@@ -158,4 +160,48 @@ test('creating or deleting a voice profile bumps session updatedAt for complete 
       settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null }, messages: [] }],
   }, JSON.parse(exportSessionData()));
   assert.equal(JSON.parse(merged.content).sessions[0].settings.voiceProfileId, 7);
+});
+
+test('a blank, negative or fractional max length is refused instead of saved as another number', async (t) => {
+  const toasts = [];
+  const shown = [];
+  t.after(() => { for (const el of shown) clearTimeout(el._timer); });
+  const toastRoot = { querySelectorAll: () => [], appendChild(el) {
+    shown.push(el); toasts.push({ msg: el.dataset.msg, type: el.className });
+  } };
+  const node = () => ({ ...element(), dataset: {}, remove() {}, classList: { add() {}, remove() {}, contains() { return false; } } });
+  globalThis.document = { getElementById: id => (id === 'toastRoot' ? toastRoot : null), createElement: node };
+  const stored = new Map();
+  globalThis.localStorage = {
+    getItem: key => stored.get(key) ?? null,
+    setItem: (key, value) => stored.set(key, value),
+    removeItem: key => stored.delete(key),
+  };
+  loadState();
+  const session = { id: 'mt', title: 'MT', settings: { ...DEFAULT_SESSION_SETTINGS, maxTokens: 2048 }, messages: [] };
+  state.sessions = [session]; state.activeId = session.id;
+  const fields = { sVoice: '', sSystem: '', sSave: '', sTemp: '.7', sTopP: '1', sMaxTokens: '1024',
+    sFreq: '0', sPres: '0', sCtx: '20', sAiAdaptiveVoice: 'true',
+    sTtsSpeed: '1', sTtsTopK: '15', sTtsTopP: '1', sTtsTemp: '1' };
+  const dom = Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, element(value)]));
+  dom.sVoice = select();
+  const writes = [];
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/chat/sessions') writes.push(JSON.parse(options.body));
+    return { ok: true, status: 200, json: async () => url === '/api/voice/profiles'
+      ? { profiles: [], active_profile_id: null } : {} };
+  };
+  initVoiceSettings(dom, {});
+  await loadSessionVoiceSelect(session);
+  for (const raw of ['-5', '0', '', '5', '100.5', '40000']) {
+    dom.sMaxTokens.value = raw;
+    await dom.sSave.click();
+    assert.equal(session.settings.maxTokens, 2048, raw);
+    assert.match(toasts.at(-1).msg, /16 到 32768 之间的整数/, raw);
+  }
+  assert.equal(writes.length, 0);
+  dom.sMaxTokens.value = '1000';
+  await dom.sSave.click();
+  assert.equal(session.settings.maxTokens, 1000);
+  assert.equal(writes.at(-1).settings.maxTokens, 1000);
 });

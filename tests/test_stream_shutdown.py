@@ -498,3 +498,97 @@ class TestChatStreamingDisconnectAndPruning:
             count = (await cur.fetchone())[0]
             assert count == 0
 
+
+
+@pytest.mark.asyncio
+async def test_console_close_saves_the_reply_still_streaming(tmp_path, monkeypatch):
+    """Closing the Windows console asks streaming turns to stop and waits for their history."""
+    from galgame2voice.utils.active_turns import stop_active_turns
+
+    database = tmp_path / "console-close.db"
+    await init_db(database)
+    first_text_sent = asyncio.Event()
+
+    async def tokens(*args, **kwargs):
+        yield '{"chinese": "关窗前的半句'
+        await asyncio.Event().wait()
+
+    service = ChatService(db_path=database)
+    service._get_active_llm_adapter = AsyncMock(return_value=(
+        SimpleNamespace(stream_chat=tokens, api_key="synthetic"), "test", "custom",
+    ))
+    service._extract_memory_safe = AsyncMock()
+    monkeypatch.setattr(chat_router, "get_chat_service", lambda: service)
+    response = await chat_router.chat_stream_endpoint(
+        chat_router.ChatRequest(prompt="问题", session_id="console-close"), None,
+    )
+
+    async def receive():
+        await asyncio.Event().wait()  # The browser never disconnects first.
+
+    async def send(message):
+        if message["type"] == "http.response.body" and b"event: text" in message.get("body", b""):
+            first_text_sent.set()
+
+    serving = asyncio.create_task(response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send))
+    try:
+        await asyncio.wait_for(first_text_sent.wait(), 3)
+        # Windows calls the console handler on a thread of its own.
+        assert await asyncio.to_thread(stop_active_turns, 3) is True
+        await asyncio.wait_for(serving, 3)
+        async with get_db(database) as conn:
+            rows = await (await conn.execute(
+                "SELECT role, content_chinese FROM messages WHERE session_id='console-close' ORDER BY id"
+            )).fetchall()
+        assert [(row[0], row[1]) for row in rows] == [("user", "问题"), ("assistant", "关窗前的半句")]
+        assert await asyncio.to_thread(stop_active_turns, 0) is True, "a finished turn stays registered"
+    finally:
+        serving.cancel()
+        await asyncio.gather(serving, return_exceptions=True)
+        await service.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("prompt", "reuses"), [("刚才的问题", True), ("另一个问题", False)])
+async def test_resending_a_question_left_unanswered_by_an_exit_reuses_its_row(tmp_path, prompt, reuses):
+    """r67 recovery 1: a question whose turn died with the process is answered, not duplicated."""
+    from galgame2voice.database import crud
+    from galgame2voice.database.models import MessageCreate
+
+    database = tmp_path / "chat.db"
+    await init_db(database)
+    async with get_db(database) as conn:
+        left = await crud.add_message(conn, MessageCreate(
+            session_id="exit", role="user", content_chinese="刚才的问题",
+            content_japanese="", audio_url="", latency_ms=0,
+        ))
+
+    async def tokens(*args, **kwargs):
+        yield '{"chinese": "这次回答了"}'
+
+    service = ChatService(db_path=database)
+    service._get_active_llm_adapter = AsyncMock(return_value=(
+        SimpleNamespace(stream_chat=tokens, api_key="synthetic"), "test", "custom",
+    ))
+    service._extract_memory_safe = AsyncMock()
+    stream = service.stream_chat(prompt, session_id="exit", cancel_event=asyncio.Event())
+    try:
+        events = await asyncio.wait_for(_consume(stream), 5)
+        await service.aclose()
+        started = next(e for e in events if e["event"] == "turn_started")
+        async with get_db(database) as conn:
+            rows = await (await conn.execute(
+                "SELECT id, role, content_chinese, reply_to_message_id FROM messages WHERE session_id='exit' ORDER BY id"
+            )).fetchall()
+        if reuses:
+            assert started["data"]["user_message_id"] == left.id
+            assert [(r[1], r[2]) for r in rows] == [("user", "刚才的问题"), ("assistant", "这次回答了")]
+            assert rows[1][3] == left.id
+        else:
+            assert started["data"]["user_message_id"] != left.id
+            assert [(r[1], r[2]) for r in rows] == [
+                ("user", "刚才的问题"), ("user", "另一个问题"), ("assistant", "这次回答了"),
+            ]
+    finally:
+        await stream.aclose()
+        await service.aclose()

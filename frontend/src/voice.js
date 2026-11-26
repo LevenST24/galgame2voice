@@ -123,9 +123,20 @@ export function startListening({ onInterim, onText, onRecorded, onError, onEnd }
       if (myGen !== listenGen) return;
       recogOk = false;
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-        if (typeof onError === 'function') onError('麦克风权限被拒绝，请在浏览器地址栏允许使用麦克风');
+        // Over http on a LAN address the browser blocks the mic outright; there is no permission to grant.
+        const message = window.isSecureContext === false
+          ? '用局域网地址（http）打开时，浏览器不允许使用麦克风。请在运行程序的电脑上用 127.0.0.1 打开，或直接打字输入。'
+          : '麦克风权限被拒绝，请在浏览器地址栏允许使用麦克风';
+        if (typeof onError === 'function') onError(message);
       } else if (e.error === 'no-speech') {
         if (typeof onError === 'function') onError('没有听到说话，请再试一次');
+      } else if (e.error === 'network') {
+        // Chrome sends speech to an online service; when it is unreachable the mic would just go quiet.
+        if (typeof onError === 'function') onError('语音识别服务连不上，请检查网络；也可以改用 Edge 浏览器，或直接打字。');
+      } else if (e.error === 'audio-capture') {
+        if (typeof onError === 'function') onError('没有找到可用的麦克风，请检查麦克风是否插好、是否被其他程序占用。');
+      } else if (e.error !== 'aborted') {
+        if (typeof onError === 'function') onError('语音识别没有成功，请再试一次，或直接打字。');
       }
       finishRecognition();
     };
