@@ -635,6 +635,31 @@ class TestProviderPresetSeedsAndFallback:
         assert (raw.chat_model, raw.reasoning_effort) == (expected_model, expected_effort)
 
     @pytest.mark.asyncio
+    async def test_retired_models_skip_custom_relay_base_url(self, tmp_path):
+        """Retired-model migration only rewrites rows whose api_base_url is empty or on the official host,
+        leaving third-party relay endpoints and their reasoning_effort untouched."""
+        from galgame2voice.database.models import ProviderUpdate
+
+        db_path = tmp_path / "relay_migrate.db"
+        await init_db(db_path)
+        cases = [
+            ("openai", "https://relay.example.com/v1", "gpt-4o", "high", "gpt-4o", "high"),
+            ("gemini", "https://relay.example.com:abc/v1", "gemini-2.5-flash", "low", "gemini-2.5-flash", "low"),
+            ("deepseek", "https://api.deepseek.com/v1", "deepseek-chat", None, "deepseek-flash", "none"),
+            ("xai", "HTTPS://API.X.AI/", "grok-3", None, "grok-4.7", "low"),
+            ("anthropic", "", "claude-sonnet-4-20250514", None, "claude-sonnet-5-5", "none"),
+        ]
+        async with get_db(db_path) as conn:
+            for pid, base_url, model, effort, _, _ in cases:
+                upd = ProviderUpdate(api_base_url=base_url, chat_model=model, reasoning_effort=effort)
+                await crud.update_provider(conn, pid, upd)
+        await init_db(db_path)
+        async with get_db(db_path) as conn:
+            for pid, _, _, _, exp_model, exp_effort in cases:
+                raw = await crud.get_provider_raw(conn, pid)
+                assert (raw.chat_model, raw.reasoning_effort) == (exp_model, exp_effort)
+
+    @pytest.mark.asyncio
     async def test_empty_chat_model_falls_back_to_preset_default_not_gpt4omini(self, tmp_path):
         """When provider chat_model is empty/blank in DB, ChatService uses preset default_chat_model, not gpt-4o-mini."""
         db_path = tmp_path / "empty_model.db"
