@@ -484,6 +484,25 @@ async def test_import_extract_disk_and_permission_errors(tmp_path, monkeypatch, 
 
 
 @pytest.mark.asyncio
+async def test_import_reports_long_path_instead_of_corrupt_zip(tmp_path, monkeypatch):
+    _root, app = _setup_app(tmp_path, monkeypatch)
+    await init_db()
+    real_open = Path.open
+
+    def fake_open(self, *a, **kw):
+        if "extracted" in self.parts:
+            raise OSError(errno.ENAMETOOLONG, "File name too long", str(self))
+        return real_open(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "open", fake_open)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
+        res = await client.post("/api/characters/import", params={"filename": "a.zip"}, content=_make_package_bytes("zip", "a", "甲"))
+    detail = res.json()["detail"]
+    assert res.status_code == 409 and "路径太长" in detail and "压缩包已损坏" not in detail
+    _assert_temp_empty()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("fmt", ["zip", "tar"])
 async def test_import_skips_files_macos_and_windows_add(tmp_path, monkeypatch, fmt):
     """Finder's __MACOSX folder, .DS_Store and "Icon\\r" are not package files.
