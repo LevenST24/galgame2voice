@@ -329,6 +329,20 @@ async def test_redeem_reuses_verified_download_after_disk_full(api: AsyncClient,
     _no_parts()
 
 
+async def test_redeem_keeps_verified_download_on_long_path_error(api: AsyncClient, dist_env: dict, monkeypatch) -> None:
+    code, real_open = _publish(dist_env, "alice", "爱丽丝", "long", downloads=1), Path.open
+
+    def fake_open(self, *a, **kw):
+        if "extracted" in self.parts:
+            raise OSError(errno.ENAMETOOLONG, "File name too long", str(self))
+        return real_open(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "open", fake_open)
+    res = await api.post("/api/characters/redeem/download", json={"code": code, "package_id": "long", "overwrite": False})
+    assert (get_settings().data_dir / "character_import" / "dl-long.zip.part").is_file()
+    assert res.status_code == 409 and "路径太长" in res.json()["detail"]
+
+
 def _drop_package_reads(monkeypatch: pytest.MonkeyPatch, state: dict) -> None:
     """While state["drop"] is set, every package read stops after 64 bytes."""
     orig = httpx.Response.aiter_bytes

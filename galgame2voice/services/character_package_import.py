@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+import errno
 import json
 import logging
 import os
@@ -49,6 +50,10 @@ MAX_PACKAGE_DISCOVERY_DEPTH = 3
 NO_PACKAGE_FOUND_DETAIL = "没有找到角色包：需要包含 manifest.json 的文件夹"
 SIZE_LIMIT_EXCEEDED_DETAIL = "角色包文件过大（上限 8 GiB），请精简无关文件后重试。"
 MEMBER_LIMIT_EXCEEDED_DETAIL = "角色包里的文件太多（超过 50000 个），已停止导入。请确认选对了文件。"
+LONG_PATH_DETAIL = (
+    "角色包里的文件路径太长（超过 Windows 的 260 个字符限制），没能解压。"
+    "请把程序文件夹移到更短的位置（例如 D:\\Galgame2Voice）后再导入。"
+)
 
 logger = logging.getLogger("galgame2voice.services.character_package_import")
 
@@ -321,6 +326,15 @@ def _extract_members(
                 out.write(chunk)
 
 
+def _is_long_path_error(exc: OSError) -> bool:
+    winerror = getattr(exc, "winerror", None)
+    return (
+        winerror == 206
+        or exc.errno == errno.ENAMETOOLONG
+        or (winerror == 3 and bool(exc.filename) and len(str(exc.filename)) >= 248)
+    )
+
+
 def extract_archive_safely(
     archive_path: Path, fmt: str, extract_dir: Path, *, max_bytes: int = MAX_IMPORT_BYTES
 ) -> None:
@@ -359,6 +373,8 @@ def extract_archive_safely(
         if isinstance(exc, OSError):
             if storage_msg := describe_storage_error(exc):
                 raise HTTPException(507, storage_msg) from exc
+            if _is_long_path_error(exc):
+                raise HTTPException(409, LONG_PATH_DETAIL) from exc
             if isinstance(exc, PermissionError):
                 raise HTTPException(403, "数据目录没有写入权限，角色包未能导入。请把程序文件夹移到有写入权限的位置后重试。") from exc
         if fmt != "zip":
