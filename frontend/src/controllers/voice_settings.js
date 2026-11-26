@@ -656,6 +656,15 @@ async function refreshScanOptions(revision, dom) {
   }
 }
 
+// The server's limits (characters.py, voice.py); code points, as Pydantic counts them.
+const PERSONA_MAX_CHARS = 20000;
+const VOICE_NAME_MAX_CHARS = 100;
+const PROMPT_TEXT_MAX_CHARS = 500;
+const charCount = (text) => [...text].length;
+function tooLongMessage(field, max, text) {
+  return `「${field}」最多 ${max} 字，现在有 ${charCount(text)} 字，请删减后再保存。`;
+}
+
 export async function createCustomVoice() {
   if (_dom.sCvCreate.disabled) return;
   const origin = getActive();
@@ -676,9 +685,17 @@ export async function createCustomVoice() {
     showToast('必须填写参考音频里说的话，留空将无法合成语音。', 'error');
     return;
   }
+  const customSystemPrompt = (_dom.sSystem?.value || '').trim();
+  const tooLong = charCount(name) > VOICE_NAME_MAX_CHARS ? tooLongMessage('音色名称', VOICE_NAME_MAX_CHARS, name)
+    : charCount(promptText) > PROMPT_TEXT_MAX_CHARS ? tooLongMessage('参考音频里说的话', PROMPT_TEXT_MAX_CHARS, promptText)
+    : charCount(customSystemPrompt) > PERSONA_MAX_CHARS ? tooLongMessage('角色人设', PERSONA_MAX_CHARS, customSystemPrompt)
+    : '';
+  if (tooLong) {
+    showToast(tooLong, 'error');
+    return;
+  }
   _dom.sCvCreate.disabled = true;
   try {
-    const customSystemPrompt = (_dom.sSystem?.value || '').trim();
     const payload = {
       name,
       gpt_weights_path: gptPath,
@@ -1330,6 +1347,14 @@ async function handleSaveSessionSettings() {
       showToast('人设草稿与当前角色不一致，已保留编辑内容。请重新选择对应角色后再保存。', 'error');
       return;
     }
+    const persona = (_dom.sSystem?.value || '').trim();
+    const targetProfile = !voiceListUnavailable && !missingBinding && profileId
+      ? voiceProfiles.find((p) => p.id === profileId)
+      : null;
+    if (targetProfile && persona !== (targetProfile.system_prompt || '').trim() && charCount(persona) > PERSONA_MAX_CHARS) {
+      showToast(`${tooLongMessage('角色人设', PERSONA_MAX_CHARS, persona)}设置未保存。`, 'error');
+      return;
+    }
     const nextTitle = (_dom.sTitle?.value || '').trim();
     if (nextTitle) {
       s.title = nextTitle;
@@ -1356,17 +1381,19 @@ async function handleSaveSessionSettings() {
     s.updatedAt = Math.max(Date.now(), (s.updatedAt || 0) + 1);
     const version = (s.unconfirmedSettingsVersion || 0) + 1;
     s.unconfirmedSettingsVersion = version;
-    saveState();
+    const localSaved = saveState();
 
     // 人设提示词属于角色、不属于会话：写回角色包 manifest.json，DB 镜像由后端刷新
-    const { note: promptNote, confirmed: promptConfirmed } = missingBinding
-      ? { note: '；原音色已不可用，音色绑定已保留，请重新选择音色', confirmed: true }
+    const { note: promptNote, confirmed: promptConfirmed, failed: promptFailed } = missingBinding
+      ? { note: '；原音色已不可用，音色绑定已保留，请重新选择音色', confirmed: true, failed: '' }
       : voiceListUnavailable
-      ? { note: '；角色列表未能加载，角色绑定与人设保持不变', confirmed: false }
+      ? { note: '；角色列表未能加载，角色绑定与人设保持不变', confirmed: false, failed: '' }
       : await saveCharacterPrompt(profileId, editor);
 
     let syncNote = '';
-    if (storageChangedByAnotherPage()) {
+    let syncErr = '';
+    const pausedByOtherPage = storageChangedByAnotherPage();
+    if (pausedByOtherPage) {
       syncNote = '；当前网页已暂停保存，设置未提交到本机服务';
     } else {
       try {
@@ -1379,6 +1406,7 @@ async function handleSaveSessionSettings() {
           }
         }
       } catch (err) {
+        syncErr = String(err?.message || err).replace(/[。.]$/, '');
         syncNote = `；本机服务尚未确认保存：${err.message}`;
       }
     }
@@ -1395,7 +1423,20 @@ async function handleSaveSessionSettings() {
     const draftNote = sameEditor() && !editorUnchanged ? '；保存期间新增的修改已保留在面板中，请再次保存' : '';
     const nextName = voiceProfiles.find((p) => p.id === profileId)?.name;
     const lead = nextName && profileId !== previousProfileId ? `已换上「${nextName}」。` : '设置已保存。';
-    showToast(`${lead}${promptNote}${syncNote}${draftNote}`, promptNote || syncNote || draftNote ? 'info' : 'success');
+    if (promptFailed) {
+      const msg = (pausedByOtherPage || !localSaved)
+        ? (syncErr && syncErr === promptFailed
+          ? `人设和其他会话设置都未保存：${promptFailed}`
+          : `人设没有保存：${promptFailed}。其他会话设置也未保存${syncNote}`)
+        : !syncNote
+        ? `人设没有保存：${promptFailed}。其他会话设置已保存`
+        : syncErr === promptFailed
+        ? `人设没有保存，本机服务也尚未确认其他会话设置：${promptFailed}`
+        : `人设没有保存：${promptFailed}${syncNote}`;
+      showToast(`${msg}${draftNote}`, 'error');
+    } else {
+      showToast(`${lead}${promptNote}${syncNote}${draftNote}`, promptNote || syncNote || draftNote ? 'info' : 'success');
+    }
     if (getActive() === s) ensureSessionVoice(s, { silent: true });
   } finally {
     if (_dom.sSave) _dom.sSave.disabled = false;
@@ -1404,11 +1445,11 @@ async function handleSaveSessionSettings() {
 
 /** 保存当前音色的人设；属于角色包时由接口写回 manifest。失败时保留面板中的编辑内容。 */
 async function saveCharacterPrompt(profileId, editor) {
-  const result = (note = '', confirmed = true) => ({ note, confirmed });
+  const result = (note = '', confirmed = true, failed = '') => ({ note, confirmed, failed });
   if (!_dom.sSystem) return result();
   if (!profileId) {
     return (_dom.sSystem.value || '').trim()
-      ? result('；当前会话未绑定角色，人设改动未保存', false) : result();
+      ? result('；当前会话未绑定角色，人设改动未保存', false, '当前会话未绑定角色') : result();
   }
   const prof = voiceProfiles.find((p) => p.id === profileId);
   const text = (_dom.sSystem.value || '').trim();
@@ -1416,7 +1457,7 @@ async function saveCharacterPrompt(profileId, editor) {
   if (!prof) return result('；找不到对应角色包，人设改动未保存', false);
   // Unchanged first: a character created without a persona must still save its session.
   if (text === (prof.system_prompt || '').trim()) return result();
-  if (!text) return result('；人设提示词不能为空，未改动角色包', false);
+  if (!text) return result('；人设提示词不能为空，未改动角色包', false, '人设提示词不能为空');
   try {
     const saved = await requestJson(`/api/characters/${profileId}/system-prompt`, {
       method: 'PUT',
@@ -1435,6 +1476,6 @@ async function saveCharacterPrompt(profileId, editor) {
       ? `；人设已写回角色包「${prof.name}」`
       : `；人设已保存至音色「${prof.name}」`);
   } catch (e) {
-    return result(`；人设写入角色包失败：${e.message || e}`, false);
+    return result(`；人设写入角色包失败：${e.message || e}`, false, String(e.message || e).replace(/[。.]$/, ''));
   }
 }
