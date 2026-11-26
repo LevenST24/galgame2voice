@@ -12,6 +12,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -110,6 +111,42 @@ class HostValidationMiddleware:
                     "type": "http.response.body",
                     "body": b'{"detail": "Forbidden: unexpected Host header"}',
                 })
+                return
+        await self.app(scope, receive, send)
+
+
+class CrossSiteGuardMiddleware:
+    """Rejects cross-site mutating /api/ requests sent by web pages."""
+
+    _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+    _DENIED_BODY = '{"detail": "已拒绝来自其他网页的请求。"}'.encode("utf-8")
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and str(scope.get("path", "")).startswith("/api/") and (
+            str(scope.get("method", "")).upper() in self._MUTATING_METHODS
+        ):
+            headers = {k.lower(): v for k, v in scope.get("headers") or []}
+            if b"sec-fetch-site" in headers:
+                allowed = headers[b"sec-fetch-site"].decode("latin-1").strip().lower() in ("same-origin", "none")
+            elif b"origin" in headers:
+                origin = headers[b"origin"].decode("latin-1").strip()
+                parsed = urlsplit(origin)
+                origin_host = parsed.netloc.lower() if parsed.scheme in ("http", "https") else ""
+                host = headers.get(b"host", b"").decode("latin-1").strip().lower()
+                allowed = (bool(origin_host) and origin_host == host) or (
+                    origin.rstrip("/") in get_settings().cors_origins
+                )
+            else:
+                allowed = True
+            if not allowed:
+                logger.warning("Rejected cross-site %s %s", scope.get("method"), scope.get("path"))
+                await send(
+                    {"type": "http.response.start", "status": 403, "headers": [(b"content-type", b"application/json")]}
+                )
+                await send({"type": "http.response.body", "body": self._DENIED_BODY})
                 return
         await self.app(scope, receive, send)
 
@@ -503,6 +540,7 @@ def create_app(*, engine_supervisor: EngineSupervisor | None = None) -> FastAPI:
     # DNS Rebinding mitigation (audit finding: Host header validation).
     from galgame2voice.security.auth import is_auth_disabled
 
+    app.add_middleware(CrossSiteGuardMiddleware)
     _is_loopback_host = is_local_only_host(settings.host)
     if (
         settings.auth_disabled
