@@ -550,6 +550,25 @@ await withToastEnv(async ({ dom, toastRoot, errors }) => {
   passed++;
 }, { captureError: true });
 await withToastEnv(async ({ dom, toastRoot }) => {
+  await prepareDeleteProfileError(dom, '');
+  dom.sCustomVoiceBox = element(); dom.sCvGpt = modelSelect(); let scans = 0;
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/voice/scan-models') return response({ gpt_weights: ++scans === 1 ? [{ path: 'characters/b/b.ckpt', name: 'b.ckpt' }] : [], sovits_weights: [], audio_files: [] });
+    if (url === '/api/voice/profiles') return response({ profiles: [], active_profile_id: null });
+    if (url === '/api/voice/profiles/2' && options.method === 'DELETE') {
+      return response({ status: 'deleted', profile_id: 2, moved_to: 'data/deleted_characters/b-20261124-120000' });
+    }
+    return response({});
+  };
+  invalidateScannedModels(); await populateScanOptions();
+  await deleteVoiceProfile(); await populateScanOptions();
+  const msg = toastRoot.children.at(-1).dataset.msg;
+  assert.match(msg, /^音色「B」已删除/);
+  assert.match(msg, /角色包文件夹已移到「data\/deleted_characters\/b-20261124-120000」/);
+  assert.equal(scans, 2); assert.equal(dom.sCvGpt.value, '');
+  passed++;
+}, { captureError: true });
+await withToastEnv(async ({ dom, toastRoot }) => {
   const full = '本机磁盘空间不足，数据没能保存。请清理磁盘空间后重试。';
   await prepareDeleteProfileError(dom, full);
   await deleteVoiceProfile();

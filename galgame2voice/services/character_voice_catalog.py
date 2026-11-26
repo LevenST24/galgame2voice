@@ -12,13 +12,16 @@ import json
 import logging
 import os
 from pathlib import Path
+import shutil
 import sqlite3
+import time
 from typing import Any
 from weakref import WeakKeyDictionary
 
 import aiosqlite
 from fastapi import HTTPException, status
 
+from galgame2voice.config import get_settings
 from galgame2voice.database import crud
 from galgame2voice.database.models import (
     VoiceProfileCreate,
@@ -49,6 +52,55 @@ from galgame2voice.utils.path_guard import (
 )
 
 logger = logging.getLogger("galgame2voice.services.character_voice_catalog")
+
+
+def _package_folder(char_mgr: Any, profile: Any, profiles: list[Any]) -> Path | None:
+    """The folder under characters/ that a rescan would rebuild this voice from, if any."""
+    try:
+        package = owned_package_for_profile(profile, profiles, char_mgr)
+    except Exception as exc:  # An unreadable catalog must not block deleting the row.
+        logger.warning("删除音色时读取角色包失败，只删除音色记录：%s", sanitize_error_detail(exc))
+        return None
+    if package is None or not getattr(package, "is_valid", True):
+        return None
+    folder = getattr(package, "folder_path", None)
+    if folder is None:
+        return None
+    folder = Path(folder)
+    if folder.parent != Path(char_mgr.characters_dir).resolve() or not folder.is_dir():
+        return None
+    # Another voice (a custom voice made from this package's model or audio) would lose
+    # its files if the folder moved, so delete only the row then.
+    profile_id = _field(profile, "id")
+    for other in profiles:
+        if _field(other, "id") == profile_id:
+            continue
+        for key in ("gpt_weights_path", "sovits_weights_path", "ref_audio_path"):
+            used = _resolved_path(_field(other, key))
+            if used is not None and used.is_relative_to(folder):
+                return None
+    return folder
+
+
+def _field(item: Any, key: str) -> Any:
+    return item.get(key) if isinstance(item, dict) else getattr(item, key, None)
+
+
+def _resolved_path(value: Any) -> Path | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    path = Path(value.strip())
+    if not path.is_absolute():
+        path = Path(get_settings().project_root) / path
+    try:
+        return path.resolve()
+    except OSError:
+        return None
+
+
+def _move_folder(source: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(source), str(target))
 
 
 def _check_reference_audio_length(ref_audio_path: str | None) -> None:
@@ -425,23 +477,82 @@ class CharacterVoiceCatalog:
         self,
         profile_id: int,
         *,
+        lock: asyncio.Lock | None = None,
         voice_manager: VoiceManager | None = None,
         db_factory: Callable[[], Any] | None = None,
-    ) -> bool:
+    ) -> dict[str, Any] | None:
+        """Deletes a voice; returns None when it does not exist.
+
+        ``moved_to`` names the backup folder a package voice's folder was moved to.
+        """
         vm = self._resolve_voice_manager(voice_manager)
         if vm.switching_profile_id == profile_id:
             raise VoiceProfileBusyError(profile_id)
 
         vm.cancel_warmup(profile_id)
         open_db = self._resolve_db_factory(db_factory)
-        async with open_db() as conn:
-            deleted = await crud.delete_voice_profile(conn, profile_id)
+        char_mgr = self._resolve_character_manager()
+
+        # A package voice is rebuilt from its folder on every rescan, import or restart,
+        # so deleting only the row never sticks. Move the folder to the backup folder
+        # first, and put it back if the row cannot be deleted.
+        effective_lock = lock if lock is not None else self._get_loop_lock(self._rescan_locks)
+        async with effective_lock:
+            async with open_db() as conn:
+                profile = await crud.get_voice_profile(conn, profile_id)
+                if profile is None:
+                    return None
+                profiles = await crud.list_voice_profiles(conn)
+            folder = await asyncio.to_thread(_package_folder, char_mgr, profile, profiles)
+            moved: Path | None = None
+            if folder is not None:
+                backup = get_settings().data_dir / "deleted_characters" / f"{folder.name}-{time.strftime('%Y%m%d-%H%M%S')}"
+                try:
+                    await asyncio.to_thread(_move_folder, folder, backup)
+                except OSError as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            f"角色包文件夹「{folder.name}」正被其他程序占用，没能移到备份文件夹，音色没有删除。"
+                            "请关闭打开这个文件夹的窗口或程序后再试。"
+                        ),
+                    ) from exc
+                moved = backup
+            try:
+                async with open_db() as conn:
+                    deleted = await crud.delete_voice_profile(conn, profile_id)
+            except BaseException:
+                if moved is not None:
+                    await asyncio.to_thread(_move_folder, moved, folder)
+                raise
+            if moved is not None and not deleted:
+                await asyncio.to_thread(_move_folder, moved, folder)
+                moved = None
+            if moved is not None:
+                try:
+                    await asyncio.to_thread(char_mgr.discover_characters)
+                except Exception as exc:  # The row is gone; a stale catalog only lasts until the next scan.
+                    logger.warning("删除角色包音色后重新扫描失败：%s", sanitize_error_detail(exc))
+                import galgame2voice.routers.voice as voice_router
+
+                scan_cache = voice_router._scan_cache
+                generation = scan_cache.get("generation", 0) + 1
+                scan_cache.clear()
+                scan_cache["generation"] = generation
 
         if deleted:
             vm.cancel_warmup(profile_id)
             if VoiceManager._resolve_profile_field(vm.active_profile, "id") == profile_id:
                 vm.active_profile = None
-        return deleted
+        if not deleted:
+            return None
+        relative = None
+        if moved is not None:
+            try:
+                relative = moved.relative_to(get_settings().project_root).as_posix()
+            except ValueError:
+                relative = str(moved)
+        return {"moved_to": relative}
 
     async def rescan_packages(
         self,
