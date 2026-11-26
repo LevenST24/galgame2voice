@@ -101,10 +101,12 @@ test('a refused audio retention value saves nothing, not even a dirty engine dir
     isConfigDirty: () => false,
     refreshTelemetry: () => {},
   });
-  await store.commitAll();
+  // The autosave loop stops on 'failed', so a refused value is not retried behind the user's back.
+  assert.equal(await store.commitAll(), 'failed');
+  assert.equal(await store.commitAll({ autosave: true }), 'failed');
   assert.deepEqual(order, []);
-  assert.equal(toasts.length, 1);
-  assert.equal(toasts[0].type, 'error');
+  assert.equal(toasts.length, 2);
+  assert.ok(toasts.every((toast) => toast.type === 'error'));
   assert.match(toasts[0].msg, /音频缓存保留时间/);
 });
 
