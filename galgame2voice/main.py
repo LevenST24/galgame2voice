@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import MutableHeaders
 from starlette.types import Receive, Scope, Send
 
-from galgame2voice.config import get_settings
+from galgame2voice.config import get_settings, require_settings
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.routers import chat, config, health, voice, characters, metrics, system, backgrounds
@@ -592,6 +592,7 @@ def create_app(*, engine_supervisor: EngineSupervisor | None = None) -> FastAPI:
 
 
 # Application singleton instance for Uvicorn
+require_settings()
 app = create_app()
 
 
