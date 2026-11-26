@@ -477,7 +477,7 @@ test('auto-finalized voice send through ADV turnstart keeps its recording URL un
   assert.equal(h.input.value, '');
 });
 
-function setupRealAppWithRecorder(t, { syncEndOnStop = false, asyncRecordStopMs = 20 } = {}) {
+function setupRealAppWithRecorder(t, { syncEndOnStop = false, asyncRecordStopMs = 20, voiceMode = false, isSessionDeleting = () => false } = {}) {
   const h = setupWithRecorder(t, { syncEndOnStop, asyncRecordStopMs });
   const doc = globalThis.document;
   class FakeImage extends Element {
@@ -512,16 +512,16 @@ function setupRealAppWithRecorder(t, { syncEndOnStop = false, asyncRecordStopMs 
     messages: [],
     settings: { ...DEFAULT_SESSION_SETTINGS, advEnabled: true, advTextIntervalMs: 0 },
   };
-  const state = { sessions: [session], activeId: session.id, global: { voiceMode: false, ttsPreset: '' } };
+  const state = { sessions: [session], activeId: session.id, global: { voiceMode, ttsPreset: '' } };
   const stream = fakeChatStream();
   const cachedBlobs = [];
   const blocked = [];
   let seq = 0;
+  const stopLineCalls = [];
   const audio = {
-    isPlaying: false,
-    currentMsgId: null,
-    playLine: async () => 'ended',
-    stopLine() {},
+    isPlaying: false, currentMsgId: null,
+    playLine: async () => (voiceMode ? new Promise(() => {}) : 'ended'),
+    stopLine(opts) { stopLineCalls.push(opts); },
     interrupt() {},
   };
 
@@ -532,7 +532,7 @@ function setupRealAppWithRecorder(t, { syncEndOnStop = false, asyncRecordStopMs 
     state,
     getActive: () => session,
     getSession: (id) => (id === session.id ? session : null),
-    isSessionDeleting: () => false,
+    isSessionDeleting,
     getCurrentActiveProvider: () => null,
     getVoiceProfiles: () => [],
     haveProvidersLoaded: () => true,
@@ -560,7 +560,7 @@ function setupRealAppWithRecorder(t, { syncEndOnStop = false, asyncRecordStopMs 
     getInput: () => app.adv?.textbox.inputElement,
     getMicButton: () => app.adv?.textbox.micButton,
     sendMessage: app.sendMessage,
-    isBusy: () => app.conversation.busy,
+    isBusy: () => app.conversation.busyReason,
   });
 
   t.after(() => {
@@ -583,6 +583,7 @@ function setupRealAppWithRecorder(t, { syncEndOnStop = false, asyncRecordStopMs 
     cachedBlobs,
     blocked,
     globalModal,
+    stopLineCalls,
     input: app.adv.textbox.inputElement,
     mic: app.adv.textbox.micButton,
   };
@@ -795,6 +796,33 @@ test('retry and explicit voiceMeta sends are unaffected by pendingVoice', async 
   assert.equal(h.createdUrls.length, h.revokedUrls.length, 'unconsumed pending mic URL should be revoked cleanly');
 });
 
+test('clicking mic while busy explains why without interrupting playback or misreporting reason', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  let deleting = false;
+  const h = setupRealAppWithRecorder(t, { voiceMode: true, isSessionDeleting: () => deleting });
+  const flush = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
+  assert.equal(h.app.sendMessage('你好'), true); await flush();
+  const push = h.stream.requests[0].packet([
+    ['line', { index: 0, zh: '第一句。', ja: '一。', emotion: 'gentle' }],
+    ['line_audio', { line: 0, status: 'ready', chunks: [{ index: 0, line: 0, audio_url: '/audio/0.wav' }] }],
+    ['line', { index: 1, zh: '第二句。', ja: '二。', emotion: 'gentle' }],
+  ]);
+  t.mock.timers.tick(1); await push; await flush();
+  h.app.adv.action('auto'); h.app.adv.action('input');
+  const stopsBefore = h.stopLineCalls.length, autoBefore = h.app.adv.player.auto;
+  h.mic.click();
+  assert.equal(h.recognizers.length, 0);
+  assert.deepEqual(h.toasts(), ['角色还在回复，等这段回复结束后再用语音输入。']);
+  assert.equal(h.app.adv.player.state, 'waiting_advance'); assert.equal(h.app.adv.player.auto, autoBefore);
+  assert.equal(h.stopLineCalls.length, stopsBefore);
+  h.app.adv.action('advance'); assert.equal(h.app.adv.player.currentIndex, 1);
+  const done = h.stream.requests[0].onEnd('第一句。第二句。');
+  t.mock.timers.tick(1); await done; await flush(); h.app.adv.action('input');
+  h.session.loadingOlder = true; h.mic.click();
+  assert.equal(h.recognizers.length, 0); assert.equal(h.toasts().at(-1), '正在加载更早的聊天记录，完成后再用语音输入。');
+  h.session.loadingOlder = false; deleting = true; h.mic.click();
+  assert.equal(h.recognizers.length, 0); assert.equal(h.toasts().at(-1), '正在删除这个对话，请稍候或切换到其他对话。');
+});
 test('a mic refused on a LAN http address says why instead of asking for permission', t => {
   const h = setup(t, { syncEndOnStop: false });
   const errors = [];

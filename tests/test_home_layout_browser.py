@@ -65,14 +65,18 @@ def _describe_hang(exc, command, seconds, requests=()):
             f"requests: {seen}, stderr tail: {stderr or '(empty)'}")
 
 
-def run_layout_browser(command, reset=None):
-    """Runs Chrome once more after a hang or a blank virtual-time dump.
+def run_layout_browser(command, reset=None, done=None):
+    """Runs Chrome once more after a hang, a blank virtual-time dump or a run whose page posted nothing.
 
     A Chrome that requested nothing from the server in the whole timeout has not reached the
     page yet, so it is started again up to BROWSER_LAUNCH_STALL_RETRIES more times.
 
     A test whose server keeps state between requests (posted results, events the page sets)
     passes `reset` to clear it, so the next run does not start from what the last one left.
+
+    A test whose page posts its result to the server passes `done`, true once that result arrived.
+    On a busy runner the page can still be loading when the image hold expires, and Chrome then
+    exits normally with nothing posted; such a run is retried once as well.
     """
     port = next((int(m[1]) for item in reversed(command) if (m := re.match(r"^https?://127\.0\.0\.1:(\d+)(?:/|$)", str(item)))), None)
     server = _SERVERS_BY_PORT.get(port)
@@ -155,7 +159,8 @@ def run_layout_browser(command, reset=None):
             # dump has no result node. Retry such a dump once with a fresh profile.
             blank = (result.returncode == 0 and any(item.startswith("--virtual-time-budget=") for item in command)
                      and not re.search(rb'<pre id="[^"]*result"', result.stdout))
-            if retried or not blank:
+            unposted = done is not None and not done()
+            if retried or not (blank or unposted):
                 return result
             retried = True
         if reset:
@@ -314,6 +319,27 @@ def test_run_layout_browser_retries_a_blank_virtual_time_dump_once(monkeypatch, 
     monkeypatch.setattr(subprocess, "Popen", FakePopen)
     run_layout_browser(["chrome", "--virtual-time-budget=5000", "--dump-dom", "http://127.0.0.1:9/"],
                        reset=lambda: steps.append("reset"))
+    assert steps == ["launch", "reset", "launch"][:2 * launches - 1]
+
+
+@pytest.mark.parametrize("posts,launches", [([True], 1), ([False, True], 2), ([False, False], 2)])
+def test_run_layout_browser_retries_once_when_the_page_posted_nothing(monkeypatch, posts, launches):
+    steps, posted = [], []
+
+    class FakePopen:
+        returncode = 0
+
+        def __init__(self, command, **kwargs):
+            steps.append("launch")
+            if posts[steps.count("launch") - 1]:
+                posted.append("result")
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+    run_layout_browser(["chrome", "--dump-dom", "http://127.0.0.1:9/"],
+                       reset=lambda: (steps.append("reset"), posted.clear()), done=lambda: bool(posted))
     assert steps == ["launch", "reset", "launch"][:2 * launches - 1]
 
 

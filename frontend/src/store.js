@@ -1,6 +1,7 @@
 // @ts-check
 // 会话状态管理 + localStorage 持久化（含会话级设置与全局设置）
 import { normalizeSnapshot, portableSnapshot } from './session_data.js';
+import { splitGraphemes } from './adv/graphemes.js';
 
 /**
  * @typedef {import('./session_data.js').DialogueLine} DialogueLine
@@ -520,9 +521,8 @@ export function autoTitle(session) {
   if (!firstUser) return false;
   const t = firstUser.content.replace(/[\r\n\t]+/g, ' ').trim();
   if (!t) return false;
-  // Count characters, not UTF-16 units: cutting an emoji in half leaves a
-  // lone surrogate that the service cannot store.
-  const chars = Array.from(t);
+  // Count whole characters so an emoji at the cut is never split in half.
+  const chars = splitGraphemes(t);
   session.title = chars.length > 20 ? `${chars.slice(0, 20).join('')}…` : t;
   return true;
 }

@@ -134,9 +134,9 @@ export function mountAdv(dom, deps) {
     onAdvance: () => action('advance'),
     onSend: text => !controller.busy && controller.send(text),
     onMic: () => {
+      if (deps.onMic?.(textbox.inputElement, textbox.micButton) === false) return;
       player.beginPlayerEdit();
       stopStageReplay();
-      deps.onMic?.(textbox.inputElement, textbox.micButton);
     },
     onAction: (actionName, data) => {
       if (actionName === 'player_edit') { deps.disarmMicAutoSend?.(); player.beginPlayerEdit(); stopStageReplay(); sprite.suspend(); syncControls(); }
@@ -282,7 +282,7 @@ export function mountAdv(dom, deps) {
       }
       if (patch.advBlink !== undefined || patch.advLipSync !== undefined) sprite.setAnimationOptions(patch);
       if (patch.advPrimaryLanguage !== undefined || patch.advSubtitleLanguage !== undefined) {
-        if (currentLine && player.state !== 'input' && player.state !== 'error') {
+        if (currentLine && player.isPresenting()) {
           player.repaginate();
           textbox.reflow({ pageIndex: player.page });
         }
@@ -298,7 +298,7 @@ export function mountAdv(dom, deps) {
         paint(currentLine, { costume: baselineSettings?.advOutfit || model.defaultCostume });
       }
       sprite.setAnimationOptions(animationOptions(baselineSettings || settings));
-      if (currentLine && player.state !== 'input' && player.state !== 'error') {
+      if (currentLine && player.isPresenting()) {
         player.repaginate();
         textbox.reflow({ pageIndex: player.page });
       }
@@ -687,7 +687,10 @@ export function mountAdv(dom, deps) {
         break;
       case 'home': deps.onHome?.(); break;
       case 'model_status': deps.onModelSettings?.(); break;
-      case 'swap_languages': textbox.swapLanguages(); break;
+      case 'swap_languages':
+        // Only swap while presenting a visible line; hidden, input, error and their suspended states have no line on stage.
+        if (!player.isPresenting() || player.hidden) break;
+        textbox.swapLanguages(); break;
       case 'new_session': deps.onNewSession?.(); break;
       case 'stop':
         ++bgPanelOpenToken;
@@ -906,7 +909,7 @@ export function mountAdv(dom, deps) {
       if (mounted) spriteTransition.change(swap);
       else swap();
     } else if (changedOutfit) paint();
-    if (changedLanguage && currentLine && player.state !== 'input' && player.state !== 'error') {
+    if (changedLanguage && currentLine && player.isPresenting()) {
       // Reflow presentation only; no activate/live announcement/acting/voice replay.
       player.repaginate();
       textbox.reflow({ pageIndex: player.page });

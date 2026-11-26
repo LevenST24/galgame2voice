@@ -143,6 +143,7 @@ class TelemetrySettingsController {
     }
     const button = this.dom.gBtnRestartSovits;
     const restarting = Boolean(this.coordinator.isRestarting?.());
+    const restartable = ready || (checking && status.was_ready === true);
     // While a fresh launch is still loading (started from another tab or before a reload),
     // pressing 启动/重启 would kill it and load from scratch. Lock both buttons until it
     // settles; a slow or unconfirmed load unlocks them so a stuck engine can be restarted.
@@ -158,15 +159,15 @@ class TelemetrySettingsController {
       this.lockedForLoading = false;
       if (button && !restarting) {
         button.disabled = false;
-        if (!(ready || status.state === 'failed' || status.state === 'unavailable')) {
+        if (!(restartable || status.state === 'failed' || status.state === 'unavailable')) {
           button.innerHTML = '<svg class="icon"><use href="#i-play"></use></svg><span>重启 SoVITS 引擎</span>';
         }
       }
       if (this.dom.gBtnTogglePrecision && !restarting) this.dom.gBtnTogglePrecision.disabled = false;
     }
     const idle = button && !button.disabled && !restarting;
-    if (idle && (ready || status.state === 'failed' || status.state === 'unavailable')) {
-      const label = ready ? '重启 SoVITS 引擎' : '启动 SoVITS 引擎';
+    if (idle && (restartable || status.state === 'failed' || status.state === 'unavailable')) {
+      const label = restartable ? '重启 SoVITS 引擎' : '启动 SoVITS 引擎';
       button.innerHTML = `<svg class="icon"><use href="#i-play"></use></svg><span>${label}</span>`;
     }
   }

@@ -134,10 +134,12 @@ async def test_parenthesized_variant_keeps_its_own_identity(project, isolate_tes
         assert bilingual_context.name == "安娜"
         assert Path(bilingual_context.emotions["gentle"]["ref_audio_path"]).resolve() == package_gentle
 
+        # The variant voices with the package's weights, so the package folder stays
+        # in place and the deleted package voice comes back on the next rescan.
         deleted = await client.delete(f"/api/voice/profiles/{base['id']}")
         assert deleted.status_code == 200, deleted.text
-        rescanned = await client.post("/api/characters/rescan")
-        assert rescanned.status_code == 200, rescanned.text
+        assert deleted.json()["moved_to"] is None and package.is_dir()
+        assert (await client.post("/api/characters/rescan")).status_code == 200
         restored = (await client.get("/api/voice/profiles")).json()
         kept = _profile_by_name(restored, "安娜 (V2)")
         recreated = _profile_by_name(restored, "安娜")
@@ -145,8 +147,7 @@ async def test_parenthesized_variant_keeps_its_own_identity(project, isolate_tes
         assert kept["prompt_text"] == "V2 的参考台词"
         assert kept["system_prompt"] == "变体新人设"
         assert "v2-ref.wav" in kept["ref_audio_path"].replace("\\", "/")
-        assert recreated["id"] != variant_id
-        assert "gentle.wav" in recreated["ref_audio_path"].replace("\\", "/")
+        assert recreated["id"] != variant_id and "gentle.wav" in recreated["ref_audio_path"].replace("\\", "/")
 
 
 async def test_unreadable_character_catalog_keeps_the_voice_usable(project, isolate_test_database, monkeypatch):
