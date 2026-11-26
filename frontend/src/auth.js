@@ -87,8 +87,13 @@ export function promptConsoleToken(reason = '') {
     return Promise.resolve(null);
   }
 
+  const reasonEl = document.getElementById('tokenModalReason');
   _pendingAuthPromise = new Promise((resolve) => {
     input.value = getConsoleToken();
+    if (reasonEl) {
+      reasonEl.textContent = reason || '';
+      reasonEl.hidden = !reason;
+    }
     openModal(modal, { focus: input });
 
     const cleanup = () => {
@@ -173,23 +178,30 @@ export function initAuthInterceptor() {
     // 复制或构造 Headers 对象
     const headers = new Headers(init.headers || (typeof input === 'object' && /** @type {any} */ (input)?.headers ? /** @type {any} */ (input).headers : {}));
     const token = getConsoleToken();
+    let sentToken = '';
 
     // An unusable stored token is left off, so the server answers 401 and the dialog reopens.
     if (token && isUsableConsoleToken(token) && !headers.has('Authorization')) {
       headers.set('Authorization', `Bearer ${token}`);
+      sentToken = token;
     }
 
     const modifiedInit = { ...init, headers };
 
-    const res = await nativeFetch(input, modifiedInit);
+    let res = await nativeFetch(input, modifiedInit);
 
-    // 捕获 401 Unauthorized：拦截并提示输入 Token，然后重试单次
-    if (res.status === 401 && !url.includes('/api/providers/test')) {
-      const newToken = await promptConsoleToken('服务需要访问令牌验证');
-      if (newToken && isUsableConsoleToken(newToken)) {
-        headers.set('Authorization', `Bearer ${newToken}`);
-        return nativeFetch(input, { ...init, headers });
+    // 捕获 401 Unauthorized：带着令牌仍被拒时先清空它并说明原因，再提示输入 Token；点取消立即结束
+    while (res.status === 401 && !url.includes('/api/providers/test')) {
+      let reason = '';
+      if (sentToken) {
+        if (getConsoleToken() === sentToken) setConsoleToken('');
+        reason = '令牌不对，请对照电脑上 data\\.console_token 里的内容重新输入。';
       }
+      const newToken = await promptConsoleToken(reason);
+      if (!newToken || !isUsableConsoleToken(newToken)) break;
+      headers.set('Authorization', `Bearer ${newToken}`);
+      sentToken = newToken;
+      res = await nativeFetch(input, { ...init, headers });
     }
 
     return res;

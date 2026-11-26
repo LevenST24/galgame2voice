@@ -685,11 +685,12 @@
       </header>
       <div class="modal-body">
         <p style="margin-bottom: 12px; font-size: 14px; color: var(--text-muted, #888);">
-          当前服务已启用访问验证。请输入启动时生成的访问令牌。
+          当前服务已启用访问验证。访问令牌在运行程序的那台电脑上：程序文件夹里的 data\.console_token 文件，用记事本打开即可复制。
         </p>
+        <p id="tokenModalReason" style="margin-bottom: 12px; font-size: 13px; color: var(--danger, #ff6b6b);" hidden></p>
         <div class="field">
           <label for="consoleTokenInput">访问令牌</label>
-          <input id="consoleTokenInput" type="password" placeholder="请输入控制台访问令牌…" autocomplete="off" />
+          <input id="consoleTokenInput" type="password" placeholder="请输入控制台访问令牌…" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
         </div>
         <p class="modal-note" style="margin-top: 8px; font-size: 12px;">
           令牌仅在当前打开期间有效，关闭页面后自动失效。

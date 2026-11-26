@@ -1,3 +1,4 @@
+let nextStatus = () => 200;
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -14,7 +15,8 @@ globalThis.window = {
   alert: () => {},
   fetch: async (_input, init = {}) => {
     sent.push(init.headers?.get?.('Authorization') ?? null);
-    return { status: 200, ok: true };
+    const status = nextStatus();
+    return { status, ok: status < 400 };
   },
 };
 globalThis.document = { getElementById: () => null };
@@ -44,4 +46,31 @@ test('a stored token that can never match is left off instead of breaking every 
   // Before the fix, Headers.set threw "Cannot convert argument to a ByteString" here.
   await window.fetch('/api/config');
   assert.deepEqual(sent, [null]);
+});
+
+test('retrying 401 with a wrong token clears it, reprompts with reason, and stops on cancel', async () => {
+  stored.clear();
+  const prompts = [];
+  window.prompt = (msg) => (prompts.push(msg), prompts.length === 1 ? 'wrong-tok' : null);
+  nextStatus = () => 401;
+  try {
+    const res = await window.fetch('/api/config');
+    assert.equal(res.status, 401);
+    assert.equal(prompts.length, 2);
+    assert.match(prompts[1], /令牌不对.*data\\\.console_token/);
+    assert.equal(getConsoleToken(), '');
+  } finally { nextStatus = () => 200; window.prompt = () => null; }
+});
+
+test('a stored token the server rejects is cleared and the first prompt says why', async () => {
+  stored.set('galgame_console_token', 'stale-tok');
+  const prompts = [];
+  window.prompt = (msg) => (prompts.push(msg), null);
+  nextStatus = () => 401;
+  try {
+    await window.fetch('/api/config');
+    assert.equal(prompts.length, 1);
+    assert.match(prompts[0], /令牌不对/);
+    assert.equal(getConsoleToken(), '');
+  } finally { nextStatus = () => 200; window.prompt = () => null; }
 });
