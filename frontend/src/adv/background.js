@@ -131,15 +131,18 @@ export function createBackgroundView({
   function preloadVariants() {
     const variants = backgrounds.get(selection.id)?.variants;
     if (!variants) return;
+    const urls = new Set(Object.values(variants).filter(url => typeof url === 'string' && url));
     // Hold decoded variants for the chosen background only, so browsing the panel
     // does not pin every full-size image in memory.
-    if (preloadedFor !== selection.id) {
-      for (const image of preloaded.values()) release(image);
-      preloaded.clear();
-      preloadedFor = selection.id;
+    for (const [url, image] of preloaded) {
+      if (preloadedFor !== selection.id || !urls.has(url)) {
+        release(image);
+        preloaded.delete(url);
+      }
     }
-    for (const url of Object.values(variants)) {
-      if (typeof url !== 'string' || !url || preloaded.has(url)) continue;
+    preloadedFor = selection.id;
+    for (const url of urls) {
+      if (preloaded.has(url)) continue;
       const image = typeof ImageClass === 'function' ? new ImageClass() : doc.createElement('img');
       preloaded.set(url, image);
       image.src = url;

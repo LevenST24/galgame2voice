@@ -181,6 +181,26 @@ test('P8 background preload keeps only the chosen background', async () => {
   view.destroy();
 });
 
+test('P8 background preload releases superseded signed URLs when setList refreshes', async () => {
+  const doc = documentFixture(), clock = fakeClock(), images = [];
+  class Image extends Element { constructor() { super('img', doc); images.push(this); } decode() { return Promise.resolve(); } }
+  const layer = doc.createElement('div');
+  const view = createBackgroundView({ layer, ImageClass: Image,
+    setTimer: (fn, ms) => clock.setTimeout(fn, ms), clearTimer: id => clock.clearTimeout(id) });
+  const listFor = round => [{ key: 'w/cafe', variants: {
+    day: `/cafe/day?sig=r${round}`, evening: `/cafe/evening?sig=r${round}`, night: `/cafe/night?sig=r${round}`,
+  } }];
+  view.setSelection({ id: 'w/cafe', time: 'day' });
+  for (let round = 1; round <= 10; round++) { view.setList(listFor(round)); await microtasks(); }
+  const preloads = images.filter(image => image.parentNode !== layer);
+  const live = preloads.filter(image => image.src);
+  assert.deepEqual(live.map(image => image.src).sort(), [
+    '/cafe/day?sig=r10', '/cafe/evening?sig=r10', '/cafe/night?sig=r10',
+  ]);
+  assert.equal(preloads.length - live.length, 27, 'older signed-URL preloads must be released');
+  view.destroy();
+});
+
 test('P8 title thumbnails resolve a stored background to its image URL', () => {
   const list = [{ key: 'w/cafe', variants: { day: '/cafe/day', night: '/cafe/night' } }];
   const noon = new Date(2026, 9, 21, 12), late = new Date(2026, 9, 21, 23);

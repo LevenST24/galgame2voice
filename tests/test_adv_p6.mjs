@@ -1056,3 +1056,20 @@ test('adv wiring: leaving during background renewal cancels opening the panel', 
   await microtasks();
   assert.deepEqual([h.app.bgPanel.isOpen, h.app.configPanel.isOpen], [false, true]);
 });
+
+test('bg panel releases thumbnail images on close and rebuilds them on reopen', t => {
+  const h = setupPanel(t, { characterWork: 'cafe' });
+  h.panel.open();
+  const openedThumbs = h.panel.dialog.querySelectorAll('.adv-bg-thumb');
+  const autoSwatch = h.tiles()[0].querySelector('.adv-bg-swatch');
+  assert.ok(openedThumbs.length > 0 && openedThumbs.every(img => Boolean(img.src)));
+  assert.ok(autoSwatch.style.backgroundImage.includes('url('));
+  h.panel.close();
+  assert.equal(h.panel.dialog.querySelectorAll('.adv-bg-thumb').length, 0);
+  assert.ok(openedThumbs.every(img => !img.src), 'detached thumbs drop src on close');
+  assert.equal(autoSwatch.style.backgroundImage, '');
+  h.panel.open();
+  const reopenedThumbs = h.panel.dialog.querySelectorAll('.adv-bg-thumb');
+  assert.equal(reopenedThumbs.length, openedThumbs.length);
+  assert.ok(reopenedThumbs.every(img => Boolean(img.src)));
+});
