@@ -56,10 +56,14 @@ export function createConversation({
     listeners.get(type).add(fn);
     return () => listeners.get(type)?.delete(fn);
   };
-  const isBusy = () => {
+  const busyReason = () => {
+    if (busy) return 'replying';
     const session = getActive();
-    return busy || Boolean(session?.loadingOlder || (session && isSessionDeleting(session.id)));
+    if (session?.loadingOlder) return 'loading_older';
+    if (session && isSessionDeleting(session.id)) return 'deleting';
+    return null;
   };
+  const isBusy = () => busyReason() !== null;
 
   /**
    * @param {string} [rawText]
@@ -341,6 +345,7 @@ export function createConversation({
   return {
     on, send, stop, retry, canRetry,
     get busy() { return isBusy(); },
+    get busyReason() { return busyReason(); },
     /** Session whose reply is streaming, or null. */
     get originId() { return busy && turn ? turn.originId : null; },
   };
