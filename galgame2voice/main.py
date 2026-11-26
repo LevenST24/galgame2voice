@@ -60,7 +60,7 @@ logger = logging.getLogger("galgame2voice.main")
 
 class HostValidationMiddleware:
     """
-    Rejects /api/ requests whose Host header is not a loopback host.
+    Rejects /api/ and /audio/ requests whose Host header is not a loopback host.
 
     A malicious web page can DNS-rebind its own domain to 127.0.0.1 and call this
     API with the victim's browser; the browser still sends the attacker's domain
@@ -97,11 +97,11 @@ class HostValidationMiddleware:
         return allowed
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http" and str(scope.get("path", "")).startswith("/api/"):
+        if scope["type"] == "http" and str(scope.get("path", "")).startswith(("/api/", "/audio/")):
             headers = {k.lower(): v for k, v in scope.get("headers") or []}
             raw_host = headers.get(b"host", b"").decode("latin-1")
             if self.extract_hostname(raw_host) not in self._allowed_hostnames():
-                logger.warning("Rejected /api request with unexpected Host header: %r", raw_host)
+                logger.warning("Rejected %s request with unexpected Host header: %r", scope.get("path"), raw_host)
                 await send({
                     "type": "http.response.start",
                     "status": 403,
@@ -445,6 +445,7 @@ class AudioStaticFiles(StaticFiles):
     """
 
     async def get_response(self, path: str, scope: Scope) -> Response:
+        await require_auth(Request(scope))
         response = await super().get_response(path, scope)
         if response.status_code in (200, 206):
             if "accept-ranges" not in response.headers:
