@@ -219,14 +219,18 @@ def _matches_profile_id(raw: Any, profile_id: int) -> bool:
 
 
 async def delete_voice_profile(conn: aiosqlite.Connection, profile_id: int) -> bool:
-    """Deletes a voice profile record and atomically unbinds sessions and active settings."""
+    """Deletes a voice profile record and atomically unbinds sessions and active settings.
+
+    Unbinding leaves each session's updated_at alone, so deleting a voice does not
+    move its old chats to the top of the recents.
+    """
     async with immediate_transaction(conn):
         cursor = await conn.execute("DELETE FROM voice_profiles WHERE id = ?;", (profile_id,))
         if not cursor.rowcount:
             return False
 
         await conn.execute(
-            "UPDATE sessions SET voice_profile_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE voice_profile_id = ?;",
+            "UPDATE sessions SET voice_profile_id = NULL WHERE voice_profile_id = ?;",
             (profile_id,),
         )
 
@@ -251,7 +255,7 @@ async def delete_voice_profile(conn: aiosqlite.Connection, profile_id: int) -> b
             if isinstance(data, dict) and _matches_profile_id(data.get("voiceProfileId"), profile_id):
                 data["voiceProfileId"] = None
                 await conn.execute(
-                    "UPDATE sessions SET settings_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
+                    "UPDATE sessions SET settings_json = ? WHERE id = ?;",
                     (json.dumps(data, ensure_ascii=False), sess_id),
                 )
 

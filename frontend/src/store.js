@@ -124,6 +124,15 @@ export const LEGACY_GREETINGS = [
 ];
 
 /**
+ * The how-to line a new session opens with. It lives only in the browser, never in the database.
+ * @param {{ role?: string, content?: string, noVoice?: boolean } | null | undefined} message
+ */
+export function isStarterGreeting(message) {
+  return Boolean(message && message.noVoice && message.role === 'assistant'
+    && (message.content === GREETING || LEGACY_GREETINGS.includes(/** @type {string} */ (message.content))));
+}
+
+/**
  * @template {ChatSession | null | undefined} T
  * @param {T} session
  * @returns {T}
@@ -502,7 +511,10 @@ export function autoTitle(session) {
   if (!firstUser) return false;
   const t = firstUser.content.replace(/[\r\n\t]+/g, ' ').trim();
   if (!t) return false;
-  session.title = t.length > 20 ? `${t.slice(0, 20)}…` : t;
+  // Count characters, not UTF-16 units: cutting an emoji in half leaves a
+  // lone surrogate that the service cannot store.
+  const chars = Array.from(t);
+  session.title = chars.length > 20 ? `${chars.slice(0, 20).join('')}…` : t;
   return true;
 }
 
