@@ -175,7 +175,8 @@ async def verify_console_token(conn: aiosqlite.Connection, token: str) -> bool:
     if not stored:
         return False
     decrypted = decrypt_secret(stored)
-    return hmac.compare_digest(decrypted, token)
+    # Compare bytes: compare_digest raises TypeError on non-ASCII str, which became a 500.
+    return hmac.compare_digest(decrypted.encode("utf-8"), token.encode("utf-8"))
 
 
 async def get_tts_cache_entry(conn: aiosqlite.Connection, cache_key: str) -> TtsCacheEntry | None:

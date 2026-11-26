@@ -62,7 +62,7 @@ export function mergeChatBackup(serverData, localData) {
       // Keep the complete local sequence separately so neither version is lost.
       let copyId;
       do { copyId = uid('s_browser_backup'); } while (byId.has(copyId));
-      const copy = { ...session, id: copyId, title: `${session.title.slice(0, 180)}（浏览器副本）` };
+      const copy = { ...session, id: copyId, title: `${Array.from(session.title).slice(0, 180).join('')}（浏览器副本）` };
       server.sessions.push(copy);
       byId.set(copyId, copy);
       browserCopies++;
