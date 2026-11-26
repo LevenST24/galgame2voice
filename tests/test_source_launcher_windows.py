@@ -94,3 +94,22 @@ def test_incomplete_source_environment_prints_dependency_recovery_before_imports
             timeout=30, check=False,
         )
         assert imported.returncode != 0 and "ImportError" in imported.stderr
+
+
+@pytest.mark.requires_piped_subprocess
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows batch launcher")
+def test_source_launcher_missing_python_points_to_windows_x64_portable(tmp_path):
+    source = Path(__file__).resolve().parents[1]
+    checkout = tmp_path / "no-python"
+    checkout.mkdir()
+    shutil.copy2(source / "启动.bat", checkout / "launch.cmd")
+    env = os.environ.copy()
+    system32 = Path(env.get("SystemRoot") or env["SYSTEMROOT"]) / "System32"
+    env["PATH"] = str(system32)
+    env["NoDefaultCurrentDirectoryInExePath"] = "1"
+    result = subprocess.run(
+        [str(system32 / "cmd.exe"), "/d", "/c", "call", r".\launch.cmd"],
+        cwd=checkout, env=env, input="\r\n", capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=30, check=False,
+    )
+    assert "windows-x64" in result.stdout
