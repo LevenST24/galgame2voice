@@ -26,6 +26,15 @@ export function createSettingsDraftStore({
         return;
       }
 
+      const savedRevision = getConfigRevision();
+      let payload;
+      try {
+        // Read and check the fields before anything is written, so a refused value saves nothing.
+        payload = readConfigPayload();
+      } catch (e) {
+        showToast(`保存失败: ${e.message || e}`, 'error');
+        return;
+      }
       const coordinatorRevision = getCoordinatorRevision();
       const targetEngineDirectory = getEngineDirectory();
       const isCurrent = () => getCoordinatorRevision() === coordinatorRevision;
@@ -36,8 +45,6 @@ export function createSettingsDraftStore({
           if (!isCurrent()) return;
           if (dirSaved === false) return;
         }
-        const savedRevision = getConfigRevision();
-        const payload = readConfigPayload();
 
         let saved = null;
         await runSettingsMutation(async (save) => {

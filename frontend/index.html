@@ -311,7 +311,7 @@
               <option value="fp32">FP32 单精度 · 兼容模式</option>
               <option value="cpu">CPU 模式 · 无需显卡，速度较慢</option>
             </select>
-            <small>选择后自动保存。在「运行状态」中重启语音引擎后生效。</small>
+            <small>选择后自动保存。在「运行状态」启动或重启 SoVITS 引擎后生效。</small>
           </div>
           <div class="settings-note">
             <strong>语速与语气跟随当前会话</strong>
@@ -647,7 +647,7 @@
         </div>
         <div class="field field-row">
           <label>语速 <b id="sTtsSpeedVal">1.0</b></label>
-          <input type="range" id="sTtsSpeed" min="0.5" max="2" step="0.05" value="1" />
+          <input type="range" id="sTtsSpeed" min="0.1" max="3" step="0.01" value="1" />
         </div>
         <div class="field field-row">
           <label>Top K <b id="sTtsTopKVal">15</b></label>
@@ -698,6 +698,24 @@
         <span class="foot-spacer"></span>
         <button class="btn ghost" data-close>取消</button>
         <button class="btn primary" id="tokenModalSave">保存并继续</button>
+      </footer>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="ownVoiceClashModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="ownVoiceClashTitle" aria-describedby="ownVoiceClashText" style="max-width: 440px;">
+      <header class="modal-head">
+        <h3 id="ownVoiceClashTitle">角色包和你的音色同名</h3>
+        <button class="icon-btn" data-close aria-label="关闭">✕</button>
+      </header>
+      <div class="modal-body">
+        <p id="ownVoiceClashText"></p>
+      </div>
+      <footer class="modal-foot">
+        <span class="foot-spacer"></span>
+        <button class="btn ghost" data-close>取消</button>
+        <button class="btn ghost" id="ownVoiceClashReplace">用角色包替换</button>
+        <button class="btn primary" id="ownVoiceClashKeep">两个都保留</button>
       </footer>
     </div>
   </div>

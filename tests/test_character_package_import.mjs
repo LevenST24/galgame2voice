@@ -10,6 +10,7 @@ function parseUstar(bytes) {
   const str = (b, s, n) => { const sl = b.subarray(s, s + n), i = sl.indexOf(0); return dec.decode(i < 0 ? sl : sl.subarray(0, i)); };
   const oct = (b, s, n) => parseInt(str(b, s, n).trim() || '0', 8);
   const files = [];
+  let paxPath = null;
   for (let off = 0; off < bytes.length;) {
     const blk = bytes.subarray(off, off + 512);
     if (blk.every((b) => b === 0)) { assert.equal(bytes.subarray(off).every((b) => b === 0), true); break; }
@@ -18,12 +19,25 @@ function parseUstar(bytes) {
     let sum = 0;
     for (let i = 0; i < 512; i++) sum += i >= 148 && i < 156 ? 0x20 : blk[i];
     assert.equal(oct(blk, 148, 8), sum);
-    assert.equal(String.fromCharCode(blk[156]), '0');
+    const type = String.fromCharCode(blk[156]);
+    assert.ok(type === '0' || type === 'x');
     const size = oct(blk, 124, 12), prefix = str(blk, 345, 155), name = str(blk, 0, 100);
     const pad = Math.ceil(size / 512) * 512;
     assert.equal(bytes.subarray(off + 512 + size, off + 512 + pad).every((b) => b === 0), true);
-    files.push({ path: prefix ? `${prefix}/${name}` : name, size, content: bytes.subarray(off + 512, off + 512 + size) });
+    const content = bytes.subarray(off + 512, off + 512 + size);
     off += 512 + pad;
+    if (type === 'x') {
+      // pax records: "<len> key=value\n", where <len> is the record's own byte length.
+      const text = dec.decode(content);
+      const len = parseInt(text, 10);
+      assert.equal(new TextEncoder().encode(text).length, len);
+      const match = /^\d+ path=(.*)\n$/s.exec(text);
+      assert.ok(match);
+      paxPath = match[1];
+      continue;
+    }
+    files.push({ path: paxPath ?? (prefix ? `${prefix}/${name}` : name), size, content });
+    paxPath = null;
   }
   return files;
 }
@@ -40,7 +54,21 @@ function parseUstar(bytes) {
   const parsed = parseUstar(new Uint8Array(await blob.arrayBuffer()));
   assert.deepEqual(parsed.map((f) => [f.path, f.size]), [['爱丽丝/refs/gentle.wav', 513], [longPath, 4]]);
   assert.deepEqual(parsed[0].content, audio);
-  assert.throws(() => packTarBlob([{ path: `${'あ'.repeat(40)}.wav`, file: new Blob(['x']) }]), /路径过长/);
+}
+
+// 1b. File names past the ustar fields (reference clips named after their Japanese transcript)
+{
+  const clip = 'ありがとうございます、ご主人様。今日もずっと一緒にいてくれて本当に嬉しいです.wav';
+  const deep = `ムラサメ/${'とても長いフォルダ名です/'.repeat(12)}${clip}`;
+  assert.ok(new TextEncoder().encode(clip).length > 100);
+  const blob = packTarBlob([
+    { path: `ムラサメ/refs/${clip}`, file: new Blob([new Uint8Array([9, 8, 7])]) },
+    { path: deep, file: new Blob(['x'.repeat(700)]) },
+    { path: 'ムラサメ/manifest.json', file: new Blob(['{}']) },
+  ]);
+  const parsed = parseUstar(new Uint8Array(await blob.arrayBuffer()));
+  assert.deepEqual(parsed.map((f) => [f.path, f.size]), [[`ムラサメ/refs/${clip}`, 3], [deep, 700], ['ムラサメ/manifest.json', 2]]);
+  assert.deepEqual([...parsed[0].content], [9, 8, 7]);
 }
 
 // --- Minimal DOM & XHR harness ---
