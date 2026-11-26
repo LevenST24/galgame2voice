@@ -778,6 +778,30 @@ def _diagnose_context_length_exceeded(
     return None
 
 
+# Phrases with which providers answer HTTP 429 when the account has run out of
+# money or quota rather than sending too fast (OpenAI insufficient_quota,
+# Moonshot exceeded_current_quota_error, Zhipu code 1113 余额不足或无可用资源包).
+# Waiting and retrying cannot fix these.
+_OUT_OF_BALANCE_MARKERS = (
+    "insufficient_quota",
+    "exceeded_current_quota",
+    "exceeded your current quota",
+    "insufficient balance",
+    "insufficient_balance",
+    "arrearage",
+    "余额",
+    "欠费",
+    "充值",
+    "资源包",
+)
+
+
+def is_out_of_balance(raw: str) -> bool:
+    """Whether an error body says the account is out of money or quota."""
+    lowered = raw.lower()
+    return any(marker in lowered for marker in _OUT_OF_BALANCE_MARKERS)
+
+
 def _diagnose_insufficient_balance(
     raw_lower: str,
     status_code: int | None,
@@ -1028,7 +1052,7 @@ def _diagnose_generic_http(
         )
 
     if status_code == 429:
-        if "quota" in raw_lower or "balance" in raw_lower:
+        if "quota" in raw_lower or "balance" in raw_lower or is_out_of_balance(raw_lower):
             return DiagnosticResult(
                 error_code="QUOTA_EXCEEDED",
                 message="账户额度已耗尽",

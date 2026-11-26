@@ -24,6 +24,7 @@ from galgame2voice.services.character_package_import import (
     MAX_IMPORT_BYTES,
     SIZE_LIMIT_EXCEEDED_DETAIL,
     import_character_archive_file,
+    sweep_import_leftovers,
 )
 from galgame2voice.utils.http_client import create_async_client
 from galgame2voice.utils.logger import describe_storage_error, sanitize_error_detail
@@ -37,6 +38,9 @@ _BAD_CODE_DETAIL = "兑换码不完整或有误。请把收到的整段兑换码
 ParsedCode = namedtuple("ParsedCode", ("server_url", "code_secret"))
 _PROGRESS: dict[str, Any] = {"phase": "idle", "done": 0, "total": 0, "name": ""}
 _KEPT: dict[str, str] = {}
+# Package metadata for a partial download kept after the network dropped. The next
+# attempt resumes it with a Range request, which the server does not count as a download.
+_PARTIAL: dict[str, tuple[ParsedCode, dict[str, Any]]] = {}
 _LOCK: asyncio.Lock | None = None
 _LOCK_LOOP: asyncio.AbstractEventLoop | None = None
 
@@ -166,10 +170,19 @@ async def _packages(parsed: ParsedCode) -> list[dict[str, Any]]:
 
 async def redeem_list(code: str) -> dict[str, Any]:
     try:
-        return {"packages": await _packages(parse_redeem_code(code))}
+        parsed = parse_redeem_code(code)
     except RedeemCodeError as exc:
         logger.warning("Redeem code rejected: %s", exc)
         raise HTTPException(400, _BAD_CODE_DETAIL) from exc
+    d, by_id = get_settings().data_dir / "character_import", {p["id"]: p for p in await _packages(parsed)}
+    def _merge() -> list[dict[str, Any]]:
+        for pid, (owner, m) in list(_PARTIAL.items()):
+            with suppress(OSError):
+                if owner == parsed and (p := d / f"dl-{pid}.zip.part").is_file() and 0 < p.stat().st_size < m["size"]:
+                    if (item := by_id.setdefault(pid, {**m, "remaining": 0}))["sha256"] == m["sha256"]:
+                        item["resumable"] = True
+        return list(by_id.values())
+    return {"packages": await asyncio.to_thread(_merge)}
 
 
 def _resume_total(header: str, got: int, expect: int) -> int:
@@ -181,12 +194,21 @@ def _resume_total(header: str, got: int, expect: int) -> int:
     return total or expect
 
 
-async def _save_package(parsed: ParsedCode, host: str, pkg: dict[str, Any], part: Path) -> None:
+class _RestartDownload(Exception):
+    """The server refused to resume a partial file kept from an earlier attempt."""
+
+
+async def _save_package(
+    parsed: ParsedCode, host: str, pkg: dict[str, Any], part: Path, resume: tuple[Any, int] | None = None
+) -> None:
     url, expect = f"{parsed.server_url}/v1/packages/{pkg['id']}", int(pkg["size"])
-    digest, got, resumes = hashlib.sha256(), 0, 0
+    digest, got = resume if resume is not None else (hashlib.sha256(), 0)
+    # A partial file from an earlier attempt: the server already counted its download.
+    kept, resumes = resume is not None, 0
+    _PARTIAL.pop(str(pkg["id"]), None)
     handle = None
     try:
-        handle = await asyncio.to_thread(part.open, "wb")
+        handle = await asyncio.to_thread(part.open, "ab" if kept else "wb")
         async with _client(host, httpx.Timeout(15.0, read=60.0, write=30.0, pool=15.0)) as client:
             while True:
                 headers = {"Authorization": f"Bearer {parsed.code_secret}"}
@@ -194,14 +216,23 @@ async def _save_package(parsed: ParsedCode, host: str, pkg: dict[str, Any], part
                     headers["Range"] = f"bytes={got}-"
                 try:
                     async with client.stream("GET", url, headers=headers) as resp:
-                        if (got == 0 and resp.status_code != 200) or (got and resp.status_code in (401, 403, 429)):
+                        ranged = "Range" in headers
+                        if kept and resp.status_code in (200, 403, 416):
+                            # Too late to resume (or nothing counted yet): start over, as a fresh download would.
+                            raise _RestartDownload
+                        if ranged and (resp.status_code == 429 or resp.status_code >= 500):
+                            err = _dist_error(resp.status_code, await resp.aread())
+                            _PARTIAL[str(pkg["id"])] = (parsed, dict(pkg))
+                            raise err
+                        if (not ranged and resp.status_code != 200) or (ranged and resp.status_code in (401, 403, 429)):
                             raise _dist_error(resp.status_code, await resp.aread())
-                        if got and resp.status_code != 206:
+                        if ranged and resp.status_code != 206:
                             raise HTTPException(502, "断点续传校验失败，请重试")
+                        kept = False
                         length = (resp.headers.get("content-length") or "").strip()
                         total = (
                             _resume_total(resp.headers.get("content-range") or "", got, expect)
-                            if got
+                            if ranged
                             else (expect or (int(length) if length.isdigit() else 0))
                         )
                         async for chunk in resp.aiter_bytes(65536):
@@ -215,13 +246,23 @@ async def _save_package(parsed: ParsedCode, host: str, pkg: dict[str, Any], part
                         if expect and got < expect:
                             raise httpx.RemoteProtocolError("short")
                         break
+                except _RestartDownload:
+                    logger.info("Redeem partial not resumable host=%s package_id=%s", host, pkg["id"])
+                    await asyncio.to_thread(handle.close)
+                    handle = await asyncio.to_thread(part.open, "wb")
+                    digest, got, kept, resumes = hashlib.sha256(), 0, False, 0
+                    _PROGRESS.update(phase="download", done=0, total=expect, name=str(pkg["name"]))
                 except httpx.HTTPError as exc:
                     if not (got and resumes < 3):
+                        if got:
+                            # The server counted this download; keep the bytes so retrying resumes them.
+                            _PARTIAL[str(pkg["id"])] = (parsed, dict(pkg))
                         raise _net_error(exc, parsed, host) from exc
                     resumes += 1
                     logger.warning("Redeem resume=%d host=%s package_id=%s", resumes, host, pkg["id"])
         await asyncio.to_thread(handle.close)
     except OSError as exc:
+        _PARTIAL.pop(str(pkg["id"]), None)
         if handle is not None:
             with suppress(OSError):
                 await asyncio.to_thread(handle.close)
@@ -237,32 +278,47 @@ async def _save_package(parsed: ParsedCode, host: str, pkg: dict[str, Any], part
         raise HTTPException(502, "下载的文件校验失败，请重试")
 
 
-def _prepare_local(root: Path, part: Path, package_id: str, listed: dict[str, Any] | None) -> tuple:
-    digest = ""
-    if part.is_file():
+def _prepare_local(root: Path, part: Path, package_id: str, listed: dict[str, Any] | None, parsed: ParsedCode) -> tuple:
+    hasher, size, present = hashlib.sha256(), 0, part.is_file()
+    if present:
         # file_digest 要 3.11，程序仍支持 3.10。
-        hasher = hashlib.sha256()
         with part.open("rb") as handle:
             while chunk := handle.read(65536):
                 hasher.update(chunk)
-        digest = hasher.hexdigest()
+                size += len(chunk)
+    digest = hasher.hexdigest() if present else ""
     # 次数用完后分发列表不再包含该包，只能对照第一次校验通过时记下的 sha256。
     expected = listed["sha256"] if listed is not None else _KEPT.get(package_id)
     if digest and expected and digest == expected:
         if listed is not None:
-            return "reuse", listed
+            return "reuse", listed, None
         meta = {"id": package_id, "name": package_id, "size": part.stat().st_size, "sha256": digest, "remaining": 0}
-        return "reuse", meta
+        return "reuse", meta, None
+    # A download the network dropped resumes from its partial file, even once the list no
+    # longer shows the package because that download used its last count.
+    partial = entry[1] if (entry := _PARTIAL.get(package_id)) and entry[0] == parsed else None
+    meta = listed if listed is not None else partial
+    if (
+        present and partial is not None and meta is not None
+        and partial["sha256"] == meta["sha256"] and 0 < size < int(meta["size"])
+    ):
+        return "resume", meta, (hasher, size)
+    if partial is not None:
+        _PARTIAL.pop(package_id, None)
     if listed is None:
-        return "missing", None
+        return "missing", None, None
     if root.is_dir():
         for stale in root.glob("dl-*.zip.part"):
-            _KEPT.pop(stale.name.removeprefix("dl-").removesuffix(".zip.part"), None)
+            stale_id = stale.name.removeprefix("dl-").removesuffix(".zip.part")
+            _KEPT.pop(stale_id, None)
+            _PARTIAL.pop(stale_id, None)
             stale.unlink(missing_ok=True)
-    return "download", listed
+    return "download", listed, None
 
 
-async def redeem_download(request: Request, *, code: str, package_id: str, overwrite: bool = False) -> Any:
+async def redeem_download(
+    request: Request, *, code: str, package_id: str, overwrite: bool = False, same_name: str = ""
+) -> Any:
     try:
         parsed = parse_redeem_code(code)
     except RedeemCodeError as exc:
@@ -281,14 +337,16 @@ async def redeem_download(request: Request, *, code: str, package_id: str, overw
         try:
             listed = next((item for item in await _packages(parsed) if item["id"] == package_id), None)
             await asyncio.to_thread(root.mkdir, parents=True, exist_ok=True)
-            action, pkg = await asyncio.to_thread(_prepare_local, root, part, package_id, listed)
+            await asyncio.to_thread(sweep_import_leftovers, root.parent)
+            action, pkg, resume = await asyncio.to_thread(_prepare_local, root, part, package_id, listed, parsed)
             if pkg is None:
                 raise HTTPException(400, "该角色包不存在、无权下载或下载次数已用完")
             if int(pkg["size"]) > MAX_IMPORT_BYTES:
                 raise HTTPException(413, SIZE_LIMIT_EXCEEDED_DETAIL)
-            if action == "download":
-                _PROGRESS.update(phase="download", done=0, total=int(pkg["size"]), name=str(pkg["name"]))
-                await _save_package(parsed, host, pkg, part)
+            if action in ("download", "resume"):
+                done = resume[1] if resume is not None else 0
+                _PROGRESS.update(phase="download", done=done, total=int(pkg["size"]), name=str(pkg["name"]))
+                await _save_package(parsed, host, pkg, part, resume)
             _KEPT[package_id] = str(pkg["sha256"])
             keep = True
             logger.info("Redeem %s host=%s package_id=%s", action, host, package_id)
@@ -306,7 +364,7 @@ async def redeem_download(request: Request, *, code: str, package_id: str, overw
             try:
                 await asyncio.to_thread(_link_download)
                 result = await import_character_archive_file(
-                    request, link, filename=f"{package_id}.zip", overwrite=overwrite
+                    request, link, filename=f"{package_id}.zip", overwrite=overwrite, same_name=same_name
                 )
             except HTTPException as exc:
                 if exc.status_code in (400, 422):
@@ -320,5 +378,6 @@ async def redeem_download(request: Request, *, code: str, package_id: str, overw
         finally:
             if not keep:
                 _KEPT.pop(package_id, None)
-                await asyncio.to_thread(part.unlink, missing_ok=True)
+                if package_id not in _PARTIAL:
+                    await asyncio.to_thread(part.unlink, missing_ok=True)
             _PROGRESS.update(phase="idle", done=0, total=0, name="")

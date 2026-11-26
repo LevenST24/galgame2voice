@@ -8,6 +8,7 @@ import {
   getStorageStatus,
   createSession,
   deleteSession,
+  sessionsByRecent,
   getSession,
   getActive,
   addMessage,
@@ -316,11 +317,10 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   };
 
   let _syncSessionsGen = 0;
-  let latestSessionSyncId = 0;
-  let activeSessionSyncId = 0;
-  // Set while the server's session list has not been applied, because the read failed
-  // or was dropped when the user acted during it; the home refresh reads it again.
+  // Set while the last /api/chat/sessions read failed; the home refresh reads it again.
   let sessionListReadFailed = false;
+  /** @type {{ gen: number, promise: Promise<boolean> } | null} */
+  let sessionSyncInFlight = null;
   const sessionsBehindServer = new Set();
   /** @type {ReturnType<typeof mountAdv> | null} */
   let advApp = null;
@@ -372,6 +372,11 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           return { ...model, state: conversation.busy ? 'busy' : model.state };
         },
         loadPortrait: (id, options) => portraits.get(id, options),
+        loadAffection: async (id, options) => {
+          const data = await requestJson('/api/characters', { signal: options?.signal }, { timeoutMs: 10000 });
+          const entry = (data?.characters || []).find(c => Number(c?.id) === Number(id));
+          return entry?.affection?.affection_level ?? null;
+        },
         saveSettings: (patch, { confirm = false } = {}) => {
           const session = getActive();
           if (!session) throw new Error('当前没有可保存的会话。');
@@ -425,7 +430,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   function renderSidebar() {
     if (dom.sessionList) {
       renderSessionList(dom.sessionList, {
-        sessions: state.sessions,
+        sessions: sessionsByRecent(state.sessions),
         activeId: state.activeId,
         onSelect: switchSession,
         onDelete: handleDelete,
@@ -507,6 +512,9 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       if (historyGen !== _syncSessionsGen || getSession(session.id) !== session || (session.messages ? session.messages.length : 0) !== initialCount) return;
       if (Array.isArray(data.messages) && data.messages.length > 0) {
         const incoming = data.messages.map(mapBackendMessage);
+        const serverTail = incoming[incoming.length - 1];
+        /** @type {Map<any, any>} server message -> the local message it matched */
+        const pairedServer = new Map();
         if (session.messages && session.messages.length > 0) {
           const usedIndices = new Set();
           const pairedLocal = new Set();
@@ -530,6 +538,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
                 if (serverMsg.role === localMsg.role) {
                   usedIndices.add(j);
                   pairedLocal.add(localMsg);
+                  pairedServer.set(serverMsg, localMsg);
                   if (localMsg.voiceKey) {
                     serverMsg.voiceKey = localMsg.voiceKey;
                     if (localMsg.dur !== undefined) {
@@ -557,6 +566,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
                 if (serverMsg.role === 'user' && serverMsg.content === localMsg.content) {
                   usedIndices.add(j);
                   pairedLocal.add(localMsg);
+                  pairedServer.set(serverMsg, localMsg);
                   if (localMsg.voiceKey) {
                     serverMsg.voiceKey = localMsg.voiceKey;
                     if (localMsg.dur !== undefined) {
@@ -585,6 +595,17 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
             }
             incoming.push(lastLocalMsg);
           }
+        }
+        // 服务端历史停在无回复提问且后面没有更新的本地提问时，去掉服务端身份并保留「重新发送」。
+        if (incoming[incoming.length - 1] === serverTail && serverTail.role === 'user') {
+          const matchedLocal = pairedServer.get(serverTail);
+          const oldId = serverTail.id;
+          delete serverTail.serverMessageId;
+          serverTail.id = matchedLocal && extractServerId(matchedLocal) === null ? matchedLocal.id : uid('m');
+          if (audioStore && serverTail.id !== oldId && audioStore.has(oldId) && !audioStore.has(serverTail.id)) {
+            audioStore.set(serverTail.id, audioStore.get(oldId));
+          }
+          serverTail.failed = matchedLocal?.failed || { error: '对话已中断，未收到回复', code: 'cancelled' };
         }
         session.messages = incoming;
         session.hasServerMessages = Boolean(data.has_more) || incoming.some((m) => m.role === 'user');
@@ -702,10 +723,9 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       return;
     }
     ++_syncSessionsGen;
-    if (id === state.activeId || conversation.busy) {
+    // Deleting another session leaves the open one's reply and voice alone.
+    if (id === state.activeId || conversation.originId === id) {
       interruptAll();
-    } else {
-      stopCurrentVoice();
     }
     try {
       const removal = deletePersistedSession(id);
@@ -787,12 +807,15 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     ) {
       s.settings.advOutfit = prevSession.settings.advOutfit;
     }
+    s.unconfirmedSettingsVersion = 1;
     saveState();
     fullRender();
     if (enterFromHome) ensureHomeEntryVoice(s);
     else ensureSessionVoice(s);
     advApp?.textbox.inputElement?.focus();
-    if (!storageChangedByAnotherPage()) persistSession(s).catch(() => {});
+    if (!storageChangedByAnotherPage()) persistSession(s).then(() => {
+      if (s.unconfirmedSettingsVersion === 1) { delete s.unconfirmedSettingsVersion; saveState(); }
+    }).catch(() => {});
     return s;
   }
 
@@ -822,8 +845,10 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       if (!haveProvidersLoaded() || hasProviderReadError()) {
         Promise.resolve(ensureProvidersLoaded()).catch(() => {});
       }
-      if (sessionListReadFailed && !activeSessionSyncId) {
-        syncSessionsFromBackend({ fromHome: true }).then(synced => { if (synced) onModel?.({}); }).catch(() => {});
+      if (sessionListReadFailed) {
+        const sync = sessionSyncInFlight && sessionSyncInFlight.gen === _syncSessionsGen
+          ? sessionSyncInFlight.promise : syncSessionsFromBackend();
+        sync.then(synced => { if (synced) onModel?.({}); }).catch(() => {});
       }
       let engine, engineRead = true;
       try { engine = await requestJson('/api/system/engine-status', {}, { timeoutMs: 10000 }); }
@@ -941,15 +966,20 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   if (window.innerWidth > 820) /** @type {ReturnType<typeof mountAdv> | null} */ (advApp)?.textbox.inputElement?.focus();
 
   // 同步后端 SQLite 会话列表及历史消息（generation counter 防止过期结果覆盖用户新建会话）
-  async function syncSessionsFromBackend({ fromHome = false } = {}) {
-    const syncId = ++latestSessionSyncId;
+  function syncSessionsFromBackend() {
     const gen = ++_syncSessionsGen;
+    const promise = runSyncSessions(gen);
+    sessionSyncInFlight = { gen, promise };
+    return promise;
+  }
+  async function runSyncSessions(gen) {
     const isStale = () => gen !== _syncSessionsGen;
-    activeSessionSyncId = syncId;
     try {
       const backendSessions = await fetchAllSessions();
       if (isStale()) {
-        if (syncId === latestSessionSyncId) sessionListReadFailed = true;
+        // Dropped because the user acted during the read: the list is still not applied,
+        // so the home refresh reads it again, unless a newer read has taken over.
+        if (sessionSyncInFlight?.gen === gen) sessionListReadFailed = true;
         Promise.resolve(ensureProvidersLoaded()).catch(() => {});
         return false;
       }
@@ -1032,9 +1062,9 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         }
         for (const [_, rem] of existingMap) {
           markInterruptedPrompt(rem);
-          if ((rem.messages && rem.messages.some((m) => m.role === 'user')) || (startupSessionSwitched && rem.id === state.activeId) || rem.unconfirmedSettingsVersion) {
+          if (rem.unconfirmedSettingsVersion) unconfirmedLocalSessions.push(rem);
+          if (rem.unconfirmedSettingsVersion || (rem.messages && rem.messages.some((m) => m.role === 'user')) || (startupSessionSwitched && rem.id === state.activeId)) {
             merged.push(rem);
-            if (rem.unconfirmedSettingsVersion) unconfirmedLocalSessions.push(rem);
           }
         }
         state.sessions = merged;
@@ -1045,7 +1075,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         const s = createSession('新对话');
         if (!storageChangedByAnotherPage()) persistSession(s).catch(() => {});
       } else {
-        for (const rem of state.sessions) markInterruptedPrompt(rem);
+        for (const rem of state.sessions) { markInterruptedPrompt(rem); if (rem.unconfirmedSettingsVersion) unconfirmedLocalSessions.push(rem); }
       }
       const curActive = getActive();
       if (curActive && (!curActive.messages || curActive.messages.length === 0 || sessionsBehindServer.has(curActive.id))) {
@@ -1066,7 +1096,8 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         }).catch(() => {});
       }
       sessionListReadFailed = false;
-      const carryDraft = !fromHome && !startupSessionSwitched && prevActiveId && state.activeId !== prevActiveId
+      const homeOpen = Boolean(advApp?.stage.stage.classList.contains('is-home'));
+      const carryDraft = !homeOpen && !startupSessionSwitched && prevActiveId && state.activeId !== prevActiveId
         ? (advApp?.textbox.draft || '')
         : '';
       fullRender();
@@ -1074,15 +1105,15 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         advApp.textbox.setDraft(carryDraft);
       }
       ensureSessionVoice(getActive(), { silent: true });
-      if (!fromHome && window.innerWidth > 820) advApp?.textbox.inputElement?.focus();
+      if (!homeOpen && window.innerWidth > 820) advApp?.textbox.inputElement?.focus();
       Promise.resolve(ensureProvidersLoaded()).catch(() => {});
       return true;
     } catch (err) {
-      if (syncId === latestSessionSyncId) sessionListReadFailed = true;
+      if (!isStale()) sessionListReadFailed = true;
       console.debug('Failed to sync sessions from backend:', err);
       throw err;
     } finally {
-      if (activeSessionSyncId === syncId) activeSessionSyncId = 0;
+      if (sessionSyncInFlight?.gen === gen) sessionSyncInFlight = null;
     }
   }
 

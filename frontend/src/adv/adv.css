@@ -191,6 +191,8 @@
   white-space: nowrap;
   font-size: calc(34 * var(--u));
   line-height: calc(46 * var(--u));
+  font-weight: 500;
+  letter-spacing: calc(0.8 * var(--u));
 }
 
 .adv-subtitle-measurer {
@@ -200,6 +202,8 @@
   white-space: nowrap;
   font-size: calc(30 * var(--u));
   line-height: calc(42 * var(--u));
+  font-weight: 400;
+  letter-spacing: calc(0.6 * var(--u));
 }
 
 /* The waiting marks share the text rows: the dots sit where the line will start,

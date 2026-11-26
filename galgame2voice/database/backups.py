@@ -84,6 +84,25 @@ def create_database_backup(path: Path, *, required: bool = False) -> Path | None
     return backup
 
 
+# Day of the last daily snapshot attempt per database, so a running app checks once a day.
+_last_daily_attempt: dict[str, str] = {}
+
+
+def ensure_daily_database_backup(path: Path) -> Path | None:
+    """Take today's snapshot if none exists yet; called periodically while the app runs.
+
+    Startup alone would leave an app that stays open for days with no newer snapshot.
+    Each database is checked at most once per calendar day; a failure is logged by
+    create_database_backup and retried the next day.
+    """
+    key = str(Path(path).resolve())
+    today = datetime.now().strftime("%Y%m%d")
+    if _last_daily_attempt.get(key) == today:
+        return None
+    _last_daily_attempt[key] = today
+    return create_database_backup(Path(path))
+
+
 def validate_backup(path: Path) -> int:
     """Accept an intact G2V database, never an unrelated SQLite file."""
     with closing(_open_readonly(path)) as conn:

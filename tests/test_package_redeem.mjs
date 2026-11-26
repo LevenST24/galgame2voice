@@ -289,6 +289,40 @@ assert.match(
 );
 resolvePkg2Download(ok({ status: 'ok', imported: [{ name: '角色二', profile_id: 22 }] }));
 await pkg2Done;
+globalThis.fetch = async (u) => ok(String(u).includes('/redeem/list') ? { packages: [{ id: 'flaky', name: '断网', size: 2048, remaining: 0, resumable: true }] } : {});
+dom.sVoiceRedeemCode.value = 'G2V1.resumable-code';
+await dom.sVoiceRedeemQuery.fire('click');
+assert.equal(dom.sVoiceRedeemList.children[0].children[0].textContent, '断网 · 2.0 KB · 可继续下载');
+assert.equal(dom.sVoiceRedeemList.children[0].children[1].textContent, '继续下载');
+
+// The server reports idle while it re-lists the packages before a download starts; the shown status stays.
+{
+  const realSetInterval = globalThis.setInterval;
+  const realClearInterval = globalThis.clearInterval;
+  let tick = null;
+  globalThis.setInterval = (fn) => { tick = fn; return 1; };
+  globalThis.clearInterval = () => { tick = null; };
+  let finishDownload;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('/redeem/list')) return ok({ packages: [{ id: 'carol', name: '卡罗尔', size: 4096, remaining: 2 }] });
+    if (u.includes('/redeem/progress')) return ok({ phase: 'idle' });
+    if (u.includes('/redeem/download')) return new Promise((resolve) => { finishDownload = resolve; });
+    if (u.includes('/profiles')) return ok({ profiles: [{ id: 30, name: '卡罗尔', system_prompt: '' }], active_profile_id: 30 });
+    return ok({});
+  };
+  dom.sVoiceRedeemCode.value = 'G2V1.idle-progress-code';
+  await dom.sVoiceRedeemQuery.fire('click');
+  const downloading = dom.sVoiceRedeemList.children[0].children[1].fire('click');
+  const shown = dom.sVoiceRedeemStatus.textContent;
+  assert.match(shown, /正在下载「卡罗尔」/);
+  await tick();
+  assert.equal(dom.sVoiceRedeemStatus.textContent, shown, 'an idle progress report must not blank the status while the download runs');
+  finishDownload(ok({ status: 'ok', imported: [{ name: '卡罗尔', profile_id: 30 }] }));
+  await downloading;
+  globalThis.setInterval = realSetInterval;
+  globalThis.clearInterval = realClearInterval;
+}
 
 toastRoot.children.forEach((c) => clearTimeout(c._timer));
 console.log('package redeem frontend tests: passed');

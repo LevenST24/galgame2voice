@@ -554,10 +554,24 @@ class CharacterManager:
     ) -> Any | None:
         """Queries an existing voice_profile row by character name or configured aliases."""
         cursor = await conn.execute("SELECT * FROM voice_profiles ORDER BY id;")
-        rows = await cursor.fetchall()
-        if index is not None and package is not None:
-            rows = [row for row in rows if index.resolve(row["name"]) is package]
-        return select_profile(rows, char_name, aliases or ())
+        all_rows = await cursor.fetchall()
+        if index is None or package is None:
+            return select_profile(all_rows, char_name, aliases or ())
+        rows = [row for row in all_rows if index.resolve(row["name"]) is package]
+        found = select_profile(rows, char_name, aliases or ())
+        if found is not None:
+            return found
+        # A package renamed without an alias keeps its own row matched by package_id;
+        # custom voices (package_id is NULL) and conflicting names are never claimed.
+        target_pkg = identity_key(package.id)
+        by_package = [
+            row for row in all_rows
+            if index.resolve(row["name"]) is None
+            and not index.is_conflicting(row["name"])
+            and "package_id" in row.keys() and row["package_id"]
+            and identity_key(str(row["package_id"])) == target_pkg
+        ]
+        return by_package[0] if len(by_package) == 1 else None
 
     @classmethod
     def _resolve_package_profile_defaults(cls, pkg: CharacterPackage) -> dict[str, Any]:
@@ -627,6 +641,7 @@ class CharacterManager:
         origin = classify_reference_origin(current_ref, pkg, known_other_packages=known_other_packages)
 
         ref_needs_update = False
+        owned_emotion = None
         if origin in (ReferenceOrigin.EMPTY, ReferenceOrigin.CROSS_PACKAGE):
             ref_needs_update = True
         elif origin == ReferenceOrigin.PACKAGE_OWNED:
@@ -635,6 +650,7 @@ class CharacterManager:
                 ref_needs_update = True
             else:
                 updates["ref_audio_path"] = to_project_relative_path(current_reference)
+                owned_emotion = cls._emotion_for_reference(pkg, current_reference)
         else:  # ReferenceOrigin.EXTERNAL_OR_CUSTOM
             ref_needs_update = False
 
@@ -645,6 +661,12 @@ class CharacterManager:
             updates["prompt_text"] = prompt_text
             if prompt_lang:
                 updates["prompt_lang"] = prompt_lang
+        elif owned_emotion is not None:
+            # The clip is the package's own, so the manifest's transcript for it is the truth:
+            # an updated package (same file name, new audio or fixed text) must not keep the old one.
+            updates["prompt_text"] = owned_emotion.text
+            if owned_emotion.lang:
+                updates["prompt_lang"] = owned_emotion.lang
         elif origin != ReferenceOrigin.EXTERNAL_OR_CUSTOM and not current_prompt.strip() and prompt_text:
             updates["prompt_text"] = prompt_text
             if prompt_lang:
@@ -674,6 +696,18 @@ class CharacterManager:
 
         # A rescan with identical values must not rewrite the row/timestamp.
         return {column: value for column, value in updates.items() if existing_row[column] != value}
+
+    @staticmethod
+    def _emotion_for_reference(pkg: CharacterPackage, reference: Path) -> Any:
+        """The manifest emotion whose clip is this file, if any."""
+        for emotion in pkg.manifest.emotions.values():
+            path = pkg.resolve_audio_path(emotion.audio)
+            try:
+                if path is not None and path.resolve() == reference:
+                    return emotion
+            except (OSError, ValueError):
+                continue
+        return None
 
     @staticmethod
     def _resolve_profile_reference(
@@ -727,13 +761,15 @@ class CharacterManager:
     ) -> bool:
         """Idempotently updates existing voice_profile row with healed paths and prompt updates."""
         updates = await asyncio.to_thread(cls._build_profile_updates, existing_row, pkg, defaults, known_other_packages)
+        needs_pkg_id = "package_id" in existing_row.keys() and existing_row["package_id"] != pkg.id
         if updates:
             from galgame2voice.database.crud_modules.voice_profiles import update_voice_profile
             from galgame2voice.database.models import VoiceProfileUpdate
 
             await update_voice_profile(conn, existing_row["id"], VoiceProfileUpdate(**updates))
-            return True
-        return False
+        if needs_pkg_id:
+            await conn.execute("UPDATE voice_profiles SET package_id = ? WHERE id = ?;", (pkg.id, existing_row["id"]))
+        return bool(updates or needs_pkg_id)
 
     @staticmethod
     async def _insert_new_profile(
@@ -747,13 +783,14 @@ class CharacterManager:
         from galgame2voice.database.crud_modules.voice_profiles import create_voice_profile
         from galgame2voice.database.models import VoiceProfileCreate
 
-        await create_voice_profile(conn, VoiceProfileCreate(
+        created = await create_voice_profile(conn, VoiceProfileCreate(
             name=char_name, description=manifest.description,
             gpt_weights_path=defaults["gpt_weights"], sovits_weights_path=defaults["sovits_weights"],
             ref_audio_path=defaults["ref_audio_str"], prompt_text=defaults["prompt_text"],
             prompt_lang=defaults["prompt_lang"], text_lang=defaults["prompt_lang"],
             system_prompt=defaults["system_prompt"], is_default=bool(is_default_val),
         ))
+        await conn.execute("UPDATE voice_profiles SET package_id = ? WHERE id = ?;", (manifest.id, created.id))
 
     async def sync_with_db(self, conn: aiosqlite.Connection) -> int:
         """
@@ -773,9 +810,11 @@ class CharacterManager:
 
         valid_pkgs = sorted(valid_pkgs, key=_pkg_sort_key)
 
+        from galgame2voice.database.migrations import _add_column_if_missing
         from galgame2voice.database.session import immediate_transaction
 
         async with immediate_transaction(conn):
+            await _add_column_if_missing(conn, "voice_profiles", "package_id", "TEXT DEFAULT NULL")
             cur = await conn.execute("SELECT COUNT(*) FROM voice_profiles;")
             count_row = await cur.fetchone()
             existing_count = count_row[0] if count_row else 0
