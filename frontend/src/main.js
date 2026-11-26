@@ -257,6 +257,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     gBtnToggleKeyVisibility: $('gBtnToggleKeyVisibility'),
     gIconKeyEye: $('gIconKeyEye'),
     gBtnToggleKeyText: $('gBtnToggleKeyText'),
+    gBtnClearKey: $('gBtnClearKey'),
     gApiKeyTip: $('gApiKeyTip'),
     gBaseUrl: $('gBaseUrl'),
     gBtnResetBaseUrl: $('gBtnResetBaseUrl'),
@@ -761,6 +762,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   function newChat(selection, { enterFromHome = false } = {}) {
     if (!selection || !Object.hasOwn(selection, 'voiceProfileId')) selection = null;
     ++_syncSessionsGen;
+    startupSessionSwitched = true;
     interruptAll();
     closeDrawer();
     revokeAllCachedAudioUrls();
@@ -976,6 +978,9 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     try {
       const backendSessions = await fetchAllSessions();
       if (isStale()) {
+        // Dropped because the user acted during the read: the list is still not applied,
+        // so the home refresh reads it again, unless a newer read has taken over.
+        if (sessionSyncInFlight?.gen === gen) sessionListReadFailed = true;
         Promise.resolve(ensureProvidersLoaded()).catch(() => {});
         return false;
       }
