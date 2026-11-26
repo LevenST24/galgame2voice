@@ -76,7 +76,7 @@ async def test_create_voice_profile_reports_full_disk(monkeypatch):
             "name": "音色", "gpt_weights_path": "weights/a.ckpt", "sovits_weights_path": "weights/a.pth",
             "ref_audio_path": "audio/a.wav", "prompt_text": "こんにちは",
         })
-    assert response.status_code == 400
+    assert response.status_code == 507
     assert "磁盘空间不足" in response.json()["detail"]
 
 
