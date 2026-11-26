@@ -258,6 +258,27 @@ test('no-speech with MediaRecorder stops recording, leaks no Blob URL, and shows
   assert.equal(h.tracks[0].stopped, true);
 });
 
+test('a failed recognition says why instead of going quiet, and a cancelled one says nothing', async (t) => {
+  const cases = [
+    ['network', ['语音识别服务连不上，请检查网络；也可以改用 Edge 浏览器，或直接打字。']],
+    ['audio-capture', ['没有找到可用的麦克风，请检查麦克风是否插好、是否被其他程序占用。']],
+    ['language-not-supported', ['语音识别没有成功，请再试一次，或直接打字。']],
+    ['aborted', []],
+  ];
+  for (const [error, expected] of cases) {
+    const h = setupWithRecorder(t, { asyncRecordStopMs: 1 });
+    toggleMic();
+    await new Promise((r) => setTimeout(r, 0));
+    h.recognizers[0].onerror?.({ error });
+    h.recognizers[0].onend?.();
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(isListening(), false);
+    assert.deepEqual(h.sent, []);
+    assert.deepEqual(h.toasts(), expected, error);
+    cancelMic();
+  }
+});
+
 test('manual mic stop with MediaRecorder keeps late onresult and sends text with audio', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const h = setupWithRecorder(t, { syncEndOnStop: false, asyncRecordStopMs: 20 });
@@ -772,4 +793,18 @@ test('retry and explicit voiceMeta sends are unaffected by pendingVoice', async 
   t.mock.timers.tick(2000);
   assert.equal(h.stream.requests.length, 3);
   assert.equal(h.createdUrls.length, h.revokedUrls.length, 'unconsumed pending mic URL should be revoked cleanly');
+});
+
+test('a mic refused on a LAN http address says why instead of asking for permission', t => {
+  const h = setup(t, { syncEndOnStop: false });
+  const errors = [];
+  for (const secure of [false, true]) {
+    globalThis.window.isSecureContext = secure;
+    assert.equal(startListening({ onError: message => errors.push(message) }).ok, true);
+    const recognizer = h.recognizers.at(-1);
+    recognizer.onerror({ error: 'not-allowed' });
+  }
+  delete globalThis.window.isSecureContext;
+  assert.match(errors[0], /局域网地址（http）打开时，浏览器不允许使用麦克风/);
+  assert.match(errors[1], /麦克风权限被拒绝/);
 });

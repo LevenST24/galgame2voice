@@ -166,7 +166,8 @@ def verify_media_url_signature(
     if not expected_sig:
         return False
 
-    return hmac.compare_digest(sig.lower(), expected_sig.lower())
+    # Compare bytes: a non-ASCII sig from the query string would otherwise raise TypeError.
+    return hmac.compare_digest(sig.lower().encode("utf-8"), expected_sig.lower().encode("utf-8"))
 
 
 def sign_media_url(
