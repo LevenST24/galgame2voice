@@ -196,7 +196,7 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
       }));
       if (settled) return;
       if (!res.ok) {
-        let msg = `请求失败 (${res.status})`;
+        let msg = getErrorMessage(null, `HTTP ${res.status}`);
         try {
           const data = await withDeadline(() => res.json());
           errorCode = extractChatErrorCode(data);
