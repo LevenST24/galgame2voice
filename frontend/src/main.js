@@ -372,6 +372,11 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           return { ...model, state: conversation.busy ? 'busy' : model.state };
         },
         loadPortrait: (id, options) => portraits.get(id, options),
+        loadAffection: async (id, options) => {
+          const data = await requestJson('/api/characters', { signal: options?.signal }, { timeoutMs: 10000 });
+          const entry = (data?.characters || []).find(c => Number(c?.id) === Number(id));
+          return entry?.affection?.affection_level ?? null;
+        },
         saveSettings: (patch, { confirm = false } = {}) => {
           const session = getActive();
           if (!session) throw new Error('当前没有可保存的会话。');
@@ -507,6 +512,9 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       if (historyGen !== _syncSessionsGen || getSession(session.id) !== session || (session.messages ? session.messages.length : 0) !== initialCount) return;
       if (Array.isArray(data.messages) && data.messages.length > 0) {
         const incoming = data.messages.map(mapBackendMessage);
+        const serverTail = incoming[incoming.length - 1];
+        /** @type {Map<any, any>} server message -> the local message it matched */
+        const pairedServer = new Map();
         if (session.messages && session.messages.length > 0) {
           const usedIndices = new Set();
           const pairedLocal = new Set();
@@ -530,6 +538,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
                 if (serverMsg.role === localMsg.role) {
                   usedIndices.add(j);
                   pairedLocal.add(localMsg);
+                  pairedServer.set(serverMsg, localMsg);
                   if (localMsg.voiceKey) {
                     serverMsg.voiceKey = localMsg.voiceKey;
                     if (localMsg.dur !== undefined) {
@@ -557,6 +566,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
                 if (serverMsg.role === 'user' && serverMsg.content === localMsg.content) {
                   usedIndices.add(j);
                   pairedLocal.add(localMsg);
+                  pairedServer.set(serverMsg, localMsg);
                   if (localMsg.voiceKey) {
                     serverMsg.voiceKey = localMsg.voiceKey;
                     if (localMsg.dur !== undefined) {
@@ -585,6 +595,17 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
             }
             incoming.push(lastLocalMsg);
           }
+        }
+        // 服务端历史停在无回复提问且后面没有更新的本地提问时，去掉服务端身份并保留「重新发送」。
+        if (incoming[incoming.length - 1] === serverTail && serverTail.role === 'user') {
+          const matchedLocal = pairedServer.get(serverTail);
+          const oldId = serverTail.id;
+          delete serverTail.serverMessageId;
+          serverTail.id = matchedLocal && extractServerId(matchedLocal) === null ? matchedLocal.id : uid('m');
+          if (audioStore && serverTail.id !== oldId && audioStore.has(oldId) && !audioStore.has(serverTail.id)) {
+            audioStore.set(serverTail.id, audioStore.get(oldId));
+          }
+          serverTail.failed = matchedLocal?.failed || { error: '对话已中断，未收到回复', code: 'cancelled' };
         }
         session.messages = incoming;
         session.hasServerMessages = Boolean(data.has_more) || incoming.some((m) => m.role === 'user');

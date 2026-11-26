@@ -530,7 +530,7 @@ export function createLinePlayer({
 
   function setSkip(on) {
     const next = !!on;
-    if (skip === next) return;
+    if (skip === next || (next && hidden)) return;
     skip = next;
     if (skip) {
       if (auto) {
@@ -577,6 +577,7 @@ export function createLinePlayer({
   function hide() {
     if (hidden) return;
     hidden = true;
+    pendingAdvance = false;
     voiceEnded = false;
     clearFollowTimer();
     setSkip(false);
@@ -877,9 +878,10 @@ export function createLinePlayer({
       }
       if (state === 'waiting_line') {
         render?.thinking?.(false);
+        if (hidden) return;
         const nextIndex = currentIndex === null ? 0 : currentIndex + 1;
         if (lines[nextIndex]) {
-          if (!hidden) activateLine(nextIndex);
+          activateLine(nextIndex);
           return;
         }
         if (skip) {

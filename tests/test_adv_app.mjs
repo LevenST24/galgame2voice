@@ -47,6 +47,7 @@ function setup(t, options = {}) {
     toggleVoice: () => { voiceEnabled = !voiceEnabled; },
     getCharacter: () => character, ImageClass: Image,
     loadPortrait: options.loadPortrait || (async () => options.art ? portrait() : null),
+    ...(options.loadAffection ? { loadAffection: options.loadAffection } : {}),
     raf: fn => { frames.set(++frameId, fn); return frameId; }, cancelRaf: id => frames.delete(id),
     matchMedia: () => mql, viewport,
     saveSettings: patch => { Object.assign(active.settings, patch); },
@@ -549,7 +550,7 @@ for (const trigger of ['click', 'Enter']) test(`hidden queued line survives done
   h.app.action('advance'); assert.equal(h.app.player.state, 'input');
 });
 
-for (const overlay of ['log', 'dialog', 'hidden']) test(`replay completion retains ${overlay} pause ownership`, async t => {
+for (const overlay of ['log', 'dialog']) test(`replay completion retains ${overlay} pause ownership`, async t => {
   const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0, advAutoBaseMs: 0, advAutoPerCharMs: 0 } });
   h.start(); h.line(); h.line(1); h.audioEvent(); h.done();
   h.app.action('auto'); h.app.action('replay_voice');
@@ -698,7 +699,6 @@ test('opening panels or overlays during stage replay stops replay and closing do
     ['log', () => stage.querySelector('.adv-qm-btn-log').click(), () => stage.querySelector('.adv-log-close-btn').click()],
     ['dialog', () => h.overlay(true), () => h.overlay(false)],
     ['sessions', () => toolButton('sessions').click(), () => stage.dispatchEvent({ type: 'keydown', key: 'Escape' })],
-    ['hide', () => stage.querySelector('.adv-qm-btn-hide').click(), () => stage.click()],
   ];
 
   for (const [label, openPanel, closePanel] of cases) {
@@ -1484,4 +1484,125 @@ test('a reply finishing leaves focus alone in the embedded experience settings p
   footerSave.focus();
   h.done();
   assert.ok(h.doc.activeElement === footerSave, `focus moved to ${h.doc.activeElement?.id || h.doc.activeElement?.tagName}`);
+});
+
+test('hiding the window lets a replay finish, then holds AUTO until it is shown again', async t => {
+  const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0, advAutoBaseMs: 0, advAutoPerCharMs: 0 } });
+  h.start(); h.line(); h.line(1); h.audioEvent(); h.done();
+  h.app.action('auto'); h.app.action('replay_voice');
+  const stopped = h.audio.stopped.length;
+  h.app.action('hide');
+  assert.equal(h.audio.stopped.length, stopped, 'hiding does not stop the replay');
+  h.endVoice('ended'); await microtasks(); h.clock.tick(5000);
+  assert.equal(h.app.player.currentIndex, 0, 'AUTO waits while the window is hidden');
+  h.app.action('unhide');
+  h.clock.tick(1200); assert.equal(h.app.player.currentIndex, 1);
+});
+
+test('hiding the window does not stop the line that is being voiced', t => {
+  const h = setup(t, { settings: { advTextIntervalMs: 0 } });
+  h.start(); h.line(0); h.audioEvent(0);
+  assert.equal(h.audio.played.length, 1);
+  const stopped = h.audio.stopped.length;
+  h.app.action('hide');
+  assert.equal(h.audio.stopped.length, stopped);
+  assert.notEqual(h.app.player.state, 'suspended');
+});
+
+test('hidden window ignores A, F and Ctrl so voice and replay finish without skipping', async t => {
+  const h = setup(t, { settings: { advTextIntervalMs: 0 } });
+  const stage = h.app.stage.stage;
+  h.start(); h.line(0); h.line(1); h.audioEvent(0); h.audioEvent(1); h.done();
+  const stopped = h.audio.stopped.length;
+  h.app.action('hide');
+  stage.dispatchEvent({ type: 'keydown', key: 'a' }); assert.equal(h.app.player.auto, false);
+  stage.dispatchEvent({ type: 'keydown', key: 'f' }); h.app.player.setSkip(true); h.clock.tick(1000);
+  assert.equal(h.audio.stopped.length, stopped);
+  assert.equal(h.app.player.currentIndex, 0); assert.equal(h.app.player.skip, false);
+  h.endVoice('ended'); await microtasks();
+  h.app.action('unhide'); h.app.action('replay_voice'); h.app.action('hide');
+  stage.dispatchEvent({ type: 'keydown', key: 'Control' }); h.clock.tick(1000);
+  assert.equal(h.audio.stopped.length, stopped); assert.equal(h.app.player.currentIndex, 0);
+});
+
+test('hiding cancels a pending advance when interruptVoice is off', async t => {
+  const h = setup(t, { settings: { advTextIntervalMs: 0, advInterruptVoice: false } });
+  h.start(); h.line(0); h.line(1); h.audioEvent(0); h.audioEvent(1); h.done();
+  h.app.action('advance'); h.app.action('hide');
+  h.endVoice('ended'); await microtasks();
+  assert.equal(h.app.player.currentIndex, 0);
+  h.app.action('unhide'); assert.equal(h.app.player.currentIndex, 0);
+  h.app.action('advance'); assert.equal(h.app.player.currentIndex, 1);
+});
+
+test('hiding while waiting for a line or after cancel still restores with H and right-click', t => {
+  const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0 } });
+  const stage = h.app.stage.stage;
+  h.start('t1'); h.line(0); h.app.action('advance'); h.app.action('hide'); h.done();
+  assert.equal(h.app.player.state, 'waiting_line');
+  stage.dispatchEvent({ type: 'keydown', key: 'h' });
+  assert.equal(h.app.player.hidden, false); assert.equal(h.app.player.state, 'input');
+  h.start('t2'); h.line(0); h.app.action('hide'); h.done('cancelled');
+  assert.equal(h.app.player.state, 'input');
+  stage.dispatchEvent({ type: 'contextmenu' }); assert.equal(h.app.player.hidden, false);
+});
+
+test('higher affection makes the portrait blush more readily, from the saved level and after each turn', async t => {
+  const payload = portrait();
+  payload.faces.smile.blush = 'smile_blush';
+  payload.sprites.uniform.smile_blush = { file: '/blush.png', width: 800, height: 1600 };
+  const asked = [];
+  const h = setup(t, { voice: false, loadPortrait: async () => payload, loadAffection: async id => { asked.push(id); return 2; } });
+  await microtasks(); h.loads.forEach(load => load.resolve()); await microtasks(); h.flush();
+  assert.deepEqual(asked, [1], 'the saved level is read for the shown character');
+  const shown = async () => { h.loads.forEach(load => load.resolve()); await microtasks(); h.flush(); return h.app.sprite.getLastCommitted(); };
+
+  h.start('turn_0'); h.line(0, { emotion: 'shy' });
+  assert.equal((await shown()).faceUrl, '/blush.png', 'level 2 already blushes on a shy line');
+  h.line(1, { emotion: 'gentle' });
+  h.app.action('advance'); h.app.action('advance');
+  assert.equal((await shown()).faceUrl, '/art.png', 'a gentle line needs level 3');
+  h.controller.busy = false;
+  h.emit('done', { originId: h.sessions[0].id, message: { id: 'turn_0', content: '你好' },
+    meta: { affection: { score: 45, level: 3, points_earned: 2 } } });
+
+  h.start('turn_1'); h.line(0, { emotion: 'gentle' });
+  assert.equal((await shown()).faceUrl, '/blush.png', 'the level the turn reached applies to the next reply');
+});
+
+test('late loadAffection repaints initial portrait and survives portrait refresh', async t => {
+  const payload = portrait();
+  payload.faces.smile.blush = 'smile_blush';
+  payload.sprites.uniform.smile_blush = { file: '/blush.png', width: 800, height: 1600 };
+  let resolveAffection, portraitCalls = 0;
+  const h = setup(t, { voice: false,
+    loadPortrait: async () => { portraitCalls++; return payload; },
+    loadAffection: () => new Promise(resolve => { resolveAffection = resolve; }) });
+  await microtasks(); assert.equal(portraitCalls, 1);
+  h.loads.splice(0).forEach(load => load.reject(new Error('expired')));
+  await microtasks(); assert.equal(portraitCalls, 2);
+  h.loads.splice(0).forEach(load => load.resolve()); await microtasks(); h.flush();
+  assert.equal(h.app.sprite.getLastCommitted().faceUrl, '/art.png');
+  resolveAffection(3); await microtasks();
+  h.loads.splice(0).forEach(load => load.resolve()); await microtasks(); h.flush();
+  assert.equal(h.app.sprite.getLastCommitted().faceUrl, '/blush.png');
+});
+
+test('done affection aborts and supersedes an older in-flight loadAffection', async t => {
+  const payload = portrait();
+  payload.faces.smile.blush = 'smile_blush';
+  payload.sprites.uniform.smile_blush = { file: '/blush.png', width: 800, height: 1600 };
+  let resolveAffection, affSignal;
+  const h = setup(t, { voice: false, loadPortrait: async () => payload,
+    loadAffection: (_id, opts) => { affSignal = opts?.signal; return new Promise(resolve => { resolveAffection = resolve; }); } });
+  await microtasks(); h.loads.splice(0).forEach(load => load.resolve()); await microtasks(); h.flush();
+  h.start('turn_0'); h.line(0, { emotion: 'gentle' });
+  h.controller.busy = false;
+  h.emit('done', { originId: h.sessions[0].id, message: { id: 'turn_0', content: '你好' },
+    meta: { affection: { score: 45, level: 3, points_earned: 2 } } });
+  assert.equal(affSignal?.aborted, true);
+  resolveAffection(2); await microtasks();
+  h.start('turn_1'); h.line(0, { emotion: 'gentle' });
+  h.loads.splice(0).forEach(load => load.resolve()); await microtasks(); h.flush();
+  assert.equal(h.app.sprite.getLastCommitted().faceUrl, '/blush.png');
 });
