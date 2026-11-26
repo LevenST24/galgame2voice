@@ -317,6 +317,10 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   };
 
   let _syncSessionsGen = 0;
+  // Set while the last /api/chat/sessions read failed; the home refresh reads it again.
+  let sessionListReadFailed = false;
+  /** @type {{ gen: number, promise: Promise<boolean> } | null} */
+  let sessionSyncInFlight = null;
   const sessionsBehindServer = new Set();
   /** @type {ReturnType<typeof mountAdv> | null} */
   let advApp = null;
@@ -781,12 +785,15 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     ) {
       s.settings.advOutfit = prevSession.settings.advOutfit;
     }
+    s.unconfirmedSettingsVersion = 1;
     saveState();
     fullRender();
     if (enterFromHome) ensureHomeEntryVoice(s);
     else ensureSessionVoice(s);
     advApp?.textbox.inputElement?.focus();
-    if (!storageChangedByAnotherPage()) persistSession(s).catch(() => {});
+    if (!storageChangedByAnotherPage()) persistSession(s).then(() => {
+      if (s.unconfirmedSettingsVersion === 1) { delete s.unconfirmedSettingsVersion; saveState(); }
+    }).catch(() => {});
     return s;
   }
 
@@ -815,6 +822,11 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       }
       if (!haveProvidersLoaded() || hasProviderReadError()) {
         Promise.resolve(ensureProvidersLoaded()).catch(() => {});
+      }
+      if (sessionListReadFailed) {
+        const sync = sessionSyncInFlight && sessionSyncInFlight.gen === _syncSessionsGen
+          ? sessionSyncInFlight.promise : syncSessionsFromBackend();
+        sync.then(synced => { if (synced) onModel?.({}); }).catch(() => {});
       }
       let engine, engineRead = true;
       try { engine = await requestJson('/api/system/engine-status', {}, { timeoutMs: 10000 }); }
@@ -932,8 +944,13 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   if (window.innerWidth > 820) /** @type {ReturnType<typeof mountAdv> | null} */ (advApp)?.textbox.inputElement?.focus();
 
   // 同步后端 SQLite 会话列表及历史消息（generation counter 防止过期结果覆盖用户新建会话）
-  async function syncSessionsFromBackend() {
+  function syncSessionsFromBackend() {
     const gen = ++_syncSessionsGen;
+    const promise = runSyncSessions(gen);
+    sessionSyncInFlight = { gen, promise };
+    return promise;
+  }
+  async function runSyncSessions(gen) {
     const isStale = () => gen !== _syncSessionsGen;
     try {
       const backendSessions = await fetchAllSessions();
@@ -1020,7 +1037,8 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         }
         for (const [_, rem] of existingMap) {
           markInterruptedPrompt(rem);
-          if ((rem.messages && rem.messages.some((m) => m.role === 'user')) || (startupSessionSwitched && rem.id === state.activeId)) {
+          if (rem.unconfirmedSettingsVersion) unconfirmedLocalSessions.push(rem);
+          if (rem.unconfirmedSettingsVersion || (rem.messages && rem.messages.some((m) => m.role === 'user')) || (startupSessionSwitched && rem.id === state.activeId)) {
             merged.push(rem);
           }
         }
@@ -1032,7 +1050,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         const s = createSession('新对话');
         if (!storageChangedByAnotherPage()) persistSession(s).catch(() => {});
       } else {
-        for (const rem of state.sessions) markInterruptedPrompt(rem);
+        for (const rem of state.sessions) { markInterruptedPrompt(rem); if (rem.unconfirmedSettingsVersion) unconfirmedLocalSessions.push(rem); }
       }
       const curActive = getActive();
       if (curActive && (!curActive.messages || curActive.messages.length === 0 || sessionsBehindServer.has(curActive.id))) {
@@ -1052,7 +1070,9 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           }
         }).catch(() => {});
       }
-      const carryDraft = !startupSessionSwitched && prevActiveId && state.activeId !== prevActiveId
+      sessionListReadFailed = false;
+      const homeOpen = Boolean(advApp?.stage.stage.classList.contains('is-home'));
+      const carryDraft = !homeOpen && !startupSessionSwitched && prevActiveId && state.activeId !== prevActiveId
         ? (advApp?.textbox.draft || '')
         : '';
       fullRender();
@@ -1060,12 +1080,15 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         advApp.textbox.setDraft(carryDraft);
       }
       ensureSessionVoice(getActive(), { silent: true });
-      if (window.innerWidth > 820) advApp?.textbox.inputElement?.focus();
+      if (!homeOpen && window.innerWidth > 820) advApp?.textbox.inputElement?.focus();
       Promise.resolve(ensureProvidersLoaded()).catch(() => {});
       return true;
     } catch (err) {
+      if (!isStale()) sessionListReadFailed = true;
       console.debug('Failed to sync sessions from backend:', err);
       throw err;
+    } finally {
+      if (sessionSyncInFlight?.gen === gen) sessionSyncInFlight = null;
     }
   }
 
