@@ -6,6 +6,7 @@ Manages application lifespan, CORS, static routing, and router registration.
 import asyncio
 import logging
 import mimetypes
+import sqlite3
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -20,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import MutableHeaders
 from starlette.types import Receive, Scope, Send
 
-from galgame2voice.config import get_settings
+from galgame2voice.config import get_settings, require_settings
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.routers import chat, config, health, voice, characters, metrics, system, backgrounds
@@ -31,7 +32,7 @@ from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client, clos
 from galgame2voice.services.telemetry_jobs import TelemetryJobs
 from galgame2voice.services.audio_cleaner import _audio_cleanup_loop
 from galgame2voice.utils.http_client import close_shared_async_clients
-from galgame2voice.utils.logger import setup_logger
+from galgame2voice.utils.logger import DISK_FULL_MESSAGE, describe_database_write_error, setup_logger
 
 __all__ = [
     "app",
@@ -574,10 +575,24 @@ def create_app(*, engine_supervisor: EngineSupervisor | None = None) -> FastAPI:
             content={"detail": "Internal Server Error", "error_type": type(exc).__name__},
         )
 
+    # Storage errors get their own handler so the user sees why, not a generic 500.
+    @app.exception_handler(sqlite3.Error)
+    @app.exception_handler(OSError)
+    async def storage_exception_handler(request: Request, exc: Exception):
+        message = describe_database_write_error(exc)
+        if message is None:
+            return await global_exception_handler(request, exc)
+        logger.error("Storage error on %s %s: %s", request.method, request.url.path, exc, exc_info=True)
+        return JSONResponse(
+            status_code=507 if message == DISK_FULL_MESSAGE else 503,
+            content={"detail": message, "error_type": type(exc).__name__},
+        )
+
     return app
 
 
 # Application singleton instance for Uvicorn
+require_settings()
 app = create_app()
 
 
