@@ -4,7 +4,7 @@ import multiprocessing
 import os
 import sys
 
-from galgame2voice.runtime_paths import get_install_root
+from galgame2voice.runtime_paths import get_install_root, low_disk_hint
 
 
 def verify_portable_runtime() -> None:
@@ -73,7 +73,7 @@ def main() -> int:
         return exc.code if isinstance(exc.code, int) else 1
     except Exception as exc:
         print(f"[启动失败] {exc}")
-        print("请将完整便携包解压到有写入权限的目录，并保留 _internal 文件夹。")
+        print(low_disk_hint(root) or "请将完整便携包解压到有写入权限的目录，并保留 _internal 文件夹。")
         try:
             from datetime import datetime, timezone
             import traceback
