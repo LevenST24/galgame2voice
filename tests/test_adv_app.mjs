@@ -549,7 +549,7 @@ for (const trigger of ['click', 'Enter']) test(`hidden queued line survives done
   h.app.action('advance'); assert.equal(h.app.player.state, 'input');
 });
 
-for (const overlay of ['log', 'dialog', 'hidden']) test(`replay completion retains ${overlay} pause ownership`, async t => {
+for (const overlay of ['log', 'dialog']) test(`replay completion retains ${overlay} pause ownership`, async t => {
   const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0, advAutoBaseMs: 0, advAutoPerCharMs: 0 } });
   h.start(); h.line(); h.line(1); h.audioEvent(); h.done();
   h.app.action('auto'); h.app.action('replay_voice');
@@ -698,7 +698,6 @@ test('opening panels or overlays during stage replay stops replay and closing do
     ['log', () => stage.querySelector('.adv-qm-btn-log').click(), () => stage.querySelector('.adv-log-close-btn').click()],
     ['dialog', () => h.overlay(true), () => h.overlay(false)],
     ['sessions', () => toolButton('sessions').click(), () => stage.dispatchEvent({ type: 'keydown', key: 'Escape' })],
-    ['hide', () => stage.querySelector('.adv-qm-btn-hide').click(), () => stage.click()],
   ];
 
   for (const [label, openPanel, closePanel] of cases) {
@@ -1484,4 +1483,65 @@ test('a reply finishing leaves focus alone in the embedded experience settings p
   footerSave.focus();
   h.done();
   assert.ok(h.doc.activeElement === footerSave, `focus moved to ${h.doc.activeElement?.id || h.doc.activeElement?.tagName}`);
+});
+
+test('hiding the window lets a replay finish, then holds AUTO until it is shown again', async t => {
+  const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0, advAutoBaseMs: 0, advAutoPerCharMs: 0 } });
+  h.start(); h.line(); h.line(1); h.audioEvent(); h.done();
+  h.app.action('auto'); h.app.action('replay_voice');
+  const stopped = h.audio.stopped.length;
+  h.app.action('hide');
+  assert.equal(h.audio.stopped.length, stopped, 'hiding does not stop the replay');
+  h.endVoice('ended'); await microtasks(); h.clock.tick(5000);
+  assert.equal(h.app.player.currentIndex, 0, 'AUTO waits while the window is hidden');
+  h.app.action('unhide');
+  h.clock.tick(1200); assert.equal(h.app.player.currentIndex, 1);
+});
+
+test('hiding the window does not stop the line that is being voiced', t => {
+  const h = setup(t, { settings: { advTextIntervalMs: 0 } });
+  h.start(); h.line(0); h.audioEvent(0);
+  assert.equal(h.audio.played.length, 1);
+  const stopped = h.audio.stopped.length;
+  h.app.action('hide');
+  assert.equal(h.audio.stopped.length, stopped);
+  assert.notEqual(h.app.player.state, 'suspended');
+});
+
+test('hidden window ignores A, F and Ctrl so voice and replay finish without skipping', async t => {
+  const h = setup(t, { settings: { advTextIntervalMs: 0 } });
+  const stage = h.app.stage.stage;
+  h.start(); h.line(0); h.line(1); h.audioEvent(0); h.audioEvent(1); h.done();
+  const stopped = h.audio.stopped.length;
+  h.app.action('hide');
+  stage.dispatchEvent({ type: 'keydown', key: 'a' }); assert.equal(h.app.player.auto, false);
+  stage.dispatchEvent({ type: 'keydown', key: 'f' }); h.app.player.setSkip(true); h.clock.tick(1000);
+  assert.equal(h.audio.stopped.length, stopped);
+  assert.equal(h.app.player.currentIndex, 0); assert.equal(h.app.player.skip, false);
+  h.endVoice('ended'); await microtasks();
+  h.app.action('unhide'); h.app.action('replay_voice'); h.app.action('hide');
+  stage.dispatchEvent({ type: 'keydown', key: 'Control' }); h.clock.tick(1000);
+  assert.equal(h.audio.stopped.length, stopped); assert.equal(h.app.player.currentIndex, 0);
+});
+
+test('hiding cancels a pending advance when interruptVoice is off', async t => {
+  const h = setup(t, { settings: { advTextIntervalMs: 0, advInterruptVoice: false } });
+  h.start(); h.line(0); h.line(1); h.audioEvent(0); h.audioEvent(1); h.done();
+  h.app.action('advance'); h.app.action('hide');
+  h.endVoice('ended'); await microtasks();
+  assert.equal(h.app.player.currentIndex, 0);
+  h.app.action('unhide'); assert.equal(h.app.player.currentIndex, 0);
+  h.app.action('advance'); assert.equal(h.app.player.currentIndex, 1);
+});
+
+test('hiding while waiting for a line or after cancel still restores with H and right-click', t => {
+  const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0 } });
+  const stage = h.app.stage.stage;
+  h.start('t1'); h.line(0); h.app.action('advance'); h.app.action('hide'); h.done();
+  assert.equal(h.app.player.state, 'waiting_line');
+  stage.dispatchEvent({ type: 'keydown', key: 'h' });
+  assert.equal(h.app.player.hidden, false); assert.equal(h.app.player.state, 'input');
+  h.start('t2'); h.line(0); h.app.action('hide'); h.done('cancelled');
+  assert.equal(h.app.player.state, 'input');
+  stage.dispatchEvent({ type: 'contextmenu' }); assert.equal(h.app.player.hidden, false);
 });

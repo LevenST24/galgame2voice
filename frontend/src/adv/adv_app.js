@@ -614,9 +614,10 @@ export function mountAdv(dom, deps) {
     switch (name) {
       case 'advance': stopStageReplay(); player.advance(); break;
       case 'toggle_auto':
-      case 'auto': if (stageReplaying || !['input', 'error', 'suspended'].includes(player.state)) player.setAuto(!player.auto); break;
+      case 'auto': if (!player.hidden && (stageReplaying || !['input', 'error', 'suspended'].includes(player.state))) player.setAuto(!player.auto); break;
       case 'toggle_skip':
       case 'skip':
+        if (player.hidden) break;
         stopStageReplay();
         if (!['input', 'error', 'suspended'].includes(player.state)) {
           temporarySkip = false;
@@ -627,6 +628,7 @@ export function mountAdv(dom, deps) {
         }
         break;
       case 'skip-hold-start':
+        if (player.hidden) break;
         stopStageReplay();
         if (!['input', 'error', 'suspended'].includes(player.state) && !player.skip) {
           temporarySkip = true;
@@ -646,7 +648,8 @@ export function mountAdv(dom, deps) {
       case 'toggle_hide':
       case 'hide':
         if (player.hidden) unhide();
-        else { player.hide(); player.suspend('hidden'); stopStageReplay(); sprite.suspend(); }
+        // Hiding pauses AUTO and the next line, but a voice already playing (or replaying) finishes.
+        else { player.hide(); sprite.suspend(); }
         break;
       case 'unhide': unhide(); break;
       case 'log': openLog(); break;
@@ -716,7 +719,6 @@ export function mountAdv(dom, deps) {
     syncControls();
   }
   function unhide() {
-    player.resume('hidden');
     player.unhide();
     restoreSprite();
   }
