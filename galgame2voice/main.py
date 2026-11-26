@@ -525,6 +525,11 @@ def create_app(*, engine_supervisor: EngineSupervisor | None = None) -> FastAPI:
     app.include_router(system.router, dependencies=auth_deps)
 
 
+    # A body nested too deeply is the request's fault: answer 400 in Chinese, not 500.
+    from galgame2voice.utils.deep_json import nested_too_deep_response, register_deep_json_handler
+
+    register_deep_json_handler(app)
+
     # 3. Mount Static Audio Storage Directory
     settings.audio_dir.mkdir(parents=True, exist_ok=True)
     app.mount(
@@ -564,11 +569,6 @@ def create_app(*, engine_supervisor: EngineSupervisor | None = None) -> FastAPI:
         query = request.url.query
         target_url = f"/?settings=1&{query}" if query else "/?settings=1"
         return RedirectResponse(url=target_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
-
-    # A body nested too deeply is the request's fault: answer 400 in Chinese, not 500.
-    from galgame2voice.utils.deep_json import nested_too_deep_response, register_deep_json_handler
-
-    register_deep_json_handler(app)
 
     # Global Exception Handler Sanitizing Internal Errors
     @app.exception_handler(Exception)
