@@ -47,6 +47,7 @@ function setup(t, options = {}) {
     toggleVoice: () => { voiceEnabled = !voiceEnabled; },
     getCharacter: () => character, ImageClass: Image,
     loadPortrait: options.loadPortrait || (async () => options.art ? portrait() : null),
+    ...(options.loadAffection ? { loadAffection: options.loadAffection } : {}),
     raf: fn => { frames.set(++frameId, fn); return frameId; }, cancelRaf: id => frames.delete(id),
     matchMedia: () => mql, viewport,
     saveSettings: patch => { Object.assign(active.settings, patch); },
@@ -1544,4 +1545,64 @@ test('hiding while waiting for a line or after cancel still restores with H and 
   h.start('t2'); h.line(0); h.app.action('hide'); h.done('cancelled');
   assert.equal(h.app.player.state, 'input');
   stage.dispatchEvent({ type: 'contextmenu' }); assert.equal(h.app.player.hidden, false);
+});
+
+test('higher affection makes the portrait blush more readily, from the saved level and after each turn', async t => {
+  const payload = portrait();
+  payload.faces.smile.blush = 'smile_blush';
+  payload.sprites.uniform.smile_blush = { file: '/blush.png', width: 800, height: 1600 };
+  const asked = [];
+  const h = setup(t, { voice: false, loadPortrait: async () => payload, loadAffection: async id => { asked.push(id); return 2; } });
+  await microtasks(); h.loads.forEach(load => load.resolve()); await microtasks(); h.flush();
+  assert.deepEqual(asked, [1], 'the saved level is read for the shown character');
+  const shown = async () => { h.loads.forEach(load => load.resolve()); await microtasks(); h.flush(); return h.app.sprite.getLastCommitted(); };
+
+  h.start('turn_0'); h.line(0, { emotion: 'shy' });
+  assert.equal((await shown()).faceUrl, '/blush.png', 'level 2 already blushes on a shy line');
+  h.line(1, { emotion: 'gentle' });
+  h.app.action('advance'); h.app.action('advance');
+  assert.equal((await shown()).faceUrl, '/art.png', 'a gentle line needs level 3');
+  h.controller.busy = false;
+  h.emit('done', { originId: h.sessions[0].id, message: { id: 'turn_0', content: '你好' },
+    meta: { affection: { score: 45, level: 3, points_earned: 2 } } });
+
+  h.start('turn_1'); h.line(0, { emotion: 'gentle' });
+  assert.equal((await shown()).faceUrl, '/blush.png', 'the level the turn reached applies to the next reply');
+});
+
+test('late loadAffection repaints initial portrait and survives portrait refresh', async t => {
+  const payload = portrait();
+  payload.faces.smile.blush = 'smile_blush';
+  payload.sprites.uniform.smile_blush = { file: '/blush.png', width: 800, height: 1600 };
+  let resolveAffection, portraitCalls = 0;
+  const h = setup(t, { voice: false,
+    loadPortrait: async () => { portraitCalls++; return payload; },
+    loadAffection: () => new Promise(resolve => { resolveAffection = resolve; }) });
+  await microtasks(); assert.equal(portraitCalls, 1);
+  h.loads.splice(0).forEach(load => load.reject(new Error('expired')));
+  await microtasks(); assert.equal(portraitCalls, 2);
+  h.loads.splice(0).forEach(load => load.resolve()); await microtasks(); h.flush();
+  assert.equal(h.app.sprite.getLastCommitted().faceUrl, '/art.png');
+  resolveAffection(3); await microtasks();
+  h.loads.splice(0).forEach(load => load.resolve()); await microtasks(); h.flush();
+  assert.equal(h.app.sprite.getLastCommitted().faceUrl, '/blush.png');
+});
+
+test('done affection aborts and supersedes an older in-flight loadAffection', async t => {
+  const payload = portrait();
+  payload.faces.smile.blush = 'smile_blush';
+  payload.sprites.uniform.smile_blush = { file: '/blush.png', width: 800, height: 1600 };
+  let resolveAffection, affSignal;
+  const h = setup(t, { voice: false, loadPortrait: async () => payload,
+    loadAffection: (_id, opts) => { affSignal = opts?.signal; return new Promise(resolve => { resolveAffection = resolve; }); } });
+  await microtasks(); h.loads.splice(0).forEach(load => load.resolve()); await microtasks(); h.flush();
+  h.start('turn_0'); h.line(0, { emotion: 'gentle' });
+  h.controller.busy = false;
+  h.emit('done', { originId: h.sessions[0].id, message: { id: 'turn_0', content: '你好' },
+    meta: { affection: { score: 45, level: 3, points_earned: 2 } } });
+  assert.equal(affSignal?.aborted, true);
+  resolveAffection(2); await microtasks();
+  h.start('turn_1'); h.line(0, { emotion: 'gentle' });
+  h.loads.splice(0).forEach(load => load.resolve()); await microtasks(); h.flush();
+  assert.equal(h.app.sprite.getLastCommitted().faceUrl, '/blush.png');
 });

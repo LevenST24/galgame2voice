@@ -24,9 +24,13 @@ export function formatTurnTimelineEntry(entry) {
   return `#${entry.turn_seq} 首字: ${fmt(entry.llm_first_token_ms)} | 首句切出: ${fmt(entry.first_sentence_parsed_ms)} | 首音就绪: ${fmt(entry.first_tts_ready_ms)} | 首音播放: ${fmt(entry.first_audio_play_ms)}`;
 }
 
+function validAffectionLevel(value) {
+  return Number.isInteger(value) && value >= 1 && value <= 5 ? value : null;
+}
+
 /** Mount one disposable renderer. Controller remains the sole history writer.
  * dom: { root, sidebar? }
- * deps: { controller, audio, getSession, voiceEnabled, loadPortrait, getCharacter,
+ * deps: { controller, audio, getSession, voiceEnabled, loadPortrait, loadAffection?, getCharacter,
  *   clock?, raf?, cancelRaf?, matchMedia?, subscribe?, subscribeOverlay?, ...actions }
  */
 // The earliest `exp` (seconds) among signed media URLs, or 0 when none is signed.
@@ -58,6 +62,9 @@ export function mountAdv(dom, deps) {
   let turnLines = [];
   let pendingOutfit = null;
   let portraitRevision = 0, portraitRequest = null, refreshTimer = null, refreshAttempted = false;
+  // The shown character's affection level (1-5). Higher levels let lines blush
+  // without an explicit act.blush, as the resolver's affection fallback says.
+  let affectionLevel = 1, affectionRevision = 0, affectionRequest = null;
   let drawer = null, backlog = null, externalOverlay = false, savedFocus = null, temporarySkip = false;
   /** @type {string | null} */
   let backlogRenderKey = null;
@@ -434,7 +441,7 @@ export function mountAdv(dom, deps) {
   function paint(line = currentLine || { emotion: 'gentle', act: {} }, options = {}) {
     if (!line || !model) return;
     const costume = options.costume !== undefined ? options.costume : (settings.advOutfit || model.defaultCostume);
-    const next = resolveSpriteState(model, resolved, line, { costume });
+    const next = resolveSpriteState(model, resolved, line, { costume, affectionLevel });
     if (pendingOutfit && pendingOutfit !== next?.state.outfit) {
       spriteTransition.abort(); pendingOutfit = null;
     }
@@ -455,7 +462,7 @@ export function mountAdv(dom, deps) {
     const next = turnLines.filter(line => line.index > currentLine.index)
       .sort((a, b) => a.index - b.index)[0];
     if (!next) return;
-    const preview = resolveSpriteState(model, resolved, next, { costume: settings.advOutfit || model.defaultCostume });
+    const preview = resolveSpriteState(model, resolved, next, { costume: settings.advOutfit || model.defaultCostume, affectionLevel });
     sprite.preloadState(preview);
   }
   function restoreSprite() {
@@ -781,7 +788,32 @@ export function mountAdv(dom, deps) {
     if (refreshTimer !== null) { clock.clearTimeout(refreshTimer); refreshTimer = null; }
     const character = deps.getCharacter?.();
     if (!character?.id || !deps.loadPortrait) {
+      ++affectionRevision; affectionRequest?.abort(); affectionRequest = null; affectionLevel = 1;
       model = null; sprite.setModel(null); status.hidden = false; status.textContent = '此角色暂无立绘'; return;
+    }
+    if (!refresh) {
+      // Read the saved level beside the art; a slow or failed read never holds the portrait back.
+      const affRevision = ++affectionRevision;
+      affectionRequest?.abort(); affectionRequest = new AbortController();
+      const affSignal = affectionRequest.signal;
+      affectionLevel = 1;
+      Promise.resolve().then(() => deps.loadAffection?.(character.id, { signal: affSignal })).then(level => {
+        if (destroyed || affRevision !== affectionRevision) return;
+        const nextLevel = validAffectionLevel(level) ?? 1;
+        if (nextLevel === affectionLevel) return;
+        affectionLevel = nextLevel;
+        if (model && resolved && currentLine?.act?.blush == null) {
+          const next = resolveSpriteState(model, resolved, {
+            emotion: currentLine?.emotion || 'gentle',
+            act: { face: resolved.state.face, pose: resolved.state.pose, fx: null },
+          }, { costume: resolved.state.outfit, affectionLevel });
+          if (next && next.state.blush !== resolved.state.blush) {
+            resolved = next;
+            sprite.apply(resolved, { reducedMotion, skipping: player.skip });
+          }
+        }
+        preloadNextLine();
+      }, () => {});
     }
     try {
       let painted;
@@ -947,6 +979,15 @@ export function mountAdv(dom, deps) {
   }));
   for (const kind of ['done', 'error', 'cancelled']) disposers.push(controller.on(kind, event => {
     if (event.originId !== sessionId || deps.getSession()?.id !== sessionId) return;
+    if (kind === 'done') {
+      // The turn's affection result is the level the next reply plays at. A failed
+      // update reports a neutral level 1 with nothing earned; keep the known level then.
+      const affection = event.meta?.affection;
+      const level = validAffectionLevel(affection?.level);
+      if (level !== null && !(level === 1 && !affection.score && !affection.points_earned)) {
+        ++affectionRevision; affectionRequest?.abort(); affectionLevel = level;
+      }
+    }
     if (!turnId) { textbox.enterInput({ canSend: !controller.busy }); syncControls(); return; }
     storedTurnId = event.message?.id ?? null;
     const hasContent = msg => Boolean(msg?.content?.trim() || msg?.japanese?.trim() ||
@@ -1018,8 +1059,8 @@ export function mountAdv(dom, deps) {
       bgPanel.destroy();
       background.destroy();
       spriteTransition.destroy();
-      destroyed = true; ++portraitRevision;
-      portraitRequest?.abort();
+      destroyed = true; ++portraitRevision; ++affectionRevision;
+      portraitRequest?.abort(); affectionRequest?.abort();
       deps.cancelMic?.();
       if (refreshTimer !== null) clock.clearTimeout(refreshTimer);
       drafts.clear();

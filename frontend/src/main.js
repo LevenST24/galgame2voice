@@ -372,6 +372,11 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           return { ...model, state: conversation.busy ? 'busy' : model.state };
         },
         loadPortrait: (id, options) => portraits.get(id, options),
+        loadAffection: async (id, options) => {
+          const data = await requestJson('/api/characters', { signal: options?.signal }, { timeoutMs: 10000 });
+          const entry = (data?.characters || []).find(c => Number(c?.id) === Number(id));
+          return entry?.affection?.affection_level ?? null;
+        },
         saveSettings: (patch, { confirm = false } = {}) => {
           const session = getActive();
           if (!session) throw new Error('当前没有可保存的会话。');
