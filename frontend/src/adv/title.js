@@ -170,7 +170,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     try { result = await actions.playExcerpt?.(excerpt); } catch { result = 'failed'; }
     if (!opened || token !== playRevision) return;
     playing = false; listenButton.children[0].textContent = '▶ 试听这句'; listenButton.setAttribute('aria-pressed', 'false');
-    if (result === 'failed') { failedAudio.add(JSON.stringify(excerpt)); listenButton.hidden = true; }
+    if (result === 'failed') { failedAudio.add(JSON.stringify(excerpt)); renderPane(true); }
   }
   function isCheckingState() {
     const anySessionHasMessages = sessions.some(s => Boolean(s?.hasUserMessages));
@@ -222,7 +222,9 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
         const primaryLabel = session?.hasUserMessages ? '接着聊 →' : '开始聊天';
         row.appendChild(btn('home-primary home-continue', primaryLabel, () => enter()));
         const canPlay = canReplayLine(excerpt.line, excerpt, actions.voiceEnabled?.() ?? true, now().getTime());
-        if (canPlay && !failedAudio.has(JSON.stringify(excerpt))) {
+        if (canPlay && failedAudio.has(JSON.stringify(excerpt))) {
+          row.appendChild(el('p', 'home-listen-note', '这句语音已过期或不可用'));
+        } else if (canPlay) {
           listenButton = btn('home-link home-listen', '▶ 试听这句', () => toggleListen(excerpt));
           listenButton.setAttribute('aria-pressed', 'false');
           row.appendChild(listenButton);
@@ -497,7 +499,8 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     } finally { if (polling === request) polling = null; }
   }
   function schedule() {
-    timer = clock.setTimeout(() => { timer = null; refresh().catch(() => {}); if (opened) schedule(); }, 5000);
+    // A hidden tab keeps the home screen open; skip its status reads until it is shown again.
+    timer = clock.setTimeout(() => { timer = null; if (!doc?.hidden) refresh().catch(() => {}); if (opened) schedule(); }, 5000);
     timer?.unref?.();
   }
   function setStageHome(on) {
@@ -543,7 +546,10 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
   }
   function outside(event) { if (!screen.contains(event.target) || !event.target.closest?.('.home-pill-wrap')) closePopup(); if (!event.target.closest?.('.home-pick-wrap')) closeDropdown(); }
   screen.addEventListener('keydown', keydown); doc.addEventListener('click', outside);
-  disposers.push(() => screen.removeEventListener('keydown', keydown), () => doc.removeEventListener('click', outside));
+  const onVisibility = () => { if (opened && !doc.hidden) refresh().catch(() => {}); };
+  doc.addEventListener?.('visibilitychange', onVisibility);
+  disposers.push(() => screen.removeEventListener('keydown', keydown), () => doc.removeEventListener('click', outside),
+    () => doc.removeEventListener?.('visibilitychange', onVisibility));
   return { element: screen, menuScreen: screen, loadScreen: load, open, close, refresh,
     get isOpen() { return opened; }, destroy() { close(); destroyed = true; for (const off of disposers) off(); screen.remove(); } };
 }

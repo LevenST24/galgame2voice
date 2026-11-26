@@ -34,7 +34,7 @@ from galgame2voice.services.character_voice_catalog import (
 )
 from galgame2voice.services.voice_manager import get_voice_manager
 from galgame2voice.routers.line_audio import router as line_audio_router
-from galgame2voice.utils.logger import sanitize_error_detail
+from galgame2voice.utils.logger import describe_database_write_error, sanitize_error_detail
 from galgame2voice.utils.path_guard import (
     discover_gpt_sovits_roots,
     to_project_relative_path,
@@ -142,6 +142,8 @@ async def create_voice_profile(req: VoiceProfileCreateRequest) -> dict[str, Any]
     except HTTPException:
         raise
     except Exception as exc:
+        if describe_database_write_error(exc):
+            raise
         logger.error("Failed to create voice profile '%s': %s", req.name, exc)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=sanitize_error_detail(exc)) from exc
 
@@ -186,6 +188,8 @@ async def update_voice_profile(profile_id: int, req: VoiceProfileUpdate) -> dict
     except HTTPException:
         raise
     except Exception as exc:
+        if describe_database_write_error(exc):
+            raise
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=sanitize_error_detail(exc),
@@ -219,6 +223,8 @@ async def delete_voice_profile(profile_id: int) -> dict[str, Any]:
     except HTTPException:
         raise
     except Exception as exc:
+        if describe_database_write_error(exc):
+            raise
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=sanitize_error_detail(exc),
@@ -280,7 +286,7 @@ _NATIVE_FILE_PICKER_CONFIG: dict[str, tuple[str, list[tuple[str, str]]]] = {
     description="Opens native OS file dialog to let the user select a file (.ckpt, .pth, audio).",
 )
 async def open_native_file_dialog(req: BrowseFileRequest) -> dict[str, Any]:
-    def _run_picker() -> str:
+    def _run_picker() -> str | None:
         root = None
         try:
             import tkinter as tk
@@ -302,7 +308,7 @@ async def open_native_file_dialog(req: BrowseFileRequest) -> dict[str, Any]:
             return selected or ""
         except Exception as err:
             logger.warning("Native file dialog failed or unavailable: %s", err)
-            return ""
+            return None
         finally:
             if root is not None:
                 try:
@@ -314,6 +320,9 @@ async def open_native_file_dialog(req: BrowseFileRequest) -> dict[str, Any]:
             # Drop the interpreter reference on the owning thread immediately.
 
     path = await asyncio.wrap_future(_NATIVE_PICKER_EXECUTOR.submit(_run_picker))
+    if path is None:
+        # Tell a dialog that could not open apart from one the user cancelled.
+        return {"selected_path": "", "picker_unavailable": True}
     return {"selected_path": path}
 
 

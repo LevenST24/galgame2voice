@@ -1437,6 +1437,40 @@ for (const trigger of ['button', 'Escape']) {
   });
 }
 
+// r67 R6: the reply text is all in but the last line's voice is still being made.
+test('voice tail: the player can write the next message while the last voice is made, and send after it settles', async t => {
+  const stream = fakeChatStream();
+  const { app, controller } = mountConversationAdv(t, { settings: { advTextIntervalMs: 0 }, fetch: stream.fetch });
+  assert.equal(controller.send('说两句'), true);
+  await tick();
+  const reply = stream.requests[0];
+  await reply.event('line', { index: 0, zh: '第一句', ja: '一つ目', emotion: 'gentle', act: {} });
+  await reply.event('line_audio', { line: 0, status: 'failed', chunks: [] });
+  app.action('advance');
+  assert.equal(app.player.state, 'waiting_line', 'before the frame the stage still shows the dots');
+
+  await reply.event('progress', { stage: 'voice' });
+  assert.equal(app.player.state, 'input');
+  const input = app.textbox.inputElement;
+  const sendBtn = app.stage.stage.querySelector('.adv-player-send-btn');
+  assert.equal(sendBtn.disabled, true);
+  assert.equal(input.placeholder, '语音还在准备，可以先写下一句');
+  input.value = '下一句先写好';
+  input.dispatchEvent({ type: 'keydown', key: 'Enter' });
+  assert.equal(stream.requests.length, 1, 'sending waits for the reply to settle');
+
+  await reply.onEnd('第一句', { message_id: 11, japanese: '一つ目', lines: [
+    { index: 0, zh: '第一句', ja: '一つ目', emotion: 'gentle', act: {}, audio: { status: 'failed', chunks: [] } },
+  ] });
+  for (let i = 0; i < 10 && controller.busy; i++) await tick();
+  assert.equal(controller.busy, false);
+  assert.equal(sendBtn.disabled, false);
+  assert.equal(input.value, '下一句先写好', 'the draft survives the reply settling');
+  input.dispatchEvent({ type: 'keydown', key: 'Enter' });
+  await tick();
+  assert.equal(stream.requests.length, 2);
+});
+
 test('a reply finishing leaves focus alone in the embedded experience settings page', t => {
   // The settings center shows this page inside its own dialog, which owns focus there.
   const h = setup(t, { deps: doc => {
