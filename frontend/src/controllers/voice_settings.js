@@ -436,6 +436,13 @@ async function applySessionVoice(session, { silent = false }, want, isCurrent) {
       showToast(e.message, 'error');
       return;
     }
+    if (e.message?.includes('角色与会话') && !e.message.includes('运行状态')) {
+      showToast(e.message, 'error', _callbacks.onOpenSessionSettings ? {
+        actionLabel: '去选择角色',
+        onAction: () => _callbacks.onOpenSessionSettings(),
+      } : null);
+      return;
+    }
     showToast('语音引擎还没准备好，现在只有文字、没有声音。可在「运行状态」查看引擎。', 'error', _callbacks.onOpenEngineStatus ? {
       actionLabel: '检查运行状态',
       onAction: () => _callbacks.onOpenEngineStatus(),

@@ -1160,6 +1160,17 @@ await withToastEnv(async ({ first, toastRoot }) => {
   assert.deepEqual(messages, [lowMemory]);
   passed++;
 }, { captureError: true, callbacks: { isVoiceEnabled: () => true } });
+await withToastEnv(async ({ first, toastRoot }) => {
+  const missingChar = '找不到角色「夏目」的语音文件：程序文件夹里的 characters 文件夹中没有它了。如果是从旧版升级，请把旧文件夹里的 characters 文件夹复制过来；也可以到「设置中心 → 角色与会话」重新选择角色。';
+  globalThis.fetch = async url => (String(url).includes('/switch')
+    ? response({ detail: missingChar }, 502)
+    : response({ profiles: [{ id: 1, name: '夏目' }], active_profile_id: null }));
+  first.settings.voiceProfileId = 1;
+  await ensureSessionVoice(first);
+  assert.deepEqual(toastRoot.children.map(toast => String(toast.dataset.msg)), [missingChar]);
+  assert.equal(toastRoot.children[0].children[1]?.textContent, '去选择角色');
+  passed++;
+}, { captureError: true, callbacks: { isVoiceEnabled: () => true, onOpenSessionSettings: () => {} } });
 {
   // Auto adaptive voice mode disables the four manual TTS sliders and explains why;
   // switching to fixed mode enables them, and clicking reset disables them again.
