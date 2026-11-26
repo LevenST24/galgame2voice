@@ -241,6 +241,17 @@ test('missing key tip links to provider API key page and clears on configured or
   assert.equal(dom.gApiKeyTip.children.filter((c) => c.tag === 'a').length, 0);
 });
 
+test('unreadable saved API key explains Windows account encryption instead of saying never filled', async t => {
+  globalThis.fetch = async (url) => response(url === '/api/providers' ? {
+    providers: [{ id: 'deepseek', name: 'DeepSeek', is_active: true, chat_model: 'deepseek-chat', api_key: '', api_key_unreadable: true }],
+    presets: [], builtin_presets: [],
+  } : { status: 'ok', settings: {} });
+  const { dom } = await openLoadedSettings(t);
+  assert.match(dom.gApiKeyTip.textContent, /^之前保存的 API 密钥在这台电脑上读不出来：密钥按 Windows 账户加密保存，换电脑、重装系统或换账户后需要重新填写。请重新填写并保存。/);
+  assert.doesNotMatch(dom.gKeyStatusText.textContent, /未配置 API Key/);
+});
+
+
 test('blocks handleProviderTest locally for custom provider with loopback or private URLs when gAllowPrivateEndpoints is unchecked', async t => {
   const testRequests = [];
   installPrivateFetch({

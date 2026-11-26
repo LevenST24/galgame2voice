@@ -20,19 +20,24 @@ export function getModelStatus({ getCurrentActiveProvider, getActive, getVoicePr
     ? profiles.find((p) => p.id === s.settings.voiceProfileId)
     : null;
   // Cloud providers cannot answer without a key; say so before the first message fails.
-  const missingKey = Boolean(activeProvider) && activeProvider.id !== 'custom'
-    && !String(activeProvider.api_key || '').trim();
+  const hasKey = Boolean(String(activeProvider?.api_key || '').trim());
+  const apiKeyUnreadable = Boolean(activeProvider?.api_key_unreadable) && !hasKey;
+  const missingKey = Boolean(activeProvider) && (activeProvider.id !== 'custom' || apiKeyUnreadable) && !hasKey;
   let modelText = haveProvidersLoaded() ? '未配置对话模型' : '正在读取模型配置…';
   if (activeProvider && (activeProvider.name || activeProvider.chat_model)) {
     const pName = activeProvider.name || '活跃模型';
     const mName = activeProvider.chat_model || '';
-    modelText = missingKey ? `${pName} · 未填写 API Key` : mName ? `${pName} · ${mName}` : pName;
+    modelText = apiKeyUnreadable ? `${pName} · 需重填 API Key` : missingKey ? `${pName} · 未填写 API Key` : mName ? `${pName} · ${mName}` : pName;
   }
-  const label = activeProvider ? (missingKey ? '未填写 API Key' : activeProvider.chat_model || activeProvider.name || '活跃模型') : modelText;
+  const label = activeProvider
+    ? (apiKeyUnreadable ? '需重填 API Key' : missingKey ? '未填写 API Key' : activeProvider.chat_model || activeProvider.name || '活跃模型')
+    : modelText;
   const title = !activeProvider
     ? '点击在「设置中心 → 对话模型」中配置模型'
-    : missingKey
-      ? `「${activeProvider.name || activeProvider.id}」尚未填写 API Key${boundProfile?.name ? `；当前音色：${boundProfile.name}` : ''}，发送消息前请点击这里配置`
-      : `当前模型：${modelText}${boundProfile?.name ? ` | 当前音色：${boundProfile.name}` : ''}（点击配置模型）`;
-  return { label, title, state: activeProvider && !missingKey ? 'ok' : 'error' };
+    : apiKeyUnreadable
+      ? `「${activeProvider.name || activeProvider.id}」保存的 API 密钥在这台电脑上读不出来，换电脑或账户后需重新填写${boundProfile?.name ? `；当前音色：${boundProfile.name}` : ''}`
+      : missingKey
+        ? `「${activeProvider.name || activeProvider.id}」尚未填写 API Key${boundProfile?.name ? `；当前音色：${boundProfile.name}` : ''}，发送消息前请点击这里配置`
+        : `当前模型：${modelText}${boundProfile?.name ? ` | 当前音色：${boundProfile.name}` : ''}（点击配置模型）`;
+  return { label, title, state: activeProvider && !missingKey ? 'ok' : 'error', ...(apiKeyUnreadable ? { apiKeyUnreadable: true } : {}) };
 }

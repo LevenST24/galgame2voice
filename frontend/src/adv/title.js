@@ -134,7 +134,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     pills[kind].wrap.appendChild(popup); focus(popup.querySelector('button'));
   }
   function explanation(kind) {
-    if (kind === 'chat') return status.model?.label || '正在读取模型配置…';
+    if (kind === 'chat') return status.model?.apiKeyUnreadable ? '换了电脑或账户，之前保存的 API 密钥需要重新填写' : (status.model?.label || '正在读取模型配置…');
     const engine = status.engine || {};
     return engine.state === 'ready' ? `语音引擎已连接${engine.base_url || engine.address ? ` · ${engine.base_url || engine.address}` : ''}`
       : engine.message || '语音引擎未连接，可以先用文字聊天';
@@ -189,7 +189,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     const checking = !status.modelLoaded || enginePending;
     const firstUse = status.modelLoaded && !status.model?.readFailed
       && (!modelReady || (!anySessionHasMessages && !enginePending && (!voiceStepDone || !characterStepDone)));
-    const signature = JSON.stringify([mode, session, status.modelLoaded, status.engineLoaded, firstUse, modelReady, status.engine?.state,
+    const signature = JSON.stringify([mode, session, status.modelLoaded, status.engineLoaded, firstUse, modelReady, Boolean(status.model?.apiKeyUnreadable), status.engine?.state,
       isTextOnly(), anySessionHasMessages, characters.length > 0, characterStepDone,
       canReplayLine(session?.excerpt?.line, session?.excerpt, actions.voiceEnabled?.() ?? true, now().getTime())]);
     if (!force && rendered === signature) return;
@@ -250,12 +250,13 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     const excerpt = main()?.excerpt;
     const greetingText = excerpt?.zh || excerpt?.ja;
     if (greetingText) { const greeting = el('blockquote', 'home-greeting', greetingText); greeting.hidden = true; pane.appendChild(greeting); }
+    const keyUnreadable = Boolean(status.model?.apiKeyUnreadable);
     const heading = el('div', 'home-first-heading');
-    heading.appendChild(el('p', 'home-label', '第一次使用'));
+    heading.appendChild(el('p', 'home-label', keyUnreadable ? '需要重新填写密钥' : '第一次使用'));
     if (main()?.hasUserMessages) {
       heading.appendChild(btn('home-link home-existing', '查看已有对话 →', () => enter()));
     }
-    add(pane, heading, el('h1', 'home-first-title', '先做三件小事，就能开始聊天'));
+    add(pane, heading, el('h1', 'home-first-title', keyUnreadable ? '换了电脑或账户，之前保存的 API 密钥需要重新填写' : '先做三件小事，就能开始聊天'));
     const characters = actions.listCharacters?.() || [];
     const installed = characters.length > 0;
     // A character id the browser kept from an earlier install counts only once that character is installed here.

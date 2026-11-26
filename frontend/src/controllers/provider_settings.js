@@ -307,18 +307,21 @@ export class ProviderSettingsController {
       if (this.dom.gProviderKeyTag) this.dom.gProviderKeyTag.className = 'provider-status-tag tag-configured';
       if (this.dom.gKeyStatusText) this.dom.gKeyStatusText.textContent = `已配置密钥 (${maskedKey})`;
       if (this.dom.gApiKeyTip) this.dom.gApiKeyTip.textContent = '密钥已保存。如需修改，请在此输入新密钥后保存；点「清除」可删除已保存的密钥。';
-    } else if (!capabilities.requires_api_key) {
+    } else if (!capabilities.requires_api_key && !stored?.api_key_unreadable) {
       if (this.dom.gApiKey) this.dom.gApiKey.placeholder = 'sk-…（本地 Ollama / vLLM 等无鉴权服务可留空）';
       if (this.dom.gProviderKeyTag) this.dom.gProviderKeyTag.className = 'provider-status-tag tag-optional';
       if (this.dom.gKeyStatusText) this.dom.gKeyStatusText.textContent = '可选 (本地服务可免密)';
       if (this.dom.gApiKeyTip) this.dom.gApiKeyTip.textContent = '本地服务（如 Ollama）无需填写，公网中转或鉴权服务请输入对应凭据。';
     } else {
-      if (this.dom.gApiKey) this.dom.gApiKey.placeholder = `请输入 ${capabilities.name || pid} 的有效 API Key (必填)`;
+      const unreadable = Boolean(stored?.api_key_unreadable);
+      if (this.dom.gApiKey) this.dom.gApiKey.placeholder = `请输入 ${capabilities.name || pid} 的有效 API Key${capabilities.requires_api_key ? ' (必填)' : ''}`;
       if (this.dom.gProviderKeyTag) this.dom.gProviderKeyTag.className = 'provider-status-tag tag-unconfigured';
-      if (this.dom.gKeyStatusText) this.dom.gKeyStatusText.textContent = '未配置 API Key · 无法调用';
+      if (this.dom.gKeyStatusText) this.dom.gKeyStatusText.textContent = unreadable ? '密钥无法读取 · 需重新填写' : '未配置 API Key · 无法调用';
       if (this.dom.gApiKeyTip) {
         const keyUrl = API_KEY_PAGES[realId];
-        this.dom.gApiKeyTip.textContent = '还没有填写密钥。';
+        this.dom.gApiKeyTip.textContent = unreadable
+          ? '之前保存的 API 密钥在这台电脑上读不出来：密钥按 Windows 账户加密保存，换电脑、重装系统或换账户后需要重新填写。请重新填写并保存。'
+          : '还没有填写密钥。';
         if (keyUrl) {
           const link = document.createElement('a');
           link.href = keyUrl;

@@ -16,7 +16,7 @@ from galgame2voice.database.models import (
     ProviderUpdate,
 )
 from galgame2voice.database.session import immediate_transaction
-from galgame2voice.security.crypto import decrypt_secret, encrypt_secret
+from galgame2voice.security.crypto import decrypt_secret, encrypt_secret, is_encrypted_secret
 
 logger = logging.getLogger("galgame2voice.database.crud_modules.providers")
 
@@ -108,7 +108,9 @@ def _row_to_provider_dict(row: aiosqlite.Row) -> dict[str, Any]:
     """Converts a SQLite providers row to a dict with decrypted api_key and parsed custom_headers."""
     d = dict(row)
     d["is_active"] = bool(d.get("is_active", 0))
-    d["api_key"] = decrypt_secret(d.get("api_key", ""))
+    raw_key = d.get("api_key") or ""
+    d["api_key"] = decrypt_secret(raw_key) or ""
+    d["api_key_unreadable"] = is_encrypted_secret(raw_key) and d["api_key"] == ""
     try:
         d["custom_headers"] = json.loads(d.get("custom_headers") or "{}")
     except Exception:

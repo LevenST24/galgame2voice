@@ -100,6 +100,7 @@ class ProviderUpdate(BaseModel):
 
 class ProviderInDB(ProviderBase):
     api_key: str = ""
+    api_key_unreadable: bool = False
     created_at: str | None = None
     updated_at: str | None = None
     model_config = ConfigDict(from_attributes=True)
@@ -107,6 +108,7 @@ class ProviderInDB(ProviderBase):
 
 class ProviderResponse(ProviderBase):
     api_key: str = ""  # Masked
+    api_key_unreadable: bool = False
     updated_at: str | None = None
     model_config = ConfigDict(from_attributes=True)
 

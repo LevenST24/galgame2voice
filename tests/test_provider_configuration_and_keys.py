@@ -670,3 +670,24 @@ class TestProviderPresetSeedsAndFallback:
         adapter, model_name, provider_id = await service._get_active_llm_adapter()
         assert provider_id == "custom_unknown"
         assert model_name == "gpt-6-luna"
+
+    @pytest.mark.asyncio
+    async def test_unreadable_encrypted_api_key_flagged_in_provider_responses(
+        self, app_client, isolate_test_database, monkeypatch
+    ):
+        from galgame2voice.database.crud_modules import providers as providers_crud
+        from galgame2voice.security.crypto import decrypt_secret as real_decrypt, is_encrypted_secret
+
+        await app_client.post("/api/providers", json={"id": "gemini", "api_key": "AIzaSyMovedKey12345678", "is_active": True})
+        await app_client.post("/api/providers", json={"id": "openai", "api_key": "sk-readable-12345678"})
+        async with get_db(isolate_test_database) as conn:
+            gemini_cipher = (await (await conn.execute("SELECT api_key FROM providers WHERE id = 'gemini';")).fetchone())[0]
+        assert is_encrypted_secret(gemini_cipher)
+        monkeypatch.setattr(providers_crud, "decrypt_secret", lambda v: "" if v == gemini_cipher else real_decrypt(v))
+
+        by_id = {p["id"]: p for p in (await app_client.get("/api/providers")).json()["providers"]}
+        assert (by_id["gemini"]["api_key"], by_id["gemini"]["api_key_unreadable"]) == ("", True)
+        assert (by_id["openai"]["api_key"], by_id["openai"]["api_key_unreadable"]) == ("sk-****5678", False)
+        assert (by_id["deepseek"]["api_key"], by_id["deepseek"]["api_key_unreadable"]) == ("", False)
+        assert (await app_client.get("/api/config")).json()["active_provider"]["api_key_unreadable"] is True
+
