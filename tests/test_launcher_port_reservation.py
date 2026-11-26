@@ -1,13 +1,14 @@
 """The launcher must retain its chosen port until the server takes ownership."""
 
 import os
+import shutil
 import socket
 from unittest.mock import MagicMock
 
 import pytest
 import uvicorn
 
-from scripts import run_server
+from scripts import desktop_entry, run_server
 
 
 def test_chosen_port_cannot_be_taken_before_uvicorn_starts(tmp_path, monkeypatch):
@@ -87,3 +88,42 @@ def test_port_is_released_if_server_startup_fails(tmp_path, monkeypatch, raises)
     assert len(ports) == 1
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as released:
         released.bind(("127.0.0.1", ports[0]))
+
+
+def test_low_disk_hint(tmp_path, monkeypatch):
+    for free, hit in ((10 * 1024 * 1024, True), (10 * 1024**3, False)):
+        monkeypatch.setattr(shutil, "disk_usage", lambda _p, f=free: MagicMock(free=f))
+        assert bool(hint := run_server.low_disk_hint(tmp_path)) is hit
+        assert not hit or ("磁盘" in hint and "清理" in hint and "10 MB" in hint)
+    monkeypatch.setattr(shutil, "disk_usage", MagicMock(side_effect=OSError("no disk")))
+    assert run_server.low_disk_hint(tmp_path) is None
+
+
+def test_full_disk_startup_reports_disk_space(tmp_path, monkeypatch, capsys, request):
+    request.addfinalizer(run_server.get_settings.cache_clear)
+    for key in ("GALGAME2VOICE_PORT", "PORT", "GALGAME_PORT", "GALGAME2VOICE_HOST", "HOST", "GALGAME_HOST"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(shutil, "disk_usage", lambda _p: MagicMock(free=10 * 1024 * 1024))
+    for name, fn in (("check_python_environment", lambda: True), ("run_hardware_diagnostics", dict),
+                     ("setup_windows_job_object", lambda: None), ("setup_signal_handlers", lambda: None),
+                     ("setup_console_close_handler", lambda: None), ("disable_console_quick_edit", lambda: None),
+                     ("cleanup_subprocesses", lambda: None), ("atexit", MagicMock())):
+        monkeypatch.setattr(run_server, name, fn)
+    monkeypatch.setattr(run_server.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(run_server.desktop_instance, "write_instance_address", MagicMock(side_effect=OSError(28, "full")))
+    srv = MagicMock(return_value=MagicMock(started=False))
+    monkeypatch.setattr(uvicorn, "Config", MagicMock())
+    monkeypatch.setattr(uvicorn, "Server", srv)
+    with pytest.raises(SystemExit) as exc:
+        run_server.main(["--no-engine", "--no-browser", "--host", "127.0.0.1", "--port", "0"])
+    out = capsys.readouterr().out
+    assert exc.value.code == 3 and srv.return_value.run.called and "[启动失败]" in out and "磁盘" in out and "清理" in out
+    assert "数据库损坏" not in out and "数据恢复.bat" not in out
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(desktop_entry, "get_install_root", lambda: tmp_path)
+    monkeypatch.setattr(desktop_entry.sys, "frozen", False, raising=False)
+    monkeypatch.setattr(desktop_entry.sys, "argv", ["Galgame2Voice.exe"])
+    monkeypatch.setattr(run_server, "main", MagicMock(side_effect=OSError(28, "No space left")))
+    assert desktop_entry.main() == 1
+    assert "磁盘" in (e := capsys.readouterr().out) and "清理" in e and "解压到有写入权限的目录" not in e

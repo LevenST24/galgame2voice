@@ -56,6 +56,7 @@ try:
         sync_runtime_precision,
     )
     from galgame2voice.utils.hardware import get_gpu_vram_status  # noqa: E402
+    from galgame2voice.runtime_paths import low_disk_hint  # noqa: E402
     from galgame2voice.services.sovits_installation import (  # noqa: E402, F401
         find_engine_python,
         missing_engine_parts,
@@ -1461,7 +1462,10 @@ def _run_main(parsed: argparse.Namespace):
         except Exception:
             pass
 
-        desktop_instance.write_instance_address(runtime_root, bind_host, active_port)
+        try:
+            desktop_instance.write_instance_address(runtime_root, bind_host, active_port)
+        except OSError:
+            pass
 
         # Step 3: Auto Open Browser
         _, display_host = browser_hosts(bind_host)
@@ -1486,9 +1490,12 @@ def _run_main(parsed: argparse.Namespace):
             raise
         except SystemExit as exc:
             if exc.code not in (None, 0):
-                print("\n[启动失败] 本机服务未能就绪。请确认解压目录可写，并查看 logs 中的错误日志；若提示数据库损坏，请先保留 data 文件夹，再从备份恢复。")
-                if getattr(sys, "frozen", False):
-                    print("可双击「数据恢复.bat」选择经过校验的数据库备份，恢复前会另存原文件。")
+                if hint := low_disk_hint(runtime_root):
+                    print(f"\n[启动失败] {hint}")
+                else:
+                    print("\n[启动失败] 本机服务未能就绪。请确认解压目录可写，并查看 logs 中的错误日志；若提示数据库损坏，请先保留 data 文件夹，再从备份恢复。")
+                    if getattr(sys, "frozen", False):
+                        print("可双击「数据恢复.bat」选择经过校验的数据库备份，恢复前会另存原文件。")
                 raise
             print("\n[提示] 服务已正常停止，正在释放资源...")
         except Exception as e:
