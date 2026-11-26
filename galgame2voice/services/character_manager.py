@@ -627,6 +627,7 @@ class CharacterManager:
         origin = classify_reference_origin(current_ref, pkg, known_other_packages=known_other_packages)
 
         ref_needs_update = False
+        owned_emotion = None
         if origin in (ReferenceOrigin.EMPTY, ReferenceOrigin.CROSS_PACKAGE):
             ref_needs_update = True
         elif origin == ReferenceOrigin.PACKAGE_OWNED:
@@ -635,6 +636,7 @@ class CharacterManager:
                 ref_needs_update = True
             else:
                 updates["ref_audio_path"] = to_project_relative_path(current_reference)
+                owned_emotion = cls._emotion_for_reference(pkg, current_reference)
         else:  # ReferenceOrigin.EXTERNAL_OR_CUSTOM
             ref_needs_update = False
 
@@ -645,6 +647,12 @@ class CharacterManager:
             updates["prompt_text"] = prompt_text
             if prompt_lang:
                 updates["prompt_lang"] = prompt_lang
+        elif owned_emotion is not None:
+            # The clip is the package's own, so the manifest's transcript for it is the truth:
+            # an updated package (same file name, new audio or fixed text) must not keep the old one.
+            updates["prompt_text"] = owned_emotion.text
+            if owned_emotion.lang:
+                updates["prompt_lang"] = owned_emotion.lang
         elif origin != ReferenceOrigin.EXTERNAL_OR_CUSTOM and not current_prompt.strip() and prompt_text:
             updates["prompt_text"] = prompt_text
             if prompt_lang:
@@ -674,6 +682,18 @@ class CharacterManager:
 
         # A rescan with identical values must not rewrite the row/timestamp.
         return {column: value for column, value in updates.items() if existing_row[column] != value}
+
+    @staticmethod
+    def _emotion_for_reference(pkg: CharacterPackage, reference: Path) -> Any:
+        """The manifest emotion whose clip is this file, if any."""
+        for emotion in pkg.manifest.emotions.values():
+            path = pkg.resolve_audio_path(emotion.audio)
+            try:
+                if path is not None and path.resolve() == reference:
+                    return emotion
+            except (OSError, ValueError):
+                continue
+        return None
 
     @staticmethod
     def _resolve_profile_reference(

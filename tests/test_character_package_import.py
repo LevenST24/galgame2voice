@@ -30,6 +30,7 @@ def _make_package_bytes(
     valid: bool = True,
     include_weights: bool = True,
     extra_entries: dict[str, bytes] | None = None,
+    ref_text: str | None = None,
 ) -> bytes:
     wav_buf = io.BytesIO()
     with wave.open(wav_buf, "wb") as audio:
@@ -43,7 +44,7 @@ def _make_package_bytes(
             {
                 "gpt_weights": "gpt.ckpt",
                 "sovits_weights": "sovits.pth",
-                "emotions": {"gentle": {"audio": "refs/gentle.wav", "text": f"{name}の優しい声。", "lang": "ja"}},
+                "emotions": {"gentle": {"audio": "refs/gentle.wav", "text": ref_text or f"{name}の優しい声。", "lang": "ja"}},
             }
         )
     asset_entries: dict[str, bytes] = {}
@@ -273,6 +274,26 @@ async def test_update_follows_disk_when_folder_changed_without_rescan(tmp_path, 
         assert res.status_code == 200, res.text
     assert sorted(p.name for p in (root / "characters").iterdir()) == ["alice_v2", "爱丽丝"]
     assert json.loads(manifest_path.read_text("utf-8"))["id"] == "bob"
+
+
+@pytest.mark.asyncio
+async def test_package_update_refreshes_the_reference_transcript(tmp_path, monkeypatch):
+    """An update that keeps refs/gentle.wav but changes its text must not leave the old transcript."""
+    from galgame2voice.database import crud
+    from galgame2voice.database.session import get_db
+
+    _, app = _setup_app(tmp_path, monkeypatch)
+    await init_db()
+    old = _make_package_bytes("zip", "alice", "爱丽丝", prefix="alice/", ref_text="古い文章です。")
+    new = _make_package_bytes("zip", "alice", "爱丽丝", prefix="alice/", ref_text="新しい文章です。")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
+        assert (await client.post("/api/characters/import", params={"filename": "a.zip"}, content=old)).status_code == 200
+        updated = await client.post("/api/characters/import", params={"filename": "a.zip", "overwrite": "1"}, content=new)
+        assert updated.status_code == 200, updated.text
+    async with get_db() as conn:
+        (profile,) = [p for p in await crud.list_voice_profiles(conn) if p.name == "爱丽丝"]
+    assert profile.ref_audio_path.endswith("refs/gentle.wav")
+    assert profile.prompt_text == "新しい文章です。"
 
 
 @pytest.mark.asyncio

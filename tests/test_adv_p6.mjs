@@ -163,6 +163,7 @@ function setupApp(t, options = {}) {
     clock,
     getSession: () => active,
     voiceEnabled: () => false,
+    wallNow: options.wallNow,
     getCharacter: options.getCharacter
       || (() => (options.characterWork ? { id: 'c', name: '角色', work: options.characterWork } : null)),
     loadPortrait: null,
@@ -940,4 +941,118 @@ test('adv wiring: switching sessions closes the panel and re-applies per session
   h.app.unmount();
   assert.equal(h.dom.root.children.length, 0, 'unmount removes the background layer');
   assert.equal(h.doc.body.querySelector('.adv-bg-overlay'), null);
+});
+
+// r67: background URLs are signed for ~12 h and must be read again once they expire.
+function signedList(exp, round) {
+  const sign = url => `${url}?exp=${exp}&sig=r${round}`;
+  return LIST.map(item => ({ ...item, variants: Object.fromEntries(
+    Object.entries(item.variants).map(([time, url]) => [time, sign(url)])) }));
+}
+
+function expiringApp(t, settings = {}) {
+  const issuedAt = 1_800_000_000_000;
+  const clock = { wall: issuedAt };
+  const exp = Math.floor(issuedAt / 1000) + 12 * 3600;
+  let round = 0, gate = null;
+  const h = setupApp(t, {
+    settings,
+    wallNow: () => clock.wall,
+    fetchBackgrounds: async () => { if (gate) await gate; return { works: WORKS, backgrounds: signedList(exp + round * 12 * 3600, ++round) }; },
+  });
+  return { h, clock, expiresAtMs: exp * 1000, holdFetch: () => { let r; gate = new Promise(f => { r = f; }); return () => { gate = null; r(); }; } };
+}
+
+test('adv wiring: expiring background URLs are read again before the panel opens', async t => {
+  const { h, clock, expiresAtMs } = expiringApp(t);
+  await microtasks();
+  h.app.action('background');
+  assert.equal(h.calls.fetches, 1, 'fresh URLs are not read again');
+  h.app.bgPanel.close();
+
+  clock.wall = expiresAtMs - 30_000; // the laptop slept for 12 hours
+  h.app.action('background');
+  assert.equal(h.calls.fetches, 2);
+  await microtasks();
+  assert.equal(h.app.bgPanel.isOpen, true);
+  const thumbs = h.app.bgPanel.dialog.querySelectorAll('.adv-bg-thumb');
+  assert.ok(thumbs.length > 0);
+  for (const thumb of thumbs) assert.match(thumb.src, /sig=r2$/, 'thumbnails use the renewed URLs');
+  h.app.bgPanel.close();
+  h.app.action('background');
+  assert.equal(h.calls.fetches, 2, 'renewed URLs are good for another 12 hours');
+});
+
+test('adv wiring: a background that fails to load after expiry is read again and shown', async t => {
+  const { h, clock, expiresAtMs } = expiringApp(t, { advBackground: 'cafe/stella', advBgTime: 'day' });
+  await microtasks();
+  await flush(h.loads);
+  assert.match(h.shown()[0].src, /cafe\/day\.png\?.*sig=r1$/);
+  h.app.action('background');
+  const pick = (sel, val) => h.app.bgPanel.dialog.querySelectorAll(sel).find(n => n.dataset.background === val || n.dataset.time === val).click();
+  // Before expiry a failed image does not trigger a reload loop.
+  pick('.adv-bg-tile', 'cafe/beach');
+  await flush(h.loads, 'reject');
+  assert.equal(h.calls.fetches, 1);
+  clock.wall = expiresAtMs + 1000;
+  pick('.adv-bg-time', 'night');
+  await flush(h.loads, 'reject');
+  assert.equal(h.calls.fetches, 2);
+  await microtasks();
+  await flush(h.loads);
+  assert.match(h.shown()[0].src, /beach\/night\.png\?.*sig=r2$/, 'the renewed URL is shown');
+  for (const thumb of h.app.bgPanel.dialog.querySelectorAll('.adv-bg-thumb')) assert.match(thumb.src, /sig=r2$/);
+  h.app.bgPanel.close();
+  clock.wall += 12 * 3600 * 1000;
+  h.doc.visibilityState = 'visible'; h.doc.dispatchEvent({ type: 'visibilitychange' });
+  await microtasks(); await flush(h.loads);
+  assert.match(h.shown()[0].src, /beach\/night\.png\?.*sig=r3$/);
+});
+
+test('adv wiring: returning home reads expiring background URLs again', async t => {
+  const { h, clock, expiresAtMs } = expiringApp(t);
+  await microtasks();
+  h.app.prepareHome();
+  assert.equal(h.calls.fetches, 1);
+  clock.wall = expiresAtMs;
+  h.app.prepareHome();
+  await microtasks();
+  assert.equal(h.calls.fetches, 2);
+  assert.match(h.app.backgroundUrl('cafe/stella', 'day'), /sig=r2$/);
+  clock.wall += 12 * 3600 * 1000;
+  h.app.backgroundUrl('cafe/stella', 'day');
+  assert.equal(h.calls.fetches, 3, 'reading a thumbnail URL renews expired URLs');
+  await microtasks();
+  assert.match(h.app.backgroundUrl('cafe/stella', 'day'), /sig=r3$/);
+});
+
+test('adv wiring: the page becoming visible again reads expiring background URLs again', async t => {
+  const { h, clock, expiresAtMs } = expiringApp(t);
+  await microtasks();
+  h.doc.visibilityState = 'visible';
+  h.doc.dispatchEvent({ type: 'visibilitychange' });
+  assert.equal(h.calls.fetches, 1);
+  clock.wall = expiresAtMs;
+  h.doc.visibilityState = 'hidden';
+  h.doc.dispatchEvent({ type: 'visibilitychange' });
+  assert.equal(h.calls.fetches, 1, 'a hidden page waits');
+  h.doc.visibilityState = 'visible';
+  h.doc.dispatchEvent({ type: 'visibilitychange' });
+  await microtasks();
+  assert.equal(h.calls.fetches, 2);
+});
+
+test('adv wiring: leaving during background renewal cancels opening the panel', async t => {
+  const { h, clock, expiresAtMs, holdFetch } = expiringApp(t);
+  await microtasks();
+  clock.wall = expiresAtMs;
+  let release = holdFetch();
+  h.app.action('background'); h.app.prepareHome(); release();
+  await microtasks();
+  assert.equal(h.app.bgPanel.isOpen, false);
+  clock.wall += 12 * 3600 * 1000;
+  release = holdFetch();
+  h.app.action('background'); h.app.action('settings'); release();
+  await microtasks();
+  assert.deepEqual([h.app.bgPanel.isOpen, h.app.configPanel.isOpen], [false, true]);
 });
