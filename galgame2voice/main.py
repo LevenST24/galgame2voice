@@ -565,6 +565,11 @@ def create_app(*, engine_supervisor: EngineSupervisor | None = None) -> FastAPI:
         target_url = f"/?settings=1&{query}" if query else "/?settings=1"
         return RedirectResponse(url=target_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
+    # A body nested too deeply is the request's fault: answer 400 in Chinese, not 500.
+    from galgame2voice.utils.deep_json import nested_too_deep_response, register_deep_json_handler
+
+    register_deep_json_handler(app)
+
     # Global Exception Handler Sanitizing Internal Errors
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
@@ -572,10 +577,7 @@ def create_app(*, engine_supervisor: EngineSupervisor | None = None) -> FastAPI:
             # A body nested a few thousand levels deep parses, then overflows the
             # encoder that echoes it back in a 422. It is the request's fault.
             logger.warning("Recursion limit hit on %s %s (deeply nested body?)", request.method, request.url.path, exc_info=True)
-            return JSONResponse(
-                status_code=400,
-                content={"detail": "请求内容的层级太深（嵌套过多），无法处理。请检查发送的数据。"},
-            )
+            return nested_too_deep_response()
         logger.error("Unhandled Exception on %s %s: %s", request.method, request.url.path, exc, exc_info=True)
         return JSONResponse(
             status_code=500,
