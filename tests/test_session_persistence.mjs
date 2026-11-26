@@ -519,6 +519,7 @@ async function exportPrefix(localSettings, localUpdatedAt) {
           { id: 'm_ja_u2', role: 'user', content: '你好', ts: 1000 },
           { id: 'm_ja_a2', role: 'assistant', content: '', japanese: 'ただいま。', ts: 1001 },
         ]),
+        makeSession('s_emoji_cut', '第26个字是表情', [], { lastLine: `${'字'.repeat(25)}🌸之后` }),
       ],
       activeId: 's_sync_lastline',
       global: {},
@@ -553,6 +554,7 @@ async function exportPrefix(localSettings, localUpdatedAt) {
     assert.equal(previews[3], '后备摘要文本', '最后一条消息内容为空时回退至 lastLine');
     assert.equal(previews[4], '# 标题*强调*`代码`\n超出二十六个字符之后的内容应当被干净截断显示'.replace(/[*`#\n]/g, ' ').slice(0, 26), 'lastLine 同样清理 Markdown 与换行并截断至26字');
     assert.equal(previews[5], 'おかえりなさい！', '最新一条助手消息仅含 lines[].ja 时应展示日文台词摘要而非暂无消息');
+    assert.equal(previews[7], `${'字'.repeat(25)}🌸`, '截断时不能把第 26 个字的表情切成半个');
     assert.equal(previews[6], 'ただいま。', '最新一条助手消息仅含 japanese 属性时应展示日文台词摘要而非暂无消息');
 
     passed++;
