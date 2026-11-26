@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 import pytest
 
 from galgame2voice.adapters.registry import PROVIDER_PRESETS
-from galgame2voice.security.url_guard import clear_dns_cache, validate_llm_base_url
+from galgame2voice.security.url_guard import clear_dns_cache, validate_llm_base_url, validate_local_service_url
 
 
 class TestSchemeValidation:
@@ -167,3 +167,44 @@ def test_proxy_tun_fake_ip_allowed_and_error_names_real_checkbox(monkeypatch):
         assert ok is False, f"{blocked_ip} must stay blocked"
         assert "「允许连接本机或局域网的模型服务」" in reason
         assert "允许私网 LLM 端点" not in reason
+
+
+@pytest.mark.parametrize(("typed", "hint"), [
+    ("http://127.0.0.1:９８８０", "全角字符「９」"),
+    ("https://ａpi.example.com", "全角字符「ａ」"),
+    ("http://127.0.0.1:9880\u3000", None),  # trailing ideographic space is stripped
+    ("http://127.0.0.1\u3000:9880", "全角空格"),
+])
+def test_fullwidth_digits_letters_and_spaces_are_not_called_punctuation(typed, hint):
+    ok, reason = validate_llm_base_url(typed, allow_private=True)
+    if hint is None:
+        assert ok is True, reason
+        return
+    assert ok is False
+    assert hint in reason and "中文标点" not in reason
+    assert "半角" in reason
+
+
+@pytest.mark.parametrize("typed", [
+    "http://127.0.0.1 :9880",  # stray space before the port
+    "http://127.0.0.1,9880",   # comma instead of colon
+    "http://127.0.0.1:0",      # port 0 can never host the engine
+    "http://local host:9880",
+])
+def test_local_service_url_rejects_typos_urlparse_tolerates(typed):
+    ok, reason = validate_local_service_url(typed)
+    assert ok is False, typed
+    assert reason
+
+
+@pytest.mark.parametrize("url", [
+    "http://127.0.0.1:9880",
+    "http://localhost:9880/",
+    "http://gpt_sovits:9880",
+    "http://my-pc.local:9880",
+    "http://[::1]:9880",
+    "https://tts.example.com",
+    "http://192.168.1.20",
+])
+def test_local_service_url_keeps_accepting_real_addresses(url):
+    assert validate_local_service_url(url) == (True, "")

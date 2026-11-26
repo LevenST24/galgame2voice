@@ -99,6 +99,17 @@ ENDPOINT_SET_REFER_AUDIO = "/set_refer_audio"
 ENDPOINT_CONTROL = "/control"
 ENDPOINT_TTS = "/tts"
 
+# api_v2 answers /tts with WAV by default; any other 200 body (a proxy's sign-in page,
+# another web app on the same port) must not be saved or cached as audio.
+NON_AUDIO_RESPONSE_ERROR = (
+    "语音引擎返回的内容不是音频（可能是网页或错误信息），已丢弃。"
+    "请确认语音引擎地址指向 GPT-SoVITS 的 api_v2 服务（默认 http://127.0.0.1:9880）后重试。"
+)
+
+
+def _is_wav_payload(data: bytes) -> bool:
+    return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"
+
 PARAM_WEIGHTS_PATH = "weights_path"
 PARAM_REFER_AUDIO_PATH = "refer_audio_path"
 PARAM_STREAMING_MODE = "streaming_mode"
@@ -467,6 +478,22 @@ class GptSovitsClient:
             (self._loaded_sovits_source, self.current_sovits_weights),
         ))
 
+    def loads_new_weights(self, target: Any, force: bool = False) -> bool:
+        """Whether switching to ``target`` would load GPT or SoVITS weights (reads file stats)."""
+        if force or self._model_state_uncertain:
+            return True
+        try:
+            spec = _extract_weight_spec(target)
+        except ValueError:
+            return True
+        return any(
+            not current or current != path or loaded is not None and loaded != SourceFile.capture(path)
+            for current, loaded, path in (
+                (self.current_gpt_weights, self._loaded_gpt_source, spec.gpt_weights_path),
+                (self.current_sovits_weights, self._loaded_sovits_source, spec.sovits_weights_path),
+            )
+        )
+
     async def set_refer_audio(
         self,
         refer_audio_path: str,
@@ -806,6 +833,8 @@ class GptSovitsClient:
                         raise RuntimeError(f"TTS synthesis failed with status {resp.status_code}: {resp.text[:300]}")
                     if not resp.content:
                         raise RuntimeError("TTS synthesis returned empty audio payload")
+                    if not _is_wav_payload(resp.content):
+                        raise RuntimeError(NON_AUDIO_RESPONSE_ERROR)
                     if wav_is_silent(resp.content):
                         raise RuntimeError(SILENT_AUDIO_ERROR)
 
@@ -966,6 +995,8 @@ class GptSovitsClient:
 
                 if not checked_silence:
                     pre_buffer.extend(item)
+                    if len(pre_buffer) >= 12 and not _is_wav_payload(bytes(pre_buffer[:12])):
+                        raise RuntimeError(NON_AUDIO_RESPONSE_ERROR)
                     # Inspect initial WAV PCM samples
                     peak = wav_peak_amplitude(bytes(pre_buffer))
                     if peak is not None and peak > 0.0:
@@ -982,6 +1013,8 @@ class GptSovitsClient:
                     yield item
 
             if not checked_silence and pre_buffer:
+                if not _is_wav_payload(bytes(pre_buffer)):
+                    raise RuntimeError(NON_AUDIO_RESPONSE_ERROR)
                 if wav_is_silent(bytes(pre_buffer)):
                     raise RuntimeError(SILENT_AUDIO_ERROR)
                 if profiler and hasattr(profiler, "record_app_first_chunk"):

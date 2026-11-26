@@ -757,7 +757,7 @@ export function createConfigPanel(container, {
       controls.advOutfit.appendChild(opt);
     }
 
-    const storedOutfit = String(values.advOutfit || '').trim();
+    const storedOutfit = String(values.advOutfit || '');
     if (storedOutfit && !installedIds.has(storedOutfit)) {
       const optExtra = doc.createElement('option');
       optExtra.value = storedOutfit;

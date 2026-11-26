@@ -598,4 +598,56 @@ test('textbox: long Japanese line pagination strictly confines every page within
   }
 });
 
+test('textbox: the voice tail lets the player write, says why send waits, and keeps the draft', () => {
+  const container = new FakeElement();
+  const sent = [];
+  const tb = createTextbox(container, { onSend: text => { sent.push(text); return true; } });
+  const textarea = container.querySelector('.adv-player-textarea');
+  const sendBtn = container.querySelector('.adv-player-send-btn');
+  const normal = textarea.placeholder;
 
+  tb.enterInput({ canSend: false, voicePending: true });
+  assert.equal(sendBtn.disabled, true);
+  assert.equal(textarea.placeholder, '语音还在准备，可以先写下一句');
+  tb.setCanSend(false);
+  assert.equal(textarea.placeholder, '语音还在准备，可以先写下一句', 'the app re-syncing controls keeps the note');
+
+  textarea.value = '先写好的下一句';
+  textarea.dispatchEvent({ type: 'keydown', key: 'Enter', shiftKey: false, preventDefault() {} });
+  assert.deepEqual(sent, []);
+
+  tb.enterInput({ canSend: true });
+  assert.equal(sendBtn.disabled, false);
+  assert.equal(textarea.placeholder, normal);
+  assert.equal(textarea.value, '先写好的下一句', 'settling does not clear the draft');
+  textarea.dispatchEvent({ type: 'keydown', key: 'Enter', shiftKey: false, preventDefault() {} });
+  assert.deepEqual(sent, ['先写好的下一句']);
+});
+
+test('textbox: re-paired subtitle pages still fit the box', () => {
+  const container = new FakeElement();
+  const fits = (text) => [...text].length <= 30;
+  const fitsSubtitle = (text) => [...text].length <= 38;
+  const tb = createTextbox(container, {
+    getSettings: () => ({ primary: 'zh', subtitle: 'ja' }),
+    fits,
+    fitsSubtitle,
+  });
+  const line = {
+    index: 0,
+    zh: '我昨天在车站前面那家咖啡店里坐了整整一个下午，一直在想你说过的那句话到底是什么意思，想来想去也想不明白，结果不知不觉天就黑了。',
+    ja: '昨日は駅前のあのカフェで午後ずっと座ってあなたが言ったあの言葉の意味を考えていたの。でも分からなくて、気づいたら暗くなってた。',
+    speaker: '菲莉',
+  };
+  const pages = tb.paginate(line, line.zh);
+  assert.equal(pages.length, 3);
+  tb.activate(line);
+  const subEl = container.querySelector('.adv-subtitle-text');
+  const shown = [];
+  pages.forEach((page, pageIndex) => {
+    tb.reveal(page, { durationMs: 0, pageIndex, pageCount: pages.length });
+    shown.push(subEl.textContent.replace(/^「|」$/g, ''));
+  });
+  assert.equal(shown.join(''), line.ja);
+  for (const page of shown) assert.ok(fitsSubtitle(page), `subtitle page too long: ${page}`);
+});

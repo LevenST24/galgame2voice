@@ -924,4 +924,4 @@ class TestPathTraversalAndFileSystemSecurity:
         with patch("tkinter.filedialog.askopenfilename", side_effect=Exception("Headless mode")):
             resp = client.post("/api/voice/browse-file", json=payload)
             assert resp.status_code == 200
-            assert resp.json() == {"selected_path": ""}
+            assert resp.json() == {"selected_path": "", "picker_unavailable": True}
