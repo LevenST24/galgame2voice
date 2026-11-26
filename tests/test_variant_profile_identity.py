@@ -134,13 +134,11 @@ async def test_parenthesized_variant_keeps_its_own_identity(project, isolate_tes
         assert bilingual_context.name == "安娜"
         assert Path(bilingual_context.emotions["gentle"]["ref_audio_path"]).resolve() == package_gentle
 
+        # The variant voices with the package's weights, so the package folder stays
+        # in place and the deleted package voice comes back on the next rescan.
         deleted = await client.delete(f"/api/voice/profiles/{base['id']}")
         assert deleted.status_code == 200, deleted.text
-        rescanned = await client.post("/api/characters/rescan")
-        assert rescanned.status_code == 200, rescanned.text
-        restored = (await client.get("/api/voice/profiles")).json()
-        assert all(row["name"] != "安娜" for row in restored["profiles"])
-        (project / deleted.json()["moved_to"]).rename(package)
+        assert deleted.json()["moved_to"] is None and package.is_dir()
         assert (await client.post("/api/characters/rescan")).status_code == 200
         restored = (await client.get("/api/voice/profiles")).json()
         kept = _profile_by_name(restored, "安娜 (V2)")
