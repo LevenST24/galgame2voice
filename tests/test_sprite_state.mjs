@@ -427,3 +427,16 @@ test('v2 packs keep picking without any animation bonus', () => {
   assert.equal(resolveSpriteState(model, null, { emotion: 'happy', act: { face: 'Surprised' } }).state.face, '04');
   assert.equal(resolveSpriteState(model, null, { emotion: 'happy' }).state.face, '01', 'no current face still takes the first pool entry');
 });
+
+test('v3 an unknown face falls back to the emotion pool, not the default face', () => {
+  const model = createV3SampleModel({
+    faces: {
+      calm: { label: 'Calm' },
+      angry: { label: 'Angry Look' },
+    },
+    defaultFace: 'calm',
+    sets: { angry: [{ id: 'angry', strength: 2 }] },
+  });
+  const result = resolveSpriteState(model, null, { emotion: 'angry', act: { face: 'pout' } });
+  assert.equal(result.state.face, 'angry');
+});

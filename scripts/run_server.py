@@ -75,7 +75,8 @@ try:
         setup_windows_job_object as _setup_windows_job_object,
         terminate_process_tree,
     )
-    from galgame2voice.config import get_settings  # noqa: E402
+    from galgame2voice.config import get_settings, require_settings  # noqa: E402
+    from galgame2voice.utils.active_turns import stop_active_turns  # noqa: E402
     from galgame2voice.utils.windows_runtime import kernel32  # noqa: E402
     from scripts.launcher_address import browser_hosts  # noqa: E402
 except ImportError as exc:
@@ -110,12 +111,23 @@ _SPAWNED_SOVITS_PROC = None
 _SPAWNED_SOVITS_STARTED_AT: float | None = None
 _SPAWNED_SOVITS_LAUNCH: EngineLaunch | None = None
 _WINDOWS_JOB_HANDLE = None
+_CONSOLE_CTRL_HANDLER = None
 register_runtime_host(sys.modules[__name__])
+
+# Console events that end the process: the window closed, the user signed out,
+# or Windows is shutting down. Windows ends the process about 5 s after it
+# reports one of them, so a turn in progress gets slightly less than that.
+_CONSOLE_EXIT_EVENTS = frozenset({2, 5, 6})  # CTRL_CLOSE, CTRL_LOGOFF, CTRL_SHUTDOWN
+_CONSOLE_EXIT_SAVE_SECONDS = 4.0
 
 
 def setup_windows_job_object():
     """Creates a Windows Job Object configured with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE."""
     return _setup_windows_job_object()
+
+
+class StoppedBySignal(SystemExit):
+    """Raised by the launcher's signal handler: a deliberate stop, not a startup failure."""
 
 
 def setup_signal_handlers():
@@ -129,7 +141,7 @@ def setup_signal_handlers():
 
     def _posix_signal_handler(signum, frame):
         cleanup_subprocesses()
-        sys.exit(128 + signum)
+        raise StoppedBySignal(128 + signum)
 
     signals_to_register = []
     if hasattr(signal, "SIGTERM"):
@@ -144,6 +156,52 @@ def setup_signal_handlers():
             signal.signal(sig, _posix_signal_handler)
         except (ValueError, OSError, AttributeError):
             pass
+
+
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def lan_bind_is_allowed(host: str) -> bool:
+    """A non-loopback bind needs console token auth, the same rule the app's lifespan enforces."""
+    if str(host).strip().lower() in _LOOPBACK_HOSTS:
+        return True
+    from galgame2voice.security.auth import is_auth_disabled
+
+    return not is_auth_disabled()
+
+
+def print_lan_bind_needs_token(host: str) -> None:
+    print(
+        f"\n[无法启动] 你让服务监听 {host}，局域网里的其他设备都能访问它，但访问令牌没有开启，任何人都能控制这台电脑上的服务。\n"
+        "      要在局域网使用：在程序文件夹的 .env 里加一行 GALGAME2VOICE_AUTH_DISABLED=0 后重新启动，"
+        "网页会要求输入访问令牌，令牌保存在 data/.console_token。\n"
+        "      只在本机使用：去掉 --host 参数即可。"
+    )
+
+
+def _on_console_control(ctrl_type: int) -> bool:
+    """Save the replies still streaming before Windows ends the process."""
+    if ctrl_type in _CONSOLE_EXIT_EVENTS:
+        try:
+            stop_active_turns(_CONSOLE_EXIT_SAVE_SECONDS)
+        except Exception:
+            pass
+    # Not handled: the next handler (Python's Ctrl+C, then Windows) still runs.
+    return False
+
+
+def setup_console_close_handler():
+    """Let a closed console window stop chat turns so their partial replies are saved."""
+    global _CONSOLE_CTRL_HANDLER
+    if sys.platform != "win32" or _CONSOLE_CTRL_HANDLER is not None:
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    routine = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)(_on_console_control)
+    if kernel32().SetConsoleCtrlHandler(routine, True):
+        # Windows calls the routine from its own thread; keep it alive.
+        _CONSOLE_CTRL_HANDLER = routine
 
 
 def _resolve_project_root() -> Path:
@@ -1091,84 +1149,139 @@ def sync_runtime_address(*, host: str | None = None, port: int | None = None) ->
         pass
 
 
+def _first_env_value(names: tuple[str, ...]) -> str | None:
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
+
+
+def _dotenv_setting(field: str) -> Any:
+    """Read host/port the way Settings does, from its own .env source.
+
+    Settings would pick these up too, but the launcher syncs its own CLI defaults
+    into the environment before Settings runs, so without this the documented
+    GALGAME2VOICE_HOST/PORT lines in .env were silently replaced by 127.0.0.1:8080.
+    Only consulted when no environment variable sets the value.
+    """
+    try:
+        from galgame2voice.config import Settings
+
+        return getattr(Settings(), field)
+    except Exception:
+        return None
+
+
+class _ChineseHelpFormatter(argparse.HelpFormatter):
+    """Chinese headings and defaults; argparse's own strings stay English otherwise."""
+
+    def add_usage(self, usage, actions, groups, prefix=None):
+        return super().add_usage(usage, actions, groups, prefix="用法：")
+
+    def _get_help_string(self, action):
+        help_text = action.help or ""
+        if action.default not in (None, False, argparse.SUPPRESS) and "%(default)" not in help_text:
+            help_text += "（默认：%(default)s）"
+        return help_text
+
+
+class _LauncherArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(2, f"[错误] 启动参数有误：{message}\n      运行时加上 --help 可以查看所有参数。\n")
+
+
+def _port_number(value: str) -> int:
+    """argparse type for --port: a whole number within the TCP range."""
+    try:
+        port = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"端口应是 0-65535 之间的整数，收到的是「{value}」") from None
+    if not 0 <= port <= 65535:
+        raise argparse.ArgumentTypeError(f"端口应在 0-65535 之间，收到的是 {port}")
+    return port
+
+
 def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     """Parses CLI flags for the Galgame2Voice server launcher."""
-    parser = argparse.ArgumentParser(
-        description="Galgame2Voice Server Entry Point & Enterprise Auto-Launcher",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    parser = _LauncherArgumentParser(
+        description="Galgame2Voice 启动器：启动本机服务，并按需拉起 GPT-SoVITS 语音引擎、打开浏览器。",
+        formatter_class=_ChineseHelpFormatter,
+        add_help=False,
     )
+    parser._optionals.title = "参数"
+    parser.add_argument("-h", "--help", action="help", help="显示这份帮助并退出")
+    port_names = ("GALGAME2VOICE_PORT", "PORT", "GALGAME_PORT")
+    host_names = ("GALGAME2VOICE_HOST", "HOST", "GALGAME_HOST")
     env_port = 8080
-    env_port_str = os.environ.get("GALGAME2VOICE_PORT") or os.environ.get("PORT") or os.environ.get("GALGAME_PORT")
+    env_port_str = _first_env_value(port_names) or str(_dotenv_setting("port") or "")
     if env_port_str:
         try:
-            env_port = int(env_port_str)
-        except ValueError:
+            env_port = _port_number(env_port_str)
+        except argparse.ArgumentTypeError:
+            # An out-of-range environment value would crash bind() later; keep the default.
             pass
-    env_host = (
-        os.environ.get("GALGAME2VOICE_HOST")
-        or os.environ.get("HOST")
-        or os.environ.get("GALGAME_HOST")
-        or "127.0.0.1"
-    )
+    env_host = _first_env_value(host_names) or _dotenv_setting("host") or "127.0.0.1"
     env_no_browser = os.environ.get("GALGAME_NO_BROWSER", "").lower() in ("1", "true", "yes")
 
     parser.add_argument(
         "--host",
         type=str,
         default=env_host,
-        help="Host interface to bind the server on",
+        help="监听地址。改成 127.0.0.1 以外的地址（如 0.0.0.0）时，必须先在 .env 里设置 GALGAME2VOICE_AUTH_DISABLED=0 开启访问令牌",
     )
     parser.add_argument(
         "--port",
-        type=int,
+        type=_port_number,
         default=env_port,
-        help="Port to listen on",
+        help="网页端口，被占用时会自动换一个可用端口",
     )
     parser.add_argument(
         "--no-browser",
         action="store_true",
         default=env_no_browser,
-        help="Suppress automatic browser launch on server startup",
+        help="启动后不自动打开浏览器（也可设置环境变量 GALGAME_NO_BROWSER=1）",
     )
     parser.add_argument(
         "--no-engine",
         action="store_true",
-        help="Open the application without discovering or starting a local GPT-SoVITS process",
+        help="不查找、不启动本机的 GPT-SoVITS 语音引擎，稍后可在网页里配置",
     )
     parser.add_argument(
         "--check-only",
         action="store_true",
-        help="Run pre-flight environment & hardware diagnostics, print report, and exit cleanly (exit code 0 if healthy, 1 if fatal)",
+        help="只检查运行环境和硬件，打印结果后退出（通过返回 0，有致命问题返回 1）",
     )
     parser.add_argument(
         "--precision",
         choices=["fp16", "fp32", "cpu", "auto"],
         default=None,
-        help="Inference precision/mode: fp16 (half-precision), fp32 (single-precision), cpu (safe host-RAM mode), or auto",
+        help="语音推理精度：fp16（半精度，显存占用小）、fp32（全精度）、cpu（只用 CPU，最稳但慢）或 auto（自动选择）",
     )
     parser.add_argument(
         "--fp16",
         action="store_true",
         default=False,
-        help="Enable half-precision (FP16) inference (alias for --precision fp16)",
+        help="使用半精度推理，同 --precision fp16",
     )
     parser.add_argument(
         "--fp32",
         action="store_true",
         default=False,
-        help="Force single-precision (FP32) inference (alias for --precision fp32)",
+        help="使用全精度推理，同 --precision fp32",
     )
     parser.add_argument(
         "--cpu",
         action="store_true",
         default=False,
-        help="Force CPU inference mode (bypasses GPU/VRAM to eliminate OOM risk and driver crashes)",
+        help="只用 CPU 推理，不占显卡显存，可避免显存不足和显卡驱动崩溃，同 --precision cpu",
     )
     parser.add_argument(
         "--profile",
         action="store_true",
         default=False,
-        help="Enable latency waterfall profiling mode (shows TTFT, First Sentence, TTS Dispatch, TTS Inference, TTFA)",
+        help="开启延迟分析，在日志里显示每轮对话各阶段的耗时（首字、首句、语音合成等）",
     )
     return parser.parse_args(args)
 
@@ -1195,6 +1308,7 @@ def main(args: list[str] | None = None):
         if parsed.check_only:
             print("\n[巡检失败] Python 运行环境或核心运行库校验未通过。")
         sys.exit(1)
+    require_settings()
 
     try:
         run_hardware_diagnostics()
@@ -1206,8 +1320,13 @@ def main(args: list[str] | None = None):
         print("[巡检通过] 所有前置依赖与硬件诊断均已就绪，系统运行状态正常。")
         sys.exit(0)
 
+    if not lan_bind_is_allowed(parsed.host):
+        print_lan_bind_needs_token(parsed.host)
+        sys.exit(2)
+
     setup_windows_job_object()
     setup_signal_handlers()
+    setup_console_close_handler()
     atexit.register(cleanup_subprocesses)
 
     listener = None
@@ -1263,6 +1382,9 @@ def main(args: list[str] | None = None):
                 raise SystemExit(3)
         except KeyboardInterrupt:
             print("\n[提示] 服务已正常停止，正在释放资源...")
+        except StoppedBySignal:
+            print("\n[提示] 收到停止信号，服务已正常停止，正在释放资源...")
+            raise
         except SystemExit as exc:
             if exc.code not in (None, 0):
                 print("\n[启动失败] 本机服务未能就绪。请确认解压目录可写，并查看 logs 中的错误日志；若提示数据库损坏，请先保留 data 文件夹，再从备份恢复。")

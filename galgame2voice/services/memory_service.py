@@ -59,12 +59,35 @@ def _resolve_stage_guidance(score: int) -> str:
     return _STAGE_GUIDANCE_TIERS[-1][1]
 
 
+# One message rarely states more than a few things of one kind; cap it so a pasted
+# list cannot flood memory.
+_MAX_FACTS_PER_PATTERN = 5
+
+
 def _is_plausible_nickname(text: str, start: int, value: str) -> bool:
     """Tells a name ("我叫昂晴", "叫我昂晴就好") apart from phrases that share the trigger."""
     clause = _RE_CLAUSE_BREAK.split(text[:start])[-1]
     if any(word in clause[-4:] for word in _NICKNAME_NEGATIONS):
         return False
     return not value.startswith(_NICKNAME_NON_NAME_STARTS)
+
+
+# "你还记得我喜欢什么吗？" asks about a preference instead of stating one, and a sentence-final
+# particle (我最喜欢狗了) is not part of the thing liked.
+_PREFERENCE_QUESTION_WORDS = ("什么", "啥", "哪个", "哪些", "哪里", "哪儿", "谁", "怎么")
+_PREFERENCE_TRAILING_PARTICLES = "了啊呀哦呢嘛啦"
+
+
+def _preference_value(value: str) -> str | None:
+    """The liked or disliked thing in a statement, or None when the clause is a question."""
+    if value.startswith("的是"):
+        value = value[2:]
+    elif value.startswith(("的", "是")):
+        return None
+    if value.endswith("吗") or any(word in value for word in _PREFERENCE_QUESTION_WORDS):
+        return None
+    value = value.rstrip(_PREFERENCE_TRAILING_PARTICLES)
+    return value or None
 
 
 def _opposite_preference_key(fact_key: str) -> str | None:
@@ -161,19 +184,27 @@ class MemoryService:
         if not text or not isinstance(text, str):
             return []
 
-        facts: list[dict[str, Any]] = []
         # Clamp extreme input text to 4000 characters to prevent ReDoS / CPU exhaustion
         cleaned = text[:4000].strip()
 
+        # Every usable match counts, in the order the player said them, and a later
+        # statement about the same thing replaces an earlier one: "以前我讨厌香菜，现在我喜欢香菜"
+        # ends on like_香菜, and "我叫小明，不对，叫我阿明就好" on 阿明. Unusable matches
+        # are skipped, so "别叫我笨蛋，我叫昂晴" still learns 昂晴.
+        positioned: list[tuple[int, dict[str, Any]]] = []
         for pat in self.EXTRACTION_PATTERNS:
-            # The first usable match wins: "别叫我笨蛋，我叫昂晴" still learns 昂晴.
+            found = 0
             for match in pat["regex"].finditer(cleaned):
                 fact = self._fact_from_match(pat, cleaned, match)
                 if fact:
-                    facts.append(fact)
-                    break
+                    positioned.append((match.start(), fact))
+                    found += 1
+                    if found >= _MAX_FACTS_PER_PATTERN:
+                        break
+        positioned.sort(key=lambda item: item[0])
 
-        return facts
+        last_index = {fact["fact_key"]: i for i, (_, fact) in enumerate(positioned)}
+        return [fact for i, (_, fact) in enumerate(positioned) if last_index[fact["fact_key"]] == i]
 
     def _fact_from_match(self, pat: dict[str, Any], text: str, match: re.Match) -> dict[str, Any] | None:
         """Builds one sanitized fact from a pattern match, or None when the match is unusable."""
@@ -187,6 +218,10 @@ class MemoryService:
             return None
         if pat["category"] == "nickname" and not _is_plausible_nickname(text, match.start(), sanitized_val):
             return None
+        if pat["category"] in ("preference", "taboo"):
+            sanitized_val = _preference_value(sanitized_val)
+            if not sanitized_val:
+                return None
 
         if "key" in pat:
             key = pat["key"]
