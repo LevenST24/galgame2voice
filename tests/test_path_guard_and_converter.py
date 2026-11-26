@@ -77,6 +77,9 @@ def test_contains_traversal_payload():
     assert contains_traversal_payload("audio\x00/file.wav")
     assert contains_traversal_payload(r"\\remote-server\share\audio.wav")
     assert contains_traversal_payload("//remote-server/share/audio.wav")
+    assert contains_traversal_payload(r" \\remote-server\share\audio.wav")
+    assert contains_traversal_payload(r'"\\remote-server\share\audio.wav"')
+    assert contains_traversal_payload(' "../etc/passwd" ')
     assert not contains_traversal_payload("audio/references/natsume/gentle.ogg")
     assert not contains_traversal_payload("nat002_032.ogg")
 

@@ -238,16 +238,19 @@ class CharacterManager:
         else:
             from galgame2voice.utils.path_guard import contains_traversal_payload
 
-            for wf in ("gpt_weights", "sovits_weights"):
-                wval = getattr(manifest, wf, None)
-                if wval and contains_traversal_payload(str(wval)):
-                    errors.append(f"安全错误：「{wf}」包含路径穿越：{wval}")
-
             pkg_container = CharacterPackage(
                 folder_path=folder,
                 manifest=manifest,
                 system_prompt=system_prompt,
             )
+
+            for wf in ("gpt_weights", "sovits_weights"):
+                wval = getattr(manifest, wf, None)
+                if wval:
+                    if contains_traversal_payload(str(wval)):
+                        errors.append(f"安全错误：「{wf}」包含路径穿越：{wval}")
+                    elif not pkg_container.resolve_weight_path(wf):
+                        errors.append(f"安全错误：「{wf}」路径超出允许目录：{wval}")
 
             self._validate_package_emotions(pkg_container, manifest, errors)
 
