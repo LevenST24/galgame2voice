@@ -16,16 +16,23 @@ export function initEngineDirectory(dom, notify, onSaved = () => {}, onOpenDashb
   let loadRequest = 0;
   let disposed = false;
   let browsing = false;
-  let saving = false;
+  /** @type {{ dir: string, promise: Promise<boolean> } | null} */
+  let inFlight = null;
   let savedDirectory = '';
   const setStatus = (text) => { if (status) status.textContent = text; };
   const onInput = () => {
     if (disposed) return;
     edited = true;
     revision += 1;
-    setStatus('目录已修改，点击「保存目录」后生效。');
+    setStatus('目录已修改，离开输入框后自动保存。');
+  };
+  // Like the other fields on this page, a finished edit saves itself.
+  const onChange = () => {
+    if (disposed || !isDirty() || !input.value.trim()) return;
+    save();
   };
   input?.addEventListener('input', onInput);
+  input?.addEventListener('change', onChange);
 
   function isDirty() {
     if (disposed || !input) return false;
@@ -58,18 +65,21 @@ export function initEngineDirectory(dom, notify, onSaved = () => {}, onOpenDashb
     if (disposed || !input) return;
     browsing = true;
     if (dom.gBrowseSovitsDirectory) dom.gBrowseSovitsDirectory.disabled = true;
+    let picked = false;
     try {
       const data = await request('/api/voice/browse-file', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file_type: 'directory', initial_dir: input.value.trim() || null }),
       });
+      const selected = (data.selected_path || '').trim();
       if (!disposed && data.picker_unavailable) {
         notify('无法打开文件夹选择窗口（例如从其他设备访问，或系统缺少图形界面组件）。请直接把引擎文件夹路径粘贴到输入框，再点击「保存目录」。', 'error');
-      } else if (!disposed && data.selected_path) {
+      } else if (!disposed && selected) {
         input.value = data.selected_path;
-        edited = true;
-        revision += 1;
-        setStatus('目录已选择，点击「保存目录」后生效。');
+        picked = selected !== savedDirectory;
+        edited = picked;
+        if (picked) revision += 1;
+        setStatus(picked ? '目录已选择，正在保存…' : '所选目录与当前目录一致。');
       }
     } catch (error) {
       if (!disposed) notify(`无法选择文件夹：${error.message}。也可直接粘贴目录路径。`, 'error');
@@ -77,16 +87,24 @@ export function initEngineDirectory(dom, notify, onSaved = () => {}, onOpenDashb
       browsing = false;
       if (!disposed && dom.gBrowseSovitsDirectory) dom.gBrowseSovitsDirectory.disabled = false;
     }
+    if (!disposed && picked) await save();
   }
 
   async function save() {
     if (disposed || !input) return false;
-    const directory = input.value.trim();
-    if (!directory) {
-      notify('请先选择或填写本机语音引擎目录。', 'error');
-      return false;
+    if (inFlight) {
+      if (input.value.trim() === inFlight.dir) return inFlight.promise;
+      await inFlight.promise;
+      const next = input.value.trim();
+      return disposed ? false : (next && next !== savedDirectory ? save() : Boolean(next));
     }
-    saving = true;
+    const directory = input.value.trim();
+    if (!directory) { notify('请先选择或填写本机语音引擎目录。', 'error'); return false; }
+    const promise = runSave(directory);
+    inFlight = { dir: directory, promise };
+    return promise;
+  }
+  async function runSave(directory) {
     if (dom.gSaveSovitsDirectory) dom.gSaveSovitsDirectory.disabled = true;
     const savedRevision = ++revision;
     try {
@@ -122,7 +140,7 @@ export function initEngineDirectory(dom, notify, onSaved = () => {}, onOpenDashb
       }
       return false;
     } finally {
-      saving = false;
+      inFlight = null;
       if (!disposed && dom.gSaveSovitsDirectory) dom.gSaveSovitsDirectory.disabled = false;
     }
   }
@@ -136,12 +154,13 @@ export function initEngineDirectory(dom, notify, onSaved = () => {}, onOpenDashb
     if (browsing || dom.gBrowseSovitsDirectory?.disabled) {
       if (dom.gBrowseSovitsDirectory) dom.gBrowseSovitsDirectory.disabled = false;
     }
-    if (saving || dom.gSaveSovitsDirectory?.disabled) {
+    if (inFlight || dom.gSaveSovitsDirectory?.disabled) {
       if (dom.gSaveSovitsDirectory) dom.gSaveSovitsDirectory.disabled = false;
     }
     browsing = false;
-    saving = false;
+    inFlight = null;
     input?.removeEventListener('input', onInput);
+    input?.removeEventListener('change', onChange);
     dom.gBrowseSovitsDirectory?.removeEventListener('click', browse);
     dom.gSaveSovitsDirectory?.removeEventListener('click', save);
   }

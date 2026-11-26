@@ -18,12 +18,18 @@ export function createSettingsDraftStore({
   refreshTelemetry,
 }) {
   return {
-    async commitAll() {
-      if (isConfigSaving() || getProviderController()?.isProviderSaving()) return;
+    /**
+     * Footer save writes the engine directory and global config; an autosave writes only the
+     * global config, stays quiet while a newer edit is still pending, and reports how it ended.
+     * @param {{ autosave?: boolean }} [options]
+     * @returns {Promise<'busy' | 'not-loaded' | 'saved' | 'failed' | 'stale'>}
+     */
+    async commitAll({ autosave = false } = {}) {
+      if (isConfigSaving() || getProviderController()?.isProviderSaving()) return 'busy';
       if (!isConfigLoaded()) {
-        showToast('还没有读取到当前配置，保存会用默认值覆盖已有设置。正在重新读取，请稍后再保存。', 'error');
+        if (!autosave) showToast('还没有读取到当前配置，保存会用默认值覆盖已有设置。正在重新读取，请稍后再保存。', 'error');
         reloadConfig();
-        return;
+        return 'not-loaded';
       }
 
       const savedRevision = getConfigRevision();
@@ -33,36 +39,43 @@ export function createSettingsDraftStore({
         payload = readConfigPayload();
       } catch (e) {
         showToast(`保存失败: ${e.message || e}`, 'error');
-        return;
+        return 'failed';
       }
       const coordinatorRevision = getCoordinatorRevision();
       const targetEngineDirectory = getEngineDirectory();
       const isCurrent = () => getCoordinatorRevision() === coordinatorRevision;
       setConfigSaving(true);
       try {
-        if (targetEngineDirectory?.isDirty()) {
+        if (!autosave && targetEngineDirectory?.isDirty()) {
           const dirSaved = await targetEngineDirectory.save();
-          if (!isCurrent()) return;
-          if (dirSaved === false) return;
+          if (!isCurrent()) return 'stale';
+          if (dirSaved === false) return 'failed';
         }
 
         let saved = null;
         await runSettingsMutation(async (save) => {
           saved = await save(payload);
         });
-        if (!isCurrent()) return;
+        if (!isCurrent()) return 'stale';
         clearConfigDirtyIfUnchanged(savedRevision);
 
-        const stillDirty = isConfigDirty() || Boolean(targetEngineDirectory?.isDirty());
         const overridden = sovitsUrlOverrideNotice(payload, saved);
-        if (stillDirty) showToast('之前的配置已保存；当前修改尚未保存。', 'success');
-        else if (overridden) showToast(overridden, 'info');
-        else showToast('全局配置已保存', 'success');
+        if (autosave) {
+          // A newer edit gets its own autosave right after this one; say nothing until it lands.
+          if (!isConfigDirty()) showToast(overridden || '语音服务设置已自动保存', overridden ? 'info' : 'success');
+        } else {
+          const stillDirty = isConfigDirty() || Boolean(targetEngineDirectory?.isDirty());
+          if (stillDirty) showToast('之前的配置已保存；当前修改尚未保存。', 'success');
+          else if (overridden) showToast(overridden, 'info');
+          else showToast('全局配置已保存', 'success');
+        }
         reloadConfig();
         refreshTelemetry();
+        return 'saved';
       } catch (e) {
-        if (!isCurrent()) return;
-        showToast(`保存失败: ${e.message || e}`, 'error');
+        if (!isCurrent()) return 'stale';
+        showToast(`${autosave ? '自动保存失败' : '保存失败'}: ${e.message || e}`, 'error');
+        return 'failed';
       } finally {
         if (getCoordinatorRevision() === coordinatorRevision) setConfigSaving(false);
       }
