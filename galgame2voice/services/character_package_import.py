@@ -146,6 +146,7 @@ def detect_archive_format(archive_path: Path) -> str:
 # Chinese Windows (GBK) is the most common source, then Japanese Windows (cp932).
 _LEGACY_ZIP_ENCODINGS = ("utf-8", "gb18030", "cp932")
 _MAX_MANIFEST_PROBE_BYTES = 1024 * 1024
+_MAX_MANIFEST_PROBE_COUNT = 8
 
 
 def _raw_zip_member_name(info: zipfile.ZipInfo) -> bytes | None:
@@ -168,7 +169,11 @@ def _manifest_strings(zf: zipfile.ZipFile, info: zipfile.ZipInfo) -> set[str]:
     if info.file_size > _MAX_MANIFEST_PROBE_BYTES:
         return set()
     try:
-        data = json.loads(zf.read(info).decode("utf-8-sig"))
+        with zf.open(info) as fh:
+            raw = fh.read(_MAX_MANIFEST_PROBE_BYTES + 1)
+        if len(raw) > _MAX_MANIFEST_PROBE_BYTES:
+            return set()
+        data = json.loads(raw.decode("utf-8-sig"))
     except Exception:
         return set()
     found: set[str] = set()
@@ -203,8 +208,12 @@ def _choose_zip_name_encoding(zf: zipfile.ZipFile) -> str:
     if "utf-8" in decoded:
         return "utf-8"
     references: set[str] = set()
+    probed = 0
     for info in zf.infolist():
         if info.filename.replace("\\", "/").rsplit("/", 1)[-1] == "manifest.json":
+            if probed >= _MAX_MANIFEST_PROBE_COUNT:
+                break
+            probed += 1
             references |= _manifest_strings(zf, info)
 
     def matches(names: list[str]) -> int:
