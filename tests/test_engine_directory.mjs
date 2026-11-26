@@ -66,6 +66,17 @@ let passed = 0;
   passed++;
 }
 {
+  // The dialog could not open at all: say so instead of looking like a cancel.
+  const test = setup(async () => response({ selected_path: '', picker_unavailable: true }));
+  test.dom.gSovitsDirectory.value = 'keep current';
+  await test.controller.browse();
+  assert.equal(test.dom.gSovitsDirectory.value, 'keep current');
+  assert.equal(test.notifications.length, 1);
+  assert.match(test.notifications[0][0], /无法打开文件夹选择窗口/);
+  assert.match(test.notifications[0][0], /粘贴/);
+  passed++;
+}
+{
   const test = setup(async () => response({ selected_path: '' }));
   test.dom.gSovitsDirectory.value = 'keep current';
   await test.controller.browse();

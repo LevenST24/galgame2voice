@@ -499,7 +499,8 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     } finally { if (polling === request) polling = null; }
   }
   function schedule() {
-    timer = clock.setTimeout(() => { timer = null; refresh().catch(() => {}); if (opened) schedule(); }, 5000);
+    // A hidden tab keeps the home screen open; skip its status reads until it is shown again.
+    timer = clock.setTimeout(() => { timer = null; if (!doc?.hidden) refresh().catch(() => {}); if (opened) schedule(); }, 5000);
     timer?.unref?.();
   }
   function setStageHome(on) {
@@ -545,7 +546,10 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
   }
   function outside(event) { if (!screen.contains(event.target) || !event.target.closest?.('.home-pill-wrap')) closePopup(); if (!event.target.closest?.('.home-pick-wrap')) closeDropdown(); }
   screen.addEventListener('keydown', keydown); doc.addEventListener('click', outside);
-  disposers.push(() => screen.removeEventListener('keydown', keydown), () => doc.removeEventListener('click', outside));
+  const onVisibility = () => { if (opened && !doc.hidden) refresh().catch(() => {}); };
+  doc.addEventListener?.('visibilitychange', onVisibility);
+  disposers.push(() => screen.removeEventListener('keydown', keydown), () => doc.removeEventListener('click', outside),
+    () => doc.removeEventListener?.('visibilitychange', onVisibility));
   return { element: screen, menuScreen: screen, loadScreen: load, open, close, refresh,
     get isOpen() { return opened; }, destroy() { close(); destroyed = true; for (const off of disposers) off(); screen.remove(); } };
 }
