@@ -65,7 +65,7 @@ test('an imported chat backup with a broken title is repaired before saving', ()
   });
   const incoming = prepareSessionImport(raw);
   assert.equal(LONE_SURROGATE.test(incoming.sessions[0].title), false, JSON.stringify(incoming.sessions[0].title));
-  assert.equal(incoming.sessions[0].title, '走呀\uFFFD…');
+  assert.equal(incoming.sessions[0].title, '走呀…');
 });
 
 test('a browser copy title in a merged backup never splits an emoji in half', () => {
