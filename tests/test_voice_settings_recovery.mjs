@@ -1460,4 +1460,33 @@ async function testSaveUnlocksWhileVoiceSwitchPending() {
 
 await testSaveUnlocksWhileVoiceSwitchPending();
 
+{
+  const tag = fs.readFileSync(new URL('../frontend/index.html', import.meta.url), 'utf8').match(/<input\b[^>]*id="sTtsSpeed"[^>]*>/)?.[0] || '';
+  const [min, max, step] = ['min', 'max', 'step'].map(k => Number(tag.match(new RegExp(`\\b${k}="([^"]+)"`))?.[1]));
+  const snap = v => String(Number((min + Math.round(Number(((Math.min(max, Math.max(min, Number(v))) - min) / step).toFixed(10))) * step).toFixed(10)));
+  const { first, dom } = setup();
+  let speedVal = snap(1);
+  Object.defineProperty(dom.sTtsSpeed, 'value', { get: () => speedVal, set: v => { speedVal = snap(v); }, enumerable: true });
+  dom.sTtsSpeedVal = element(); dom.sTitle = element();
+  first.settings.voiceProfileId = 1; first.settings.ttsSpeed = 0.875;
+  globalThis.fetch = async url => (url === '/api/voice/profiles'
+    ? response({ profiles: [{ id: 1, name: '高楯欧丽叶', system_prompt: 'P' }], active_profile_id: 1 })
+    : response({}));
+  await loadSessionVoiceSelect(first);
+  await openSessionSettings();
+  assert.equal(dom.sTtsSpeed.value, '0.88');
+  dom.sTitle.value = '重命名会话';
+  await dom.sSave.click();
+  assert.equal(first.settings.ttsSpeed, 0.875);
+  dom.sAiAdaptiveVoice.value = 'false'; await dom.sAiAdaptiveVoice.fire('change');
+  dom.sTtsSpeed.value = '1.23'; await dom.sTtsSpeed.fire('input');
+  await dom.sSave.click();
+  assert.equal(first.settings.ttsSpeed, 1.23);
+  first.settings.ttsSpeed = 1.004;
+  await openSessionSettings();
+  await dom.sReset.click(); await dom.sSave.click();
+  assert.equal(first.settings.ttsSpeed, DEFAULT_SESSION_SETTINGS.ttsSpeed);
+  passed++;
+}
+
 console.log(`Voice settings recovery: ${passed} scenarios passed`);
