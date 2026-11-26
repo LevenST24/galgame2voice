@@ -58,6 +58,7 @@ try:
     from galgame2voice.utils.hardware import get_gpu_vram_status  # noqa: E402
     from galgame2voice.services.sovits_installation import (  # noqa: E402, F401
         find_engine_python,
+        missing_engine_parts,
         read_sovits_directory,
         read_sovits_directory_hint,
         write_sovits_directory_hint,
@@ -265,21 +266,23 @@ def _check_sovits_dir(p: Path) -> Path | None:
     """Checks if p or a nested directory inside p contains api_v2.py."""
     if not p.exists() or not p.is_dir():
         return None
-    if (p / "api_v2.py").is_file():
+    def _ready(d: Path) -> bool:
+        return (d / "api_v2.py").is_file() and not missing_engine_parts(d)
+    if _ready(p):
         return p
     # Check nested directory with same name or any subfolder containing api_v2.py
     nested_same = p / p.name
-    if (nested_same / "api_v2.py").is_file():
+    if _ready(nested_same):
         return nested_same
     try:
         for sub in p.iterdir():
             if sub.is_dir():
-                if (sub / "api_v2.py").is_file():
+                if _ready(sub):
                     return sub
                 # Check 2 levels deep (e.g. outer / nested / api_v2.py)
                 try:
                     for sub2 in sub.iterdir():
-                        if sub2.is_dir() and (sub2 / "api_v2.py").is_file():
+                        if sub2.is_dir() and _ready(sub2):
                             return sub2
                 except (PermissionError, OSError):
                     pass
