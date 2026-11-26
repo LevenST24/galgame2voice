@@ -1337,6 +1337,7 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
 def main(args: list[str] | None = None):
     parsed = parse_args(args)
     if not parsed.check_only and not getattr(sys, "frozen", False):
+        require_settings()  # an invalid setting stops here with its Chinese message, not as a crash
         root = _resolve_project_root()
         instance = desktop_instance.DesktopInstance(root)
         if not instance.acquire():
