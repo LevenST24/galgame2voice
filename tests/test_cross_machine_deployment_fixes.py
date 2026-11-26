@@ -240,6 +240,16 @@ def test_preflight_diagnostics_calibration_notice(capsys, monkeypatch, tmp_path)
     assert diag["has_nvidia"] is True
 
 
+def test_low_vram_notice_points_to_settings_center_cpu_mode(capsys, monkeypatch):
+    import scripts.run_server as rs
+    monkeypatch.setattr(rs, "read_precision_cache", lambda root: None)
+    monkeypatch.setattr(rs, "detect_gpu_capability", lambda: (True, "NVIDIA GeForce GTX 1650", 1))
+    monkeypatch.setattr(rs, "get_gpu_vram_status", lambda: (4.0, 2.5))
+    rs.run_hardware_diagnostics()
+    out = capsys.readouterr().out
+    assert "设置中心 → 语音服务 → 计算方式" in out and "CPU 模式" in out and "控制面板" not in out and "CPU 稳定模式" not in out
+
+
 def test_preflight_python_and_deps_check():
     """Verifies that pre-flight Python version and dependency validation functions correctly."""
     assert check_python_environment() is True

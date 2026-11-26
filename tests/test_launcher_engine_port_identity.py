@@ -87,8 +87,18 @@ def test_launcher_does_not_call_an_unrelated_busy_port_a_running_engine(monkeypa
         server.server_close()
     out = capsys.readouterr().out
     assert "语音引擎已在运行" not in out
-    assert f"端口 {port} 已被别的程序占用" in out
+    assert f"端口 {port} 已被别的程序占用" in out and "改回 http://127.0.0.1:9880" in out
     assert not spawn
+
+
+def test_launcher_busy_default_port_9880_suggests_another_port(monkeypatch, capsys):
+    endpoint = parse_sovits_endpoint("http://127.0.0.1:9880", source="default")
+    monkeypatch.setattr("galgame2voice.services.sovits_endpoint.resolve_effective_sovits_endpoint_sync", lambda: endpoint)
+    monkeypatch.setattr(run_server, "is_port_in_use", lambda port, host="127.0.0.1": True)
+    monkeypatch.setattr(run_server, "_probe_engine_identity", lambda *args, **kwargs: "other")
+    run_server.ensure_gpt_sovits_running()
+    out = capsys.readouterr().out
+    assert "端口 9880 已被别的程序占用" in out and "http://127.0.0.1:9881" in out and "改回" not in out
 
 
 def test_probe_does_not_follow_redirects_to_200():
