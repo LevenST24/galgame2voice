@@ -265,6 +265,21 @@ test('hidden window pauses AUTO, unhide restarts delay without losing a line', t
   h.app.action('unhide'); h.clock.tick(2000); assert.equal(h.app.player.currentIndex, 1);
 });
 
+test('opening the input box stops AUTO and SKIP so the box stays open before typing', t => {
+  for (const mode of ['auto', 'skip']) {
+    const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0 } });
+    h.start(); h.line(0); h.line(1); h.line(2);
+    h.app.action(mode);
+    h.app.action('input');
+    const wrap = h.app.stage.stage.querySelector('.adv-player-input-wrap');
+    assert.equal(h.app.player.auto, false, mode);
+    assert.equal(h.app.player.skip, false, mode);
+    h.clock.tick(10000);
+    assert.equal(wrap.classList.contains('is-hidden'), false, `${mode}: the box is still open`);
+    if (mode === 'auto') assert.equal(h.app.player.currentIndex, 0, 'AUTO did not advance');
+  }
+});
+
 test('typing away keeps queued/future history, cancels voice/AUTO/SKIP and preserves IME draft', t => {
   const h = setup(t); h.start(); h.line(); h.line(1); h.audioEvent(); h.app.action('auto');
   h.app.action('input'); assert.equal(h.app.player.state, 'revealing', 'focus alone retains queue');

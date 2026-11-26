@@ -641,7 +641,15 @@ export function mountAdv(dom, deps) {
         controller.stop();
         if (player.isPresenting()) player.beginPlayerEdit();
         break;
-      case 'input': textbox.prepareInput({ canSend: !controller.busy }); break;
+      case 'input':
+        // AUTO or SKIP would advance to the next line and hide the box the player just opened.
+        // Lines stay queued; they are only dropped once the player actually starts typing.
+        temporarySkip = false;
+        if (player.skip) { player.setSkip(false); restoreSprite(); }
+        player.setAuto(false);
+        textbox.prepareInput({ canSend: !controller.busy });
+        syncControls();
+        break;
       case 'voice_mode': deps.toggleVoice?.(); if (!deps.voiceEnabled?.()) stopStageReplay(); backlog?.stopReplay(); update(); break;
       case 'replay_voice': {
         const line = currentLine;
