@@ -60,3 +60,16 @@ def test_an_env_token_points_to_the_variable_not_the_file(settings, caplog, monk
 def test_nothing_is_said_when_the_token_is_off(settings, caplog, monkeypatch):
     monkeypatch.setattr(auth, "is_auth_disabled", lambda: True)
     assert "访问令牌" not in _announce(settings, caplog)
+
+
+@pytest.mark.parametrize("contents", ["", "  \n\t  "])
+def test_an_empty_token_file_is_written_again(settings, caplog, contents):
+    token_file = settings.data_dir / ".console_token"
+    token_file.parent.mkdir(parents=True)
+    token_file.write_text(contents, encoding="utf-8")
+
+    text = _announce(settings, caplog)
+
+    assert token_file.read_text(encoding="utf-8") == TOKEN
+    assert str(token_file) in text
+    assert TOKEN not in text

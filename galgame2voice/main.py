@@ -218,8 +218,14 @@ async def _announce_console_token(settings) -> None:
         )
         return
     token_file = settings.data_dir / ".console_token"
-    if not token_file.is_file():
-        # Someone deleted the file; write it again from the stored token.
+    missing = not token_file.is_file()
+    if not missing:
+        try:
+            missing = not token_file.read_text(encoding="utf-8").strip()
+        except Exception:
+            missing = False
+    if missing:
+        # Someone deleted the file or a truncated write left it empty; restore it from the DB.
         try:
             token = await _read_db_console_token(settings)
             if token:
@@ -229,9 +235,10 @@ async def _announce_console_token(settings) -> None:
                     token_file.chmod(0o600)
                 except OSError:
                     pass
+                missing = False
         except Exception as exc:
             logger.warning("Could not restore the console token file: %s", exc)
-    if token_file.is_file():
+    if not missing:
         logger.info(
             "已开启访问令牌：网页要求输入令牌时，用记事本打开 %s，复制里面的内容粘贴进去。",
             token_file,
