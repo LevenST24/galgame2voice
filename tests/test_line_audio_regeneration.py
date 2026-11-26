@@ -18,7 +18,7 @@ from galgame2voice.database.session import get_db, immediate_transaction, init_d
 from galgame2voice.routers.voice import router
 from galgame2voice.services.tts_cache_manager import TtsCacheManager
 from galgame2voice.services.tts_scheduler import TtsScheduler
-from galgame2voice.services.tts_service import TtsService
+from galgame2voice.services.tts_service import TtsService, VoiceModelMissingError
 from galgame2voice.services.voice_manager import get_voice_manager
 from galgame2voice.services.chat_service import ChatService
 
@@ -736,3 +736,15 @@ async def test_regenerate_line_accepts_fullwidth_alnum_and_ideographic_zero(repa
     response = await repair.client.post("/api/voice/regenerate-line", json=body)
     assert response.status_code == 200, response.text
     assert len(repair.engine.calls) == 1
+
+
+async def test_missing_voice_model_or_reference_points_to_real_ui_actions(repair):
+    async with get_db(repair.db) as conn:
+        no_model = await crud.create_voice_profile(conn, VoiceProfileCreate(name="缺权重", gpt_weights_path="", sovits_weights_path="", ref_audio_path=str(repair.root / "ref.wav")))
+        no_ref = await crud.create_voice_profile(conn, VoiceProfileCreate(name="缺参考", gpt_weights_path="m.ckpt", sovits_weights_path="m.pth", ref_audio_path=""))
+    with pytest.raises(VoiceModelMissingError) as exc:
+        await repair.service.synthesize_to_file("こんにちは。", {"voice_profile_id": no_model.id})
+    assert "设置中心 → 角色与会话" in str(exc.value) and "＋ 新建自定义音色" in str(exc.value) and "运行状态" not in str(exc.value)
+    r1 = await repair.client.post("/api/voice/regenerate-line", json={**repair.body, "voice_profile_id": no_model.id})
+    r2 = await repair.client.post("/api/voice/regenerate-line", json={**repair.body, "voice_profile_id": no_ref.id})
+    assert r1.status_code == r2.status_code == 422 and "设置中心 → 角色与会话" in r1.json()["detail"] and "导入角色包" in r1.json()["detail"] and "＋ 新建自定义音色" in r2.json()["detail"]

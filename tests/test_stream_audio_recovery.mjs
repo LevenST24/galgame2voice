@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import { test, afterEach } from 'node:test';
 import { StreamAudioController, streamAudioController } from '../frontend/src/audio_player.js';
 import { initAudioPlayerUi } from '../frontend/src/controllers/audio_player_ui.js';
+import { mountAdv } from '../frontend/src/adv/adv_app.js';
 import { createBacklog } from '../frontend/src/adv/backlog.js';
 import { clearMemAudioCache, loadAudioBlob, putCachedAudioBlob } from '../frontend/src/cache.js';
 import { streamChat } from '../frontend/src/ai.js';
+import { startListening, stopListening } from '../frontend/src/voice.js';
 import { fakeDocument } from './helpers/adv_dom.mjs';
 
 const tick = (ms = 0) => new Promise(resolve => setTimeout(resolve, ms));
@@ -181,8 +183,51 @@ test('a refused line playback reports a browser recovery hint without fetching a
   assert.equal(await p.playLine(0, ['/blocked-line.wav']), 'blocked');
   assert.equal(p._linePlayState, null);
   assert.equal(errors.length, 1);
-  assert.match(errors[0].message, /浏览器.*LOG.*语音/);
+  assert.match(errors[0].message, /浏览器.*记录.*语音/);
   assert.deepEqual(fetched, []);
+});
+
+test('playLine resumes an interrupted AudioContext before scheduling chunks', async () => {
+  const p = player({ fetchTimeoutMs: 500 }); p.ctx.state = 'interrupted';
+  const pending = p.playLine(0, ['/interrupted-line.wav']); await tick();
+  assert.equal(p.ctx.resumes, 1); p.ctx.sources[0].finish(); assert.equal(await pending, 'ended');
+});
+test('returning to foreground resumes an interrupted AudioContext unless paused', () => {
+  const prevDoc = globalThis.document, doc = globalThis.document = fakeDocument();
+  try {
+    const p = player(); p.ctx.state = 'interrupted'; p.isPaused = true;
+    doc.dispatchEvent({ type: 'visibilitychange' }); assert.equal(p.ctx.resumes, 0);
+    p.isPaused = false; doc.dispatchEvent({ type: 'visibilitychange' }); assert.equal(p.ctx.resumes, 1);
+  } finally { if (prevDoc === undefined) delete globalThis.document; else globalThis.document = prevDoc; }
+});
+test('audioSession switches to playback in playLine and play-and-record only while recording', async () => {
+  const prevNav = Object.getOwnPropertyDescriptor(globalThis, 'navigator'), audioSession = { type: 'auto' };
+  let recog; Object.defineProperty(globalThis, 'navigator', { value: { audioSession }, configurable: true, writable: true });
+  try {
+    const p = player(); window.SpeechRecognition = class { constructor() { recog = this; } start() {} stop() {} };
+    assert.equal(audioSession.type, 'auto');
+    const pending = p.playLine(0, ['/silent-switch.wav']); await tick(); p.ctx.sources[0].finish(); await pending;
+    assert.equal(audioSession.type, 'playback');
+    assert.equal(startListening({ onText() {} }).ok, true); assert.equal(audioSession.type, 'play-and-record');
+    stopListening(); assert.equal(audioSession.type, 'auto');
+    assert.equal(startListening({ onText() {} }).ok, true); recog.onerror({ error: 'no-speech' }); assert.equal(audioSession.type, 'auto');
+  } finally { stopListening(); if (prevNav) Object.defineProperty(globalThis, 'navigator', prevNav); else delete globalThis.navigator; }
+});
+test('stage capture touchend and stopPropagation child click unlock AudioContext unless running or paused', () => {
+  const prevDoc = globalThis.document, doc = globalThis.document = fakeDocument(), root = doc.createElement('div');
+  doc.body.appendChild(root); const p = player(); p.ctx.state = 'suspended';
+  const app = mountAdv({ root }, {
+    controller: { busy: false, on: () => () => {}, send: () => true, canRetry: () => false, retry() {}, stop() {} },
+    audio: p, getSession: () => ({ id: 's', settings: {}, messages: [] }),
+    fetchBackgrounds: async () => ({ backgrounds: [], works: [] }), raf: () => 1, cancelRaf() {}, matchMedia: () => ({ matches: false }),
+  });
+  try {
+    const sendBtn = app.stage.stage.querySelector('.adv-player-send-btn');
+    sendBtn.addEventListener('touchend', e => e.stopPropagation());
+    sendBtn.click(); assert.equal(p.ctx.resumes, 1); sendBtn.click(); assert.equal(p.ctx.resumes, 1);
+    p.ctx.state = 'interrupted'; p.isPaused = true; sendBtn.dispatchEvent({ type: 'touchend' }); assert.equal(p.ctx.resumes, 1);
+    p.isPaused = false; sendBtn.dispatchEvent({ type: 'touchend' }); assert.equal(p.ctx.resumes, 2);
+  } finally { app.unmount(); if (prevDoc === undefined) delete globalThis.document; else globalThis.document = prevDoc; }
 });
 
 test('an unresolved line resume reaches its deadline and clears playback ownership', async t => {

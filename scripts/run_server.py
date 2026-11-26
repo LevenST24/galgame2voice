@@ -79,7 +79,7 @@ try:
     )
     from galgame2voice.config import get_settings, require_settings  # noqa: E402
     from galgame2voice.utils.active_turns import stop_active_turns  # noqa: E402
-    from galgame2voice.utils.windows_runtime import kernel32  # noqa: E402
+    from galgame2voice.utils.windows_runtime import disable_console_quick_edit, kernel32  # noqa: E402
     from scripts.launcher_address import browser_hosts  # noqa: E402
     from scripts import desktop_instance  # noqa: E402
 except ImportError as exc:
@@ -548,7 +548,10 @@ def run_hardware_diagnostics() -> dict[str, Any]:
             if vram_total <= 4.1:
                 print(f"      [显存提示] 显卡物理显存为 {vram_total:.1f} GB (显存较紧凑)。")
                 print("                长时间连续多轮对话或高并发时可能存在显存溢出(OOM)风险。")
-                print("                若遇显存不足，可在控制面板或通过 `启动.bat --cpu`（Linux/macOS 下为 `bash run.sh --cpu`）启用「CPU 稳定模式」（依托大内存，彻底杜绝崩溃）。")
+                print(
+                    "                若遇显存不足，可在「设置中心 → 语音服务 → 计算方式」选「CPU 模式」并在「运行状态」重启引擎，"
+                    "或通过 `启动.bat --cpu`（Linux/macOS 下为 `bash run.sh --cpu`）启动。"
+                )
             else:
                 print(f"      [显存就绪] 显存容量: {vram_total:.1f} GB (当前空闲约 {vram_free:.1f} GB)")
 
@@ -1008,9 +1011,14 @@ def ensure_gpt_sovits_running(
         if identity == "engine":
             print("      [OK] GPT-SoVITS 语音引擎已在运行")
         elif identity == "other":
+            action = (
+                "改为其他未占用的本机地址（如 http://127.0.0.1:9881）"
+                if sovits_port == 9880
+                else "改回 http://127.0.0.1:9880"
+            )
             print(
                 f"      [WARN] 端口 {sovits_port} 已被别的程序占用，那里运行的不是语音引擎。"
-                "请关闭占用这个端口的程序，或在「设置中心 → 语音服务」把「语音服务地址」改回 http://127.0.0.1:9880 后重新启动。"
+                f"请关闭占用这个端口的程序，或在「设置中心 → 语音服务」把「语音服务地址」{action}后重新启动。"
             )
         else:
             print(
@@ -1391,9 +1399,35 @@ def _run_main(parsed: argparse.Namespace):
         print_lan_bind_needs_token(parsed.host)
         sys.exit(2)
 
+    if getattr(sys, "frozen", False) and parsed.port != 0 and is_port_in_use(parsed.port):
+        import http.client
+
+        conn = None
+        other_running = False
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", parsed.port, timeout=1.5)
+            conn.request("GET", "/api/health")
+            resp = conn.getresponse()
+            if resp.status == 200:
+                health = json.loads(resp.read(4096))
+                other_running = isinstance(health, dict) and health.get("app") == "galgame2voice"
+        except (OSError, ValueError, http.client.HTTPException):
+            pass
+        finally:
+            if conn is not None:
+                conn.close()
+        if other_running:
+            print(
+                f"[提示] 端口 {parsed.port} 上已经有另一个 Galgame2Voice 在运行（多半是旧版本，或另一个文件夹里的程序）。"
+            )
+            print("请先关掉它的黑色启动窗口，再重新双击这个文件夹里的「启动.bat」。")
+            print("两个同时开着时，这个会换到别的端口，浏览器里的本地记录和录音会看不到。")
+            sys.exit(1)
+
     setup_windows_job_object()
     setup_signal_handlers()
     setup_console_close_handler()
+    disable_console_quick_edit()
     atexit.register(cleanup_subprocesses)
 
     listener = None

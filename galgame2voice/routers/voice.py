@@ -6,6 +6,7 @@ and switching active character models with auto-rollback.
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import ipaddress
 import logging
 import os
 from pathlib import Path
@@ -289,7 +290,20 @@ _NATIVE_FILE_PICKER_CONFIG: dict[str, tuple[str, list[tuple[str, str]]]] = {
     summary="Open Native Windows File Browser",
     description="Opens native OS file dialog to let the user select a file (.ckpt, .pth, audio).",
 )
-async def open_native_file_dialog(req: BrowseFileRequest) -> dict[str, Any]:
+async def open_native_file_dialog(
+    req: BrowseFileRequest, request: Request = None  # type: ignore[assignment]
+) -> dict[str, Any]:
+    if request is not None:
+        host = (request.client.host if request.client else "").strip()
+        if host != "testclient":
+            try:
+                addr = ipaddress.ip_address(host)
+                is_local = (getattr(addr, "ipv4_mapped", None) or addr).is_loopback
+            except ValueError:
+                is_local = False
+            if not is_local:
+                return {"selected_path": "", "picker_unavailable": True}
+
     def _run_picker() -> str | None:
         root = None
         try:

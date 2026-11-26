@@ -289,7 +289,7 @@ async def test_incomplete_resolved_voice_never_uses_engine_models(stack, mode, i
             await crud.set_active_voice_profile(conn, target.id)
 
     options = {} if implicit else {'voice_profile_id': target.id}
-    with pytest.raises(ValueError, match='模型.*缺少'):
+    with pytest.raises(ValueError, match='缺少.*模型权重'):
         await render(stack, mode, options, use_cache=True)
     assert stack.engine.calls == []
 
@@ -310,7 +310,7 @@ async def test_complete_explicit_weights_override_incomplete_profile(stack):
 
 async def test_selected_pre_resolved_voice_cannot_borrow_missing_models(stack):
     target = stack.profiles[1]
-    with pytest.raises(ValueError, match='模型.*缺少'):
+    with pytest.raises(ValueError, match='缺少.*模型权重'):
         await stack.service.synthesize('こんにちは', options={
             '_pre_resolved': True, 'voice_profile_id': target.id,
             'gpt_weights_path': '', 'sovits_weights_path': target.sovits_weights_path,

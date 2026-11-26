@@ -243,6 +243,7 @@ test('settings center: reset button is visible only on inference tab, and resets
   }
   assert.ok(indexHtml.includes('id="gPrecision"'), 'gPrecision must exist in frontend/index.html');
   assert.ok(indexHtml.includes('id="gAudioRetention"'), 'gAudioRetention must exist in frontend/index.html');
+  assert.ok(indexHtml.includes('id="gDiagVoiceChip" title="点击打开「角色与会话」"'), 'gDiagVoiceChip tooltip must match tab name');
 
   await saveGlobalConfig();
   assert.ok(savedPayload !== null, 'Config POST payload should have been captured');

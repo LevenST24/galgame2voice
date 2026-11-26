@@ -312,3 +312,10 @@ def test_create_request_limits_match_the_persona_editor_and_the_synthesis_limit(
     for field in ("prompt_text", "refer_text"):
         with pytest.raises(ValidationError):
             VoiceProfileCreateRequest(**base, **{field: "あ" * 501})
+
+
+async def test_unloaded_voice_switch_points_to_real_character_actions(stack, monkeypatch):
+    monkeypatch.setattr(stack.client, "switch_voice_profile", AsyncMock(return_value=False))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
+        resp = await client.post("/api/voice/switch", json={"profile_id": stack.new.id})
+    assert resp.status_code == 502 and "设置中心 → 运行状态" in resp.json()["detail"] and "导入角色包" in resp.json()["detail"]

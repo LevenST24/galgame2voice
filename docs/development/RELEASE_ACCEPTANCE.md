@@ -48,3 +48,57 @@ uv run --frozen --extra desktop python scripts/smoke_windows_turn_reply.py --arc
 - 使用合成 LLM/TTS 上游，能检查打包程序的请求、流式处理、存储和故障反馈，不能证明真实模型质量、显存占用或人脸部件的对齐。
 - 实际语音引擎和真实角色资源需要单独验收。未执行的项目应注明未验证。
 - 构建成功、API 返回 200 或浏览器启动成功，都不能替代完整流程验收。
+
+## PowerShell 验收调用示例
+
+- `smoke_windows_portable.py` 会在中文、空格路径解压真实产物，隐藏系统 Python/FFmpeg，检查网页、文件选择器运行库、音频转换和凭据保存；未检测到可用浏览器时会自动跳过无头首页检查，**跳过不代表 UI 交互验收通过**。
+- `smoke_windows_turn_reply.py` 会在临时目录真实解压便携 EXE，接入合成替身桩（`scripts/dev_standins.py`），检查“收到首句台词后关闭流 → 按真实用户消息 ID 解析助手 ID → 唯一单句修复 POST 持久化 → 同目录冷重启服务 → 历史分页/音频文件/WAV 格式与只读 SQLite 一致性”。
+
+在 Windows 维护者环境中执行以下脚本，自动完成动态发现、校验核对与独立沙箱验收：
+
+```powershell
+# 1. 动态定位唯一发布包并读取同源 SHA-256 校验和
+$archives = Get-ChildItem -Path "dist/*-windows-x64.zip" -File
+if ($archives.Count -ne 1) {
+    throw "预期 dist/ 下存在唯一的 Windows 发布包，实际找到 $($archives.Count) 个。"
+}
+$archivePath = $archives[0].FullName
+$shaFile = "$archivePath.sha256"
+if (-not (Test-Path $shaFile)) {
+    throw "未找到对应的校验和文件: $shaFile"
+}
+$expectedSha = (Get-Content -Path $shaFile -Raw).Trim().Split()[0]
+
+# 2. 在系统临时目录生成 GUID 独占沙箱目录
+$scratchDir = Join-Path $env:TEMP ("g2v-release-gate-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $scratchDir -Force | Out-Null
+
+try {
+    # 3. 校验包结构与基础启动冒烟
+    uv run --frozen --extra desktop python scripts/verify_windows_portable.py $archivePath
+    if ($LASTEXITCODE -ne 0) {
+        throw "verify_windows_portable 校验未通过 (退出码: $LASTEXITCODE)"
+    }
+
+    uv run --frozen --extra desktop python scripts/smoke_windows_portable.py $archivePath
+    if ($LASTEXITCODE -ne 0) {
+        throw "smoke_windows_portable 冒烟未通过 (退出码: $LASTEXITCODE)"
+    }
+
+    # 4. 执行端到端业务验收（使用 --no-dev 保证纯净运行）
+    uv run --frozen --extra desktop --no-dev python scripts/smoke_windows_turn_reply.py `
+        --archive $archivePath `
+        --expected-sha $expectedSha `
+        --scratch $scratchDir
+    if ($LASTEXITCODE -ne 0) {
+        throw "smoke_windows_turn_reply 业务验收未通过 (退出码: $LASTEXITCODE)"
+    }
+
+    Write-Host "便携包发布验收全部通过。"
+}
+finally {
+    # 失败时请保留沙箱内的 result.json 与合成服务日志以供定位
+    # 切勿删除真实用户 data 目录重试，严禁向外上传解压安装树、私有数据库或密钥
+    Write-Host "验收临时目录: $scratchDir"
+}
+```

@@ -295,7 +295,7 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
             }
           } else if (currentEvent === 'audio_chunk_error') {
             onEvent?.(currentEvent, json);
-            audioError ||= getErrorMessage(json, '本轮角色语音暂不可用，文字回复已保留。请在「设置中心 → 运行状态」启动引擎，或切换 CPU 稳定模式后重试。');
+            audioError ||= getErrorMessage(json, '本轮角色语音暂不可用，文字回复已保留。请在「设置中心 → 运行状态」启动引擎；显存不够时，可在「设置中心 → 语音服务 → 计算方式」改选「CPU 模式」后重试。');
             console.warn('[streamChat] audio chunk error:', json.error, json.sentence);
           } else if (currentEvent === 'error') {
             errorCode = extractChatErrorCode(json);
