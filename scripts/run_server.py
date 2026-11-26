@@ -1337,6 +1337,9 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
 def main(args: list[str] | None = None):
     parsed = parse_args(args)
     if not parsed.check_only and not getattr(sys, "frozen", False):
+        # A bad setting must give the Chinese message, not a traceback from
+        # _resolve_project_root() reading the settings for the instance lock.
+        require_settings()
         root = _resolve_project_root()
         instance = desktop_instance.DesktopInstance(root)
         if not instance.acquire():

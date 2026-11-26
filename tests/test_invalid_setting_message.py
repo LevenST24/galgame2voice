@@ -73,3 +73,12 @@ def test_desktop_entry_prints_bad_setting_message(tmp_path, monkeypatch, fresh_s
     assert desktop_entry.main() == 1
     err = capsys.readouterr().err
     assert "GALGAME2VOICE_DEBUG" in err and "Traceback" not in err
+
+
+def test_source_launch_prints_bad_setting_message(monkeypatch, fresh_settings):
+    from scripts import run_server
+
+    monkeypatch.setenv("GALGAME2VOICE_DEBUG", "maybe")
+    with pytest.raises(SystemExit) as exc:
+        run_server.main(["--no-engine", "--no-browser"])
+    assert "GALGAME2VOICE_DEBUG" in str(exc.value.code)
