@@ -438,3 +438,41 @@ async def test_failed_preparation_preserves_selection_and_does_not_cache_wrong_a
         assert (await crud.get_active_voice_profile(conn)).id == stack.profiles[0].id
     refuse = False
     assert await render(stack, 'bytes') == wav(600)
+
+
+@pytest.mark.parametrize('missing', [True, False])
+async def test_failed_switch_reports_missing_characters_folder_only_when_file_is_gone(stack, monkeypatch, missing):
+    from httpx import ASGITransport, AsyncClient
+    from galgame2voice.main import create_app
+    from galgame2voice.services.voice_manager import VoiceManager
+
+    pkg = stack.root / 'characters' / 'natsume'
+    pkg.mkdir(parents=True)
+    for name, data in [('gpt.ckpt', b'gpt'), ('sovits.pth', b'sovits'), ('ref.wav', wav(200))]:
+        (pkg / name).write_bytes(data)
+    target = stack.profiles[1]
+    async with get_db(stack.db) as conn:
+        await crud.update_voice_profile(conn, target.id, VoiceProfileUpdate(
+            name='夏目', gpt_weights_path='characters/natsume/gpt.ckpt',
+            sovits_weights_path='characters/natsume/sovits.pth', ref_audio_path='characters/natsume/ref.wav',
+        ))
+    if missing:
+        for child in pkg.iterdir():
+            child.unlink()
+        pkg.rmdir()
+    async def fail_switch(*_a, **_kw):
+        return httpx.Response(500, text='switch failed')
+
+    monkeypatch.setattr(stack.engine, 'handle_request', fail_switch)
+    expected = ('找不到角色「夏目」的语音文件：程序文件夹里的 characters 文件夹中没有它了。'
+                '如果是从旧版升级，请把旧文件夹里的 characters 文件夹复制过来；也可以到「设置中心 → 角色与会话」重新选择角色。')
+    with pytest.raises(ValueError) as exc_info:
+        await render(stack, 'bytes')
+    assert (str(exc_info.value) == expected and '运行状态' not in str(exc_info.value)) if missing else ('运行状态' in str(exc_info.value))
+    monkeypatch.setattr('galgame2voice.routers.voice.get_db', lambda: get_db(stack.db))
+    monkeypatch.setattr('galgame2voice.routers.voice.get_voice_manager', lambda: VoiceManager(stack.client, db_path=str(stack.db)))
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url='http://127.0.0.1:8080') as http:
+        resp = await http.post('/api/voice/switch', json={'profile_id': target.id})
+    assert resp.status_code == 502
+    assert (resp.json()['detail'] == expected) if missing else ('运行状态' in resp.json()['detail'])
+

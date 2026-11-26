@@ -20,7 +20,7 @@ from typing import Any, AsyncGenerator
 import httpx
 
 from galgame2voice.config import get_settings
-from galgame2voice.services.audio_identity import SourceFile, VoicePreparation, bind_audio_options
+from galgame2voice.services.audio_identity import SourceFile, VoicePreparation, bind_audio_options, database_scope
 from galgame2voice.services.voice_resources import VoiceResourceGuard
 from galgame2voice.services.engine_supervisor import get_managed_launch_for_url, mark_engine_launch_ready
 from galgame2voice.utils.path_guard import resolve_existing_audio_path
@@ -109,6 +109,27 @@ NON_AUDIO_RESPONSE_ERROR = (
 
 def _is_wav_payload(data: bytes) -> bool:
     return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"
+
+
+def missing_character_voice_message(target: Any) -> str | None:
+    """Explain a failed switch when a profile's file under characters/ is missing."""
+    settings = get_settings()
+    root = database_scope(settings.project_root)
+    chars_prefix = database_scope(settings.characters_dir).rstrip(os.sep) + os.sep
+    is_dict = isinstance(target, dict)
+    for key in ("gpt_weights_path", "sovits_weights_path", "ref_audio_path", "refer_audio_path"):
+        raw = str((target.get(key) if is_dict else getattr(target, key, None)) or "").strip().strip("\"'")
+        if raw:
+            p = Path(raw) if Path(raw).is_absolute() else Path(root) / raw.replace("\\", "/")
+            scoped = database_scope(p)
+            if scoped.startswith(chars_prefix) and not Path(scoped).is_file():
+                name = str((target.get("name") if is_dict else getattr(target, "name", None)) or "").strip() or "当前角色"
+                return (
+                    f"找不到角色「{name}」的语音文件：程序文件夹里的 characters 文件夹中没有它了。"
+                    "如果是从旧版升级，请把旧文件夹里的 characters 文件夹复制过来；"
+                    "也可以到「设置中心 → 角色与会话」重新选择角色。"
+                )
+    return None
 
 PARAM_WEIGHTS_PATH = "weights_path"
 PARAM_REFER_AUDIO_PATH = "refer_audio_path"
@@ -789,7 +810,8 @@ class GptSovitsClient:
                     'text_lang': opts.get('text_lang', 'ja'),
                 }
                 if not await self._switch_voice_profile_locked(target):
-                    raise ValueError('语音引擎还没准备好，现在只有文字、没有声音。可在「运行状态」查看引擎。')
+                    missing = await asyncio.to_thread(missing_character_voice_message, target)
+                    raise ValueError(missing or '语音引擎还没准备好，现在只有文字、没有声音。可在「运行状态」查看引擎。')
         await asyncio.to_thread(identity.validate, opts, self)
         # Hot URL swaps do not wait for the potentially long inference mutex.
         if identity.engine_url and identity.engine_url != self.base_url.rstrip("/"):
@@ -1083,6 +1105,7 @@ async def close_gpt_sovits_client() -> None:
 
 __all__ = [
     "GptSovitsClient",
+    "missing_character_voice_message",
     "get_gpt_sovits_client",
     "reload_gpt_sovits_client_base_url",
     "close_gpt_sovits_client",
