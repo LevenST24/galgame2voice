@@ -525,3 +525,29 @@ async def test_import_rejects_escaped_or_unc_weight_paths_without_fs_probe(tmp_p
         for fname, payload in (("cn.zip", ok_cn), ("ptr.zip", ok_ptr)):
             res = await client.post("/api/characters/import", params={"filename": fname}, content=payload)
             assert res.status_code == 200 and res.json()["imported"][0]["missing_voice_weights"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fmt", ["zip", "tar"])
+async def test_import_rejects_archive_exceeding_member_limit(tmp_path, monkeypatch, fmt):
+    root, app = _setup_app(tmp_path, monkeypatch)
+    await init_db()
+    monkeypatch.setattr(cpi, "MAX_IMPORT_MEMBERS", 5)
+    names = [f"pack/empty_{i}.txt" for i in range(5)] + ["__MACOSX/._empty_0.txt"]
+    buf = io.BytesIO()
+    if fmt == "zip":
+        with zipfile.ZipFile(buf, "w") as zf:
+            for name in names:
+                zf.writestr(name, b"")
+    else:
+        with tarfile.open(fileobj=buf, mode="w") as tf:
+            for name in names:
+                info = tarfile.TarInfo(name=name)
+                info.size = 0
+                tf.addfile(info, io.BytesIO(b""))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
+        res = await client.post("/api/characters/import", params={"filename": f"many.{fmt}"}, content=buf.getvalue())
+    assert res.status_code == 413, res.text
+    assert res.json()["detail"] == "角色包里的文件太多（超过 50000 个），已停止导入。请确认选对了文件。"
+    assert not (root / "characters").exists() or list((root / "characters").iterdir()) == []
+    _assert_temp_empty()

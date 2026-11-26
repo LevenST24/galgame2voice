@@ -40,12 +40,14 @@ from galgame2voice.utils.async_tasks import await_protected
 from galgame2voice.utils.logger import describe_storage_error, sanitize_error_detail
 
 MAX_IMPORT_BYTES = 8 * 1024 * 1024 * 1024  # 8 GiB
+MAX_IMPORT_MEMBERS = 50000
 STREAM_WRITE_BUFFER_BYTES = 1024 * 1024  # 1 MiB
 EXTRACT_COPY_CHUNK_BYTES = 256 * 1024  # 256 KiB
 MAX_PACKAGE_DISCOVERY_DEPTH = 3
 
 NO_PACKAGE_FOUND_DETAIL = "没有找到角色包：需要包含 manifest.json 的文件夹"
 SIZE_LIMIT_EXCEEDED_DETAIL = "角色包文件过大（上限 8 GiB），请精简无关文件后重试。"
+MEMBER_LIMIT_EXCEEDED_DETAIL = "角色包里的文件太多（超过 50000 个），已停止导入。请确认选对了文件。"
 
 logger = logging.getLogger("galgame2voice.services.character_package_import")
 
@@ -283,7 +285,11 @@ def _extract_members(
     max_bytes: int,
 ) -> None:
     actual_total = 0
+    member_count = 0
     for member_name, is_dir, open_src in members:
+        member_count += 1
+        if member_count > MAX_IMPORT_MEMBERS:
+            raise HTTPException(413, MEMBER_LIMIT_EXCEEDED_DETAIL)
         if _is_os_metadata(member_name):
             continue
         dest = _resolve_safe_extract_path(member_name, extract_dir)
@@ -312,6 +318,8 @@ def extract_archive_safely(
         extract_dir.mkdir(parents=True, exist_ok=True)
         if fmt == "zip":
             with zipfile.ZipFile(archive_path, "r") as zf:
+                if len(zf.infolist()) > MAX_IMPORT_MEMBERS:
+                    raise HTTPException(413, MEMBER_LIMIT_EXCEEDED_DETAIL)
                 name_encoding = _choose_zip_name_encoding(zf)
 
                 def _zip_members() -> Iterable[tuple[str, bool, Callable[[], IO[bytes] | None] | None]]:
