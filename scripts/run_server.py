@@ -75,7 +75,7 @@ try:
         setup_windows_job_object as _setup_windows_job_object,
         terminate_process_tree,
     )
-    from galgame2voice.config import get_settings  # noqa: E402
+    from galgame2voice.config import get_settings, require_settings  # noqa: E402
     from galgame2voice.utils.windows_runtime import kernel32  # noqa: E402
     from scripts.launcher_address import browser_hosts  # noqa: E402
 except ImportError as exc:
@@ -1195,6 +1195,7 @@ def main(args: list[str] | None = None):
         if parsed.check_only:
             print("\n[巡检失败] Python 运行环境或核心运行库校验未通过。")
         sys.exit(1)
+    require_settings()
 
     try:
         run_hardware_diagnostics()

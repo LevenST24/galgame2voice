@@ -36,7 +36,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from galgame2voice.config import Settings, get_settings
+from galgame2voice.config import Settings, get_settings, require_settings
 from galgame2voice.database.session import get_database_path
 from galgame2voice.security.auth import is_auth_disabled
 from galgame2voice.services.sovits_endpoint import resolve_sovits_url
@@ -452,7 +452,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     import asyncio
 
-    checks = asyncio.run(collect_checks(offline=args.offline))
+    checks = asyncio.run(collect_checks(settings=require_settings(), offline=args.offline))
 
     if args.json:
         # ensure_ascii keeps --json valid on any console encoding; JSON consumers

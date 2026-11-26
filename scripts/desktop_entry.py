@@ -68,6 +68,8 @@ def main() -> int:
         from scripts.run_server import main as run
         run()
     except SystemExit as exc:
+        if isinstance(exc.code, str) and exc.code:
+            print(exc.code, file=sys.stderr)
         return exc.code if isinstance(exc.code, int) else 1
     except Exception as exc:
         print(f"[启动失败] {exc}")
