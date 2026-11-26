@@ -345,7 +345,9 @@ export function mountAdv(dom, deps) {
     getSelection: storedBackground,
     saveSettings: patch => {
       deps.saveSettings?.(patch);
-      settings = pickSettings({ ...settings, ...deps.getSession()?.settings, ...patch }, DEFAULT_SESSION_SETTINGS);
+      // main.js sends no session update for its own save, so reread it: reopening the panel
+      // or picking a time must start from this choice, not the one loaded at mount.
+      update();
     },
     onPreview: selection => {
       appliedBackground = shownBackground(selection);
@@ -478,7 +480,8 @@ export function mountAdv(dom, deps) {
     stage.stage.classList.toggle('is-window-hidden', player.hidden);
     stage.stage.classList.toggle('reduced-motion', reducedMotion);
     quickMenu.setModelStatus(deps.getModelStatus?.() || { label: '对话模型', state: controller.busy ? 'busy' : 'ok' });
-    if (configPanel?.isOpen && !configPanel.element.contains(doc.activeElement)) {
+    // Embedded in the settings center, the dialog owns focus; pulling it back would yank the user off its tabs and buttons.
+    if (configPanel?.isOpen && !deps.readingSettingsContainer && !configPanel.element.contains(doc.activeElement)) {
       configPanel.focusFirstControl?.();
     }
   }
@@ -682,7 +685,15 @@ export function mountAdv(dom, deps) {
         controller.stop();
         if (player.isPresenting()) player.beginPlayerEdit();
         break;
-      case 'input': textbox.prepareInput({ canSend: !controller.busy }); break;
+      case 'input':
+        // AUTO or SKIP would advance to the next line and hide the box the player just opened.
+        // Lines stay queued; they are only dropped once the player actually starts typing.
+        temporarySkip = false;
+        if (player.skip) { player.setSkip(false); restoreSprite(); }
+        player.setAuto(false);
+        textbox.prepareInput({ canSend: !controller.busy });
+        syncControls();
+        break;
       case 'voice_mode': deps.toggleVoice?.(); if (!deps.voiceEnabled?.()) stopStageReplay(); backlog?.stopReplay(); update(); break;
       case 'replay_voice': {
         const line = currentLine;
