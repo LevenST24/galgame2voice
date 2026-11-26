@@ -191,9 +191,22 @@ export function createBgPanel(container, {
     return String((known && known.name) || work);
   }
 
-  function buildTiles() {
+  function clearTiles() {
+    for (const { tile, thumb } of tiles) {
+      tile.onclick = null;
+      if (thumb.tagName === 'IMG') {
+        if (thumb.removeAttribute) thumb.removeAttribute('src');
+        else thumb.src = '';
+      } else if (thumb.style) {
+        thumb.style.backgroundImage = '';
+      }
+    }
     tiles.length = 0;
     grid.replaceChildren();
+  }
+
+  function buildTiles() {
+    clearTiles();
     const items = (Array.isArray(getList()) ? getList() : [])
       .filter(item => item && typeof item.key === 'string' && item.key);
     const activeWork = getWork ? getWork() : null;
@@ -321,6 +334,7 @@ export function createBgPanel(container, {
     isOpen = false;
     overlay.hidden = true;
     overlay.setAttribute('hidden', '');
+    clearTiles();
     onClose?.();
     if (savedFocus?.isConnected && typeof savedFocus.focus === 'function') savedFocus.focus();
   }
@@ -338,8 +352,7 @@ export function createBgPanel(container, {
     destroy() {
       for (const off of disposers.splice(0)) off();
       isOpen = false;
-      tiles.length = 0;
-      for (const tile of [...grid.querySelectorAll('button')]) tile.onclick = null;
+      clearTiles();
       overlay.remove();
     },
   };
