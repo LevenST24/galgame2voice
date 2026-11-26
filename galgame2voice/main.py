@@ -31,6 +31,7 @@ from galgame2voice.services.engine_supervisor import DefaultEngineSupervisor, En
 from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client, close_gpt_sovits_client
 from galgame2voice.services.telemetry_jobs import TelemetryJobs
 from galgame2voice.services.audio_cleaner import _audio_cleanup_loop
+from galgame2voice.services.character_package_import import sweep_import_leftovers
 from galgame2voice.utils.http_client import close_shared_async_clients
 from galgame2voice.utils.logger import DISK_FULL_MESSAGE, describe_database_write_error, setup_logger
 
@@ -368,6 +369,8 @@ async def lifespan(app: FastAPI):
 
     _init_logging_and_safety(settings)
     _init_directories(settings)
+    # No import can be running yet, so whatever a crash left behind can go.
+    await asyncio.to_thread(sweep_import_leftovers, settings.data_dir, older_than=None)
     await _init_database_and_characters(settings)
     await _announce_console_token(settings)
     await _init_gpt_sovits_client(settings)

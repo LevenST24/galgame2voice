@@ -15,6 +15,7 @@ import stat
 import sys
 import tarfile
 import tempfile
+import time
 from typing import Any, Callable, IO, Iterable
 import unicodedata
 import zipfile
@@ -85,6 +86,45 @@ def _rmtree_force(path: Path) -> None:
 
     kw = {"onexc": _clear_ro} if sys.version_info >= (3, 12) else {"onerror": _clear_ro}
     shutil.rmtree(path, **kw)
+
+
+# An upload that is still streaming keeps touching its file; a day without a
+# change means the server that owned it stopped mid-import.
+STALE_IMPORT_TEMP_SECONDS = 24 * 3600
+
+
+def sweep_import_leftovers(data_dir: Path, *, older_than: float | None = STALE_IMPORT_TEMP_SECONDS) -> int:
+    """Delete uploads (up-*.bin), redeem links (dl-*.zip.import), and staging folders (imp-*) a crash left behind.
+
+    Packages can be gigabytes, and nothing else ever removes these. With
+    older_than=None (server startup, when no import can be running) every
+    leftover goes; otherwise only those untouched for that many seconds.
+    """
+    temp_root = data_dir / "character_import"
+    try:
+        entries = list(temp_root.iterdir())
+    except OSError:
+        return 0
+    cutoff = None if older_than is None else time.time() - older_than
+    removed = 0
+    for entry in entries:
+        if not (
+            entry.name.startswith("imp-")
+            or (entry.name.startswith("up-") and entry.name.endswith(".bin"))
+            or (entry.name.startswith("dl-") and entry.name.endswith(".zip.import"))
+        ):
+            continue
+        try:
+            if cutoff is not None and entry.lstat().st_mtime >= cutoff:
+                continue
+            if entry.is_dir() and not entry.is_symlink():
+                _rmtree_force(entry)
+            else:
+                entry.unlink(missing_ok=True)
+            removed += 1
+        except OSError as exc:
+            logger.warning("Could not remove leftover import file %s: %s", entry.name, exc)
+    return removed
 
 
 def detect_archive_format(archive_path: Path) -> str:
@@ -698,6 +738,7 @@ async def import_character_archive(
     """Streams, safely unpacks, validates, and installs character package(s)."""
     temp_root = get_settings().data_dir / "character_import"
     await asyncio.to_thread(temp_root.mkdir, parents=True, exist_ok=True)
+    await asyncio.to_thread(sweep_import_leftovers, temp_root.parent)
     fd, raw_upload = await asyncio.to_thread(tempfile.mkstemp, prefix="up-", suffix=".bin", dir=str(temp_root))
     os.close(fd)
     upload_path = Path(raw_upload)
