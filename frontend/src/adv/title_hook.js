@@ -28,12 +28,14 @@ export function showTitle(actions, { documentObj = document, matchMedia = query 
         element.inert = true;
         element.style.pointerEvents = 'none';
         animation = element.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 300 });
-        animation.finished.catch(() => {}).finally(() => { if (token === revision) element.hidden = true; });
+        animation.finished.catch(() => {}).finally(() => { if (token === revision) { element.hidden = true; screen.releaseMedia?.(); } });
+      } else {
+        screen.releaseMedia?.();
       }
       return result;
     };
   }
-  screen = createTitleScreen(root, { actions: wrapped, documentObj, matchMedia });
+  screen = createTitleScreen(root, { actions: wrapped, documentObj, matchMedia, deferMediaRelease: true });
   const { open, destroy } = screen;
   screen.open = () => {
     ++revision; animation?.cancel(); animation = null;

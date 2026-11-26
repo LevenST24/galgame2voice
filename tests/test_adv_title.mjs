@@ -1727,3 +1727,35 @@ test('unreadable saved API key updates home onboarding prompt while keeping exis
   assert.doesNotMatch(home.element.querySelector('.home-label')?.textContent || '', /第一次使用/);
   assert.equal(textTree(home.element.querySelector('.home-existing')), '查看已有对话 →');
 });
+
+test('title screen releases hidden grid and avatar images on returnHome and after entering chat', async t => {
+  const sessions = [
+    { ...snapshot('a'), background: '/bg/a.png' },
+    { ...snapshot('b', 1), background: '/bg/b.png' },
+  ];
+  const h = await fixture(t, { sessions, actions: {
+    getAvatar: async () => ({ rect: { x: 0, y: 0, width: 100, height: 100 }, layers: [{ file: '/face/b.webp', width: 100, height: 100 }] }),
+  } });
+  h.ui.destroy();
+  let finishFade;
+  const ui = showTitle(h.actions, { documentObj: h.doc, matchMedia: () => ({ matches: false }) });
+  t.after(() => ui.destroy());
+  await microtasks();
+  assert.equal(ui.element.querySelector('.home-avatar').querySelectorAll('img').length, 1);
+  ui.element.querySelector('.home-all').click();
+  const gridImgs = ui.element.querySelectorAll('.adv-title-thumb-image');
+  assert.equal(gridImgs.length, 2);
+  ui.element.querySelector('.adv-title-back').click();
+  assert.equal(ui.element.querySelectorAll('.adv-title-thumb-image').length, 0);
+  assert.ok(gridImgs.every(img => !img.src), 'leaving all-sessions grid must clear thumb img src');
+  await microtasks();
+  const avatarImgs = ui.element.querySelector('.home-avatar').querySelectorAll('img');
+  assert.equal(avatarImgs.length, 1);
+  ui.element.animate = () => ({ finished: new Promise(r => { finishFade = r; }), cancel() {} });
+  ui.element.querySelector('.home-continue').click();
+  assert.equal(ui.element.querySelectorAll('img').length, 1, 'fade keeps avatars visible until done');
+  finishFade();
+  await microtasks();
+  assert.equal(ui.element.querySelectorAll('img').length, 0);
+  assert.ok(avatarImgs.every(img => !img.src), 'avatar img src must be cleared once fade finishes');
+});
