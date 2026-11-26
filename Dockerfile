@@ -82,7 +82,7 @@ EXPOSE 8080
 VOLUME ["/app/data", "/app/audio", "/app/logs", "/app/characters"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://127.0.0.1:8080/api/health || exit 1
+    CMD curl -f "http://127.0.0.1:${GALGAME2VOICE_PORT:-${PORT:-${GALGAME_PORT:-8080}}}/api/health" || exit 1
 
 # The entrypoint turns authentication on before Settings load (an AUTH variable in
 # ENV trips `docker build --check`); the listener and startup safety check still
