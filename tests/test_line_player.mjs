@@ -857,3 +857,79 @@ test('voice.play returning failed or throwing reveals line and lets voice-priori
   clockThrow.tick(2000);
   assert.equal(playerThrow.currentIndex, 1, 'AUTO advances to next line after thrown voice');
 });
+
+// r67 R6: once the server says the text is final, the voice tail must not leave the
+// player staring at dots with no way to write the next message.
+test('voice tail: text_complete after the last line opens the input with send disabled', () => {
+  const { player, clock, render, events } = setup();
+  player.startTurn('tail');
+  player.setLineAudio('tail', 0, { status: 'skipped' });
+  player.pushLine('tail', sampleLine0);
+  clock.tick(500);
+  player.advance();
+  assert.equal(player.state, 'waiting_line');
+  assert.deepEqual(render.calls.at(-1), ['thinking', true]);
+
+  player.textComplete('tail');
+  assert.equal(player.state, 'input');
+  assert.deepEqual(render.calls.at(-1), ['enterInput', { canSend: false, voicePending: true }]);
+  assert.ok(events.some(([ev, payload]) => ev === 'input' && payload.canSend === false));
+
+  player.settle('tail', { ok: true });
+  assert.equal(player.state, 'input');
+  assert.deepEqual(render.calls.at(-1), ['enterInput', { canSend: true }]);
+});
+
+test('voice tail: text_complete that arrives early opens the input once the last line is read', () => {
+  const { player, clock, render } = setup();
+  player.startTurn('early');
+  player.setLineAudio('early', 0, { status: 'skipped' });
+  player.pushLine('early', sampleLine0);
+  player.textComplete('early');
+  assert.equal(player.state, 'revealing', 'unread text is never skipped');
+  clock.tick(500);
+  render.calls.length = 0;
+  player.advance();
+  assert.equal(player.state, 'input');
+  assert.deepEqual(render.calls.at(-1), ['enterInput', { canSend: false, voicePending: true }]);
+  assert.ok(!render.calls.some(([name, on]) => name === 'thinking' && on === true), 'no dots in the voice tail');
+});
+
+test('voice tail: without text_complete the dots stay until the reply settles', () => {
+  const { player, clock, render } = setup();
+  player.startTurn('dots');
+  player.setLineAudio('dots', 0, { status: 'skipped' });
+  player.pushLine('dots', sampleLine0);
+  clock.tick(500);
+  player.advance();
+  player.textComplete('another-turn');
+  assert.equal(player.state, 'waiting_line');
+  assert.deepEqual(render.calls.at(-1), ['thinking', true]);
+});
+
+test('voice tail: a line that is still unread keeps the player on the text', () => {
+  const { player, clock } = setup();
+  player.startTurn('more');
+  player.setLineAudio('more', 0, { status: 'skipped' });
+  player.setLineAudio('more', 1, { status: 'skipped' });
+  player.pushLine('more', sampleLine0);
+  player.pushLine('more', sampleLine1);
+  player.textComplete('more');
+  clock.tick(500);
+  player.advance();
+  assert.equal(player.currentIndex, 1);
+  assert.notEqual(player.state, 'input');
+});
+
+test('voice tail: a new turn forgets the previous text_complete', () => {
+  const { player, clock } = setup();
+  player.startTurn('old');
+  player.textComplete('old');
+  player.settle('old', { ok: true });
+  player.startTurn('new');
+  player.setLineAudio('new', 0, { status: 'skipped' });
+  player.pushLine('new', sampleLine0);
+  clock.tick(500);
+  player.advance();
+  assert.equal(player.state, 'waiting_line');
+});

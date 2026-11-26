@@ -34,7 +34,7 @@ from galgame2voice.utils.error_diagnostics import (
     is_retryable_diagnostic_code,
     normalize_diagnostic_code,
 )
-from galgame2voice.utils.logger import sanitize_error_detail
+from galgame2voice.utils.logger import describe_database_write_error, sanitize_error_detail
 
 logger = logging.getLogger("galgame2voice.routers.providers")
 router = APIRouter(tags=["Providers & Testing"])
@@ -188,6 +188,8 @@ async def _update_existing_provider(
         updated = await crud.update_provider(conn, provider_id, updates)
         return {"status": "success", "provider": updated.model_dump() if updated else None}
     except Exception as exc:
+        if describe_database_write_error(exc):
+            raise
         safe_err = sanitize_error_detail(exc)
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -241,6 +243,8 @@ async def _create_new_provider(
         created = await crud.create_provider(conn, new_provider)
         return {"status": "created", "provider": created.model_dump()}
     except Exception as exc:
+        if describe_database_write_error(exc):
+            raise
         safe_err = sanitize_error_detail(exc)
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -332,6 +336,8 @@ async def activate_provider(provider_id: str):
                     # Concurrently created by parallel activation request (TOCTOU safe)
                     pass
                 except Exception as exc:
+                    if describe_database_write_error(exc):
+                        raise
                     logger.debug("Non-critical: error while creating preset provider: %s", exc)
         success = await crud.set_active_provider(conn, clean_id)
         if not success:
