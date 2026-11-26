@@ -809,11 +809,11 @@ test('clicking mic while busy explains why without interrupting playback or misr
   ]);
   t.mock.timers.tick(1); await push; await flush();
   h.app.adv.action('auto'); h.app.adv.action('input');
-  const stopsBefore = h.stopLineCalls.length;
+  const stopsBefore = h.stopLineCalls.length, autoBefore = h.app.adv.player.auto;
   h.mic.click();
   assert.equal(h.recognizers.length, 0);
   assert.deepEqual(h.toasts(), ['角色还在回复，等这段回复结束后再用语音输入。']);
-  assert.equal(h.app.adv.player.state, 'waiting_advance'); assert.equal(h.app.adv.player.auto, true);
+  assert.equal(h.app.adv.player.state, 'waiting_advance'); assert.equal(h.app.adv.player.auto, autoBefore);
   assert.equal(h.stopLineCalls.length, stopsBefore);
   h.app.adv.action('advance'); assert.equal(h.app.adv.player.currentIndex, 1);
   const done = h.stream.requests[0].onEnd('第一句。第二句。');
