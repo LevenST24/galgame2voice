@@ -315,7 +315,9 @@ def _prepare_local(root: Path, part: Path, package_id: str, listed: dict[str, An
     return "download", listed, None
 
 
-async def redeem_download(request: Request, *, code: str, package_id: str, overwrite: bool = False) -> Any:
+async def redeem_download(
+    request: Request, *, code: str, package_id: str, overwrite: bool = False, same_name: str = ""
+) -> Any:
     try:
         parsed = parse_redeem_code(code)
     except RedeemCodeError as exc:
@@ -360,7 +362,7 @@ async def redeem_download(request: Request, *, code: str, package_id: str, overw
             try:
                 await asyncio.to_thread(_link_download)
                 result = await import_character_archive_file(
-                    request, link, filename=f"{package_id}.zip", overwrite=overwrite
+                    request, link, filename=f"{package_id}.zip", overwrite=overwrite, same_name=same_name
                 )
             except HTTPException as exc:
                 if exc.status_code in (400, 422):
