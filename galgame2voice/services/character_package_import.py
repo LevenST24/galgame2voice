@@ -472,6 +472,47 @@ def _place_packages(
         placed.append(target)
 
 
+def _manifest_id_key(pkg_dir: Path) -> str | None:
+    manifest_file = pkg_dir / "manifest.json"
+    if not manifest_file.is_file():
+        return None
+    try:
+        raw = json.loads(manifest_file.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+    pkg_id = raw.get("id") if isinstance(raw, dict) else None
+    return (identity_key(pkg_id) or None) if isinstance(pkg_id, str) else None
+
+
+def _target_installed_folders(staged: list[tuple[str, Path]], chars_dir: Path) -> list[tuple[str, Path]]:
+    """Send an update of an installed character to that character's folder.
+
+    The folder name comes from the zip's file name, so 「爱丽丝 (1).zip」 for the installed
+    「爱丽丝」 would land in a second folder and fail as a duplicate id. Matching by manifest id
+    turns it into the usual 「已有同名角色包」 question, and overwrite replaces the right folder.
+    """
+    installed: dict[str, str | None] = {}
+    try:
+        for item in chars_dir.iterdir():
+            if item.is_dir() and (key := _manifest_id_key(item)):
+                installed[key] = None if key in installed else item.name
+    except OSError:
+        return staged
+    if not installed:
+        return staged
+    taken = {name for name, _ in staged}
+    result: list[tuple[str, Path]] = []
+    for folder_name, src_dir in staged:
+        key = _manifest_id_key(src_dir)
+        current = installed.get(key) if key else None
+        if current and current != folder_name and current not in taken:
+            taken.discard(folder_name)
+            taken.add(current)
+            folder_name = current
+        result.append((folder_name, src_dir))
+    return result
+
+
 async def _rollback_and_rescan(
     placed: list[Path], backups: list[tuple[Path, Path]], catalog: Any, char_mgr: Any
 ) -> None:
@@ -629,6 +670,7 @@ async def import_character_archive_file(
         async with lock:
             chars_dir = char_mgr.characters_dir
             await asyncio.to_thread(chars_dir.mkdir, parents=True, exist_ok=True)
+            staged = await asyncio.to_thread(_target_installed_folders, staged, chars_dir)
             existing = [name for name, _ in staged if (chars_dir / name).exists()]
             if existing and not overwrite:
                 return JSONResponse(

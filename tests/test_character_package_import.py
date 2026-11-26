@@ -217,6 +217,66 @@ async def test_conflict_409_overwrite_backup_and_failed_overwrite_restore(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_update_under_another_file_name_asks_to_overwrite_the_installed_character(tmp_path, monkeypatch):
+    """A browser saves a second download as 「爱丽丝 (1).zip」; that is still an update of 爱丽丝."""
+    root, app = _setup_app(tmp_path, monkeypatch)
+    await init_db()
+    v1 = _make_package_bytes("zip", "alice", "爱丽丝", system_prompt="第一版人设")
+    v2 = _make_package_bytes("zip", "alice", "爱丽丝", system_prompt="第二版人设")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
+        first = await client.post("/api/characters/import", params={"filename": "爱丽丝.zip"}, content=v1)
+        assert first.status_code == 200, first.text
+        asked = await client.post("/api/characters/import", params={"filename": "爱丽丝 (1).zip"}, content=v2)
+        assert asked.status_code == 409, asked.text
+        assert asked.json()["code"] == "package_exists" and asked.json()["names"] == ["爱丽丝"]
+        replaced = await client.post(
+            "/api/characters/import", params={"filename": "爱丽丝 (1).zip", "overwrite": "1"}, content=v2
+        )
+        assert replaced.status_code == 200, replaced.text
+        assert replaced.json()["imported"][0]["profile_id"] == first.json()["imported"][0]["profile_id"]
+    assert sorted(p.name for p in (root / "characters").iterdir()) == ["爱丽丝"]
+    manifest = json.loads((root / "characters" / "爱丽丝" / "manifest.json").read_text("utf-8"))
+    assert manifest["system_prompt"] == "第二版人设"
+    _assert_temp_empty()
+
+
+@pytest.mark.asyncio
+async def test_update_under_another_file_name_replaces_invalid_package(tmp_path, monkeypatch):
+    root, app = _setup_app(tmp_path, monkeypatch)
+    await init_db()
+    broken_dir = root / "characters" / "爱丽丝"
+    broken_dir.mkdir(parents=True)
+    (broken_dir / "manifest.json").write_text(json.dumps({"id": "alice", "name": "爱丽丝"}), encoding="utf-8")
+    CharacterManager.get_instance().discover_characters()
+    fixed = _make_package_bytes("zip", "alice", "爱丽丝", system_prompt="修复版人设")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
+        asked = await client.post("/api/characters/import", params={"filename": "爱丽丝 (1).zip"}, content=fixed)
+        assert asked.status_code == 409 and asked.json()["names"] == ["爱丽丝"]
+        replaced = await client.post(
+            "/api/characters/import", params={"filename": "爱丽丝 (1).zip", "overwrite": "1"}, content=fixed
+        )
+        assert replaced.status_code == 200, replaced.text
+    assert sorted(p.name for p in (root / "characters").iterdir()) == ["爱丽丝"]
+    assert json.loads((broken_dir / "manifest.json").read_text("utf-8"))["system_prompt"] == "修复版人设"
+
+
+@pytest.mark.asyncio
+async def test_update_follows_disk_when_folder_changed_without_rescan(tmp_path, monkeypatch):
+    root, app = _setup_app(tmp_path, monkeypatch)
+    await init_db()
+    v1 = _make_package_bytes("zip", "alice", "爱丽丝")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
+        assert (await client.post("/api/characters/import", params={"filename": "爱丽丝.zip"}, content=v1)).status_code == 200
+        manifest_path = root / "characters" / "爱丽丝" / "manifest.json"
+        data = json.loads(manifest_path.read_text("utf-8"))
+        manifest_path.write_text(json.dumps({**data, "id": "bob", "name": "鲍勃"}), encoding="utf-8")
+        res = await client.post("/api/characters/import", params={"filename": "alice_v2.zip"}, content=v1)
+        assert res.status_code == 200, res.text
+    assert sorted(p.name for p in (root / "characters").iterdir()) == ["alice_v2", "爱丽丝"]
+    assert json.loads(manifest_path.read_text("utf-8"))["id"] == "bob"
+
+
+@pytest.mark.asyncio
 async def test_package_update_refreshes_the_reference_transcript(tmp_path, monkeypatch):
     """An update that keeps refs/gentle.wav but changes its text must not leave the old transcript."""
     from galgame2voice.database import crud
