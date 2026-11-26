@@ -257,6 +257,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     gBtnToggleKeyVisibility: $('gBtnToggleKeyVisibility'),
     gIconKeyEye: $('gIconKeyEye'),
     gBtnToggleKeyText: $('gBtnToggleKeyText'),
+    gBtnClearKey: $('gBtnClearKey'),
     gApiKeyTip: $('gApiKeyTip'),
     gBaseUrl: $('gBaseUrl'),
     gBtnResetBaseUrl: $('gBtnResetBaseUrl'),

@@ -8,6 +8,7 @@ const post = (body) => ({
 });
 export const fetchProviders = () => requestJson('/api/providers');
 export const saveProvider = (payload) => requestJson('/api/providers', post(payload));
+export const clearProviderKey = (id) => requestJson(`/api/providers/${encodeURIComponent(id)}/api_key`, { method: 'DELETE' });
 export const activateProvider = (id) => requestJson(`/api/providers/${encodeURIComponent(id)}/activate`, { method: 'POST' });
 export const fetchSystemVersion = (checkRemote = true) => requestJson(`/api/system/version?check_remote=${checkRemote ? 'true' : 'false'}`, {}, { timeoutMs: 60000 });
 
