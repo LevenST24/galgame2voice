@@ -38,6 +38,7 @@
 - `_internal`：程序自带的运行环境，请勿删除或单独移动。
 - `tools/ffmpeg.exe`：自带的音频转换工具。
 
+便携版使用下载新版发布包的方式更新；“设置中心 → 备份与更新”中的“检查新版本”只提示 GitHub Releases 上是否有新的正式版本并给出下载页链接，不会改动本地文件。
 更新时先关闭程序，将新包解压到新目录，再复制旧目录的 `data`、`audio`、`characters` 与 `backgrounds`（若存在）。
 如果自行创建过 `.env`，也应复制该文件；它可能包含服务地址与个人设置。不要用新包的 `.env.example` 覆盖它。
 如果新版提示找不到语音引擎，到“设置中心 → 语音服务”重新选择“本机 GPT-SoVITS 引擎文件夹”并保存。
@@ -50,7 +51,7 @@ Windows 凭据使用 DPAPI，换 Windows 用户或另一台电脑时，原加密
 - “导出完整聊天备份”会读取数据库中的完整记录，包括未打开的对话和较早消息。当前网页与数据库不一致的文字会另存为“浏览器副本”，两份都保留；导入保留原消息时间。建议等当前回复完成后导出。
 - 服务连接不上时，可先点“仅导出浏览器记录”保留网页里的文字；此文件不包含尚未加载的数据库历史，服务恢复后应再导出完整备份。
 - 单份聊天 JSON 上限为 20 MB、10000 个会话、50000 条消息（每个会话至多 10000 条）、1000 万文字字符。超出时不会截断导出；关闭程序后备份整个 `data` 文件夹，并另存浏览器记录。
-- 音色编号与安装目录有关，导入会话后请重新选择音色，以免绑定到另一个角色。
+- 导入聊天备份时会自动清除旧环境的音色编号，不会错绑到其他角色；本机已安装唯一同名角色时会自动找回音色，本机没有该角色或存在重名角色时，请在“设置中心 → 角色与会话”中重新选择音色。
 - 浏览器存储受限或已满时，网页会明确提示，并保留当前显示的消息。先导出备份，再检查存储权限或删除不需要的会话，点击“恢复本地保存”重试。
 - 浏览器中的原记录损坏时，不会用空记录覆盖它；如有上一份有效快照，会先恢复显示。在“备份与更新”导出原始记录后，再选择“恢复本地保存”。
 - 已有数据库在启动时每天自动生成一次经过校验的快照，版本升级前另建一份，最近 5 份存放在 `data/backups`。快照包括已提交但尚未合并到主文件的 SQLite 日志数据；它不是持续实时备份。
@@ -72,89 +73,13 @@ Windows 凭据使用 DPAPI，换 Windows 用户或另一台电脑时，原加密
 
 - 网页提示连接不上本机服务：保留启动窗口；如果已关闭，重新双击 `启动.bat`，再刷新网页。当前网页中已经收到的回复会保留。
 - 回复中途断开或长时间没有数据：程序会结束等待并保留已收到的文字；若尚未收到任何回复，检查网络或模型服务后可点「重新发送」重发上一条消息（已收到部分文字时会显示「继续」，保留当前内容）。程序不会自动重发聊天，以免产生重复回复或重复计费。
-- 语音暂时无法播放：程序会跳过加载失败的片段并保留文字，稍后可以在「记录」（LOG）里点这句的「语音」重播。网络故障不会清空原有音频记录；确认旧音频已过期或不存在时会提示，可到「记录」（LOG）里重新生成这一句的语音。
-- 浏览器暂停自动播放：等这轮回复生成完，点快捷菜单的「重播」（F9）重播当前这句，或在「记录」（LOG）里点那句的「语音」。切换会话会停止旧会话的播放。
+- 语音暂时无法播放：程序会跳过加载失败的片段并保留文字，稍后可以点「记录」打开「对话记录」，点这句的「语音」重播。网络故障不会清空原有音频记录；确认旧音频已过期或不存在时会提示，可在「对话记录」里重新生成这一句的语音。
+- 浏览器暂停自动播放：等这轮回复生成完，点快捷菜单的「重播」（F9）重播当前这句，或点「记录」在「对话记录」里点那句的「语音」。切换会话会停止旧会话的播放。
 - 保存配置失败：输入会保留，检查提示后重试。普通配置遇到连接中断时，程序会读取一次已保存值确认结果，不会自动重复保存。密钥等无法安全比对的内容仍会提示确认后再试。
 - 删除对话失败：列表和文字会保留，恢复连接后可重试。删除对话不会立即删除共用语音文件，缓存仍按保留时间自动清理。
 - 引擎重启显示“正在加载”：这是准备模型的正常阶段。界面确认服务可用后才提示就绪；CPU 首次启动可能较慢，请等待或稍后刷新状态。
-- 模型切换提示内存不足：关闭占用内存或显存的程序，或在“语音服务”选择 CPU 模式后重启引擎。程序会保留内存保护，文字聊天可继续使用。
+- 模型切换提示内存不足：关闭占用内存或显存的程序，或在“设置中心 → 语音服务 → 计算方式”选择“CPU 模式”，再到“运行状态”重启引擎。程序会保留内存保护，文字聊天可继续使用。
 - 引擎目录失效或运行环境缺失：在“语音服务”重新选择完整解压且包含 `runtime` 的引擎目录；无需修改 Python 代码。
 - 引擎由其他窗口启动：可直接使用现有引擎；需要更改推理模式时先关闭那个引擎窗口，再从网页启动。
 - 立绘不显示：先在“角色与会话”选择角色，并确认角色包包含 `portrait` 目录及对应图片。只有模型和参考音频的包不含立绘；语音引擎未启动不影响图片显示。兼容 `portrait/layers.json`、`portrait/expressions.json` 和旧版 `portrait/manifest.json`，无需手工转换。
 - 立绘提示连接或图片加载失败：检查启动窗口是否仍在运行、角色包是否完整，随后点击画面上的重试提示（或刷新网页）重试。切换到没有立绘的角色会清除上一位角色的图片。
-
-## 从源码构建（面向维护者）
-
-在 Windows 64 位环境中：
-
-```powershell
-uv sync --frozen --extra desktop
-uv run --frozen --extra desktop python scripts/build_windows_portable.py
-uv run --frozen --extra desktop python scripts/verify_windows_portable.py dist/galgame2voice-v3.2.12-windows-x64.zip
-uv run --frozen --extra desktop python scripts/smoke_windows_portable.py dist/galgame2voice-v3.2.12-windows-x64.zip
-```
-
-前端修改后应先在 `frontend` 目录执行 `npm ci` 和 `npm run deploy`。
-产物位于 `dist/galgame2voice-v<版本>-windows-x64.zip`，校验文件与其同目录。
-上面的冒烟验证会在中文、空格路径解压真实产物，隐藏系统 Python/FFmpeg，检查网页、文件选择器运行库、音频转换和凭据保存。
-便携版使用下载新版发布包的方式更新；设置中心的「检查新版本」只提示 GitHub Releases 上是否有新的正式版本并给出下载页链接，不会改动本地文件。
-
-## 维护者发布验收
-
-便携发布包自带 Python 3.12 运行环境与 FFmpeg，但不包含用户 API Key、模型权重或游戏角色。面向发布归档时，建议在完成旧构建校验（`verify_windows_portable.py`）与基础冒烟（`smoke_windows_portable.py`）之后，执行包外业务验收脚本 `scripts/smoke_windows_turn_reply.py`。
-
-> **边界说明**：
-> - 基础冒烟在未检测到可用浏览器时会自动跳过无头首页检查；**跳过不代表 UI 交互验收通过**。
-> - 新增验收脚本将在临时目录真实解压便携 EXE，接入合成替身桩（`scripts/dev_standins.py`），检查“收到首句台词后关闭流 → 按真实用户消息 ID 解析助手 ID → 唯一单句修复 POST 持久化 → 同目录冷重启服务 → 历史分页/音频文件/WAV 格式与只读 SQLite 一致性”。
-> - 本验收仅使用临时合成数据覆盖离线业务契约，**没有真实 GPU 模型推理、真人听感或全界面 LOG 交互证明**；脚本为独立维护工具，**不可声称完整业务已全量验收或 CI 已通过**。
-
-### PowerShell 验收调用示例
-
-在 Windows 维护者环境中执行以下脚本，自动完成动态发现、校验核对与独立沙箱验收：
-
-```powershell
-# 1. 动态定位唯一发布包并读取同源 SHA-256 校验和
-$archives = Get-ChildItem -Path "dist/*-windows-x64.zip" -File
-if ($archives.Count -ne 1) {
-    throw "预期 dist/ 下存在唯一的 Windows 发布包，实际找到 $($archives.Count) 个。"
-}
-$archivePath = $archives[0].FullName
-$shaFile = "$archivePath.sha256"
-if (-not (Test-Path $shaFile)) {
-    throw "未找到对应的校验和文件: $shaFile"
-}
-$expectedSha = (Get-Content -Path $shaFile -Raw).Trim().Split()[0]
-
-# 2. 在系统临时目录生成 GUID 独占沙箱目录
-$scratchDir = Join-Path $env:TEMP ("g2v-release-gate-" + [guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Path $scratchDir -Force | Out-Null
-
-try {
-    # 3. 校验包结构与基础启动冒烟
-    uv run --frozen --extra desktop python scripts/verify_windows_portable.py $archivePath
-    if ($LASTEXITCODE -ne 0) {
-        throw "verify_windows_portable 校验未通过 (退出码: $LASTEXITCODE)"
-    }
-
-    uv run --frozen --extra desktop python scripts/smoke_windows_portable.py $archivePath
-    if ($LASTEXITCODE -ne 0) {
-        throw "smoke_windows_portable 冒烟未通过 (退出码: $LASTEXITCODE)"
-    }
-
-    # 4. 执行端到端业务验收（使用 --no-dev 保证纯净运行）
-    uv run --frozen --extra desktop --no-dev python scripts/smoke_windows_turn_reply.py `
-        --archive $archivePath `
-        --expected-sha $expectedSha `
-        --scratch $scratchDir
-    if ($LASTEXITCODE -ne 0) {
-        throw "smoke_windows_turn_reply 业务验收未通过 (退出码: $LASTEXITCODE)"
-    }
-
-    Write-Host "便携包发布验收全部通过。"
-}
-finally {
-    # 失败时请保留沙箱内的 result.json 与合成服务日志以供定位
-    # 切勿删除真实用户 data 目录重试，严禁向外上传解压安装树、私有数据库或密钥
-    Write-Host "验收临时目录: $scratchDir"
-}
-```
