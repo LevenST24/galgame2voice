@@ -174,6 +174,38 @@ def test_duplicate_entry_never_imports_or_runs_server(tmp_path, monkeypatch):
     mutex.close.assert_called_once()
 
 
+def test_nested_extract_into_old_folder_stops_before_starting_server(tmp_path, monkeypatch, capsys):
+    outer = tmp_path / "Galgame2Voice"
+    nested = outer / "Galgame2Voice"
+    (outer / "data").mkdir(parents=True)
+    (outer / "Galgame2Voice.exe").write_bytes(b"old")
+    (outer / "data" / "galgame2voice.db").write_bytes(b"old-db")
+    (nested / "tools").mkdir(parents=True)
+    (nested / "tools" / "ffmpeg.exe").write_bytes(b"marker")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(desktop_entry, "get_install_root", lambda: nested)
+    monkeypatch.setattr(desktop_entry.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(desktop_entry.sys, "argv", ["Galgame2Voice.exe"])
+    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
+    mutex = MagicMock()
+    mutex.acquire.return_value = True
+    monkeypatch.setattr(desktop_instance, "DesktopInstance", lambda _root: mutex)
+    run = MagicMock()
+    monkeypatch.setattr(run_server, "main", run)
+
+    assert desktop_entry.main() == 1
+    assert "解压到了旧版" in capsys.readouterr().out
+    assert not (nested / "logs" / "launcher_error.log").exists()
+    mutex.acquire.assert_not_called()
+    run.assert_not_called()
+
+    (nested / "data").mkdir()
+    (nested / "data" / "galgame2voice.db").write_bytes(b"own-db")
+    assert desktop_entry.main() == 0
+    run.assert_called_once()
+    mutex.close.assert_called_once()
+
+
 def test_entry_handles_chinese_output_in_ascii_locale(tmp_path, monkeypatch):
     buffer = io.BytesIO()
     output = io.TextIOWrapper(buffer, encoding="ascii")

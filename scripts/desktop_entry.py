@@ -58,6 +58,19 @@ def main() -> int:
             verify_portable_runtime()
             return 0
         if getattr(sys, "frozen", False) and not any(arg in sys.argv for arg in ("--check-only", "--help", "-h")):
+            parent = root.parent
+            if (
+                parent != root
+                and not (root / "data" / "galgame2voice.db").exists()
+                and (parent / "Galgame2Voice.exe").is_file()
+                and (parent / "data" / "galgame2voice.db").is_file()
+            ):
+                print(
+                    f"[无法启动] 新版被解压到了旧版的 Galgame2Voice 文件夹里面（现在这个文件夹是 {root}），"
+                    "所以读不到旧版的聊天记录和设置。请关闭这个窗口，把这个文件夹整个移到旧版文件夹外面（例如桌面），"
+                    "再把旧版文件夹里的 data、audio、characters、backgrounds 文件夹复制进去，然后双击它里面的「启动.bat」。"
+                )
+                return 1
             from scripts.desktop_instance import DesktopInstance, open_existing_instance
             instance = DesktopInstance(root)
             if not instance.acquire():
