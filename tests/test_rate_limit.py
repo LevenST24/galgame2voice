@@ -69,11 +69,36 @@ class TestMiddleware:
                 statuses.append(message["status"])
 
         for i in range(35):
-            scope = {"type": "http", "path": "/api/chat/stream", "client": ("9.9.9.9", 1)}
+            scope = {"type": "http", "path": "/api/chat/stream", "method": "POST", "client": ("9.9.9.9", 1)}
             await mw(scope, receive, send)
 
         assert len(handled) == 30  # protected budget exhausted
         assert 429 in statuses
+
+    @pytest.mark.asyncio
+    async def test_reading_chat_history_does_not_block_the_next_message(self, monkeypatch):
+        monkeypatch.delenv("GALGAME2VOICE_RATE_LIMIT_DISABLED", raising=False)
+        statuses = []
+
+        async def app(scope, receive, send):
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        async def receive():
+            return {"type": "http.request"}
+
+        async def send(message):
+            if message["type"] == "http.response.start":
+                statuses.append(message["status"])
+
+        mw = RateLimitMiddleware(app)
+        # Switching quickly between 40 conversations loads each one's history.
+        for _ in range(40):
+            await mw({"type": "http", "path": "/api/chat/history", "method": "GET",
+                      "client": ("127.0.0.1", 1)}, receive, send)
+        await mw({"type": "http", "path": "/api/chat/stream", "method": "POST",
+                  "client": ("127.0.0.1", 1)}, receive, send)
+        assert statuses == [200] * 41
 
     @pytest.mark.asyncio
     async def test_static_paths_exempt(self, monkeypatch):
