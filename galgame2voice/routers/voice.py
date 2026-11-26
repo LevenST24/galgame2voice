@@ -59,8 +59,8 @@ class VoiceProfileCreateRequest(BaseModel):
     ref_audio_path: str | None = Field(default=None, max_length=1000)
     refer_text: str | None = Field(default=None, max_length=1000)
     prompt_text: str | None = Field(default=None, max_length=1000)
-    refer_language: str | None = Field(default="ja", max_length=32)
-    prompt_lang: str | None = Field(default="ja", max_length=32)
+    refer_language: str | None = Field(default=None, max_length=32)
+    prompt_lang: str | None = Field(default=None, max_length=32)
     text_lang: str | None = Field(default="ja", max_length=32)
     system_prompt: str | None = Field(default="", max_length=10000)
     is_default: bool = False
@@ -363,22 +363,23 @@ def _discover_gpt_sovits_roots() -> list[str]:
     return [str(p) for p in discover_gpt_sovits_roots(get_settings().project_root)]
 
 
-def _scan_models_sync() -> dict[str, list[dict[str, Any]]]:
-    """Blocking filesystem scan for weights & reference audio (worker thread)."""
-    candidate_roots: list[str] = []
-    for root in _discover_gpt_sovits_roots():
-        if root not in candidate_roots and os.path.isdir(root):
-            candidate_roots.append(root)
+_SCAN_LIST_LIMIT = 50
 
-    # Also scan the app's own directories for user-copied assets.
+
+def _scan_models_sync() -> dict[str, Any]:
+    """Blocking filesystem scan for weights & reference audio (worker thread)."""
     settings = get_settings()
-    for root_candidate in (
-        str(settings.project_root),
+    # The user's own data/ and audio/ come first: only the first 50 of each
+    # kind are listed, and an engine's training folders can hold hundreds.
+    candidate_roots: list[str] = []
+    for root in (
         str(settings.data_dir),
         str(settings.audio_dir),
+        *_discover_gpt_sovits_roots(),
+        str(settings.project_root),
     ):
-        if root_candidate not in candidate_roots:
-            candidate_roots.append(root_candidate)
+        if root not in candidate_roots and os.path.isdir(root):
+            candidate_roots.append(root)
 
     excluded_cache_dirs: set[Path] = set()
     for p in (
@@ -456,10 +457,11 @@ def _scan_models_sync() -> dict[str, list[dict[str, Any]]]:
         except OSError:
             continue
 
+    found = {"gpt_weights": gpt_weights, "sovits_weights": sovits_weights, "audio_files": audio_files}
     return {
-        "gpt_weights": gpt_weights[:50],
-        "sovits_weights": sovits_weights[:50],
-        "audio_files": audio_files[:50],
+        **{key: items[:_SCAN_LIST_LIMIT] for key, items in found.items()},
+        # How many of each kind were found but not listed, so the page can say so.
+        "hidden": {key: len(items) - _SCAN_LIST_LIMIT for key, items in found.items() if len(items) > _SCAN_LIST_LIMIT},
     }
 
 

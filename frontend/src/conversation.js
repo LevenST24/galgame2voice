@@ -338,5 +338,10 @@ export function createConversation({
     return send(message.content, null, { retryOf: message });
   }
 
-  return { on, send, stop, retry, canRetry, get busy() { return isBusy(); } };
+  return {
+    on, send, stop, retry, canRetry,
+    get busy() { return isBusy(); },
+    /** Session whose reply is streaming, or null. */
+    get originId() { return busy && turn ? turn.originId : null; },
+  };
 }

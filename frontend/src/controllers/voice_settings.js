@@ -5,7 +5,7 @@ import { showToast } from '../ui.js';
 import { requestJson } from '../api.js';
 import { getErrorMessage } from '../request.js';
 import { persistSession } from '../session_api.js';
-import { getConsoleToken, promptConsoleToken } from '../auth.js';
+import { getConsoleToken, isUsableConsoleToken, promptConsoleToken } from '../auth.js';
 import { packTarBlob } from '../tar_pack.js';
 
 export const FIRST_USE_VOICE_HINT =
@@ -578,7 +578,7 @@ export async function populateScanOptions() {
 
 async function refreshScanOptions(revision, dom) {
   const isCurrent = () => revision === scanRevision && dom === _dom;
-  const fill = (sel, list, emptyHint) => {
+  const fill = (sel, list, emptyHint, hidden = 0) => {
     if (!sel) return;
     const previous = sel.value;
     const stillAvailable = list.some(file => file.path === previous);
@@ -606,6 +606,13 @@ async function refreshScanOptions(revision, dom) {
       opt.textContent = labelCounts.get(labels[i]) > 1 ? file.path : labels[i];
       sel.appendChild(opt);
     });
+    if (hidden > 0) {
+      const more = document.createElement('option');
+      more.value = '';
+      more.disabled = true;
+      more.textContent = `（还有 ${hidden} 个没列出，只显示前 ${list.length} 个；把要用的文件放进 data 文件夹会排在最前面）`;
+      sel.appendChild(more);
+    }
     sel.value = stillAvailable ? previous : needsChoice ? '' : list[0]?.path || '';
   };
   try {
@@ -614,9 +621,10 @@ async function refreshScanOptions(revision, dom) {
       if (!isCurrent()) return;
       scannedModels = models;
     }
-    fill(dom.sCvGpt, scannedModels.gpt_weights || [], '（未扫描到 .ckpt 文件；请先在「设置中心 → 语音服务」选择引擎目录）');
-    fill(dom.sCvSovits, scannedModels.sovits_weights || [], '（未扫描到 .pth 文件；请先在「设置中心 → 语音服务」选择引擎目录）');
-    fill(dom.sCvRef, scannedModels.audio_files || [], '（未扫描到音频文件；参考音频为必选项，无法创建自定义音色）');
+    const hidden = scannedModels.hidden || {};
+    fill(dom.sCvGpt, scannedModels.gpt_weights || [], '（未扫描到 .ckpt 文件；请先在「设置中心 → 语音服务」选择引擎目录）', hidden.gpt_weights);
+    fill(dom.sCvSovits, scannedModels.sovits_weights || [], '（未扫描到 .pth 文件；请先在「设置中心 → 语音服务」选择引擎目录）', hidden.sovits_weights);
+    fill(dom.sCvRef, scannedModels.audio_files || [], '（未扫描到音频文件；参考音频为必选项，无法创建自定义音色）', hidden.audio_files);
   } catch (e) {
     if (!isCurrent()) return;
     [dom.sCvGpt, dom.sCvSovits, dom.sCvRef].forEach((sel) => {
@@ -662,7 +670,8 @@ export async function createCustomVoice() {
       ref_audio_path: refPath,
       prompt_text: promptText,
       prompt_lang: _dom.sCvLang.value,
-      text_lang: _dom.sCvLang.value,
+      // Only the Japanese line is ever voiced; the select describes the reference clip.
+      text_lang: 'ja',
       system_prompt: customSystemPrompt,
     };
     const data = await requestJson('/api/voice/profiles', {
@@ -755,7 +764,7 @@ function sendImportArchiveXhr(blob, filename, { overwrite = false, retriedAuth =
     xhr.open('POST', `/api/characters/import${qs ? `?${qs}` : ''}`);
     xhr.setRequestHeader('Content-Type', blob.type || 'application/octet-stream');
     const token = getConsoleToken();
-    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    if (token && isUsableConsoleToken(token)) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
     if (xhr.upload) xhr.upload.onprogress = (ev) => {
       if (ev.lengthComputable && ev.total > 0 && _dom.sVoiceImport) {
         _dom.sVoiceImport.textContent = `正在导入…${Math.min(100, Math.max(0, Math.round((ev.loaded / ev.total) * 100)))}%`;
@@ -998,7 +1007,10 @@ async function pollRedeemStatus() {
   try {
     const progress = await requestJson('/api/characters/redeem/progress', {}, { timeoutMs: 10000 });
     if (!isImporting || !_dom.sVoiceRedeemStatus) return;
-    _dom.sVoiceRedeemStatus.textContent = formatRedeemProgress(progress);
+    // The server says idle while it re-lists the packages or checks a partial file
+    // before the download starts; keep the shown status instead of blanking it.
+    const text = formatRedeemProgress(progress);
+    if (text) _dom.sVoiceRedeemStatus.textContent = text;
   } catch {
     // 下一秒再查
   }
@@ -1162,38 +1174,20 @@ export async function deleteVoiceProfile() {
       switchSaveUnconfirmed = false;
     }
     const cleared = state.sessions.filter(sess => sess.settings?.voiceProfileId === id);
-    const sessionVersions = new Map();
-    for (const sess of cleared) {
-      sess.settings.voiceProfileId = null;
-      sess.updatedAt = Math.max(Date.now(), (sess.updatedAt || 0) + 1);
-      const version = (sess.unconfirmedSettingsVersion || 0) + 1;
-      sess.unconfirmedSettingsVersion = version;
-      sessionVersions.set(sess, version);
-    }
     let bindingNote = '';
     if (cleared.length) {
+      // The server unbinds its copies in the same delete and keeps their order,
+      // so only the local copies change here; touching updatedAt would move
+      // every old chat of this voice to the top of the recents.
+      for (const sess of cleared) sess.settings.voiceProfileId = null;
       _callbacks.invalidateSessionSync?.();
       saveState();
-      if (storageChangedByAnotherPage()) {
-        bindingNote = '；当前网页已暂停保存，解除绑定未提交到本机服务';
-      } else {
-        // The server copies still name the deleted voice; the next sync would restore them.
-        for (const sess of cleared) {
-          const version = sessionVersions.get(sess);
-          persistSession(sess).then(() => {
-            if (sess.unconfirmedSettingsVersion === version) {
-              delete sess.unconfirmedSettingsVersion;
-              saveState();
-            }
-          }).catch(() => {});
-        }
-        bindingNote = `，并解除了 ${cleared.length} 个会话的绑定`;
-      }
+      bindingNote = `，并解除了 ${cleared.length} 个会话的绑定`;
     }
     await loadSessionVoiceSelect(getActive());
     refreshActiveLoadedBadges();
     ensureSessionVoice(getActive(), { silent: true });
-    showToast(`音色「${p ? p.name : id}」已删除${bindingNote}`, bindingNote.startsWith('；') ? 'info' : 'success');
+    showToast(`音色「${p ? p.name : id}」已删除${bindingNote}`, 'success');
   } catch (e) {
     console.error('音色删除失败:', e);
     showToast(serverMessage(e) || '音色删除失败：该音色已被保留，请稍后重试；若仍失败，请打开「运行状态」检查服务', 'error');
