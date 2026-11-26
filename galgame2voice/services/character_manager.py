@@ -30,6 +30,7 @@ from galgame2voice.schemas.character_manifest import (
     manifest_json_error,
     manifest_schema_error,
     no_emotions_error,
+    read_manifest_text,
 )
 from galgame2voice.utils.audio_spec import (
     REFERENCE_AUDIO_MIN_SECONDS,
@@ -213,7 +214,7 @@ class CharacterManager:
         errors: list[str] = []
 
         try:
-            raw_text = manifest_path.read_text(encoding="utf-8-sig")
+            raw_text = read_manifest_text(manifest_path)
             raw_json = json.loads(raw_text)
         except Exception as exc:
             return self._rejected_manifest(folder, manifest_json_error(exc))

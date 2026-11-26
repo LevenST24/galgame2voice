@@ -551,3 +551,29 @@ async def test_import_rejects_archive_exceeding_member_limit(tmp_path, monkeypat
     assert res.json()["detail"] == "角色包里的文件太多（超过 50000 个），已停止导入。请确认选对了文件。"
     assert not (root / "characters").exists() or list((root / "characters").iterdir()) == []
     _assert_temp_empty()
+
+
+@pytest.mark.asyncio
+async def test_import_rejects_oversized_manifest_without_reading_it(tmp_path, monkeypatch):
+    root, app = _setup_app(tmp_path, monkeypatch)
+    await init_db()
+    base = json.dumps({"id": "huge", "name": "大清单", "gpt_weights": "gpt.ckpt", "sovits_weights": "sovits.pth", "emotions": {"gentle": {"audio": "refs/gentle.wav", "text": "声。", "lang": "ja"}}}).encode("utf-8")
+    oversized = base + b" " * (1024 * 1024 + 1 - len(base))
+    assert len(oversized) == 1024 * 1024 + 1
+    payload = _make_package_bytes("zip", "huge", "大清单", extra_entries={"manifest.json": oversized})
+    read_manifests: list[Path] = []
+    real_read_text = Path.read_text
+
+    def _spy_read_text(self, *args, **kwargs):
+        if self.name == "manifest.json":
+            read_manifests.append(self)
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _spy_read_text)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
+        res = await client.post("/api/characters/import", params={"filename": "huge.zip"}, content=payload)
+    assert res.status_code == 422, res.text
+    assert "manifest.json 太大" in res.json()["detail"]
+    assert read_manifests == []
+    assert not (root / "characters").exists() or list((root / "characters").iterdir()) == []
+    _assert_temp_empty()

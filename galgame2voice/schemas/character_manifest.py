@@ -85,7 +85,22 @@ class CharacterManifestV2(CharacterManifest):
     default_emotion: str | None = Field(default="gentle", description="Default emotion identifier")
 
 
+MAX_MANIFEST_BYTES = 1024 * 1024
+
+
+class ManifestTooLargeError(ValueError):
+    """Raised when manifest.json exceeds MAX_MANIFEST_BYTES."""
+
+
+def read_manifest_text(path: Path) -> str:
+    if path.stat().st_size > MAX_MANIFEST_BYTES:
+        raise ManifestTooLargeError("manifest.json 太大（超过 1 MiB），不是正常的角色包清单")
+    return path.read_text(encoding="utf-8-sig")
+
+
 def manifest_json_error(exc: Exception) -> str:
+    if isinstance(exc, ManifestTooLargeError):
+        return "manifest.json 太大（超过 1 MiB），不是正常的角色包清单"
     if isinstance(exc, json.JSONDecodeError):
         return f"manifest.json 不是有效的 JSON（第 {exc.lineno} 行附近）"
     return "manifest.json 不是有效的 JSON"
@@ -146,7 +161,7 @@ def validate_character_package(character_dir: Path) -> tuple[bool, list[str]]:
         return False, [f"缺少 manifest.json 配置文件: {manifest_path}"]
 
     try:
-        data = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+        data = json.loads(read_manifest_text(manifest_path))
     except Exception as exc:
         return False, [manifest_json_error(exc)]
 
