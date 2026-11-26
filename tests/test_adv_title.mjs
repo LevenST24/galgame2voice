@@ -1532,3 +1532,11 @@ test('background /api/providers retry failure stays silent while opening setting
   env.app.actions.openSettings('models'); for (let i = 0; i < 5; i++) await tick();
   assert.equal(toasts.children.length, 1);
 });
+
+test('a session title that starts with an emoji keeps the whole emoji as its avatar letter', async t => {
+  const sessions = [snapshot('a'), { ...snapshot('b', 1), title: '🌸花火大会', characterName: '' }];
+  const h = await fixture(t, { sessions, actions: { getAvatar: async () => null } });
+  const avatar = h.q('.home-avatar').textContent;
+  assert.equal(avatar, '🌸');
+  assert.ok(avatar.isWellFormed());
+});

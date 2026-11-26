@@ -828,6 +828,26 @@ test('adv wiring: quick menu 背景 opens the panel and paints the picked artwor
   assert.equal(h.app.bgPanel.isOpen, true);
 });
 
+test('adv wiring: the 背景 panel reopens on the saved choice and a time keeps it', async t => {
+  const h = setupApp(t);
+  await microtasks();
+  const button = h.app.stage.quickmenu.querySelector('.adv-qm-btn-background');
+  const tiles = () => h.app.bgPanel.dialog.querySelectorAll('.adv-bg-tile');
+  button.click();
+  tiles()[2].click();
+  assert.deepEqual(h.saves.at(-1), { advBackground: 'cafe/stella', advBgTime: 'auto' });
+  h.app.stage.stage.dispatchEvent({ type: 'keydown', key: 'Escape' });
+
+  // No session notification arrives between saving and reopening, as in main.js.
+  button.click();
+  assert.equal(tiles()[2].getAttribute('aria-pressed'), 'true', 'the saved background is selected');
+  assert.equal(tiles()[0].getAttribute('aria-pressed'), 'false', '自动 is not selected');
+  const night = h.app.bgPanel.dialog.querySelectorAll('.adv-bg-time').find(node => node.dataset.time === 'night');
+  night.click();
+  assert.deepEqual(h.saves.at(-1), { advBackground: 'cafe/stella', advBgTime: 'night' },
+    'picking a time keeps the saved background');
+});
+
 test('adv wiring: the 背景 panel follows the active character work', async t => {
   const h = setupApp(t, { characterWork: 'cafe' });
   await microtasks();
