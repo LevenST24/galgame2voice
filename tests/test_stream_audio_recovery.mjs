@@ -509,3 +509,41 @@ test('runtime cache pruning coalesces overlapping prune requests and recovers fr
   }
 });
 
+
+test('playLine recreates a closed AudioContext and settles if context closes mid-line', async () => {
+  const created = [];
+  class CloseableAudioContext extends AudioContextMock {
+    listeners = new Set();
+    constructor() { super(); created.push(this); }
+    addEventListener(type, fn) { if (type === 'statechange') this.listeners.add(fn); }
+    removeEventListener(type, fn) { if (type === 'statechange') this.listeners.delete(fn); }
+    closeFromOs() { this.state = 'closed'; for (const fn of [...this.listeners]) fn(); }
+  }
+  globalThis.window = { AudioContext: CloseableAudioContext };
+  globalThis.fetch = async () => new Response(blob());
+  const p = new StreamAudioController({ fetchTimeoutMs: 100 });
+  players.push(p);
+  const firstCtx = p.ensureContext();
+  firstCtx.closeFromOs();
+
+  // Case 1: context already closed before playLine -> must create a fresh context and finish cleanly.
+  const firstPlay = p.playLine(0, ['/after-wake.wav']);
+  await tick();
+  assert.equal(created.length, 2, 'closed AudioContext must be recreated on next playback');
+  assert.notEqual(p.ctx, firstCtx);
+  p.ctx.sources.forEach(s => s.finish());
+  assert.equal(await firstPlay, 'ended');
+
+  // Case 2: context closes mid-playback -> must settle with network instead of hanging forever.
+  const secondPlay = p.playLine(1, ['/mid-close.wav'], { onStart: () => {} });
+  await tick();
+  const activeCtx = p.ctx;
+  activeCtx.closeFromOs();
+  const outcome = await Promise.race([
+    secondPlay,
+    tick(250).then(() => 'hung'),
+  ]);
+  assert.equal(outcome, 'network');
+  assert.equal(p.isPlaying, false);
+  assert.equal(activeCtx.listeners.size, 0);
+});

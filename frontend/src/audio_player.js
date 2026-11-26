@@ -67,7 +67,11 @@ export class StreamAudioController {
    * @returns {AudioContext|null}
    */
   ensureContext({ resumeIfSuspended = true } = {}) {
-    if (!this.ctx) {
+    if (!this.ctx || this.ctx.state === 'closed') {
+      this.ctx = null;
+      this.masterGain = null;
+      this.analyser = null;
+      this.nextStartTime = 0;
       const AudioContextClass = window.AudioContext || /** @type {any} */ (window).webkitAudioContext;
       if (!AudioContextClass) {
         console.error('[StreamAudioController] 当前浏览器不支持 Web Audio API');
@@ -221,6 +225,7 @@ export class StreamAudioController {
       resolve(outcome, { fadeMs = 0 } = {}) {
         if (lineState.settled) return;
         lineState.settled = true;
+        ctx.removeEventListener?.('statechange', onStateChange);
         clearTimeout(/** @type {any} */ (lineState.startTimer));
         abortController.abort();
         const sources = lineState.activeSources.splice(0);
@@ -255,6 +260,10 @@ export class StreamAudioController {
       playedCount: 0,
       totalChunks: chunks.length,
     };
+    const onStateChange = () => {
+      if (/** @type {string} */ (ctx.state) === 'closed') lineState.resolve('network');
+    };
+    ctx.addEventListener?.('statechange', onStateChange);
     this._linePlayState = lineState;
 
     // Register ownership before the first await. A stop/session change must
@@ -265,8 +274,9 @@ export class StreamAudioController {
       } catch (_) {}
       if (lineState.settled) return linePromise;
       if (/** @type {string} */ (ctx.state) !== 'running') {
+        const closed = /** @type {string} */ (ctx.state) === 'closed';
         const halted = isContextHalted(ctx.state);
-        lineState.resolve(halted ? 'blocked' : 'failed');
+        lineState.resolve(closed ? 'network' : (halted ? 'blocked' : 'failed'));
         if (halted) {
           this._reportError(new Error('浏览器尚未允许播放语音，请点「记录」，在这句旁边再点一次「语音」。文字聊天可继续使用。'));
         }
@@ -304,6 +314,10 @@ export class StreamAudioController {
 
     function scheduleLineNext() {
       if (lineState.settled) return;
+      if (/** @type {string} */ (/** @type {AudioContext} */ (ctx).state) === 'closed') {
+        lineState.resolve('network');
+        return;
+      }
 
       const now = /** @type {AudioContext} */ (ctx).currentTime;
       if (self.nextStartTime <= now) {
@@ -344,6 +358,10 @@ export class StreamAudioController {
           const notifyStart = () => {
             lineState.startTimer = null;
             if (lineState.settled || self._linePlayState !== lineState) return;
+            if (/** @type {string} */ (/** @type {AudioContext} */ (ctx).state) === 'closed') {
+              lineState.resolve('network');
+              return;
+            }
             // Browser timers keep advancing while an interrupted/suspended
             // AudioContext does not. Only its running clock can release text.
             const remainingMs = (startTime - /** @type {AudioContext} */ (ctx).currentTime) * 1000;
