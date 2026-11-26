@@ -336,7 +336,10 @@ def _diagnose_local_configuration(
         return DiagnosticResult(
             error_code="API_KEY_MISSING",
             message=f"尚未填写{f'「{name}」的' if name else ''} API Key",
-            guidance="在上面的 API 密钥里填入后再测试；使用 Ollama、LM Studio 等本地模型时，请选择「自定义 / 本地模型」。",
+            guidance=(
+                "请到「设置中心 → 对话模型」填写 API 密钥，点「保存并启用此模型」后再试；"
+                "使用 Ollama、LM Studio 等本地模型时，请选择「自定义 / 本地模型 (Ollama / vLLM)」。"
+            ),
             raw_error=sanitized_raw,
         )
     return None
@@ -771,7 +774,10 @@ def _diagnose_context_length_exceeded(
         return DiagnosticResult(
             error_code="CONTEXT_LENGTH_EXCEEDED",
             message="对话上下文超出模型最大限制",
-            guidance="对话上下文超出当前模型的长度限制。请在「角色与会话 → 对话高级参数」中调小「携带上下文条数」，或点击「新建会话」开启新对话。",
+            guidance=(
+                "对话上下文超出当前模型的长度限制。请在「角色与会话 → 对话高级参数」中调小「携带上下文条数」，"
+                "或点舞台左上角「会话」后点击「新建会话」开启新对话。"
+            ),
             status_code=status_code or 400,
             raw_error=sanitized_raw,
         )

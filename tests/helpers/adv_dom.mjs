@@ -45,8 +45,8 @@ export class Element {
     if (parent) { parent.insertBefore(node, this); this.remove(); }
   }
   contains(child) { return child === this || this.children.some(c => c.contains(child)); }
-  addEventListener(type, fn) { if (!this.listeners.has(type)) this.listeners.set(type, new Set()); this.listeners.get(type).add(fn); }
-  removeEventListener(type, fn) { this.listeners.get(type)?.delete(fn); }
+  addEventListener(type, fn, opts) { const k = (opts === true || opts?.capture) ? `${type}:c` : type; if (!this.listeners.has(k)) this.listeners.set(k, new Set()); this.listeners.get(k).add(fn); }
+  removeEventListener(type, fn, opts) { this.listeners.get((opts === true || opts?.capture) ? `${type}:c` : type)?.delete(fn); }
   dispatchEvent(event) {
     event.target ||= this;
     event.preventDefault ||= () => { event.defaultPrevented = true; };
@@ -55,8 +55,12 @@ export class Element {
     // mid-click must not drop the rest of that chain; stopPropagation still cuts it.
     const path = [];
     for (let node = this; node; node = node.parentNode) path.push(node);
+    for (let i = path.length - 1; i >= 0 && !event.stopped; i--) {
+      for (const fn of [...path[i].listeners?.get(`${event.type}:c`) || []]) fn(event);
+    }
     for (const node of path) {
-      for (const fn of [...node.listeners.get(event.type) || []]) fn(event);
+      if (event.stopped) break;
+      for (const fn of [...node.listeners?.get(event.type) || []]) fn(event);
       if (event.type === 'click') node.onclick?.(event);
       if (event.bubbles === false || event.stopped) break;
     }

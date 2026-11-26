@@ -742,13 +742,16 @@ export function mountAdv(dom, deps) {
     onAction: action,
   });
   const unlockAudio = () => {
+    if (audio?.isPaused || audio?.ctx?.state === 'running') return;
     try {
-      const ctx = audio?.ensureContext?.();
-      ctx?.resume?.()?.catch?.(() => {});
+      const ctx = audio?.ensureContext?.({ resumeIfSuspended: false }) ?? audio?.ctx;
+      if (ctx && ctx.state !== 'running') ctx.resume?.()?.catch?.(() => {});
     } catch (_) {}
   };
   listen(stage.stage, 'pointerdown', unlockAudio);
   listen(stage.stage, 'keydown', unlockAudio);
+  listen(stage.stage, 'touchend', unlockAudio, { capture: true, passive: true });
+  listen(stage.stage, 'click', unlockAudio, { capture: true, passive: true });
   // Trap focus in the temporary drawer, including its existing playback controls.
   listen(stage.stage, 'keydown', event => {
     if (!drawer || event.key !== 'Tab') return;

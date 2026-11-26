@@ -66,7 +66,7 @@ def test_engine_log_guidance_hides_raw_errors(tmp_path, log, keyword):
 def test_engine_failure_ignores_errors_from_previous_launch(tmp_path):
     log = tmp_path / "engine.log"
     log.write_text("CUDA out of memory\n=== Galgame2Voice engine start ===\nFileNotFoundError: missing.ckpt\n")
-    assert "缺少模型或配置文件" in engine_failure_message(log)
+    assert "缺少模型或配置文件" in engine_failure_message(log) and "导入角色包" in engine_failure_message(log)
 
 
 @pytest.mark.asyncio

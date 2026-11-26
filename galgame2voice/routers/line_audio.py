@@ -146,9 +146,17 @@ async def regenerate_line(req: LineAudioRequest, request: Request, manager: Anno
     except HTTPException:
         raise
     except VoiceModelMissingError as exc:
-        raise HTTPException(422, "所选音色缺少模型权重，请在设置中心的角色与会话中补全模型路径。原音频与文字已保留。") from exc
+        raise HTTPException(
+            422,
+            "所选音色缺少模型权重，请在「设置中心 → 角色与会话」重新选择角色包的音色、"
+            "点「导入角色包」重新导入完整角色包，或用「＋ 新建自定义音色」重新创建。原音频与文字已保留。",
+        ) from exc
     except VoiceReferenceMissingError as exc:
-        raise HTTPException(422, "所选音色缺少参考音频，请在设置中心的角色与会话中补全参考音频。原音频与文字已保留。") from exc
+        raise HTTPException(
+            422,
+            "所选音色缺少参考音频，请在「设置中心 → 角色与会话」重新选择角色包的音色，"
+            "或用「＋ 新建自定义音色」重新创建。原音频与文字已保留。",
+        ) from exc
     except VoiceContextUnavailableError as exc:
         raise HTTPException(503, "音色配置暂时无法读取，请稍后重试。原音频与文字已保留。") from exc
     except Exception as exc:

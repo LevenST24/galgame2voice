@@ -21,6 +21,10 @@ export function isListening() {
   return listening;
 }
 
+function setAudioSession(type) {
+  try { if (typeof navigator !== 'undefined' && /** @type {any} */ (navigator).audioSession) /** @type {any} */ (navigator).audioSession.type = type; } catch (_) {}
+}
+
 /**
  * 开始转写 + 并行录音（转写必需；录音不可用时仅转写）
  * @returns {{ok: true} | {ok: false, reason: string}}
@@ -45,10 +49,12 @@ export function startListening({ onInterim, onText, onRecorded, onError, onEnd }
     if (ended || !listening || myGen !== listenGen) return;
     ended = true;
     listening = false;
+    setAudioSession('auto');
     stopRecorder();
     if (typeof onEnd === 'function') onEnd();
   };
 
+  setAudioSession('play-and-record');
   // 1) 录音（可选能力，失败不阻断转写）
   if (hasRecorder) {
     navigator.mediaDevices
@@ -158,6 +164,7 @@ export function startListening({ onInterim, onText, onRecorded, onError, onEnd }
     // 换代并清掉聆听状态，让还在等麦克风权限的录音拿到流后立即关掉。
     ++listenGen;
     listening = false;
+    setAudioSession('auto');
     return {
       ok: false,
       reason: '当前浏览器不支持语音输入，建议使用 Chrome / Edge',
@@ -171,7 +178,9 @@ export function startListening({ onInterim, onText, onRecorded, onError, onEnd }
 export function stopListening() {
   // 这里不换代：浏览器在 stop() 之后才送来最终识别结果，换代会把它丢掉。
   // 下一次 startListening 会换代，挡住上一轮迟到的回调。
+  const wasListening = listening;
   listening = false;
+  if (wasListening) setAudioSession('auto');
   if (recog) {
     try {
       recog.stop();
