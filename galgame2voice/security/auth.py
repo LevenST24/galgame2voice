@@ -93,6 +93,7 @@ async def require_auth(request: Request) -> None:
             detail="Invalid or missing console token",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    request.state.auth_verified = True
 
 
 __all__ = ["require_auth", "verify_console_token", "is_auth_disabled", "get_env_console_token"]

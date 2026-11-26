@@ -1,8 +1,11 @@
 """Tests for the sliding-window rate limiter."""
 
+import httpx
 import pytest
+from fastapi import Depends, FastAPI, Request
 
 from galgame2voice.security import rate_limit
+from galgame2voice.security.auth import require_auth
 from galgame2voice.security.rate_limit import RateLimitMiddleware, SlidingWindowCounter
 
 
@@ -151,14 +154,15 @@ class TestMiddleware:
 
 class TestRejectedRequestsSpareOtherBudgets:
     @staticmethod
-    async def _call(mw, ip, path="/api/characters"):
+    async def _call(mw, ip, path="/api/characters", headers=()):
         statuses = []
 
         async def app(scope, receive, send):
             await send({"type": "http.response.start", "status": 200, "headers": []})
             await send({"type": "http.response.body", "body": b"ok"})
 
-        mw.app = app
+        if mw.app is None:
+            mw.app = app
 
         async def receive():
             return {"type": "http.request"}
@@ -167,7 +171,8 @@ class TestRejectedRequestsSpareOtherBudgets:
             if message["type"] == "http.response.start":
                 statuses.append(message["status"])
 
-        await mw({"type": "http", "path": path, "method": "GET", "client": (ip, 1)}, receive, send)
+        scope = {"type": "http", "path": path, "method": "GET", "client": (ip, 1), "headers": list(headers)}
+        await mw(scope, receive, send)
         return statuses[0]
 
     @pytest.mark.asyncio
@@ -196,3 +201,41 @@ class TestRejectedRequestsSpareOtherBudgets:
         assert "10.0.0.5" not in mw.protected_counters
         assert await self._call(mw, "10.0.0.1") == 429
         assert len(mw.ip_counters["10.0.0.1"].events) == 80
+
+    @pytest.mark.asyncio
+    async def test_unverified_lan_requests_do_not_spend_global_budget(self, monkeypatch):
+        monkeypatch.delenv("GALGAME2VOICE_RATE_LIMIT_DISABLED", raising=False)
+        monkeypatch.setenv("GALGAME2VOICE_AUTH_DISABLED", "0")
+        monkeypatch.setattr(rate_limit, "_DEFAULT_GLOBAL_LIMIT", 4)
+        monkeypatch.setattr(rate_limit, "_DEFAULT_IP_LIMIT", 2)
+        async def app(scope, receive, send):
+            ok = (b"x-ok", b"1") in scope.get("headers", ())
+            if ok:
+                scope["state"]["auth_verified"] = True
+            status = 200 if ok or scope["client"][0] == "127.0.0.1" else 401
+            await send({"type": "http.response.start", "status": status, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+        mw = RateLimitMiddleware(app)
+        for ip in ("192.168.1.10", "192.168.1.11"):
+            assert [await self._call(mw, ip) for _ in range(2)] == [401, 401]
+        assert await self._call(mw, "127.0.0.1") == 200
+        assert await self._call(mw, "192.168.1.12", headers=[(b"x-ok", b"1")]) == 200
+
+    @pytest.mark.asyncio
+    async def test_lan_bearer_token_sets_auth_verified_and_counts_globally(self, monkeypatch):
+        monkeypatch.delenv("GALGAME2VOICE_RATE_LIMIT_DISABLED", raising=False)
+        monkeypatch.setenv("GALGAME2VOICE_AUTH_DISABLED", "0")
+        monkeypatch.setenv("GALGAME2VOICE_CONSOLE_TOKEN", "lan-secret")
+        monkeypatch.setattr(rate_limit, "_DEFAULT_GLOBAL_LIMIT", 1)
+        app = FastAPI()
+        app.add_middleware(RateLimitMiddleware)
+        @app.get("/api/ping", dependencies=[Depends(require_auth)])
+        async def ping(request: Request):
+            return {"verified": getattr(request.state, "auth_verified", False)}
+        headers = {"Authorization": "Bearer lan-secret"}
+        transport = httpx.ASGITransport(app=app, client=("10.0.0.9", 50000))
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            assert (await client.get("/api/ping")).status_code == 401
+            resp = await client.get("/api/ping", headers=headers)
+            assert resp.status_code == 200 and resp.json() == {"verified": True}
+            assert (await client.get("/api/ping", headers=headers)).status_code == 429
