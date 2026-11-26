@@ -653,4 +653,8 @@ async def test_invalid_sovits_url_and_params_return_chinese_guidance(tmp_path, m
         assert bad_param.status_code == 422
         param_detail = bad_param.json()["detail"]
         assert "全局配置参数格式或范围无效" in param_detail
+
+        too_long = await client.post("/api/config", json={"settings": {"audio_retention_minutes": 999999}})
+        assert too_long.status_code == 422
+        assert "全局配置参数格式或范围无效" in too_long.json()["detail"]
         assert "Invalid configuration parameters" not in param_detail

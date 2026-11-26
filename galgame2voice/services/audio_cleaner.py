@@ -16,7 +16,7 @@ import aiosqlite
 
 from galgame2voice.database.session import get_db, immediate_transaction
 import galgame2voice.database.crud as crud
-from galgame2voice.services.audio_artifacts import is_repair_audio_name
+from galgame2voice.services.audio_artifacts import is_generated_audio_name, is_repair_audio_name
 
 logger = logging.getLogger("galgame2voice.services.audio_cleaner")
 
@@ -93,8 +93,9 @@ def _scan_and_clean(
             # Strictly protect reference audio files (*.ogg) and registered voice profile references
             if f.suffix.lower() == ".ogg" or f.name.lower() in protected_audio_names:
                 continue
-            # Target ephemeral synthesized audio files (e.g. chunk_*.wav, full_*.wav)
-            if f.is_file() and f.suffix.lower() in (".wav", ".mp3", ".opus"):
+            # Target only audio the app synthesized (chunk_*, full_*, repair_*, voice_*).
+            # Any other clip here was put there by the user as a reference and is theirs.
+            if f.is_file() and is_generated_audio_name(f.name):
                 try:
                     retention_cutoff = cache_cutoff if is_repair_audio_name(f.name) else cutoff
                     if f.stat().st_mtime < retention_cutoff:

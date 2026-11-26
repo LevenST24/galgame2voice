@@ -155,14 +155,15 @@ class EngineSettingsController {
     this.engineWaitController?.abort();
     const waitController = new AbortController();
     this.engineWaitController = waitController;
+    let selected = '';
+    let sent = false;
+    const revision = this.precisionRevision;
 
     try {
       const payload = {};
       const configLoaded = this.coordinator.isConfigLoaded ? this.coordinator.isConfigLoaded() : false;
-      const selected = typeof precision === 'string' ? precision : (configLoaded ? this.dom.gPrecision?.value : '');
-      const revision = this.precisionRevision;
+      selected = typeof precision === 'string' ? precision : (configLoaded ? this.dom.gPrecision?.value : '');
       if (selected) payload.precision = selected;
-      let sent = false;
       let acknowledged = true;
       let postError = null;
       let data;
@@ -210,6 +211,7 @@ class EngineSettingsController {
       });
       if (this.disposed) return;
       engineReady = result.ready === true;
+      if (!acknowledged && selected) await this._showSavedPrecision(selected, revision);
       if (!acknowledged && result.ready) result = { ...result, message: UNCONFIRMED_RESTART_MESSAGE };
       this.coordinator.renderEngineStatus?.(result);
       this.coordinator.showToast?.(result.message, result.ready && acknowledged ? 'success' : 'info');
@@ -219,21 +221,26 @@ class EngineSettingsController {
       const unconfirmed = err.code === 'CONFIG_WRITE_SKIPPED'
         || [401, 403, 404, 429].includes(err.status)
         || (!err.status && err.code !== 'ENGINE_NOT_READY');
+      // 409 means the restart was refused (another restart running, an engine in another
+      // window, a remote address, or the old engine still holding the port). Nothing failed
+      // to start, so don't show the red 启动失败 badge.
+      const refused = err.status === 409;
       this.coordinator.renderEngineStatus?.({
         state: (err.engineState && err.engineState !== 'unavailable')
           ? err.engineState
-          : (unconfirmed ? 'checking' : 'failed'),
+          : (unconfirmed || refused ? 'checking' : 'failed'),
         ready: false,
         message: err.message,
       });
       const needDir = /引擎目录|选择文件夹|api_v2\.py|运行环境/i.test(err.message || '');
-      this.coordinator.showToast?.(err.message, 'error', needDir ? {
+      this.coordinator.showToast?.(err.message, refused ? 'info' : 'error', needDir ? {
         actionLabel: '选择引擎文件夹',
         onAction: () => {
           this.coordinator.goToInferenceTab?.();
           this.dom.gSovitsDirectory?.focus?.();
         },
       } : null);
+      if (sent && selected) await this._showSavedPrecision(selected, revision);
     } finally {
       if (this.engineWaitController === waitController) {
         this.engineWaitController = null;
@@ -251,6 +258,16 @@ class EngineSettingsController {
         }
       }
     }
+  }
+
+  // The server may keep a requested precision even when the start then fails.
+  // Show it once it is saved, so the next start does not quietly send the old choice.
+  async _showSavedPrecision(requested, revision) {
+    const cfg = await requestJson('/api/config', { cache: 'no-store' }).catch(() => null);
+    const saved = cfg?.settings?.inference_precision;
+    if (this.disposed || saved !== requested || !this.dom.gPrecision || revision !== this.precisionRevision) return;
+    this.dom.gPrecision.value = saved;
+    this.coordinator.onPrecisionSaved?.(saved);
   }
 
   async handleTogglePrecision() {
