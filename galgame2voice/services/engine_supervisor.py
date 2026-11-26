@@ -15,7 +15,7 @@ from typing import Any, Protocol
 from fastapi import Request
 
 from galgame2voice.services.engine_recovery import ENGINE_LOG_START
-from galgame2voice.services.engine_runtime import EngineLaunch, prepare_engine_entrypoint
+from galgame2voice.services.engine_runtime import EngineLaunch, prepare_engine_entrypoint, write_engine_guard
 from galgame2voice.services.sovits_endpoint import SovitsEndpoint, parse_sovits_endpoint
 from galgame2voice.services.sovits_installation import find_engine_python
 from galgame2voice.utils.precision import write_sovits_yaml_config
@@ -392,6 +392,7 @@ def _launch_sovits_process(
     entrypoint = getattr(
         runtime_host, "prepare_engine_entrypoint", prepare_engine_entrypoint
     )(sovits_dir, runtime_dir / "bootstrap")
+    guard = write_engine_guard(runtime_dir / "bootstrap")
     synced_yaml = getattr(
         runtime_host, "write_sovits_yaml_config", write_sovits_yaml_config
     )(sovits_dir, is_half, device=device, output_path=runtime_dir / "tts_infer.yaml")
@@ -406,6 +407,7 @@ def _launch_sovits_process(
         str(python_exe),
         "-I",
         "-u",
+        str(guard),
         str(entrypoint),
         "-a",
         host,
