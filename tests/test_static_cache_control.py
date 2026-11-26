@@ -23,7 +23,7 @@ class TestAudioCacheControlHeaders:
         test_wav.write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00")
 
         app = create_app()
-        client = TestClient(app)
+        client = TestClient(app, base_url="http://127.0.0.1:8080")
 
         resp = client.get("/audio/cache/tts_immutable_sample.wav")
         assert resp.status_code == 200
@@ -38,7 +38,7 @@ class TestAudioCacheControlHeaders:
         user_audio.write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00")
 
         app = create_app()
-        client = TestClient(app)
+        client = TestClient(app, base_url="http://127.0.0.1:8080")
 
         resp = client.get("/audio/user_mic_ephemeral.wav")
         assert resp.status_code == 200
@@ -47,7 +47,7 @@ class TestAudioCacheControlHeaders:
     def test_asgi_cache_control_error_responses_never_immutable(self):
         """404 error responses under /audio/cache/ must never receive immutable cache headers."""
         app = create_app()
-        client = TestClient(app)
+        client = TestClient(app, base_url="http://127.0.0.1:8080")
 
         resp = client.get("/audio/cache/missing_audio_segment_404.wav")
         assert resp.status_code == 404
@@ -56,7 +56,7 @@ class TestAudioCacheControlHeaders:
     def test_asgi_cache_control_traversal_attempts_protected(self):
         """Path traversal payloads under /audio/cache/ must be blocked or not receive immutable headers."""
         app = create_app()
-        client = TestClient(app)
+        client = TestClient(app, base_url="http://127.0.0.1:8080")
 
         resp = client.get("/audio/cache/../../secret.txt")
         assert resp.status_code in (403, 404)
@@ -73,7 +73,7 @@ class TestAudioCacheControlHeaders:
             path = settings.audio_dir / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(self._CACHE_SAMPLE)
-        return TestClient(create_app())
+        return TestClient(create_app(), base_url="http://127.0.0.1:8080")
 
     def test_asgi_cache_audio_head_is_immutable(self):
         """HEAD /audio/cache/*.wav stays immutable. A GET 200 check does not observe HEAD."""

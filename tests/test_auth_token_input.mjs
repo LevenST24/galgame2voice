@@ -74,3 +74,11 @@ test('a stored token the server rejects is cleared and the first prompt says why
     assert.equal(getConsoleToken(), '');
   } finally { nextStatus = () => 200; window.prompt = () => null; }
 });
+
+test('same-origin /audio/ requests attach the stored token while cross-origin /audio/ does not', async () => {
+  stored.set('galgame_console_token', 'audio-tok-1');
+  sent.length = 0;
+  await window.fetch('/audio/cache/x.wav');
+  await window.fetch('https://other.example/audio/x.wav');
+  assert.deepEqual(sent, ['Bearer audio-tok-1', null]);
+});

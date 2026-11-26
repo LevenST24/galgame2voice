@@ -98,6 +98,16 @@ class TestConsoleTokenAuth:
         assert (await app_client.get("/docs")).status_code in (404, 405)
         assert (await app_client.get("/redoc")).status_code in (404, 405)
 
+    @pytest.mark.asyncio
+    async def test_audio_static_files_require_auth(self, app_client):
+        from galgame2voice.config import get_settings
+        audio_file = get_settings().audio_dir / "ref_sample.wav"
+        audio_file.parent.mkdir(parents=True, exist_ok=True)
+        audio_file.write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt ")
+        assert (await app_client.get("/audio/ref_sample.wav")).status_code == 401
+        resp = await app_client.get("/audio/ref_sample.wav", headers={"Authorization": f"Bearer {TEST_TOKEN}"})
+        assert resp.status_code == 200 and resp.content.startswith(b"RIFF")
+
 
 class TestTokenSources:
     @pytest.mark.asyncio

@@ -169,7 +169,7 @@ export function initAuthInterceptor() {
     const isApiRequest =
       parsedUrl !== null &&
       parsedUrl.origin === location.origin &&
-      parsedUrl.pathname.startsWith('/api/');
+      (parsedUrl.pathname.startsWith('/api/') || parsedUrl.pathname.startsWith('/audio/'));
 
     if (!isApiRequest) {
       return nativeFetch(input, init);

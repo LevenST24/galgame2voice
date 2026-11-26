@@ -99,3 +99,13 @@ def test_default_suite_rejects_non_loopback_host(monkeypatch):
     resp = TestClient(create_app(), base_url="http://test").get("/api/health")
     assert resp.status_code == 403
     assert "Host" in resp.json().get("detail", "")
+
+
+def test_audio_files_enforce_host_header(guarded_client_factory):
+    """Existing files under /audio/ reject DNS-rebinding Host headers and allow loopback."""
+    audio_file = get_settings().audio_dir / "ref_sample.wav"
+    audio_file.parent.mkdir(parents=True, exist_ok=True)
+    audio_file.write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt ")
+    assert guarded_client_factory("http://evil.example").get("/audio/ref_sample.wav").status_code == 403
+    resp = guarded_client_factory("http://127.0.0.1:8080").get("/audio/ref_sample.wav")
+    assert resp.status_code == 200 and resp.content.startswith(b"RIFF")
