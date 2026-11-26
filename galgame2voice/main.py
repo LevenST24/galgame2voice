@@ -522,12 +522,18 @@ def create_app(*, engine_supervisor: EngineSupervisor | None = None) -> FastAPI:
     )
 
     # 1. Configure CORS Middleware
-    # allow_origin_regex covers loopback on ANY port so the console keeps working
-    # when the launcher auto-switches away from a busy 8080.
+    # Trust loopback only on this server's port (even when the launcher auto-switches
+    # away from a busy 8080), plus origins explicitly configured via cors_origins.
+    cors_origins = [
+        f"http://127.0.0.1:{settings.port}",
+        f"http://localhost:{settings.port}",
+        f"http://[::1]:{settings.port}",
+    ]
+    if "cors_origins" in settings.model_fields_set:
+        cors_origins = list(dict.fromkeys([*cors_origins, *settings.cors_origins]))
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origins,
-        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$",
+        allow_origins=cors_origins,
         allow_credentials=settings.cors_allow_credentials,
         allow_methods=settings.cors_allow_methods,
         allow_headers=settings.cors_allow_headers,
