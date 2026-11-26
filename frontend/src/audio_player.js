@@ -13,6 +13,9 @@
 import { loadAudioBuffer } from './cache.js';
 import { withAudioDeadline } from './audio_request.js';
 
+/** @param {string} [state] */
+const isContextHalted = state => state === 'suspended' || state === 'interrupted';
+
 // 整句没有开声时，只有确认丢失或损坏才返回 'failed'。超时和连接问题下次还能再点。
 function loadFailureOutcome(errors) {
   const confirmed = errors.some(error =>
@@ -43,11 +46,13 @@ export class StreamAudioController {
 
     /** @type {(() => void) | null} */
     this._onVisibilityChange = () => {
-      if (typeof document !== 'undefined' && !document.hidden) {
-        if (this.ctx && this.ctx.state === 'running') {
+      if (typeof document !== 'undefined' && !document.hidden && this.ctx) {
+        if (this.ctx.state === 'running') {
           if (this.nextStartTime < this.ctx.currentTime) {
             this.nextStartTime = this.ctx.currentTime + this.currentBufferLeadSec;
           }
+        } else if (isContextHalted(this.ctx.state) && !this.isPaused) {
+          this.ctx.resume().catch(() => {});
         }
       }
     };
@@ -88,7 +93,7 @@ export class StreamAudioController {
         this.masterGain.connect(this.ctx.destination);
       }
     }
-    if (resumeIfSuspended && this.ctx.state === 'suspended' && !this.isPaused) {
+    if (resumeIfSuspended && isContextHalted(this.ctx.state) && !this.isPaused) {
       this.ctx.resume().catch(() => {});
     }
     return this.ctx;
@@ -98,7 +103,7 @@ export class StreamAudioController {
    * 当前是否处于暂停状态
    */
   get paused() {
-    return this.isPaused || (this.ctx && this.ctx.state === 'suspended');
+    return this.isPaused || (this.ctx && isContextHalted(this.ctx.state));
   }
 
   get isPlaying() {
@@ -162,7 +167,7 @@ export class StreamAudioController {
    */
   resume() {
     this.isPaused = false;
-    if (this.ctx && this.ctx.state === 'suspended') {
+    if (this.ctx && isContextHalted(this.ctx.state)) {
       withAudioDeadline(() => /** @type {AudioContext} */ (this.ctx).resume(), { timeoutMs: 1500 }).catch(() => {});
     }
   }
@@ -190,6 +195,9 @@ export class StreamAudioController {
 
     const ctx = this.ensureContext({ resumeIfSuspended: false });
     if (!ctx) return 'failed';
+    try {
+      if (typeof navigator !== 'undefined' && /** @type {any} */ (navigator).audioSession) /** @type {any} */ (navigator).audioSession.type = 'playback';
+    } catch (_) {}
     const abortController = new AbortController();
     const lineGain = ctx.createGain();
     lineGain.gain.setValueAtTime(1.0, ctx.currentTime);
@@ -251,15 +259,16 @@ export class StreamAudioController {
 
     // Register ownership before the first await. A stop/session change must
     // cancel preparation even while the browser is waiting for an audio gesture.
-    if (ctx.state === 'suspended' && !this.isPaused) {
+    if (isContextHalted(ctx.state) && !this.isPaused) {
       try {
         await withAudioDeadline(() => ctx.resume(), { signal: abortController.signal, timeoutMs: 1500 });
       } catch (_) {}
       if (lineState.settled) return linePromise;
-      if (/** @type {AudioContextState} */ (ctx.state) !== 'running') {
-        lineState.resolve(/** @type {AudioContextState} */ (ctx.state) === 'suspended' ? 'blocked' : 'failed');
-        if (/** @type {AudioContextState} */ (ctx.state) === 'suspended') {
-          this._reportError(new Error('浏览器尚未允许播放语音，请在 LOG 里再点一次「语音」。文字聊天可继续使用。'));
+      if (/** @type {string} */ (ctx.state) !== 'running') {
+        const halted = isContextHalted(ctx.state);
+        lineState.resolve(halted ? 'blocked' : 'failed');
+        if (halted) {
+          this._reportError(new Error('浏览器尚未允许播放语音，请点「记录」，在这句旁边再点一次「语音」。文字聊天可继续使用。'));
         }
         return linePromise;
       }
