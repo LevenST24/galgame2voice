@@ -1711,3 +1711,19 @@ test('startup 401 after cancelling token prompt shows action toast to re-enter t
   for (let i = 0; i < 6; i++) await tick();
   assert.equal(listCalls, 2);
 });
+
+test('unreadable saved API key updates home onboarding prompt while keeping existing chat link', async t => {
+  const ts = '2026-11-20T10:00:00Z';
+  const env = bootTitleStartupEnv(t, { fetchImpl: async url => {
+    const p = String(url);
+    if (p === '/api/providers') return Response.json({ providers: [{ id: 'deepseek', name: 'DeepSeek', chat_model: 'deepseek-chat', api_key: '', api_key_unreadable: true, is_active: true }], presets: [] });
+    if (p === '/api/chat/sessions' || p.startsWith('/api/chat/sessions?')) return Response.json({ sessions: [{ id: 's1', title: '旧对话', last_message: '你好', message_count: 2, created_at: ts, updated_at: ts, voice_profile_id: 7, settings: {} }], has_more: false });
+    if (p.startsWith('/api/chat/history')) return Response.json({ session_id: 's1', has_more: false, oldest_id: 1, messages: [{ id: 1, role: 'user', content_chinese: '在吗', created_at: ts }, { id: 2, role: 'assistant', content_chinese: '你好', created_at: ts }] });
+    return Response.json({ state: 'ready', base_url: 'http://127.0.0.1:9880', profiles: [{ id: 7, name: '星野' }], active_profile_id: 7, backgrounds: [], settings: {} });
+  } });
+  const home = await env.app.ready;
+  for (let i = 0; i < 10; i++) await tick();
+  assert.equal(home.element.querySelector('.home-first-title')?.textContent, '换了电脑或账户，之前保存的 API 密钥需要重新填写');
+  assert.doesNotMatch(home.element.querySelector('.home-label')?.textContent || '', /第一次使用/);
+  assert.equal(textTree(home.element.querySelector('.home-existing')), '查看已有对话 →');
+});
