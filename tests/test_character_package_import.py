@@ -30,6 +30,7 @@ def _make_package_bytes(
     valid: bool = True,
     include_weights: bool = True,
     extra_entries: dict[str, bytes] | None = None,
+    ref_text: str | None = None,
 ) -> bytes:
     wav_buf = io.BytesIO()
     with wave.open(wav_buf, "wb") as audio:
@@ -43,7 +44,7 @@ def _make_package_bytes(
             {
                 "gpt_weights": "gpt.ckpt",
                 "sovits_weights": "sovits.pth",
-                "emotions": {"gentle": {"audio": "refs/gentle.wav", "text": f"{name}の優しい声。", "lang": "ja"}},
+                "emotions": {"gentle": {"audio": "refs/gentle.wav", "text": ref_text or f"{name}の優しい声。", "lang": "ja"}},
             }
         )
     asset_entries: dict[str, bytes] = {}
@@ -216,6 +217,26 @@ async def test_conflict_409_overwrite_backup_and_failed_overwrite_restore(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_package_update_refreshes_the_reference_transcript(tmp_path, monkeypatch):
+    """An update that keeps refs/gentle.wav but changes its text must not leave the old transcript."""
+    from galgame2voice.database import crud
+    from galgame2voice.database.session import get_db
+
+    _, app = _setup_app(tmp_path, monkeypatch)
+    await init_db()
+    old = _make_package_bytes("zip", "alice", "爱丽丝", prefix="alice/", ref_text="古い文章です。")
+    new = _make_package_bytes("zip", "alice", "爱丽丝", prefix="alice/", ref_text="新しい文章です。")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
+        assert (await client.post("/api/characters/import", params={"filename": "a.zip"}, content=old)).status_code == 200
+        updated = await client.post("/api/characters/import", params={"filename": "a.zip", "overwrite": "1"}, content=new)
+        assert updated.status_code == 200, updated.text
+    async with get_db() as conn:
+        (profile,) = [p for p in await crud.list_voice_profiles(conn) if p.name == "爱丽丝"]
+    assert profile.ref_audio_path.endswith("refs/gentle.wav")
+    assert profile.prompt_text == "新しい文章です。"
+
+
+@pytest.mark.asyncio
 async def test_missing_manifest_names_zip_and_folder(tmp_path, monkeypatch):
     _root, app = _setup_app(tmp_path, monkeypatch)
     await init_db()
@@ -368,4 +389,32 @@ async def test_import_extract_disk_and_permission_errors(tmp_path, monkeypatch, 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         res = await client.post("/api/characters/import", params={"filename": "a.zip"}, content=_make_package_bytes("zip", "a", "甲"))
     assert res.status_code == code and msg in res.json()["detail"]
+    _assert_temp_empty()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fmt", ["zip", "tar"])
+async def test_import_skips_files_macos_and_windows_add(tmp_path, monkeypatch, fmt):
+    """Finder's __MACOSX folder, .DS_Store and "Icon\\r" are not package files.
+
+    "Icon\\r" (added when a folder has a custom icon) used to fail the whole
+    import as an illegal path, and the rest were copied into the package.
+    """
+    root, app = _setup_app(tmp_path, monkeypatch)
+    await init_db()
+    junk = {
+        "__MACOSX/._manifest.json": b"\x00\x05\x16\x07",
+        "__MACOSX/refs/._gentle.wav": b"\x00\x05\x16\x07",
+        ".DS_Store": b"Bud1",
+        "refs/.DS_Store": b"Bud1",
+        "Icon\r": b"",
+        "Thumbs.db": b"\xd0\xcf",
+    }
+    content = _make_package_bytes(fmt, "mika", "美嘉", extra_entries=junk)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
+        res = await client.post("/api/characters/import", params={"filename": f"mika.{fmt}"}, content=content)
+    assert res.status_code == 200, res.text
+    installed = root / "characters" / "mika"
+    names = sorted(p.relative_to(installed).as_posix() for p in installed.rglob("*"))
+    assert names == ["gpt.ckpt", "manifest.json", "refs", "refs/gentle.wav", "sovits.pth"]
     _assert_temp_empty()

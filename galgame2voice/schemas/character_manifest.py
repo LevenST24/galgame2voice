@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from galgame2voice.utils.audio_spec import (
     REFERENCE_AUDIO_MAX_SECONDS,
@@ -21,6 +21,11 @@ from galgame2voice.utils.audio_spec import (
 # A work id is the background pack folder name; characters declare which work they belong to.
 CHARACTER_WORK_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 CHARACTER_IDENTITY_MAX_LENGTH = 100
+
+
+def _forward_slashes(value: object) -> object:
+    """Accept Windows-style separators ("refs\\gentle.wav") on every platform."""
+    return value.replace("\\", "/") if isinstance(value, str) else value
 
 
 def clean_character_work(value: object) -> str | None:
@@ -46,6 +51,8 @@ class EmotionConfig(BaseModel):
     description: str | None = Field(default=None, description="Human-readable description of this emotion")
     voice_params: VoiceParamsConfig | None = Field(default=None, description="Optional custom voice parameters for this emotion")
 
+    _audio_separators = field_validator("audio", mode="before")(_forward_slashes)
+
 
 class CharacterManifest(BaseModel):
     """Validated schema for character package manifest.json."""
@@ -64,6 +71,8 @@ class CharacterManifest(BaseModel):
     portrait: dict[str, Any] | None = Field(default=None, description="Optional portrait metadata")
     # Cleaned on read (clean_character_work): a bad optional value must not invalidate the package.
     work: str | None = Field(default=None, description="Background work/pack this character belongs to")
+
+    _weight_separators = field_validator("gpt_weights", "sovits_weights", mode="before")(_forward_slashes)
 
 
 class CharacterManifestV2(CharacterManifest):

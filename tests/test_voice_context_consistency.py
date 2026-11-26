@@ -450,7 +450,7 @@ async def test_expired_context_is_reloaded(tmp_path, monkeypatch):
 @pytest.mark.parametrize("remove_package", [False, True])
 async def test_catalog_rescan_refreshes_context_even_without_profile_changes(tmp_path, monkeypatch, remove_package):
     import json
-    from test_character_identity import install, catalog
+    from test_character_identity import _write_wav, catalog, install
     from galgame2voice.config import get_settings
 
     monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
@@ -470,7 +470,9 @@ async def test_catalog_rescan_refreshes_context_even_without_profile_changes(tmp
         manifest.unlink()
     else:
         data = json.loads(manifest.read_text(encoding="utf-8"))
-        data["emotions"]["gentle"]["text"] = "New reference transcript"
+        # A new emotion leaves the profile row as it is (its own clip and transcript are unchanged).
+        _write_wav(folder / "happy.wav", frame=b"\x02\x00")
+        data["emotions"]["happy"] = {"audio": "happy.wav", "text": "New reference transcript", "lang": "ja"}
         manifest.write_text(json.dumps(data), encoding="utf-8")
     manager.discover_characters()
     async with get_db(path) as conn:
@@ -480,4 +482,4 @@ async def test_catalog_rescan_refreshes_context_even_without_profile_changes(tmp
     if remove_package:
         assert refreshed.emotions == {}
     else:
-        assert refreshed.emotions["gentle"]["prompt_text"] == "New reference transcript"
+        assert refreshed.emotions["happy"]["prompt_text"] == "New reference transcript"

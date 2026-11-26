@@ -6,6 +6,7 @@ Manages application lifespan, CORS, static routing, and router registration.
 import asyncio
 import logging
 import mimetypes
+import sqlite3
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -20,18 +21,19 @@ from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import MutableHeaders
 from starlette.types import Receive, Scope, Send
 
-from galgame2voice.config import get_settings
+from galgame2voice.config import get_settings, require_settings
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.routers import chat, config, health, voice, characters, metrics, system, backgrounds
-from galgame2voice.security.auth import require_auth
+from galgame2voice.security.auth import LOCAL_ONLY_HOSTS, is_local_only_host, require_auth
 from galgame2voice.security.rate_limit import RateLimitMiddleware
 from galgame2voice.services.engine_supervisor import DefaultEngineSupervisor, EngineSupervisor
 from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client, close_gpt_sovits_client
 from galgame2voice.services.telemetry_jobs import TelemetryJobs
 from galgame2voice.services.audio_cleaner import _audio_cleanup_loop
+from galgame2voice.services.character_package_import import sweep_import_leftovers
 from galgame2voice.utils.http_client import close_shared_async_clients
-from galgame2voice.utils.logger import setup_logger
+from galgame2voice.utils.logger import DISK_FULL_MESSAGE, describe_database_write_error, setup_logger
 
 __all__ = [
     "app",
@@ -66,7 +68,7 @@ class HostValidationMiddleware:
     proxies rewrite or forward their own Host value.
     """
 
-    ALLOWED_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+    ALLOWED_LOOPBACK_HOSTS = LOCAL_ONLY_HOSTS
 
     def __init__(self, app: Any) -> None:
         self.app = app
@@ -121,7 +123,7 @@ def _init_logging_and_safety(settings) -> None:
     )
     logger.info("Initializing %s v%s...", settings.app_name, settings.app_version)
 
-    is_loopback = str(settings.host).strip().lower() in ("127.0.0.1", "localhost", "::1")
+    is_loopback = is_local_only_host(settings.host)
     from galgame2voice.security.auth import is_auth_disabled
 
     if not is_loopback and is_auth_disabled():
@@ -152,6 +154,55 @@ def _init_directories(settings) -> None:
         settings.logs_dir,
         settings.characters_dir,
     )
+
+
+async def _read_db_console_token(settings) -> str:
+    async with get_db(settings.db_path) as conn:
+        raw = await crud.get_settings_raw(conn)
+    return str(raw.console_token or "").strip()
+
+
+async def _announce_console_token(settings) -> None:
+    """Say where the access token is on every startup, never the token itself.
+
+    The token was only logged (in English) the first time it was generated, so a
+    later visit that asked for it left the user to search the README.
+    """
+    from galgame2voice.security import auth
+
+    if auth.is_auth_disabled():
+        return
+    if auth.get_env_console_token():
+        logger.info(
+            "已开启访问令牌：网页要求输入令牌时，填写 %s（环境变量或 .env）里设置的值。",
+            auth.ENV_TOKEN_VAR,
+        )
+        return
+    token_file = settings.data_dir / ".console_token"
+    if not token_file.is_file():
+        # Someone deleted the file; write it again from the stored token.
+        try:
+            token = await _read_db_console_token(settings)
+            if token:
+                token_file.parent.mkdir(parents=True, exist_ok=True)
+                token_file.write_text(token, encoding="utf-8")
+                try:
+                    token_file.chmod(0o600)
+                except OSError:
+                    pass
+        except Exception as exc:
+            logger.warning("Could not restore the console token file: %s", exc)
+    if token_file.is_file():
+        logger.info(
+            "已开启访问令牌：网页要求输入令牌时，用记事本打开 %s，复制里面的内容粘贴进去。",
+            token_file,
+        )
+    else:
+        logger.warning(
+            "已开启访问令牌，但没能写出令牌文件 %s。可以在 .env 里设置 %s=自己定的令牌，重启后用它登录。",
+            token_file,
+            auth.ENV_TOKEN_VAR,
+        )
 
 
 async def _init_database_and_characters(settings) -> None:
@@ -318,7 +369,10 @@ async def lifespan(app: FastAPI):
 
     _init_logging_and_safety(settings)
     _init_directories(settings)
+    # No import can be running yet, so whatever a crash left behind can go.
+    await asyncio.to_thread(sweep_import_leftovers, settings.data_dir, older_than=None)
     await _init_database_and_characters(settings)
+    await _announce_console_token(settings)
     await _init_gpt_sovits_client(settings)
 
     cleanup_task = asyncio.create_task(
@@ -444,7 +498,7 @@ def create_app(*, engine_supervisor: EngineSupervisor | None = None) -> FastAPI:
     # DNS Rebinding mitigation (audit finding: Host header validation).
     from galgame2voice.security.auth import is_auth_disabled
 
-    _is_loopback_host = str(settings.host).strip().lower() in ("127.0.0.1", "localhost", "::1")
+    _is_loopback_host = is_local_only_host(settings.host)
     if (
         settings.auth_disabled
         and _is_loopback_host
@@ -524,10 +578,24 @@ def create_app(*, engine_supervisor: EngineSupervisor | None = None) -> FastAPI:
             content={"detail": "Internal Server Error", "error_type": type(exc).__name__},
         )
 
+    # Storage errors get their own handler so the user sees why, not a generic 500.
+    @app.exception_handler(sqlite3.Error)
+    @app.exception_handler(OSError)
+    async def storage_exception_handler(request: Request, exc: Exception):
+        message = describe_database_write_error(exc)
+        if message is None:
+            return await global_exception_handler(request, exc)
+        logger.error("Storage error on %s %s: %s", request.method, request.url.path, exc, exc_info=True)
+        return JSONResponse(
+            status_code=507 if message == DISK_FULL_MESSAGE else 503,
+            content={"detail": message, "error_type": type(exc).__name__},
+        )
+
     return app
 
 
 # Application singleton instance for Uvicorn
+require_settings()
 app = create_app()
 
 

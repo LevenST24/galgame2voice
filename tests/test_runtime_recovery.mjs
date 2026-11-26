@@ -887,7 +887,7 @@ await withUpdateManager({
       restart: () => response({ detail: '当前连接的是远端或外部语音引擎，无法由此处重启。' }, 409),
       engineStatus: { state: 'ready', ready: true, message: '语音引擎已就绪。' },
       systemStatus: { gpt_sovits: { status: 'reachable', base_url: 'http://127.0.0.1:9880' } },
-      expectedBadge: '启动失败',
+      expectedBadge: '待确认',
       expectedMessage: /远端或外部语音引擎/,
     },
     {

@@ -23,6 +23,7 @@ from galgame2voice.adapters.registry import (
 )
 from galgame2voice.database import crud
 from galgame2voice.database.crud import is_masked_key
+from galgame2voice.database.crud_modules.providers import same_url_origin
 from galgame2voice.database.models import (
     ProviderCreate,
     ProviderUpdate,
@@ -34,7 +35,7 @@ from galgame2voice.utils.error_diagnostics import (
     is_retryable_diagnostic_code,
     normalize_diagnostic_code,
 )
-from galgame2voice.utils.logger import sanitize_error_detail
+from galgame2voice.utils.logger import describe_database_write_error, sanitize_error_detail
 
 logger = logging.getLogger("galgame2voice.routers.providers")
 router = APIRouter(tags=["Providers & Testing"])
@@ -157,7 +158,7 @@ async def get_provider(provider_id: str):
 
 
 async def _update_existing_provider(
-    conn: Any, provider_id: str, provider_data: dict[str, Any]
+    conn: Any, provider_id: str, provider_data: dict[str, Any], existing: Any
 ) -> dict[str, Any]:
     """Updates an existing LLM provider configuration with validation."""
     update_kwargs: dict[str, Any] = {}
@@ -183,11 +184,19 @@ async def _update_existing_provider(
     if "reasoning_effort" in provider_data:
         update_kwargs["reasoning_effort"] = provider_data["reasoning_effort"]
 
+    new_url, new_key = update_kwargs.get("api_base_url"), str(update_kwargs.get("api_key") or "").strip()
+    if (provider_id != "custom" and existing.api_key and new_url and existing.api_base_url
+            and (not new_key or is_masked_key(new_key)) and not same_url_origin(new_url, existing.api_base_url)):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="更换「接口地址」时，请在「API 密钥」处重新填入完整密钥，避免将已保存的原服务商密钥发往新地址。")
+
     try:
         updates = ProviderUpdate(**update_kwargs)
         updated = await crud.update_provider(conn, provider_id, updates)
         return {"status": "success", "provider": updated.model_dump() if updated else None}
     except Exception as exc:
+        if describe_database_write_error(exc):
+            raise
         safe_err = sanitize_error_detail(exc)
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -241,6 +250,8 @@ async def _create_new_provider(
         created = await crud.create_provider(conn, new_provider)
         return {"status": "created", "provider": created.model_dump()}
     except Exception as exc:
+        if describe_database_write_error(exc):
+            raise
         safe_err = sanitize_error_detail(exc)
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -271,7 +282,7 @@ async def create_or_update_provider(provider_data: dict[str, Any]):
     async with get_db() as conn:
         existing = await crud.get_provider_raw(conn, provider_id)
         if existing:
-            return await _update_existing_provider(conn, provider_id, provider_data)
+            return await _update_existing_provider(conn, provider_id, provider_data, existing)
         return await _create_new_provider(conn, provider_id, provider_data)
 
 
@@ -348,6 +359,8 @@ async def activate_provider(provider_id: str):
                     # Concurrently created by parallel activation request (TOCTOU safe)
                     pass
                 except Exception as exc:
+                    if describe_database_write_error(exc):
+                        raise
                     logger.debug("Non-critical: error while creating preset provider: %s", exc)
         success = await crud.set_active_provider(conn, clean_id)
         if not success:
@@ -366,8 +379,12 @@ async def _resolve_provider_test_credentials(
         async with get_db() as conn:
             stored = await crud.get_provider_raw(conn, provider_id)
             if stored and stored.api_key:
-                # Credential leak guard: stored keys may only be sent to the base_url they were saved with
-                if base_url and stored.api_base_url and base_url.rstrip("/") != stored.api_base_url.rstrip("/"):
+                # Credential leak guard: stored keys may only be sent to the base_url origin they were saved with
+                if base_url and stored.api_base_url and not same_url_origin(base_url, stored.api_base_url):
+                    if provider_id == "custom":
+                        # Custom endpoints need no key (Ollama, LM Studio): test the new
+                        # address without the stored one instead of refusing.
+                        return "", base_url
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail="Cannot test custom base_url with stored API key. Please provide the explicit API key."
