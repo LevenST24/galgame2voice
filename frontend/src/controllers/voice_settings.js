@@ -993,7 +993,8 @@ async function importCharacterArchive(blob, filename) {
       ({ status, data } = await sendImportArchiveXhr(blob, filename, opts));
     }
     if (status < 200 || status >= 300) {
-      showToast(getErrorMessage(data, '') || `导入角色包失败（HTTP ${status}）`, 'error');
+      const fallback = status ? `HTTP ${status}` : '导入角色包失败，请确认本机服务正在运行后重试。';
+      showToast(getErrorMessage(data, fallback), 'error');
       return;
     }
     await finishCharacterImport(data, filename);
