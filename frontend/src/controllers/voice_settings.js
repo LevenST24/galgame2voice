@@ -670,7 +670,8 @@ export async function createCustomVoice() {
       ref_audio_path: refPath,
       prompt_text: promptText,
       prompt_lang: _dom.sCvLang.value,
-      text_lang: _dom.sCvLang.value,
+      // Only the Japanese line is ever voiced; the select describes the reference clip.
+      text_lang: 'ja',
       system_prompt: customSystemPrompt,
     };
     const data = await requestJson('/api/voice/profiles', {
