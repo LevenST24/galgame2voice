@@ -36,7 +36,7 @@ from galgame2voice.services.character_manager import (
     format_invalid_package_warning,
     get_character_manager,
 )
-from galgame2voice.services.character_voice_catalog import get_character_voice_catalog
+from galgame2voice.services.character_voice_catalog import _move_folder, get_character_voice_catalog
 from galgame2voice.utils.async_tasks import await_protected
 from galgame2voice.utils.logger import describe_storage_error, sanitize_error_detail
 
@@ -484,9 +484,9 @@ def _place_packages(
                 if old.is_dir() and older.fullmatch(old.name):
                     _rmtree_force(old)
             backup = backup_root / f"{folder_name}-{ts}"
-            shutil.move(str(target), str(backup))
+            _move_folder(target, backup)
             backups.append((target, backup))
-        shutil.move(str(src_dir), str(target))
+        _move_folder(src_dir, target)
         placed.append(target)
 
 
@@ -734,6 +734,12 @@ async def import_character_archive_file(
                 await await_protected(_undo())
                 if not isinstance(exc, Exception):
                     raise
+                if isinstance(exc, PermissionError):
+                    raise HTTPException(
+                        status.HTTP_409_CONFLICT,
+                        "角色包文件夹正被其他程序占用，没能替换，原来的角色包没有改动。"
+                        "请关闭打开这个文件夹的窗口或程序（例如资源管理器、播放器、杀毒软件）后再试。",
+                    ) from exc
                 raise HTTPException(500, f"移动角色包失败：{sanitize_error_detail(exc)}") from exc
 
             imported_pkgs: list[CharacterPackage] = []
