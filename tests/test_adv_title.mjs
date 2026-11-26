@@ -167,7 +167,10 @@ test('audio availability, stop toggle, natural completion and playback failure',
   h.q('.home-listen').click(); assert.equal(h.calls.at(-1), 'stop'); assert.equal(textTree(h.q('.home-listen')), '▶ 试听这句');
   h.finish('ended'); await microtasks();
   h.q('.home-listen').click(); h.finish('ended'); await microtasks(); assert.equal(textTree(h.q('.home-listen')), '▶ 试听这句');
-  h.q('.home-listen').click(); h.finish('failed'); await microtasks(); assert.equal(h.q('.home-listen').hidden, true);
+  h.q('.home-listen').click(); h.finish('failed'); await microtasks();
+  assert.equal(h.q('.home-listen'), null);
+  assert.equal(h.q('.home-listen-note').textContent, '这句语音已过期或不可用');
+  assert.equal(h.doc.activeElement, h.q('.home-continue'));
 });
 
 test('opening settings center stops excerpt playback immediately via gear, capsule popover, or modal subscriber', async t => {
