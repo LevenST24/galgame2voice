@@ -200,6 +200,26 @@ async def test_live_but_unresponsive_engine_does_not_claim_loading_forever(engin
     assert "gpt_sovits.log" in result["message"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("via", ["health", "request", "stream"])
+async def test_engine_ready_via_client_traffic_is_not_called_loading_slow(engine, monkeypatch, via):
+    import httpx
+    from galgame2voice.services.gpt_sovits_client import GptSovitsClient
+    proc = MagicMock(); proc.poll.return_value = None
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", proc)
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", EngineLaunch(proc, "127.0.0.1", 19230, "cpu", False, 10.0))
+    monkeypatch.setattr(run_server.time, "monotonic", lambda: 250.0)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200, json={"ok": True}))) as hc:
+        client = GptSovitsClient(base_url="http://127.0.0.1:19230", client=hc)
+        if via == "health": assert (await client.check_health())["connected"] is True
+        elif via == "request": assert await client.control("status") == {"ok": True}
+        else: await client._produce_stream_tts_chunks(hc, "http://127.0.0.1:19230/tts", {}, asyncio.Queue(), object(), None, 4096)
+    monkeypatch.setattr(health, "_probe_gpt_sovits", lambda *a: asyncio.sleep(0, SimpleNamespace(status="unreachable")))
+    result = await health.engine_status_endpoint()
+    assert result["state"] == "checking" and result["ready"] is False and result["was_ready"] is True
+    assert "此前已就绪" in result["message"]
+
+
 @pytest.mark.requires_piped_subprocess
 def test_engine_startup_output_is_visible_before_process_exit(engine, monkeypatch):
     root, directory = engine
