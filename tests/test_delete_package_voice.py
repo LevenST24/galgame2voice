@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
-import shutil
 
 import pytest
 
@@ -72,6 +72,8 @@ async def test_a_folder_that_cannot_move_keeps_the_voice(tmp_path: Path, isolate
     CharacterManager.reset_instance()
     try:
         _install_character_package(tmp_path, "ann", "Ann")
+        ann_dir = tmp_path / "characters" / "ann"
+        before_files = sorted(p.relative_to(ann_dir).as_posix() for p in ann_dir.rglob("*"))
         async with _app_http() as http:
             assert (await http.post("/api/characters/rescan")).status_code == 200
             ann = await _ann(http)
@@ -79,12 +81,13 @@ async def test_a_folder_that_cannot_move_keeps_the_voice(tmp_path: Path, isolate
             def locked(*_args, **_kwargs):
                 raise PermissionError(32, "The process cannot access the file")
 
-            monkeypatch.setattr(shutil, "move", locked)
+            monkeypatch.setattr(os, "rename", locked)
             res = await http.delete(f"/api/voice/profiles/{ann['id']}")
             assert res.status_code == 409
             assert "没能移到备份文件夹" in res.json()["detail"]
             assert await _ann(http) is not None
-            assert (tmp_path / "characters" / "ann" / "manifest.json").is_file()
+            assert (ann_dir / "manifest.json").is_file()
+            assert sorted(p.relative_to(ann_dir).as_posix() for p in ann_dir.rglob("*")) == before_files
     finally:
         CharacterManager.reset_instance()
         get_settings.cache_clear()

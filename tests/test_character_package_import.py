@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import io
 import json
+import os
 from pathlib import Path
 import tarfile
 import wave
@@ -213,6 +214,36 @@ async def test_conflict_409_overwrite_backup_and_failed_overwrite_restore(tmp_pa
         backups = list((get_settings().data_dir / "replaced_characters").glob("natsume-*"))
         assert len(backups) == 1
         assert json.loads((backups[0] / "manifest.json").read_text("utf-8"))["system_prompt"] == "第二版人设"
+    _assert_temp_empty()
+
+
+@pytest.mark.asyncio
+async def test_overwrite_locked_package_folder_returns_409_and_keeps_original(tmp_path, monkeypatch):
+    root, app = _setup_app(tmp_path, monkeypatch)
+    await init_db()
+    v1 = _make_package_bytes("zip", "natsume", "夏目", prefix="natsume/", system_prompt="第一版人设")
+    v2 = _make_package_bytes("zip", "natsume", "夏目", prefix="natsume/", system_prompt="第二版人设")
+    pkg_dir = (root / "characters" / "natsume").resolve()
+    real_rename = os.rename
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
+        assert (await client.post("/api/characters/import", params={"filename": "n.zip"}, content=v1)).status_code == 200
+        before_files = sorted(p.relative_to(pkg_dir).as_posix() for p in pkg_dir.rglob("*"))
+
+        def locked_rename(src, dst, *args, **kwargs):
+            if Path(src).resolve() == pkg_dir:
+                raise PermissionError(13, "Access is denied")
+            return real_rename(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(os, "rename", locked_rename)
+        res = await client.post("/api/characters/import", params={"filename": "n.zip", "overwrite": "1"}, content=v2)
+
+    body = res.json()
+    assert res.status_code == 409, res.text
+    assert "被其他程序占用" in body["detail"]
+    assert "WinError" not in body["detail"] and "Errno" not in body["detail"] and "code" not in body
+    assert json.loads((pkg_dir / "manifest.json").read_text("utf-8"))["system_prompt"] == "第一版人设"
+    assert sorted(p.relative_to(pkg_dir).as_posix() for p in pkg_dir.rglob("*")) == before_files
     _assert_temp_empty()
 
 
