@@ -39,7 +39,7 @@ export function createSettingsDraftStore({
         payload = readConfigPayload();
       } catch (e) {
         showToast(`保存失败: ${e.message || e}`, 'error');
-        return;
+        return 'failed';
       }
       const coordinatorRevision = getCoordinatorRevision();
       const targetEngineDirectory = getEngineDirectory();
