@@ -146,7 +146,7 @@ class CharacterManager:
 
             pkg = self._load_and_validate_package(item, manifest_path)
             if pkg.id in packages:
-                raise DuplicateCharacterId(f"角色包 ID 重复：{pkg.id}；请修改 manifest.json 中的 id，然后重新扫描角色包。")
+                raise DuplicateCharacterId(f"角色包 ID 重复：{pkg.id}；请修改 manifest.json 中的 id，然后到「设置中心 → 角色与会话」点「扫描」。")
             packages[pkg.id] = pkg
             if pkg.is_valid:
                 discovered.append(pkg)

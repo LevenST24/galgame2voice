@@ -422,7 +422,7 @@ async def test_duplicate_id_cold_start_keeps_profiles_and_reports_conflict(
     voices = await voice.list_voice_profiles()
     assert any(p["name"] == "Saved" for p in result["characters"])
     assert any(p["name"] == "Saved" for p in voices["profiles"])
-    assert "角色包 ID 重复" in result["catalog_warning"]
+    assert "角色包 ID 重复" in result["catalog_warning"] and "到「设置中心 → 角色与会话」点「扫描」" in result["catalog_warning"]
     assert voices["catalog_warning"] == result["catalog_warning"]
     assert manager.get_character("ann") is None
 
