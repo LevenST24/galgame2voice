@@ -8,6 +8,7 @@ import {
   getStorageStatus,
   createSession,
   deleteSession,
+  sessionsByRecent,
   getSession,
   getActive,
   addMessage,
@@ -420,7 +421,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   function renderSidebar() {
     if (dom.sessionList) {
       renderSessionList(dom.sessionList, {
-        sessions: state.sessions,
+        sessions: sessionsByRecent(state.sessions),
         activeId: state.activeId,
         onSelect: switchSession,
         onDelete: handleDelete,
