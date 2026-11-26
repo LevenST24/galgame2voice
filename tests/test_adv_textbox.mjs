@@ -598,6 +598,32 @@ test('textbox: long Japanese line pagination strictly confines every page within
   }
 });
 
+test('textbox: the voice tail lets the player write, says why send waits, and keeps the draft', () => {
+  const container = new FakeElement();
+  const sent = [];
+  const tb = createTextbox(container, { onSend: text => { sent.push(text); return true; } });
+  const textarea = container.querySelector('.adv-player-textarea');
+  const sendBtn = container.querySelector('.adv-player-send-btn');
+  const normal = textarea.placeholder;
+
+  tb.enterInput({ canSend: false, voicePending: true });
+  assert.equal(sendBtn.disabled, true);
+  assert.equal(textarea.placeholder, '语音还在准备，可以先写下一句');
+  tb.setCanSend(false);
+  assert.equal(textarea.placeholder, '语音还在准备，可以先写下一句', 'the app re-syncing controls keeps the note');
+
+  textarea.value = '先写好的下一句';
+  textarea.dispatchEvent({ type: 'keydown', key: 'Enter', shiftKey: false, preventDefault() {} });
+  assert.deepEqual(sent, []);
+
+  tb.enterInput({ canSend: true });
+  assert.equal(sendBtn.disabled, false);
+  assert.equal(textarea.placeholder, normal);
+  assert.equal(textarea.value, '先写好的下一句', 'settling does not clear the draft');
+  textarea.dispatchEvent({ type: 'keydown', key: 'Enter', shiftKey: false, preventDefault() {} });
+  assert.deepEqual(sent, ['先写好的下一句']);
+});
+
 test('textbox: re-paired subtitle pages still fit the box', () => {
   const container = new FakeElement();
   const fits = (text) => [...text].length <= 30;

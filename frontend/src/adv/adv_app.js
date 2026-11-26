@@ -937,6 +937,9 @@ export function mountAdv(dom, deps) {
       preloadNextLine();
     }
   }));
+  disposers.push(controller.on('text_complete', event => {
+    if (event.messageId === turnId && deps.getSession()?.id === sessionId) player.textComplete(turnId);
+  }));
   disposers.push(controller.on('line_audio', event => {
     if (event.messageId === turnId && deps.getSession()?.id === sessionId) player.setLineAudio(turnId, event.line, event);
   }));

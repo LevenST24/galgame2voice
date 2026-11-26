@@ -75,7 +75,7 @@ try:
         setup_windows_job_object as _setup_windows_job_object,
         terminate_process_tree,
     )
-    from galgame2voice.config import get_settings  # noqa: E402
+    from galgame2voice.config import get_settings, require_settings  # noqa: E402
     from galgame2voice.utils.active_turns import stop_active_turns  # noqa: E402
     from galgame2voice.utils.windows_runtime import kernel32  # noqa: E402
     from scripts.launcher_address import browser_hosts  # noqa: E402
@@ -1149,6 +1149,30 @@ def sync_runtime_address(*, host: str | None = None, port: int | None = None) ->
         pass
 
 
+def _first_env_value(names: tuple[str, ...]) -> str | None:
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
+
+
+def _dotenv_setting(field: str) -> Any:
+    """Read host/port the way Settings does, from its own .env source.
+
+    Settings would pick these up too, but the launcher syncs its own CLI defaults
+    into the environment before Settings runs, so without this the documented
+    GALGAME2VOICE_HOST/PORT lines in .env were silently replaced by 127.0.0.1:8080.
+    Only consulted when no environment variable sets the value.
+    """
+    try:
+        from galgame2voice.config import Settings
+
+        return getattr(Settings(), field)
+    except Exception:
+        return None
+
+
 class _ChineseHelpFormatter(argparse.HelpFormatter):
     """Chinese headings and defaults; argparse's own strings stay English otherwise."""
 
@@ -1188,20 +1212,17 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     )
     parser._optionals.title = "参数"
     parser.add_argument("-h", "--help", action="help", help="显示这份帮助并退出")
+    port_names = ("GALGAME2VOICE_PORT", "PORT", "GALGAME_PORT")
+    host_names = ("GALGAME2VOICE_HOST", "HOST", "GALGAME_HOST")
     env_port = 8080
-    env_port_str = os.environ.get("GALGAME2VOICE_PORT") or os.environ.get("PORT") or os.environ.get("GALGAME_PORT")
+    env_port_str = _first_env_value(port_names) or str(_dotenv_setting("port") or "")
     if env_port_str:
         try:
             env_port = _port_number(env_port_str)
         except argparse.ArgumentTypeError:
             # An out-of-range environment value would crash bind() later; keep the default.
             pass
-    env_host = (
-        os.environ.get("GALGAME2VOICE_HOST")
-        or os.environ.get("HOST")
-        or os.environ.get("GALGAME_HOST")
-        or "127.0.0.1"
-    )
+    env_host = _first_env_value(host_names) or _dotenv_setting("host") or "127.0.0.1"
     env_no_browser = os.environ.get("GALGAME_NO_BROWSER", "").lower() in ("1", "true", "yes")
 
     parser.add_argument(
@@ -1287,6 +1308,7 @@ def main(args: list[str] | None = None):
         if parsed.check_only:
             print("\n[巡检失败] Python 运行环境或核心运行库校验未通过。")
         sys.exit(1)
+    require_settings()
 
     try:
         run_hardware_diagnostics()

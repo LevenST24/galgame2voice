@@ -7,6 +7,7 @@ import { getErrorMessage } from '../request.js';
 import { persistSession } from '../session_api.js';
 import { getConsoleToken, isUsableConsoleToken, promptConsoleToken } from '../auth.js';
 import { packTarBlob } from '../tar_pack.js';
+import { openModal, closeModal } from '../settings_ui.js';
 
 export const FIRST_USE_VOICE_HINT =
   '首次使用：点「导入角色包」选 .zip 压缩包，或点「选择文件夹」选已解压的角色包，也可以直接拖进来；没有角色包时，可以用模型权重和参考音频新建音色。';
@@ -757,10 +758,14 @@ function setImportBusy(busy) {
   if (_dom.sVoiceRescan) _dom.sVoiceRescan.disabled = busy;
 }
 
-function sendImportArchiveXhr(blob, filename, { overwrite = false, retriedAuth = false } = {}) {
+function sendImportArchiveXhr(blob, filename, { overwrite = false, sameName = '', retriedAuth = false } = {}) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    const qs = new URLSearchParams([...(filename ? [['filename', filename]] : []), ...(overwrite ? [['overwrite', '1']] : [])]).toString();
+    const qs = new URLSearchParams([
+      ...(filename ? [['filename', filename]] : []),
+      ...(overwrite ? [['overwrite', '1']] : []),
+      ...(sameName ? [['same_name', sameName]] : []),
+    ]).toString();
     xhr.open('POST', `/api/characters/import${qs ? `?${qs}` : ''}`);
     xhr.setRequestHeader('Content-Type', blob.type || 'application/octet-stream');
     const token = getConsoleToken();
@@ -775,7 +780,7 @@ function sendImportArchiveXhr(blob, filename, { overwrite = false, retriedAuth =
         let token = null;
         try { token = await promptConsoleToken('服务需要访问令牌验证'); } catch {}
         if (token) {
-          sendImportArchiveXhr(blob, filename, { overwrite, retriedAuth: true }).then(resolve, reject);
+          sendImportArchiveXhr(blob, filename, { overwrite, sameName, retriedAuth: true }).then(resolve, reject);
           return;
         }
       }
@@ -792,6 +797,46 @@ function sendImportArchiveXhr(blob, filename, { overwrite = false, retriedAuth =
 function confirmPackageOverwrite(data, filename) {
   const names = Array.isArray(data?.names) && data.names.length ? data.names.join('、') : (filename || '该角色');
   return window.confirm(`已有同名角色包「${names}」，覆盖它吗？旧的会先备份。`);
+}
+
+/**
+ * A package named like a voice the user made: keep both (the default) or let the package replace it.
+ * @returns {Promise<'keep_both' | 'replace' | null>}
+ */
+export function askOwnVoiceSameName(data) {
+  const names = Array.isArray(data?.names) && data.names.length ? data.names : ['该音色'];
+  const suffix = typeof data?.suffix === 'string' ? data.suffix : '（自建）';
+  const list = names.map((name) => `「${name}」`).join('、');
+  const renamed = names.map((name) => `「${name}${suffix}」`).join('、');
+  const doc = globalThis.document;
+  const modal = doc?.getElementById?.('ownVoiceClashModal');
+  const text = doc?.getElementById?.('ownVoiceClashText');
+  const keepBtn = doc?.getElementById?.('ownVoiceClashKeep');
+  const replaceBtn = doc?.getElementById?.('ownVoiceClashReplace');
+  if (!modal || !text || !keepBtn || !replaceBtn) {
+    if (window.confirm(`你自己建的音色${list}和这个角色包同名。\n\n点「确定」两个都保留：你的音色改名为${renamed}，人设和声音都不变。\n点「取消」再选是否用角色包替换它。`)) {
+      return Promise.resolve('keep_both');
+    }
+    return Promise.resolve(window.confirm(`用角色包替换你自己建的${list}吗？你写的人设会被角色包的覆盖。`) ? 'replace' : null);
+  }
+  text.textContent = `你自己建的音色${list}和这个角色包同名。选「两个都保留」，你的音色会改名为${renamed}，人设和声音都不变；选「用角色包替换」，角色包会覆盖它和你写的人设。`;
+  return new Promise((resolve) => {
+    const closers = [...modal.querySelectorAll('[data-close]')];
+    const finish = (choice) => {
+      keepBtn.removeEventListener('click', onKeep);
+      replaceBtn.removeEventListener('click', onReplace);
+      closers.forEach((btn) => btn.removeEventListener('click', onCancel));
+      closeModal(modal);
+      resolve(choice);
+    };
+    const onKeep = () => finish('keep_both');
+    const onReplace = () => finish('replace');
+    const onCancel = () => finish(null);
+    keepBtn.addEventListener('click', onKeep);
+    replaceBtn.addEventListener('click', onReplace);
+    closers.forEach((btn) => btn.addEventListener('click', onCancel));
+    openModal(modal, { focus: keepBtn });
+  });
 }
 
 function isSessionModalOpen() {
@@ -817,16 +862,23 @@ function characterImportSuccessMessage(label, imported, modalOpen = true, autoBo
   return `已导入${label}，其中${who}还不能出声，需要补上模型权重`;
 }
 
+function keptOwnVoicesNote(data) {
+  const kept = Array.isArray(data?.kept_own_voices) ? data.kept_own_voices.filter((item) => item?.renamed_to) : [];
+  if (!kept.length) return '';
+  return `；你自己建的${kept.map((item) => `「${item.name}」`).join('、')}已改名为${kept.map((item) => `「${item.renamed_to}」`).join('、')}`;
+}
+
 async function finishCharacterImport(data, filename) {
   invalidateScannedModels();
   const imported = Array.isArray(data?.imported) ? data.imported : [];
   const label = imported.length ? imported.map((item) => `「${item.name}」`).join('、') : `「${filename || '角色包'}」`;
+  const keptNote = keptOwnVoicesNote(data);
   if (!isSessionModalOpen()) {
     await fetchVoiceProfiles({ silent: true }).catch(() => {});
     const toastOpts = _callbacks.onOpenSessionSettings
       ? { actionLabel: '去选用', onAction: () => _callbacks.onOpenSessionSettings() }
       : null;
-    showToast(characterImportSuccessMessage(label, imported, false), 'success', toastOpts);
+    showToast(`${characterImportSuccessMessage(label, imported, false)}${keptNote}`, 'success', toastOpts);
     return;
   }
   await loadSessionVoiceSelect(getActive(), { preserveDraft: true, syncCustomBox: false });
@@ -878,7 +930,7 @@ async function finishCharacterImport(data, filename) {
   const toastOpts = !modalOpen && !autoBound && _callbacks.onOpenSessionSettings
     ? { actionLabel: '去选用', onAction: () => _callbacks.onOpenSessionSettings() }
     : null;
-  const message = characterImportSuccessMessage(label, imported, modalOpen, autoBound);
+  const message = `${characterImportSuccessMessage(label, imported, modalOpen, autoBound)}${keptNote}`;
   showToast(note ? `${message}${note}` : message, note ? 'info' : 'success', toastOpts);
 }
 
@@ -886,11 +938,20 @@ async function importCharacterArchive(blob, filename) {
   if (isImporting || !blob) return;
   setImportBusy(true);
   try {
-    let { status, data } = await sendImportArchiveXhr(blob, filename, { overwrite: false });
-    if (status === 409 && data?.code === 'package_exists') {
-      if (!confirmPackageOverwrite(data, filename)) return;
+    const opts = { overwrite: false, sameName: '' };
+    let { status, data } = await sendImportArchiveXhr(blob, filename, opts);
+    // The server asks one question per round: same-name package first, then a same-name voice of the user's own.
+    for (let round = 0; status === 409 && round < 2; round++) {
+      if (data?.code === 'package_exists' && !opts.overwrite) {
+        if (!confirmPackageOverwrite(data, filename)) return;
+        opts.overwrite = true;
+      } else if (data?.code === 'own_voice_same_name' && !opts.sameName) {
+        const choice = await askOwnVoiceSameName(data);
+        if (!choice) return;
+        opts.sameName = choice;
+      } else break;
       if (_dom.sVoiceImport) _dom.sVoiceImport.textContent = '正在导入…';
-      ({ status, data } = await sendImportArchiveXhr(blob, filename, { overwrite: true }));
+      ({ status, data } = await sendImportArchiveXhr(blob, filename, opts));
     }
     if (status < 200 || status >= 300) {
       showToast(getErrorMessage(data, '') || `导入角色包失败（HTTP ${status}）`, 'error');
@@ -1030,24 +1091,34 @@ async function downloadRedeemPackage(pkg) {
     });
   }
   const timer = setInterval(pollRedeemStatus, 1000);
-  const post = (overwrite) => requestJson('/api/characters/redeem/download', {
+  const opts = { overwrite: false, sameName: '' };
+  const post = () => requestJson('/api/characters/redeem/download', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code, package_id: pkg.id, overwrite }),
+    body: JSON.stringify({ code, package_id: pkg.id, overwrite: opts.overwrite, same_name: opts.sameName }),
   }, { timeoutMs: 0 });
   try {
     let data;
-    try {
-      data = await post(false);
-    } catch (err) {
-      const conflict = err?.status === 409 && err?.data?.code === 'package_exists';
-      if (!conflict || !confirmPackageOverwrite(err.data, pkg.name)) throw err;
-      if (_dom.sVoiceRedeemStatus) _dom.sVoiceRedeemStatus.textContent = '正在导入…';
-      data = await post(true);
+    for (let round = 0; ; round++) {
+      try {
+        data = await post();
+        break;
+      } catch (err) {
+        const conflict = err?.status === 409 ? err?.data?.code : '';
+        if (round < 2 && conflict === 'package_exists' && !opts.overwrite) {
+          if (!confirmPackageOverwrite(err.data, pkg.name)) throw err;
+          opts.overwrite = true;
+        } else if (round < 2 && conflict === 'own_voice_same_name' && !opts.sameName) {
+          const choice = await askOwnVoiceSameName(err.data);
+          if (!choice) throw err;
+          opts.sameName = choice;
+        } else throw err;
+        if (_dom.sVoiceRedeemStatus) _dom.sVoiceRedeemStatus.textContent = '正在导入…';
+      }
     }
     await finishCharacterImport(data, pkg.name);
   } catch (err) {
-    if (err?.status !== 409 || err?.data?.code !== 'package_exists') {
+    if (err?.status !== 409 || !['package_exists', 'own_voice_same_name'].includes(err?.data?.code)) {
       showToast(err?.message || '下载并导入失败，请重试。', 'error');
     }
   } finally {
