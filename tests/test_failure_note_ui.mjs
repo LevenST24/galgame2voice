@@ -32,6 +32,7 @@ test('error codes decide model-settings toast actions; text without a code does 
   assert.equal(needsModelSettings('anything', 'PRIVATE_ENDPOINT_BLOCKED'), true);
   assert.equal(needsModelSettings('请求过于频繁', 'OPENAI_RATE_LIMIT'), false);
   assert.equal(needsModelSettings('API Key 无效', null), false);
+  assert.equal(needsModelSettings('对话已被删除或清空，本次回复未保存。', 'turn_unavailable'), false);
   assert.equal(needsModelSettings('连接中断，请检查服务与网络后再试。', null), false);
   assert.equal(needsModelSettings('连接超时，响应里提到 API Key', 'NETWORK_TIMEOUT'), false);
   assert.equal(needsModelSettings('连接超时，响应里提到 API Key', 'CONNECTION_RESET'), false);

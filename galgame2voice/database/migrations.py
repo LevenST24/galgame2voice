@@ -556,6 +556,7 @@ async def run_schema_migrations(conn: aiosqlite.Connection) -> int:
     await _add_column_if_missing(conn, "messages", "lines_json", "TEXT DEFAULT NULL")
     await _add_column_if_missing(conn, "messages", "reply_to_message_id", "INTEGER DEFAULT NULL")
     await _add_column_if_missing(conn, "providers", "reasoning_effort", "TEXT DEFAULT NULL")
+    await _add_column_if_missing(conn, "voice_profiles", "package_id", "TEXT DEFAULT NULL")
     try:
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session_reply_to ON messages(session_id, reply_to_message_id);")
     except Exception as exc:
