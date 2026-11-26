@@ -51,14 +51,26 @@ def assemble_portable_files(folder: Path, ffmpeg_binary: Path) -> None:
     for name in (*PORTABLE_EMPTY_RUNTIME_DIRS, "tools"):
         (folder / name).mkdir(exist_ok=True)
     shutil.copy2(ffmpeg_binary, folder / "tools" / "ffmpeg.exe")
-    (folder / "启动.bat").write_text(
+    bat_header = (
         '@echo off\nchcp 65001 >nul 2>&1\ncd /d "%~dp0"\n'
-        '"%~dp0Galgame2Voice.exe" %*\nif errorlevel 1 pause\n',
+        'if not exist "%~dp0Galgame2Voice.exe" goto missing\n'
+        'if not exist "%~dp0_internal\\" goto missing\n'
+    )
+    # Trailing ASCII space before CRLF prevents cmd.exe DBCS/UTF-8 seek drift under CP936.
+    bat_missing = (
+        "exit /b\n:missing\n"
+        "echo 没有找到 Galgame2Voice.exe 或 _internal 文件夹，程序无法启动。 \n"
+        "echo 如果你是在压缩包窗口里直接双击的：请先关掉这个窗口，右键下载的 zip 压缩包，"
+        "选「全部解压」，再打开解压出来的文件夹，双击里面的「启动.bat」。 \n"
+        "echo 如果解压过但文件不见了：可能被杀毒软件删除或隔离了，请把它恢复或把程序文件夹加入信任，然后重新解压一次。 \n"
+        "pause\nexit /b 1\n"
+    )
+    (folder / "启动.bat").write_text(
+        f'{bat_header}"%~dp0Galgame2Voice.exe" %*\nif errorlevel 1 pause\n{bat_missing}',
         encoding="utf-8", newline="\r\n",
     )
     (folder / "数据恢复.bat").write_text(
-        '@echo off\nchcp 65001 >nul 2>&1\ncd /d "%~dp0"\n'
-        '"%~dp0Galgame2Voice.exe" --restore-database\npause\n',
+        f'{bat_header}"%~dp0Galgame2Voice.exe" --restore-database\npause\n{bat_missing}',
         encoding="utf-8", newline="\r\n",
     )
 
