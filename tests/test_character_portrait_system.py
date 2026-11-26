@@ -270,3 +270,29 @@ async def test_character_detail_route_removed_while_portrait_route_intact(tmp_pa
         assert portrait_res.status_code == 200
         assert portrait_res.json()["enabled"] is True
         assert portrait_res.json()["character_name"] == "立绘保留角色"
+
+
+@pytest.mark.asyncio
+async def test_portrait_file_allows_only_images_and_rejects_bad_costume(tmp_path, monkeypatch):
+    """Legacy portrait file endpoint only serves image types with nosniff and rejects bad costume segments."""
+    pkg = _fake_package(tmp_path, "立绘白名单角色", "cafe_stella")
+    casual = pkg.folder / "portrait" / "casual"
+    casual.mkdir(parents=True)
+    (casual / "gentle.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (casual / "evil.html").write_text("<script>alert(1)</script>", encoding="utf-8")
+    (casual / "evil.svg").write_text("<svg onload=alert(1)/>", encoding="utf-8")
+    _patch_manager(monkeypatch, [pkg])
+    profile = await _make_profile("立绘白名单角色", "portrait_allowlist")
+
+    async with await _client() as client:
+        base = f"/api/characters/{profile.id}/portrait/file"
+        assert (await client.get(f"{base}/casual/evil.html")).status_code == 404
+        assert (await client.get(f"{base}/casual/evil.svg")).status_code == 404
+        ok = await client.get(f"{base}/casual/gentle.png")
+        assert ok.status_code == 200
+        assert ok.headers["content-type"].split(";")[0] == "image/png"
+        assert ok.headers.get("x-content-type-options") == "nosniff"
+
+    with pytest.raises(HTTPException) as rejected:
+        await characters_router.get_character_portrait_file(profile.id, r"casual\sub", "gentle.png")
+    assert rejected.value.status_code == 400
