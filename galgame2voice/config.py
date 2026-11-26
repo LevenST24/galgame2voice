@@ -3,14 +3,39 @@ Configuration module for galgame2voice.
 Provides type-safe environment and runtime settings via Pydantic V2.
 """
 
+import codecs
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from galgame2voice import __version__
 from galgame2voice.runtime_paths import get_install_root
+
+_DEFAULT_ENV_FILE = object()
+
+
+def detect_env_file_encoding(path: Path) -> str:
+    """The encoding a Windows editor most likely saved .env in.
+
+    PowerShell 5.1's `>` writes UTF-16, and Notepad on Chinese Windows may save
+    as ANSI (GBK). Reading those as UTF-8 crashed startup.
+    """
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return "utf-8"
+    if raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return "utf-16"
+    for encoding in ("utf-8-sig", "gb18030"):
+        try:
+            raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        return encoding
+    return "latin-1"
 
 
 class Settings(BaseSettings):
@@ -152,12 +177,30 @@ class Settings(BaseSettings):
     )
 
     # Pydantic Settings Config
+    # Default .env is resolved against get_install_root() in __init__ so
+    # BaseSettings never pre-reads a .env from the current working directory.
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=None,
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
     )
+
+    def __init__(
+        self,
+        *,
+        _env_file: Any = _DEFAULT_ENV_FILE,
+        _env_file_encoding: str | None = None,
+        **values: Any,
+    ) -> None:
+        if _env_file is _DEFAULT_ENV_FILE:
+            candidate = get_install_root() / ".env"
+            _env_file = candidate if candidate.is_file() else None
+        if _env_file_encoding is None and isinstance(_env_file, (str, Path)):
+            path = Path(_env_file).expanduser()
+            if path.is_file():
+                _env_file_encoding = detect_env_file_encoding(path)
+        super().__init__(_env_file=_env_file, _env_file_encoding=_env_file_encoding, **values)
 
     @property
     def data_dir(self) -> Path:
