@@ -577,6 +577,7 @@ await withToastEnv(async ({ dom, toastRoot }) => {
   const msg = toastRoot.children.at(-1).dataset.msg;
   assert.match(msg, /^音色「B」已删除/);
   assert.match(msg, /角色包文件夹已移到「data\/deleted_characters\/b-20261124-120000」/);
+  assert.match(msg, /再在「设置中心 → 角色与会话」里点「扫描」/);
   assert.equal(scans, 2); assert.equal(dom.sCvGpt.value, '');
   passed++;
 }, { captureError: true });

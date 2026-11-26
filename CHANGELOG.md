@@ -5,6 +5,8 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fixed
+- 修复语音出错和删除角色包音色等几处提示里写的「CPU 稳定模式」「音色设置」在界面上找不到的问题；现在都写成「设置中心」里真实的页面和选项名。
 
 ## [3.2.12] - 2026-11-26
 ### Fixed

@@ -111,7 +111,7 @@ async function chatScenario(chunks, { hang = false, cancel = false, status = 200
 {
   const result = await chatScenario(['event: audio_chunk_error\ndata: {"error":"connection refused"}\n\n',
     'event: done\ndata: {"chinese":"文字正常"}\n\n']);
-  assert.equal(result.meta.error, null); assert.match(result.meta.audioError, /启动引擎/); passed++;
+  assert.equal(result.meta.error, null); assert.match(result.meta.audioError, /设置中心 → 语音服务 → 计算方式」改选「CPU 模式/); passed++;
 }
 {
   // No text, line, or message arrived. The stage must not claim that content was kept.
