@@ -38,7 +38,7 @@ const invalid = {
   advPrimaryLanguage: ['en', 'none', null, 1], advSubtitleLanguage: ['en', null, false],
   advWindowOpacity: [-1, 101, 1.5, Infinity, '75'], advTextIntervalMs: [-1, 101, 0.5, NaN, '30'],
   advAutoBaseMs: [-1, 6001, 1.1, Infinity, null], advAutoPerCharMs: [-1, 201, 0.5, NaN],
-  advAutoMode: ['fast', '', null, 2], advOutfit: ['../private', '/absolute', 'a/b', 'a\\b', {}, null],
+  advAutoMode: ['fast', '', null, 2], advOutfit: ['.', '   ', '../private', '/absolute', 'a/b', 'a\\b', 'a\nb', 'x'.repeat(201), {}, null],
   advBackground: ['../cafe', 'cafe', 'cafe/stella/day', 'cafe//stella', '/stella', 'cafe/', 'cafe\\day',
     '咖啡店', 'a'.repeat(65), 'cafe\n', 'cafe/' + 'a'.repeat(65), {}, null, 1],
   advBgTime: ['dawn', '', 'DAY', null, 1],
@@ -48,6 +48,13 @@ for (const [key, values] of Object.entries(invalid)) test(`${key}: invalid value
     const result = normalizeSnapshot({ sessions: [{ id: 's', title: 'test', messages: [], settings: { [key]: value } }] }, defaults, DEFAULT_GLOBAL);
     const fallback = key === 'advBackground' ? '' : key === 'advBgTime' ? 'auto' : defaults[key];
     assert.equal(result.sessions[0].settings[key], fallback, `${key}=${String(value)}`);
+  }
+});
+
+test('outfit ids that a portrait pack can list are kept and pass the settings check', () => {
+  for (const id of ['school uniform', 'uniform.summer', '制服_2', 'x'.repeat(200)]) {
+    assert.equal(pickSettings({ advOutfit: id }, defaults).advOutfit, id);
+    assert.equal(validateAdvField('advOutfit', id, defaults).valid, true, id);
   }
 });
 

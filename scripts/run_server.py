@@ -59,6 +59,7 @@ try:
     from galgame2voice.services.sovits_installation import (  # noqa: E402, F401
         find_engine_python,
         read_sovits_directory,
+        read_sovits_directory_hint,
         write_sovits_directory_hint,
     )
     from galgame2voice.services.engine_runtime import EngineLaunch, prepare_engine_entrypoint  # noqa: E402, F401
@@ -75,10 +76,11 @@ try:
         setup_windows_job_object as _setup_windows_job_object,
         terminate_process_tree,
     )
-    from galgame2voice.config import get_settings  # noqa: E402
+    from galgame2voice.config import get_settings, require_settings  # noqa: E402
     from galgame2voice.utils.active_turns import stop_active_turns  # noqa: E402
     from galgame2voice.utils.windows_runtime import kernel32  # noqa: E402
     from scripts.launcher_address import browser_hosts  # noqa: E402
+    from scripts import desktop_instance  # noqa: E402
 except ImportError as exc:
     # Config imports Pydantic before main() can run the ordinary dependency
     # check. Give source-checkout users a recovery path, but keep missing local
@@ -320,7 +322,7 @@ def find_gpt_sovits_directory() -> Path | None:
                     valid_cached = _check_sovits_dir(cached_path)
                     if valid_cached:
                         try:
-                            raw_hint = cache_file.read_text(encoding="utf-8-sig").strip().strip("\"'")
+                            raw_hint = read_sovits_directory_hint(cache_file)
                             if Path(raw_hint).is_absolute() and valid_cached.resolve().is_relative_to(hint_root.resolve().parent):
                                 write_sovits_directory_hint(hint_root, valid_cached)
                         except Exception:
@@ -704,6 +706,40 @@ def _find_custom_voice_ref_audio(
     return None, default_text, default_lang
 
 
+def _probe_engine_identity(base_url: str, *, timeout: float = 3.0) -> str:
+    """Asks a busy engine port whether GPT-SoVITS answers there.
+
+    api_v2 answers GET /control without a command with 400 (some builds 200).
+    Returns "engine" for that, "other" when something else answered or the
+    connection broke, and "unknown" when nothing answered in time (a busy engine
+    can be slow, so a timeout is not proof either way).
+    """
+    import http.client
+    import socket as _socket
+    import urllib.error
+    import urllib.request
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    try:
+        with opener.open(f"{base_url.rstrip('/')}/control", timeout=timeout) as resp:
+            status = resp.status
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+    except (TimeoutError, _socket.timeout):
+        return "unknown"
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, (TimeoutError, _socket.timeout)):
+            return "unknown"
+        return "other"
+    except (http.client.HTTPException, OSError):
+        return "other"
+    return "engine" if status in (200, 400) else "other"
+
+
 def _probe_synth_peak(host: str, port: int, timeout: float = 90.0) -> float | None:
     """
     Synthesizes one short test sentence via the engine's /tts endpoint and returns
@@ -965,7 +1001,19 @@ def ensure_gpt_sovits_running(
         sovits_base_url = "http://127.0.0.1:9880"
     print(f"[1/2] 正在检测 GPT-SoVITS 语音推理引擎 ({sovits_host}:{sovits_port})...")
     if is_port_in_use(sovits_port, sovits_host):
-        print("      [OK] GPT-SoVITS 语音引擎已在运行")
+        identity = _probe_engine_identity(sovits_base_url)
+        if identity == "engine":
+            print("      [OK] GPT-SoVITS 语音引擎已在运行")
+        elif identity == "other":
+            print(
+                f"      [WARN] 端口 {sovits_port} 已被别的程序占用，那里运行的不是语音引擎。"
+                "请关闭占用这个端口的程序，或在「设置中心 → 语音服务」把「语音服务地址」改回 http://127.0.0.1:9880 后重新启动。"
+            )
+        else:
+            print(
+                f"      [提示] 端口 {sovits_port} 已有程序在监听，但几秒内没有应答语音引擎的检测。"
+                "如果是正在忙的语音引擎可以忽略；否则请关闭占用这个端口的程序后重新启动。"
+            )
         return
     if not sovits_is_local:
         print(
@@ -1149,6 +1197,30 @@ def sync_runtime_address(*, host: str | None = None, port: int | None = None) ->
         pass
 
 
+def _first_env_value(names: tuple[str, ...]) -> str | None:
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
+
+
+def _dotenv_setting(field: str) -> Any:
+    """Read host/port the way Settings does, from its own .env source.
+
+    Settings would pick these up too, but the launcher syncs its own CLI defaults
+    into the environment before Settings runs, so without this the documented
+    GALGAME2VOICE_HOST/PORT lines in .env were silently replaced by 127.0.0.1:8080.
+    Only consulted when no environment variable sets the value.
+    """
+    try:
+        from galgame2voice.config import Settings
+
+        return getattr(Settings(), field)
+    except Exception:
+        return None
+
+
 class _ChineseHelpFormatter(argparse.HelpFormatter):
     """Chinese headings and defaults; argparse's own strings stay English otherwise."""
 
@@ -1188,20 +1260,17 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     )
     parser._optionals.title = "参数"
     parser.add_argument("-h", "--help", action="help", help="显示这份帮助并退出")
+    port_names = ("GALGAME2VOICE_PORT", "PORT", "GALGAME_PORT")
+    host_names = ("GALGAME2VOICE_HOST", "HOST", "GALGAME_HOST")
     env_port = 8080
-    env_port_str = os.environ.get("GALGAME2VOICE_PORT") or os.environ.get("PORT") or os.environ.get("GALGAME_PORT")
+    env_port_str = _first_env_value(port_names) or str(_dotenv_setting("port") or "")
     if env_port_str:
         try:
             env_port = _port_number(env_port_str)
         except argparse.ArgumentTypeError:
             # An out-of-range environment value would crash bind() later; keep the default.
             pass
-    env_host = (
-        os.environ.get("GALGAME2VOICE_HOST")
-        or os.environ.get("HOST")
-        or os.environ.get("GALGAME_HOST")
-        or "127.0.0.1"
-    )
+    env_host = _first_env_value(host_names) or _dotenv_setting("host") or "127.0.0.1"
     env_no_browser = os.environ.get("GALGAME_NO_BROWSER", "").lower() in ("1", "true", "yes")
 
     parser.add_argument(
@@ -1267,7 +1336,23 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
 
 def main(args: list[str] | None = None):
     parsed = parse_args(args)
+    if not parsed.check_only and not getattr(sys, "frozen", False):
+        require_settings()  # an invalid setting stops here with its Chinese message, not as a crash
+        root = _resolve_project_root()
+        instance = desktop_instance.DesktopInstance(root)
+        if not instance.acquire():
+            instance.close()
+            desktop_instance.open_existing_instance(root, no_browser=parsed.no_browser)
+            sys.exit(0)
+        (root / "data" / "desktop_instance.json").unlink(missing_ok=True)
+        try:
+            return _run_main(parsed)
+        finally:
+            instance.close()
+    return _run_main(parsed)
 
+
+def _run_main(parsed: argparse.Namespace):
     # Immediately synchronize the requested host/port across all environment aliases
     # and clear any early-cached Settings before any diagnostic or engine setup runs.
     sync_runtime_address(host=parsed.host, port=parsed.port)
@@ -1287,6 +1372,7 @@ def main(args: list[str] | None = None):
         if parsed.check_only:
             print("\n[巡检失败] Python 运行环境或核心运行库校验未通过。")
         sys.exit(1)
+    require_settings()
 
     try:
         run_hardware_diagnostics()
@@ -1338,9 +1424,7 @@ def main(args: list[str] | None = None):
         except Exception:
             pass
 
-        if getattr(sys, "frozen", False):
-            from scripts.desktop_instance import write_instance_address
-            write_instance_address(runtime_root, bind_host, active_port)
+        desktop_instance.write_instance_address(runtime_root, bind_host, active_port)
 
         # Step 3: Auto Open Browser
         _, display_host = browser_hosts(bind_host)

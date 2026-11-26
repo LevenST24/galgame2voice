@@ -41,6 +41,19 @@ def _has_unnegated_keyword(text: str, keywords: list[str]) -> bool:
     return False
 
 
+# The preference keywords and easter eggs below come from one character's story (四季夏目 of
+# 喫茶ステラ). Another character gets no bonus for "兼职" or "喝一杯" and no 女仆装 easter egg.
+_LORE_CHARACTER_NAMES = ("夏目", "ナツメ", "natsume")
+
+
+def _uses_character_lore(character_name: str | None) -> bool:
+    """Whether the Natsume-specific keywords apply. ``None`` means the caller doesn't know the character."""
+    if character_name is None:
+        return True
+    name = character_name.strip().lower()
+    return any(lore_name in name for lore_name in _LORE_CHARACTER_NAMES)
+
+
 class AffectionService:
     """
     State machine controlling character intimacy, emotion transitions,
@@ -61,8 +74,10 @@ class AffectionService:
     # Keyword scoring rules
     COMPLIMENT_KEYWORDS = [
         "可爱", "辛苦了", "喜欢你", "谢谢你", "真棒", "夸你", "好看", "漂亮", "温柔", "爱你", "想你", "开心",
-        "太棒了", "真好", "努力", "赞", "喜欢夏目"
+        "太棒了", "真好", "努力", "赞"
     ]
+
+    CHARACTER_COMPLIMENT_KEYWORDS = ["喜欢夏目"]
 
     CHARACTER_PREFERENCE_KEYWORDS = [
         "星光咖啡馆", "女仆装", "甜鸡尾酒", "咖啡加糖", "大枣", "死神", "咖啡豆", "兼职", "高岭之花", "喝一杯",
@@ -156,7 +171,9 @@ class AffectionService:
     def __init__(self, db_path: str | Path | None = None) -> None:
         self.db_path = str(db_path) if db_path is not None else get_database_path()
 
-    def calculate_turn_points(self, user_text: str, assistant_text: str = "") -> tuple[int, list[str]]:
+    def calculate_turn_points(
+        self, user_text: str, assistant_text: str = "", character_name: str | None = None,
+    ) -> tuple[int, list[str]]:
         """Calculates turn affection points and reason tags."""
         if not user_text or not isinstance(user_text, str):
             return 1, ["base_turn", "base_interaction (+1)"]
@@ -166,29 +183,39 @@ class AffectionService:
 
         combined = user_text[:4000].lower()
 
+        uses_lore = _uses_character_lore(character_name)
+
         # Check compliments
-        has_compliment = _has_unnegated_keyword(combined, self.COMPLIMENT_KEYWORDS)
+        has_compliment = _has_unnegated_keyword(combined, self.COMPLIMENT_KEYWORDS) or (
+            uses_lore and _has_unnegated_keyword(combined, self.CHARACTER_COMPLIMENT_KEYWORDS)
+        )
         if has_compliment:
             points += 2
             reasons.extend(["compliment", "warm_compliment (+2)"])
 
         # Check character preferences
-        has_preference = _has_unnegated_keyword(combined, self.CHARACTER_PREFERENCE_KEYWORDS)
+        has_preference = uses_lore and _has_unnegated_keyword(
+            combined, self.CHARACTER_PREFERENCE_KEYWORDS,
+        )
         if has_preference:
             points += 3
             reasons.extend(["character_preference", "character_preference (+3)"])
 
         return points, reasons
 
-    def calculate_interaction_points(self, user_text: str, assistant_text: str = "") -> tuple[int, list[str]]:
+    def calculate_interaction_points(
+        self, user_text: str, assistant_text: str = "", character_name: str | None = None,
+    ) -> tuple[int, list[str]]:
         """Calculates affection points earned for a turn based on content analysis."""
-        return self.calculate_turn_points(user_text, assistant_text)
+        return self.calculate_turn_points(user_text, assistant_text, character_name)
 
-    def check_easter_eggs(self, user_text: str, current_level: int = 1) -> dict[str, Any] | None:
+    def check_easter_eggs(
+        self, user_text: str, current_level: int = 1, character_name: str | None = None,
+    ) -> dict[str, Any] | None:
         """
         Checks if the user input triggers a specific Galgame easter egg dialogue.
         """
-        if not user_text or not isinstance(user_text, str):
+        if not user_text or not isinstance(user_text, str) or not _uses_character_lore(character_name):
             return None
         try:
             curr_lvl = int(current_level)
@@ -261,6 +288,7 @@ class AffectionService:
         assistant_text: str = "",
         daily_limit: int = 15,
         explicit_emotion: str | None = None,
+        character_name: str | None = None,
     ) -> dict[str, Any]:
         """
         Processes a full turn of affection update:
@@ -279,11 +307,11 @@ class AffectionService:
         u_text = (user_text or "")[:4000] if isinstance(user_text, str) else ""
         a_text = (assistant_text or "")[:4000] if isinstance(assistant_text, str) else ""
 
-        delta_points, reasons = self.calculate_interaction_points(u_text, a_text)
+        delta_points, reasons = self.calculate_interaction_points(u_text, a_text, character_name)
 
         async with get_db(self.db_path) as conn:
             current = await crud.get_or_create_character_affection(conn, u_id, char_id)
-            triggered_egg = self.check_easter_eggs(u_text, current.affection_level)
+            triggered_egg = self.check_easter_eggs(u_text, current.affection_level, character_name)
             emotion = self._resolve_turn_emotion(current, explicit_emotion, triggered_egg)
 
             # Increment points atomically
