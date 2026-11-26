@@ -6,13 +6,13 @@ folder's write permission. Only a failure writing data/sovits_dir.txt is that.
 """
 
 import errno
+from pathlib import Path
 
 from httpx import ASGITransport, AsyncClient
 import pytest
 
 from galgame2voice.config import get_settings
 from galgame2voice.main import create_app
-from galgame2voice.routers import health
 
 
 async def _save(directory: str):
@@ -21,16 +21,21 @@ async def _save(directory: str):
 
 
 @pytest.mark.asyncio
-async def test_unreadable_chosen_folder_is_a_400_about_that_folder(tmp_path, monkeypatch):
+@pytest.mark.parametrize("parts", [("nas", "GPT-SoVITS"), ("app", "data", "GPT-SoVITS")])
+async def test_unreadable_chosen_folder_is_a_400_about_that_folder(tmp_path, monkeypatch, parts):
     root = tmp_path / "app"
     root.mkdir()
     monkeypatch.setattr(get_settings(), "project_root", root)
-    chosen = tmp_path / "nas" / "GPT-SoVITS"
+    chosen = tmp_path.joinpath(*parts)
+    target = chosen.resolve()
+    real_is_dir = Path.is_dir
 
-    def refuse(project_root, value):
-        raise PermissionError(errno.EACCES, "Permission denied", str(chosen / "api_v2.py"))
+    def refuse(self, *args, **kwargs):
+        if self == target:
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return real_is_dir(self, *args, **kwargs)
 
-    monkeypatch.setattr(health, "save_sovits_directory", refuse)
+    monkeypatch.setattr(Path, "is_dir", refuse)
     result = await _save(str(chosen))
     assert result.status_code == 400
     assert "无法打开所选文件夹" in result.json()["detail"]
