@@ -393,7 +393,8 @@ const models = {
   assert.equal(saves.at(-1).voice_profile_id, 1); passed++;
 }
 {
-  // Deleting a voice also clears the server copies, or the next sync binds it again.
+  // The server clears its copies in the same delete; saving them again would only
+  // move these chats to the top of the recents.
   const { first, second, dom } = setup();
   dom.sVoiceDelete = element();
   initVoiceSettings(dom);
@@ -407,7 +408,10 @@ const models = {
   await loadSessionVoiceSelect(first);
   dom.sVoice.value = '5';
   await dom.sVoiceDelete.click(); await tick();
-  assert.deepEqual(saves.map(s => [s.id, s.voice_profile_id]).sort(), [['first', null], ['second', null]]); passed++;
+  assert.equal(first.settings.voiceProfileId, null);
+  assert.equal(second.settings.voiceProfileId, null);
+  assert.deepEqual(saves.filter(s => s.voice_profile_id === 5), [], 'the deleted voice must not be saved back');
+  assert.ok(!saves.some(s => s.id === 'second'), 'an unbound old chat is not saved again'); passed++;
 }
 {
   // A missing binding stays explicit until the user chooses a replacement.
@@ -553,6 +557,29 @@ await withToastEnv(async ({ dom, toastRoot }) => {
   assert.equal(toastRoot.children[0].dataset.msg, full);
   passed++;
 }, { captureError: true });
+await withToastEnv(async ({ first, second, dom, toastRoot }) => {
+  // Deleting a voice unbinds its old chats without making them the most recent ones.
+  globalThis.window = { confirm: () => true };
+  dom.sVoiceDelete = element();
+  initVoiceSettings(dom);
+  first.settings.voiceProfileId = 1; first.updatedAt = 3000;
+  second.settings.voiceProfileId = 2; second.updatedAt = 1000;
+  const saved = [];
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/voice/profiles') return response({ profiles: [{ id: 1, name: 'A' }, { id: 2, name: 'B' }], active_profile_id: 1 });
+    if (url === '/api/chat/sessions' && options.method === 'POST') saved.push(JSON.parse(options.body).id);
+    return response({});
+  };
+  await loadSessionVoiceSelect(first);
+  dom.sVoice.value = '2';
+  await dom.sVoiceDelete.click(); await tick();
+  assert.equal(second.settings.voiceProfileId, null, 'the deleted voice is unbound locally');
+  assert.equal(second.updatedAt, 1000, 'an old chat must not become the most recent one');
+  assert.equal(first.updatedAt, 3000);
+  assert.ok(!saved.includes(second.id), 'the server already unbound its copy; saving again would reorder it');
+  assert.match(toastRoot.children.at(-1).dataset.msg, /解除了 1 个会话的绑定/);
+  passed++;
+});
 await withToastEnv(async ({ first, second, dom, toastRoot }) => {
   // 1. Initial catalog load to populate voiceProfiles cache
   globalThis.fetch = async () => response({ profiles: cnProfiles, active_profile_id: 1 });
