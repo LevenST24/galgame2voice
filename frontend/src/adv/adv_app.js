@@ -619,7 +619,7 @@ export function mountAdv(dom, deps) {
   function action(name) {
     if (destroyed) return;
     switch (name) {
-      case 'advance': stopStageReplay(); player.advance(); break;
+      case 'advance': stopStageReplay(); flushRelayout(); player.advance(); break;
       case 'toggle_auto':
       case 'auto': if (!player.hidden && (stageReplaying || !['input', 'error', 'suspended'].includes(player.state))) player.setAuto(!player.auto); break;
       case 'toggle_skip':
@@ -1021,14 +1021,34 @@ export function mountAdv(dom, deps) {
     player.settle(turnId, kind === 'done' ? { ok: true } : { kind, error: { message: event.error, code: event.code || event.kind } });
     syncControls();
   }));
-  disposers.push(player.on('state', syncControls));
-  if (deps.subscribe) disposers.push(deps.subscribe(update));
-  listen(deps.viewport || globalThis.window, 'resize', () => {
-    if (!currentLine || !['revealing', 'waiting_advance', 'waiting_audio'].includes(player.state)) return;
+  // A resize while an overlay or replay holds the player is applied once it resumes,
+  // so the page laid out for the old window size does not stay on screen.
+  let relayoutLine = null, activeState = player.state;
+  const RELAYOUT_STATES = ['revealing', 'waiting_advance', 'waiting_audio'];
+  function relayout() {
+    if (!currentLine || !RELAYOUT_STATES.includes(player.state)) return;
+    relayoutLine = null;
     const wasRevealing = player.state === 'revealing';
     player.repaginate();
     textbox.reflow({ pageIndex: player.page });
     if (wasRevealing) player.advance();
+  }
+  function flushRelayout() {
+    if (relayoutLine && relayoutLine === currentLine) relayout();
+  }
+  disposers.push(player.on('state', syncControls));
+  disposers.push(player.on('state', state => {
+    if (state === 'suspended') return;
+    activeState = state;
+    if (!relayoutLine) return;
+    // Let resume() finish restoring the line before the page is laid out again.
+    if (relayoutLine === currentLine && RELAYOUT_STATES.includes(state)) queueMicrotask(flushRelayout);
+    else relayoutLine = null;
+  }));
+  if (deps.subscribe) disposers.push(deps.subscribe(update));
+  listen(deps.viewport || globalThis.window, 'resize', () => {
+    if (currentLine && player.state === 'suspended' && RELAYOUT_STATES.includes(activeState)) relayoutLine = currentLine;
+    else relayout();
   });
   loadBackgrounds();
   update();
