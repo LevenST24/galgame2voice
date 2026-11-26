@@ -381,7 +381,6 @@
   max-height: calc(64 * var(--u));
 }
 .adv-stage:not(.is-home) :is(.adv-subtitle-text, .adv-subtitle-measurer) { font-family: var(--night-mincho); }
-.adv-stage:not(.is-home) .adv-subtitle-measurer { letter-spacing: calc(.6 * var(--u)); }
 .adv-stage:not(.is-home) .adv-text-column { text-shadow: 0 2px 5px #000, 0 0 12px #000; }
 #globalModal .modal-foot [data-close] { opacity: .65; }
 .adv-stage:not(.is-home) .adv-subtitle-text { color: rgba(255, 255, 255, .7); }
