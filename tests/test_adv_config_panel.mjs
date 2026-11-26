@@ -627,6 +627,22 @@ test('outfit select: default option, installed costumes with names, uninstalled 
   assert.equal(h.active.settings.advOutfit, '');
 });
 
+test('outfit select: preserves installed outfit id with trailing space across reopen and save', async t => {
+  const spaced = {
+    enabled: true, defaultCostume: 'school uniform ',
+    costumes: [{ id: 'school uniform ', name: '水手服' }],
+    sprites: {}, faces: {}, expressionSets: {},
+  };
+  const h = setup(t, { loadPortrait: async () => spaced, settings: { advOutfit: 'school uniform ' } });
+  await microtasks();
+  h.app.action('settings');
+  const select = h.app.configPanel.controls.advOutfit;
+  assert.equal(select.querySelectorAll('option').length, 2);
+  assert.equal(select.value, 'school uniform ');
+  h.app.configPanel.element.querySelector('.adv-config-btn-save').click();
+  assert.equal(h.active.settings.advOutfit, 'school uniform ');
+});
+
 test('focus confinement: player in input mode, quick-menu settings lands focus on first control, outside elements cannot steal focus', t => {
   const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0 } });
   // Player is in input mode with textarea focused
