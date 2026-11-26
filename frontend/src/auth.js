@@ -8,13 +8,34 @@ const STORAGE_KEY = 'galgame_console_token';
 
 let _pendingAuthPromise = null;
 
+const TOKEN_INVALID_MESSAGE = '令牌只含英文字母、数字和符号。请切换到英文输入法，或重新复制令牌后再试。';
+
+/**
+ * Undo what an IME or a copy can add to a pasted token: full-width letters become plain
+ * ASCII and invisible characters (zero-width spaces, BOM) are dropped.
+ * @param {string} raw
+ * @returns {string}
+ */
+export function normalizeConsoleToken(raw) {
+  return String(raw || '').normalize('NFKC').replace(/\p{Cf}/gu, '').trim();
+}
+
+/**
+ * A token the server can ever accept is printable ASCII; anything else cannot be sent in a
+ * header (the browser throws) or matched, so it must not be attached to a request.
+ * @param {string} token
+ */
+export function isUsableConsoleToken(token) {
+  return /^[\x21-\x7e]+$/.test(token);
+}
+
 /**
  * 获取当前 sessionStorage 中的控制台令牌
  * @returns {string}
  */
 export function getConsoleToken() {
   try {
-    return (window.sessionStorage.getItem(STORAGE_KEY) || '').trim();
+    return normalizeConsoleToken(window.sessionStorage.getItem(STORAGE_KEY) || '');
   } catch {
     return '';
   }
@@ -26,8 +47,9 @@ export function getConsoleToken() {
  */
 function setConsoleToken(token) {
   try {
-    if (token && token.trim()) {
-      window.sessionStorage.setItem(STORAGE_KEY, token.trim());
+    const normalized = normalizeConsoleToken(token);
+    if (normalized) {
+      window.sessionStorage.setItem(STORAGE_KEY, normalized);
     } else {
       window.sessionStorage.removeItem(STORAGE_KEY);
     }
@@ -54,8 +76,13 @@ export function promptConsoleToken(reason = '') {
     // 降级回退至原生 prompt
     const val = window.prompt(reason || '请输入控制台访问令牌 (Console Access Token):', getConsoleToken());
     if (val !== null) {
-      setConsoleToken(val);
-      return Promise.resolve(val.trim());
+      const token = normalizeConsoleToken(val);
+      if (token && !isUsableConsoleToken(token)) {
+        window.alert?.(TOKEN_INVALID_MESSAGE);
+        return Promise.resolve(null);
+      }
+      setConsoleToken(token);
+      return Promise.resolve(token || null);
     }
     return Promise.resolve(null);
   }
@@ -68,14 +95,23 @@ export function promptConsoleToken(reason = '') {
       closeModal(modal);
       saveBtn.removeEventListener('click', onSave);
       input.removeEventListener('keydown', onKeydown);
+      input.removeEventListener('input', onInput);
+      input.setCustomValidity?.('');
       modal.querySelectorAll('[data-close]').forEach((btn) => {
         btn.removeEventListener('click', onCancel);
       });
       _pendingAuthPromise = null;
     };
 
+    const onInput = () => input.setCustomValidity?.('');
     const onSave = () => {
-      const token = input.value.trim();
+      const token = normalizeConsoleToken(input.value);
+      if (token && !isUsableConsoleToken(token)) {
+        // Keep the dialog open: saving this token would only fail again on every request.
+        input.setCustomValidity?.(TOKEN_INVALID_MESSAGE);
+        input.reportValidity?.();
+        return;
+      }
       setConsoleToken(token);
       cleanup();
       resolve(token || null);
@@ -102,6 +138,7 @@ export function promptConsoleToken(reason = '') {
       }
     };
     input.addEventListener('keydown', onKeydown);
+    input.addEventListener('input', onInput);
   });
 
   return _pendingAuthPromise;
@@ -137,7 +174,8 @@ export function initAuthInterceptor() {
     const headers = new Headers(init.headers || (typeof input === 'object' && /** @type {any} */ (input)?.headers ? /** @type {any} */ (input).headers : {}));
     const token = getConsoleToken();
 
-    if (token && !headers.has('Authorization')) {
+    // An unusable stored token is left off, so the server answers 401 and the dialog reopens.
+    if (token && isUsableConsoleToken(token) && !headers.has('Authorization')) {
       headers.set('Authorization', `Bearer ${token}`);
     }
 
@@ -148,7 +186,7 @@ export function initAuthInterceptor() {
     // 捕获 401 Unauthorized：拦截并提示输入 Token，然后重试单次
     if (res.status === 401 && !url.includes('/api/providers/test')) {
       const newToken = await promptConsoleToken('服务需要访问令牌验证');
-      if (newToken) {
+      if (newToken && isUsableConsoleToken(newToken)) {
         headers.set('Authorization', `Bearer ${newToken}`);
         return nativeFetch(input, { ...init, headers });
       }

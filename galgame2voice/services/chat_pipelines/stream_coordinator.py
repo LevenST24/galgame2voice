@@ -180,8 +180,11 @@ class StreamCoordinator:
         reasoning_effort: str | None = None,
         character_name: str | None = None,
         acting_menu: dict | None = None,
+        on_turn_kept: Callable[[], None] | None = None,
     ) -> None:
         self.adapter = adapter
+        # Runs once the reply is saved, so a withdrawn prompt teaches nothing.
+        self.on_turn_kept = on_turn_kept
         self.reply_format = "lines"
         self.messages = messages
         self.model_name = model_name
@@ -362,6 +365,8 @@ class StreamCoordinator:
                         base_options=self.tts_options,
                         adaptive_enabled=bool(self.ai_adaptive_voice),
                         sentence_text=sentence,
+                        # Prosody follows the line being voiced, not the reply's lead emotion.
+                        emotion_override=line_item["emotion"] if line_item is not None else None,
                     )
                     if line_item is not None:
                         chunk_opts["emotion"] = line_item["emotion"]
@@ -578,6 +583,26 @@ class StreamCoordinator:
             return
         run.last_progress_at = now
 
+    async def _note_voice_tail(self, run: _StreamRun) -> None:
+        """Tells the client once that the text is final and only voice is left.
+
+        The client may then let the player write the next message while the
+        last lines are still synthesizing. Unlike the thinking frames this one
+        is not throttled: it is sent at most once per reply.
+        """
+        if run.cancel_event and run.cancel_event.is_set():
+            return
+        async with run.line_audio_lock:
+            waiting = any(not result["settled"] for result in run.chunk_results.values())
+        if not waiting:
+            return
+        await self._put_with_cancel(
+            run.event_queue,
+            {"event": "progress", "data": {"stage": "voice"}},
+            run.cancel_event,
+            run.shutdown_event,
+        )
+
     async def _llm_producer(self, run: _StreamRun) -> None:
         """Producer task streaming LLM tokens, extracting sentences, and feeding TTS and event queues."""
         cancel_event = run.cancel_event
@@ -638,6 +663,7 @@ class StreamCoordinator:
                         async with run.line_audio_lock:
                             self._line_audio_state(run, 0)["sealed"] = True
                         await self._try_emit_line_audio(run)
+                await self._note_voice_tail(run)
         except Exception as exc:
             if getattr(exc, "is_truncation", False):
                 run.truncation_error = exc
@@ -749,8 +775,14 @@ class StreamCoordinator:
             logger.warning("Failed to persist partial assistant message: %s", persist_err)
 
     def _mark_persisted(self, message_id: int) -> None:
+        first = not self.persisted_assistant
         self.persisted_assistant = True
         self.persisted_message_id = message_id
+        if first and self.on_turn_kept is not None:
+            try:
+                self.on_turn_kept()
+            except Exception as exc:
+                logger.warning("Post-turn hook failed: %s", exc)
 
     async def _prune_orphaned_user_message(self) -> None:
         """Prunes orphaned user message when no meaningful assistant response was generated."""

@@ -112,6 +112,9 @@ def save_sovits_directory(project_root: Path, value: str) -> dict:
         directory = project_root / directory
     try:
         directory = directory.resolve()
+        if directory.is_file() and (directory.parent / "api_v2.py").is_file():
+            # Explorer's "复制文件地址" on api_v2.py (or any file in the engine) pastes a file path.
+            directory = directory.parent
         if not directory.is_dir() or not (directory / "api_v2.py").is_file():
             if directory.is_dir() and (directory.parent / "api_v2.py").is_file():
                 raise ValueError(
