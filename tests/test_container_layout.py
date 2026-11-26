@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 import re
 import runpy
+import shutil
+import subprocess
 import sys
 
 import pytest
@@ -120,3 +122,26 @@ def test_container_entrypoint_turns_auth_on_before_the_app_loads(monkeypatch, co
     monkeypatch.setitem(sys.modules, "galgame2voice.main", FakeMain())
     runpy.run_path(str(ROOT / "scripts" / "run_container.py"), run_name="__main__")
     assert seen == [expected, "run"]
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell, as the image has")
+def test_healthcheck_probes_the_port_the_server_listens_on():
+    # GALGAME2VOICE_PORT moves the server; a check fixed on 8080 then marks a working container unhealthy.
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    check = re.search(r"^HEALTHCHECK[^\n]*\\\n\s*CMD (.+)$", dockerfile, flags=re.MULTILINE)
+    assert check, "HEALTHCHECK not found"
+    url = re.search(r'"(http://[^"]+)"', check.group(1))
+    assert url, "the health check URL must be quoted so the shell expands the port"
+    # Settings reads the port from these names in this order (config.py AliasChoices).
+    cases = [
+        ({}, "8080"),
+        ({"GALGAME2VOICE_PORT": "9000"}, "9000"),
+        ({"PORT": "9100"}, "9100"),
+        ({"GALGAME_PORT": "9200"}, "9200"),
+        ({"GALGAME2VOICE_PORT": "9000", "PORT": "9100"}, "9000"),
+    ]
+    for env, port in cases:
+        clean = {k: v for k, v in os.environ.items() if k not in ("GALGAME2VOICE_PORT", "PORT", "GALGAME_PORT")}
+        result = subprocess.run(["sh", "-c", f'echo "{url.group(1)}"'], env={**clean, **env},
+                                capture_output=True, text=True, check=True)
+        assert result.stdout.strip() == f"http://127.0.0.1:{port}/api/health", env

@@ -7,6 +7,7 @@ import errno
 import logging
 import logging.handlers
 import re
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
@@ -175,6 +176,28 @@ def describe_storage_error(exc_or_msg: Exception | str | None) -> str | None:
     return None
 
 
+DATABASE_BUSY_MESSAGE = "数据库正被另一个操作占用，这次操作没有完成。请等几秒后重试。"
+NO_WRITE_PERMISSION_MESSAGE = "没有权限读写数据目录，这次操作没有完成。请检查数据文件夹的权限后重试。"
+
+
+def describe_database_write_error(exc: Exception) -> str | None:
+    """Return a Chinese sentence for a full disk, read-only storage, a busy database or a
+    permission error, else None."""
+    if not isinstance(exc, (OSError, sqlite3.Error)):
+        return None
+    if storage_message := describe_storage_error(exc):
+        return storage_message
+    if isinstance(exc, PermissionError):
+        return NO_WRITE_PERMISSION_MESSAGE
+    if isinstance(exc, sqlite3.OperationalError):
+        text = str(exc).lower()
+        if "database is locked" in text or "database is busy" in text:
+            return DATABASE_BUSY_MESSAGE
+        if "unable to open database file" in text:
+            return NO_WRITE_PERMISSION_MESSAGE
+    return None
+
+
 def sanitize_error_detail(exc_or_msg: Exception | str | None) -> str:
     """
     Sanitizes an exception or error string before returning to client or logging.
@@ -191,6 +214,32 @@ def sanitize_error_detail(exc_or_msg: Exception | str | None) -> str:
     return sanitized
 
 
+_LOG_LEVEL_NAMES = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "WARN": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+    "FATAL": logging.CRITICAL,
+}
+
+
+def resolve_log_level(value: Any) -> tuple[int, str | None]:
+    """Return (level, canonical name), or (INFO, None) when the value is not a level.
+
+    Accepts names in any case with surrounding spaces, and the numbers 10 to 50.
+    """
+    text = str(value if value is not None else "").strip().upper()
+    if text in _LOG_LEVEL_NAMES:
+        level = _LOG_LEVEL_NAMES[text]
+        return level, logging.getLevelName(level)
+    if text.isdigit() and int(text) in _LOG_LEVEL_NAMES.values():
+        level = int(text)
+        return level, logging.getLevelName(level)
+    return logging.INFO, None
+
+
 def setup_logger(
     log_level: str = "INFO",
     logs_dir: Path | None = None,
@@ -200,7 +249,7 @@ def setup_logger(
     Configures and initializes the root logger and Uvicorn loggers with
     the zero-leakage MaskingFilter and MaskingFormatter.
     """
-    level = getattr(logging, log_level.upper(), logging.INFO)
+    level, level_name = resolve_log_level(log_level)
     masking_filter = MaskingFilter()
 
     # Formatter: [Timestamp] [LEVEL] [logger_name]: message (with Zero-Leakage Masking)
@@ -253,5 +302,11 @@ def setup_logger(
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
     logger = logging.getLogger("galgame2voice")
-    logger.info("Logging initialized at level %s with zero-leakage security filter and formatter", log_level.upper())
+    if level_name is None:
+        logger.warning(
+            "GALGAME2VOICE_LOG_LEVEL=%r 不是可用的日志级别，已按 INFO 记录。可用：DEBUG、INFO、WARNING、ERROR、CRITICAL。",
+            log_level,
+        )
+        level_name = "INFO"
+    logger.info("Logging initialized at level %s with zero-leakage security filter and formatter", level_name)
     return logger

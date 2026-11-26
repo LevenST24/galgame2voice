@@ -19,15 +19,17 @@ from galgame2voice.config import get_settings
 _DEFAULT_GLOBAL_LIMIT = 240      # requests per window, all clients combined
 _DEFAULT_IP_LIMIT = 120          # requests per window, per client IP
 _WINDOW_SECONDS = 60.0
-_PROTECTED_PREFIXES = (
-    "/api/chat",
-)
-# High-risk admin/config routes. Their expensive/dangerous operations are the
-# MUTATING ones (settings writes, provider activation, network tests), so only
-# those take the strict budget; plain GETs of /api/config and /api/providers
-# stay on the normal per-IP budget so the console cannot throttle itself while
-# polling.
-_ADMIN_STRICT_PREFIXES = ("/api/config", "/api/providers")
+# Routes held to the strict budget for every method. None at present: reading
+# chat history or polling for a reply spends nothing, so a strict budget on
+# those GETs let a few quick session switches block the next message for a
+# minute.
+_PROTECTED_PREFIXES: tuple[str, ...] = ()
+# Chat and high-risk admin/config routes. Their expensive/dangerous operations
+# are the MUTATING ones (sending a chat turn, importing history, settings
+# writes, provider activation, network tests), so only those take the strict
+# budget; plain GETs stay on the normal per-IP budget so the page cannot
+# throttle itself while reading or polling.
+_ADMIN_STRICT_PREFIXES = ("/api/chat", "/api/config", "/api/providers")
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _PROTECTED_LIMIT = 30            # stricter budget for LLM/TTS-spending and high-risk admin routes
 _MAX_TRACKED_IPS = 10000
@@ -53,10 +55,14 @@ class SlidingWindowCounter:
         self.window = window_seconds
         self.events: Deque[float] = deque()
 
-    def allow(self, now: float) -> bool:
+    def has_room(self, now: float) -> bool:
+        """Reports whether one more request fits, without recording it."""
         while self.events and now - self.events[0] >= self.window:
             self.events.popleft()
-        if len(self.events) >= self.limit:
+        return len(self.events) < self.limit
+
+    def allow(self, now: float) -> bool:
+        if not self.has_room(now):
             return False
         self.events.append(now)
         return True
@@ -79,37 +85,37 @@ class RateLimitMiddleware:
             return
 
         path = scope.get("path", "")
-        if path.startswith(("/static/", "/audio/")):
+        # Plain file reads: portrait layers, sprites and backgrounds come from
+        # /api/media, and one expression change in a layered portrait loads a
+        # dozen or more layer images, so counting them used up the budget and
+        # broke images and API calls alike.
+        if path.startswith(("/static/", "/audio/", "/api/media/")):
             await self.app(scope, receive, send)
             return
 
         now = time.monotonic()
         ip = self._client_ip(scope)
 
-        if not self.global_counter.allow(now):
-            await self._reject(send)
-            return
-
         is_protected = path.startswith(_PROTECTED_PREFIXES) or (
             path.startswith(_ADMIN_STRICT_PREFIXES)
             and str(scope.get("method", "GET")).upper() in _MUTATING_METHODS
         )
-        if is_protected:
-            counter = self.protected_counters.get(ip)
-            if counter is None:
-                if len(self.protected_counters) >= _MAX_TRACKED_IPS:
-                    _evict_oldest(self.protected_counters)
-                counter = self.protected_counters[ip] = SlidingWindowCounter(_PROTECTED_LIMIT)
-        else:
-            counter = self.ip_counters.get(ip)
-            if counter is None:
-                if len(self.ip_counters) >= _MAX_TRACKED_IPS:
-                    _evict_oldest(self.ip_counters)
-                counter = self.ip_counters[ip] = SlidingWindowCounter(_DEFAULT_IP_LIMIT)
+        counters = self.protected_counters if is_protected else self.ip_counters
+        limit = _PROTECTED_LIMIT if is_protected else _DEFAULT_IP_LIMIT
+        counter = counters.get(ip)
 
-        if not counter.allow(now):
+        # Check both budgets before mutating either or tracking a new IP:
+        # a rejected request must not spend the other budget or churn the IP table.
+        if not ((counter is None or counter.has_room(now)) and self.global_counter.has_room(now)):
             await self._reject(send)
             return
+
+        if counter is None:
+            if len(counters) >= _MAX_TRACKED_IPS:
+                _evict_oldest(counters)
+            counter = counters[ip] = SlidingWindowCounter(limit)
+        counter.events.append(now)
+        self.global_counter.events.append(now)
 
         await self.app(scope, receive, send)
 

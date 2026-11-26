@@ -2,6 +2,7 @@
 
 import pytest
 
+from galgame2voice.security import rate_limit
 from galgame2voice.security.rate_limit import RateLimitMiddleware, SlidingWindowCounter
 
 
@@ -49,6 +50,31 @@ class TestMiddleware:
         assert called
 
     @pytest.mark.asyncio
+    async def test_portrait_layer_images_do_not_use_the_budget(self, monkeypatch):
+        monkeypatch.delenv("GALGAME2VOICE_RATE_LIMIT_DISABLED", raising=False)
+        statuses = []
+
+        async def app(scope, receive, send):
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+
+        async def receive():
+            return {"type": "http.request"}
+
+        async def send(message):
+            if message["type"] == "http.response.start":
+                statuses.append(message["status"])
+
+        mw = RateLimitMiddleware(app)
+        # A few expression changes in a layered portrait, with blink and mouth frames.
+        for i in range(150):
+            await mw({"type": "http", "path": f"/api/media/portrait/1/layers/main/face_{i}.png",
+                      "method": "GET", "client": ("127.0.0.1", 1)}, receive, send)
+        await mw({"type": "http", "path": "/api/chat/history", "method": "GET",
+                  "client": ("127.0.0.1", 1)}, receive, send)
+        assert statuses == [200] * 151
+
+    @pytest.mark.asyncio
     async def test_rejects_after_burst(self, monkeypatch):
         monkeypatch.delenv("GALGAME2VOICE_RATE_LIMIT_DISABLED", raising=False)
         handled = []
@@ -69,11 +95,36 @@ class TestMiddleware:
                 statuses.append(message["status"])
 
         for i in range(35):
-            scope = {"type": "http", "path": "/api/chat/stream", "client": ("9.9.9.9", 1)}
+            scope = {"type": "http", "path": "/api/chat/stream", "method": "POST", "client": ("9.9.9.9", 1)}
             await mw(scope, receive, send)
 
         assert len(handled) == 30  # protected budget exhausted
         assert 429 in statuses
+
+    @pytest.mark.asyncio
+    async def test_reading_chat_history_does_not_block_the_next_message(self, monkeypatch):
+        monkeypatch.delenv("GALGAME2VOICE_RATE_LIMIT_DISABLED", raising=False)
+        statuses = []
+
+        async def app(scope, receive, send):
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        async def receive():
+            return {"type": "http.request"}
+
+        async def send(message):
+            if message["type"] == "http.response.start":
+                statuses.append(message["status"])
+
+        mw = RateLimitMiddleware(app)
+        # Switching quickly between 40 conversations loads each one's history.
+        for _ in range(40):
+            await mw({"type": "http", "path": "/api/chat/history", "method": "GET",
+                      "client": ("127.0.0.1", 1)}, receive, send)
+        await mw({"type": "http", "path": "/api/chat/stream", "method": "POST",
+                  "client": ("127.0.0.1", 1)}, receive, send)
+        assert statuses == [200] * 41
 
     @pytest.mark.asyncio
     async def test_static_paths_exempt(self, monkeypatch):
@@ -96,3 +147,52 @@ class TestMiddleware:
         for i in range(200):
             await mw({"type": "http", "path": "/static/js/app.js", "client": ("8.8.8.8", 1)}, receive, send)
         assert len(handled) == 200
+
+
+class TestRejectedRequestsSpareOtherBudgets:
+    @staticmethod
+    async def _call(mw, ip, path="/api/characters"):
+        statuses = []
+
+        async def app(scope, receive, send):
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        mw.app = app
+
+        async def receive():
+            return {"type": "http.request"}
+
+        async def send(message):
+            if message["type"] == "http.response.start":
+                statuses.append(message["status"])
+
+        await mw({"type": "http", "path": path, "method": "GET", "client": (ip, 1)}, receive, send)
+        return statuses[0]
+
+    @pytest.mark.asyncio
+    async def test_runaway_client_does_not_lock_out_others(self, monkeypatch):
+        monkeypatch.delenv("GALGAME2VOICE_RATE_LIMIT_DISABLED", raising=False)
+        mw = RateLimitMiddleware(None)
+        # One LAN client loops far past its own per-IP budget.
+        results = [await self._call(mw, "192.168.1.50") for _ in range(400)]
+        assert results.count(200) == 120
+        # The PC's own browser must still get through.
+        assert await self._call(mw, "127.0.0.1") == 200
+
+    @pytest.mark.asyncio
+    async def test_global_rejection_does_not_spend_client_budget(self, monkeypatch):
+        monkeypatch.delenv("GALGAME2VOICE_RATE_LIMIT_DISABLED", raising=False)
+        monkeypatch.setattr(rate_limit, "_MAX_TRACKED_IPS", 3)
+        mw = RateLimitMiddleware(None)
+        # Fill the 240-request global window across 3 clients (80 each < 120 per-IP).
+        for ip in ("10.0.0.1", "10.0.0.2", "10.0.0.3"):
+            for _ in range(80):
+                assert await self._call(mw, ip) == 200
+        # Global rejection must not insert a new IP, evict tracked IPs, or spend client budget.
+        assert await self._call(mw, "10.0.0.4") == 429
+        assert set(mw.ip_counters) == {"10.0.0.1", "10.0.0.2", "10.0.0.3"}
+        assert await self._call(mw, "10.0.0.5", path="/api/chat/stream") == 429
+        assert "10.0.0.5" not in mw.protected_counters
+        assert await self._call(mw, "10.0.0.1") == 429
+        assert len(mw.ip_counters["10.0.0.1"].events) == 80
