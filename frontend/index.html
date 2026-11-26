@@ -288,7 +288,7 @@
 
         <!-- 选项卡 2: 语音与推理参数 -->
         <div class="gtab-panel hidden" id="gp-inference">
-          <div class="settings-intro"><h3>语音服务</h3><p>连接 GPT-SoVITS，设置运行方式和音频保留时间。</p></div>
+          <div class="settings-intro"><h3>语音服务</h3><p>连接 GPT-SoVITS，设置运行方式和音频保留时间。改完自动保存。</p></div>
           <div class="field">
             <label>语音服务地址</label>
             <input id="gParamSovitsUrl" placeholder="http://127.0.0.1:9880" autocomplete="off" />
@@ -365,6 +365,7 @@
                   <svg class="icon" id="gIconKeyEye" style="width:14px;height:14px;"><use href="#i-eye"></use></svg>
                   <span id="gBtnToggleKeyText">显示</span>
                 </button>
+                <button type="button" class="btn-input-action hidden" id="gBtnClearKey" title="删除这里保存的密钥">清除</button>
               </div>
               <small class="field-tip" id="gApiKeyTip">密钥经本机安全脱敏存储，仅提交给本地后端，绝不回显明文。</small>
             </div>

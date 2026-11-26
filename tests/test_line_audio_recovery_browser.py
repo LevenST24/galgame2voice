@@ -137,14 +137,14 @@ def _stop_layout_server(server, ready, worker, *events):
     worker.join(timeout=2)
 
 
-def _launch_browser(executable, port, user_data_dir, screenshot_path, width, height, *, extra_args=(), reset):
+def _launch_browser(executable, port, user_data_dir, screenshot_path, width, height, *, extra_args=(), reset, done=None):
     return run_layout_browser([
         executable, "--headless", "--no-sandbox", "--disable-gpu", *extra_args, "--mute-audio",
         "--autoplay-policy=no-user-gesture-required", "--no-first-run", "--disable-sync",
         "--no-proxy-server", "--disable-background-networking", "--disable-extensions",
         f"--user-data-dir={user_data_dir}", f"--window-size={max(600, width + 100)},{height + 100}",
         "--dump-dom", f"--screenshot={screenshot_path}", f"http://127.0.0.1:{port}/",
-    ], reset=reset)
+    ], reset=reset, done=done)
 
 
 def _run_iframe_repair(tmp_path, width, height, mode, script_source, screenshot, *, track_requests=False):
@@ -177,7 +177,8 @@ def _run_iframe_repair(tmp_path, width, height, mode, script_source, screenshot,
     try:
         rendered = _launch_browser(
             executable, server.server_port, tmp_path / "browser", tmp_path / screenshot,
-            width, height, reset=lambda: (ready.clear(), result.clear()),
+            width, height, done=lambda: bool(result),
+            reset=lambda: (ready.clear(), result.clear(), *(log.clear() for log in (shared_requests or {}).values())),
         )
     finally:
         _stop_layout_server(server, ready, worker)

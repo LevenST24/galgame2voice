@@ -475,6 +475,9 @@ def create_app(*, engine_supervisor: EngineSupervisor | None = None) -> FastAPI:
         lifespan=lifespan,
         docs_url="/docs" if settings.enable_docs else None,
         redoc_url="/redoc" if settings.enable_docs else None,
+        # The schema lists every endpoint and is served without the console token, so it
+        # stays off with the docs pages that read it.
+        openapi_url="/openapi.json" if settings.enable_docs else None,
     )
     app.state.engine_supervisor = (
         engine_supervisor if engine_supervisor is not None else DefaultEngineSupervisor()

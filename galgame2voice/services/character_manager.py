@@ -787,7 +787,8 @@ class CharacterManager:
             name=char_name, description=manifest.description,
             gpt_weights_path=defaults["gpt_weights"], sovits_weights_path=defaults["sovits_weights"],
             ref_audio_path=defaults["ref_audio_str"], prompt_text=defaults["prompt_text"],
-            prompt_lang=defaults["prompt_lang"], text_lang=defaults["prompt_lang"],
+            # The reference clip may be Chinese or English; the voiced lines are Japanese.
+            prompt_lang=defaults["prompt_lang"], text_lang="ja",
             system_prompt=defaults["system_prompt"], is_default=bool(is_default_val),
         ))
         await conn.execute("UPDATE voice_profiles SET package_id = ? WHERE id = ?;", (manifest.id, created.id))

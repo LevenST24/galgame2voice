@@ -105,6 +105,18 @@ const validId = (value) => typeof value === 'string' && value.length > 0 && valu
 /** @param {any} value @returns {number} */
 const timestamp = (value) => Number.isFinite(value) && value >= 0 ? value : Date.now();
 
+/**
+ * Replaces lone UTF-16 surrogates, which the server cannot decode, with U+FFFD.
+ * @template T
+ * @param {T} text
+ * @returns {T}
+ */
+export function wellFormed(text) {
+  return /** @type {T} */ (typeof text === 'string'
+    ? text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD')
+    : text);
+}
+
 // SQLite CURRENT_TIMESTAMP is UTC even though it has no explicit zone suffix.
 /**
  * @param {any} value

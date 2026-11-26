@@ -1,5 +1,6 @@
 // @ts-check
 import { requestJson } from './api.js';
+import { splitGraphemes } from './adv/graphemes.js';
 import { normalizeSnapshot, portableSnapshot } from './session_data.js';
 import { buildLocalBackupSnapshot, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL, GREETING, LEGACY_GREETINGS, uid } from './store.js';
 
@@ -12,6 +13,16 @@ function lastQuestionFailed(session) {
   return last?.role === 'user' && Boolean(last.failed);
 }
 const messageKey = message => JSON.stringify([message.role, message.content]);
+
+/** @param {string} title */
+function trimCopyTitle(title, maxUnits = 180) {
+  let result = '';
+  for (const grapheme of splitGraphemes(title)) {
+    if (result.length + grapheme.length > maxUnits) break;
+    result += grapheme;
+  }
+  return result;
+}
 
 // Match occurrences in order, never a set: repeated identical lines are real messages.
 function containsLocalMessages(server, local) {
@@ -62,7 +73,7 @@ export function mergeChatBackup(serverData, localData) {
       // Keep the complete local sequence separately so neither version is lost.
       let copyId;
       do { copyId = uid('s_browser_backup'); } while (byId.has(copyId));
-      const copy = { ...session, id: copyId, title: `${Array.from(session.title).slice(0, 180).join('')}（浏览器副本）` };
+      const copy = { ...session, id: copyId, title: `${trimCopyTitle(session.title)}（浏览器副本）` };
       server.sessions.push(copy);
       byId.set(copyId, copy);
       browserCopies++;

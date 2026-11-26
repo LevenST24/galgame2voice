@@ -313,6 +313,22 @@ async def delete_provider(provider_id: str):
         return {"status": "deleted", "provider_id": clean_id}
 
 
+@router.delete(
+    "/providers/{provider_id}/api_key",
+    summary="Clear Provider API Key",
+    description="Removes the saved API key of a provider and keeps its other settings.",
+)
+async def clear_provider_api_key(provider_id: str):
+    clean_id = (provider_id or "").strip().lower()
+    if not clean_id or len(clean_id) > 64:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Provider '{provider_id}' not found")
+    async with get_db() as conn:
+        if not await crud.clear_provider_api_key(conn, clean_id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Provider '{provider_id}' not found")
+        provider = await crud.get_provider(conn, clean_id, mask=True)
+        return {"status": "cleared", "provider": provider.model_dump() if provider else None}
+
+
 @router.post(
     "/providers/{provider_id}/activate",
     summary="Set Active Provider",
