@@ -368,3 +368,39 @@ def test_portable_premerge_workflow_contract():
     assert "scripts/smoke_windows_portable.py" in raw and "--startup-only" in raw
     assert "softprops/action-gh-release" not in raw
     assert ".local/portable-premerge-smoke/diagnostics" in raw
+
+
+@pytest.mark.requires_piped_subprocess
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows batch launcher")
+@pytest.mark.parametrize("script_name", ["启动.bat", "数据恢复.bat"])
+def test_portable_batch_launchers_explain_missing_files_when_run_alone(tmp_path, monkeypatch, script_name):
+    source = tmp_path / "source"
+    (source / "galgame2voice" / "static").mkdir(parents=True)
+    (source / "docs").mkdir()
+    (source / "galgame2voice" / "static" / "index.html").write_text("<html></html>", encoding="utf-8")
+    for name in ("LICENSE", "SECURITY.md", ".env.example", "docs/WINDOWS_PORTABLE.md"):
+        (source / name).write_text("doc", encoding="utf-8")
+    ffmpeg = tmp_path / "ffmpeg.exe"
+    ffmpeg.write_bytes(b"ffmpeg")
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    monkeypatch.setattr(build_windows_portable, "PROJECT_ROOT", source)
+    build_windows_portable.assemble_portable_files(staged, ffmpeg)
+
+    isolated = tmp_path / "Temp (1)"
+    isolated.mkdir()
+    bat_path = isolated / script_name
+    bat_path.write_bytes((staged / script_name).read_bytes())
+    result = subprocess.run(
+        ["cmd.exe", "/d", "/c", "call", str(bat_path)],
+        cwd=isolated,
+        input="",
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=15,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    assert result.returncode != 0
+    assert "全部解压" in result.stdout
