@@ -7,6 +7,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from galgame2voice.schemas.character_manifest import read_manifest_text
+
 logger = logging.getLogger(__name__)
 
 CANVAS_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,32}")
@@ -148,7 +150,7 @@ def _read_object(path: Path) -> dict[str, Any] | None:
     if not path.is_file():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        data = json.loads(read_manifest_text(path))
         return data if isinstance(data, dict) else None
     except (OSError, ValueError):
         logger.warning("Cannot read portrait index: %s", path)

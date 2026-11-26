@@ -11,6 +11,8 @@ import logging
 from pathlib import Path, PureWindowsPath
 import re
 
+from galgame2voice.schemas.character_manifest import read_manifest_text
+
 logger = logging.getLogger(__name__)
 
 BACKGROUND_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
@@ -70,7 +72,7 @@ def resolve_background_file(root: Path, relative_path: str) -> Path | None:
 def _load_pack(pack_dir: Path, work: str) -> BackgroundPack | None:
     """A single pack whose declared work matches its folder; bad packs return None."""
     try:
-        data = json.loads((pack_dir / "manifest.json").read_text(encoding="utf-8-sig"))
+        data = json.loads(read_manifest_text(pack_dir / "manifest.json"))
     except FileNotFoundError:
         return None
     except (OSError, ValueError, UnicodeError, RecursionError):
@@ -132,7 +134,7 @@ def _load_pack(pack_dir: Path, work: str) -> BackgroundPack | None:
 
 def _declared_work(pack_dir: Path) -> str | None:
     with suppress(OSError, ValueError, UnicodeError, RecursionError):
-        data = json.loads((pack_dir / "manifest.json").read_text(encoding="utf-8-sig"))
+        data = json.loads(read_manifest_text(pack_dir / "manifest.json"))
         work = data.get("work") if isinstance(data, dict) else None
         if isinstance(work, str) and BACKGROUND_ID_RE.fullmatch(work):
             return work

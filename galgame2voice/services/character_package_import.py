@@ -28,6 +28,7 @@ from galgame2voice.config import get_settings
 from galgame2voice.database.crud_modules.voice_profiles import update_voice_profile
 from galgame2voice.database.models import VoiceProfileUpdate
 from galgame2voice.database.session import get_db
+from galgame2voice.schemas.character_manifest import read_manifest_text
 from galgame2voice.services.character_identity import AmbiguousProfileName, DuplicateCharacterId, identity_key, select_profile
 from galgame2voice.services.character_manager import (
     CharacterManager,
@@ -379,7 +380,7 @@ def _resolve_folder_name(raw_name: str, pkg_dir: Path | None = None) -> str:
                 break
         if not base.strip(". "):
             try:
-                raw = json.loads((pkg_dir / "manifest.json").read_text(encoding="utf-8-sig"))
+                raw = json.loads(read_manifest_text(pkg_dir / "manifest.json"))
                 base = next(
                     (
                         raw[k]
@@ -400,7 +401,7 @@ def _is_portrait_manifest(cur_dir: Path, manifest_file: Path, depth: int) -> boo
     if depth == 0 or cur_dir.name.lower() != "portrait":
         return False
     try:
-        raw = json.loads(manifest_file.read_text(encoding="utf-8-sig"))
+        raw = json.loads(read_manifest_text(manifest_file))
         return isinstance(raw, dict) and ("sprites" in raw or "costumes" in raw) and "emotions" not in raw
     except Exception:
         return False
@@ -413,7 +414,7 @@ def discover_extracted_packages(extract_dir: Path, *, filename: str = "") -> lis
         manifest_file = cur_dir / "manifest.json"
         if manifest_file.is_file() and not _is_portrait_manifest(cur_dir, manifest_file, depth):
             try:
-                raw = json.loads(manifest_file.read_text(encoding="utf-8-sig"))
+                raw = json.loads(read_manifest_text(manifest_file))
             except Exception:
                 raw = None
             if isinstance(raw, dict) and isinstance(raw.get("backgrounds"), list) and "emotions" not in raw:
@@ -494,7 +495,7 @@ def _manifest_id_key(pkg_dir: Path) -> str | None:
     if not manifest_file.is_file():
         return None
     try:
-        raw = json.loads(manifest_file.read_text(encoding="utf-8-sig"))
+        raw = json.loads(read_manifest_text(manifest_file))
     except Exception:
         return None
     pkg_id = raw.get("id") if isinstance(raw, dict) else None
@@ -557,7 +558,7 @@ def _staged_identities(staged: list[tuple[str, Path]]) -> list[tuple[str, list[s
     found: list[tuple[str, list[str]]] = []
     for _folder, src_dir in staged:
         try:
-            data = json.loads((src_dir / "manifest.json").read_text(encoding="utf-8-sig"))
+            data = json.loads(read_manifest_text(src_dir / "manifest.json"))
         except (OSError, ValueError):
             continue
         if not isinstance(data, dict) or not isinstance(data.get("name"), str) or not data["name"].strip():
