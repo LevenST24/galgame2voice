@@ -163,11 +163,16 @@ class Settings(BaseSettings):
             import json
 
             try:
-                parsed = json.loads(text)
+                items = json.loads(text)
             except ValueError as exc:
                 raise ValueError(f"无法解析列表：{text}") from exc
-            return parsed
-        return [part.strip().rstrip("/") for part in text.split(",") if part.strip()]
+        else:
+            items = text.split(",")
+        return [
+            cleaned
+            for item in items
+            if (cleaned := item.strip().rstrip("/") if isinstance(item, str) else item) != ""
+        ]
 
     # Audio Retention & Cleanup
     audio_retention_minutes: int = Field(
