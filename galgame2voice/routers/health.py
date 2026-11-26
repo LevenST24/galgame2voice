@@ -43,7 +43,7 @@ from galgame2voice.services.sovits_endpoint import (
     parse_sovits_endpoint,
     resolve_effective_sovits_endpoint,
 )
-from galgame2voice.utils.logger import sanitize_error_detail
+from galgame2voice.utils.logger import describe_storage_error, sanitize_error_detail
 from galgame2voice.utils.async_tasks import cancel_and_drain, gather_owned
 from galgame2voice.utils.hardware import (
     detect_gpu_capability,
@@ -579,6 +579,8 @@ async def save_sovits_directory_endpoint(payload: SovitsDirectoryPayload) -> dic
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except OSError as exc:
         logger.warning("Failed saving engine directory: %s", exc)
+        if storage_msg := (describe_storage_error(exc) or describe_storage_error(exc.__cause__)):
+            raise HTTPException(status_code=507, detail=storage_msg) from exc
         raise HTTPException(status_code=500, detail="无法保存引擎目录，请确认程序目录有写入权限。") from exc
     from galgame2voice.routers.voice import _scan_cache
     generation = _scan_cache.get("generation", 0) + 1
@@ -727,6 +729,8 @@ async def restart_sovits_endpoint(payload: RestartSovitsPayload | None = None) -
         raise
     except Exception as exc:
         logger.exception("Engine restart preparation failed")
+        if storage_msg := (describe_storage_error(exc) or describe_storage_error(exc.__cause__)):
+            raise HTTPException(status_code=507, detail=storage_msg) from exc
         raise HTTPException(status_code=500, detail="无法准备语音引擎。请确认程序和引擎目录可写，在「语音服务」重新选择完整引擎包后再试。") from exc
 
 
@@ -852,6 +856,8 @@ async def _restart_local_engine(endpoint: SovitsEndpoint, payload: RestartSovits
         raise
     except Exception as exc:
         logger.exception("Engine restart failed")
+        if storage_msg := (describe_storage_error(exc) or describe_storage_error(exc.__cause__)):
+            raise HTTPException(status_code=507, detail=storage_msg) from exc
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="语音引擎启动未完成。请确认引擎已完整解压且目录可写，在「语音服务」重新选择文件夹后再试。详细原因已记录在程序日志。",

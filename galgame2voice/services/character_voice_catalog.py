@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+import errno
 import json
 import logging
 import os
@@ -100,7 +101,13 @@ def _resolved_path(value: Any) -> Path | None:
 
 def _move_folder(source: Path, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(source), str(target))
+    # shutil.move falls back to copytree + rmtree on any OSError, deleting unlocked files when a file is open on Windows.
+    try:
+        os.rename(source, target)
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+        shutil.move(str(source), str(target))
 
 
 def _check_reference_audio_length(ref_audio_path: str | None) -> None:

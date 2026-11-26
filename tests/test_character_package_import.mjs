@@ -373,6 +373,24 @@ try {
   await tick();
   assert.equal(session.settings.voiceProfileId, 21);
   assert.equal(toastRoot.children.at(-1)?.dataset.msg, '已导入「A」、「B」，已选用「A」，现在可以直接开始聊天');
+
+  // Non-JSON / English HTTP errors must show actionable Chinese guidance instead of bare HTTP codes.
+  for (const [status, body, expected] of [
+    [502, '<html>502 Bad Gateway</html>', /运行状态/],
+    [429, JSON.stringify({ detail: 'Too Many Requests' }), /稍候再试/],
+  ]) {
+    dom.sVoiceImportZipInput.files = [z1];
+    const pErr = dom.sVoiceImportZipInput.fire('change');
+    await tick();
+    const errXhr = xhrs.at(-1);
+    errXhr.status = status;
+    errXhr.responseText = body;
+    errXhr.onload();
+    await pErr;
+    const msg = toastRoot.children.at(-1)?.dataset.msg || '';
+    assert.match(msg, expected);
+    assert.doesNotMatch(msg, /HTTP \d+/);
+  }
 } finally {
   globalThis.XMLHttpRequest = prevXHR; globalThis.window = prevWin;
   cleanup();

@@ -220,3 +220,22 @@ test('a progress event without a stage cannot renew the reply budget', async t =
   assert.equal(h.ends.length, 1);
   assert.equal(h.ends[0].errorCode, 'stream_idle_timeout');
 });
+
+test('non-JSON HTTP errors from /api/chat/stream show actionable Chinese guidance', async () => {
+  const cases = [
+    [502, '<html>502 Bad Gateway</html>', /运行状态/],
+    [401, 'Unauthorized', /访问令牌/],
+    [429, 'Too Many Requests', /稍候再试/],
+  ];
+  for (const [status, body, expected] of cases) {
+    const meta = await new Promise(resolve => streamChat({
+      prompt: '你好',
+      sessionId: 's1',
+      fetch: async () => new Response(body, { status, headers: { 'Content-Type': 'text/plain' } }),
+      onChunk() {},
+      onEnd: (_text, info) => resolve(info),
+    }));
+    assert.match(meta.error, expected);
+    assert.doesNotMatch(meta.error, /请求失败 \(\d+\)/);
+  }
+});
