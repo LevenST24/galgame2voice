@@ -1103,3 +1103,7 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
 .modal-tabs { scrollbar-width: thin; scrollbar-color: var(--brand-line) transparent; }
 .modal-tabs::-webkit-scrollbar { width: 4px; height: 4px; }
 .modal-tabs::-webkit-scrollbar-thumb { background: var(--brand-line); border-radius: 4px; }
+
+@media (hover: none), (pointer: coarse) {
+  .si-del:not(.si-del-confirm) { opacity: 0.8; width: 36px; height: 36px; }
+}

@@ -26,7 +26,7 @@ from galgame2voice.utils.error_diagnostics import chat_error_payload, diagnose_l
 def test_missing_key_names_the_provider_and_the_settings_page():
     payload = chat_error_payload(MissingApiKeyError(), provider_id="gemini", api_key_configured=False)
     assert payload["error_code"] == "API_KEY_MISSING"
-    assert "Google Gemini" in payload["error"] and "在上面的 API 密钥里填入后再测试" in payload["error"]
+    assert all(k in payload["error"] for k in ("Google Gemini", "设置中心 → 对话模型", "保存并启用此模型", "自定义 / 本地模型 (Ollama / vLLM)")) and "上面的 API 密钥" not in payload["error"]
     # Still a ValueError mentioning authentication, as callers and tests expect.
     assert isinstance(MissingApiKeyError(), ValueError)
     assert "Authentication error" in str(MissingApiKeyError())
@@ -234,7 +234,7 @@ async def test_error_copy_uses_real_ui_labels_without_raw_english_or_status_code
     )
     assert ctx["error_code"] == "CONTEXT_LENGTH_EXCEEDED"
     assert "角色与会话 → 对话高级参数" in ctx["action_zh"]
-    assert "携带上下文条数" in ctx["action_zh"] and "新建会话" in ctx["action_zh"]
+    assert "携带上下文条数" in ctx["action_zh"] and "点舞台左上角「会话」后点击「新建会话」" in ctx["action_zh"]
     assert "携带上下文条数" in ctx["error"] and "新建会话" in ctx["error"]
     for stale in ("会话设置", "最大上下文轮数", "清理历史记录"):
         for field in ("summary_zh", "action_zh", "error"):

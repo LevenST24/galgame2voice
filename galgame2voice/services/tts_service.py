@@ -75,8 +75,8 @@ def _require_voice_models(opts: dict[str, Any]) -> None:
         value = opts.get(field)
         if not isinstance(value, (str, Path)) or not str(value).strip():
             raise VoiceModelMissingError(
-                "当前音色的模型权重缺少 GPT 或 SoVITS 路径，"
-                "请在设置中心的角色与会话中补全模型路径后重试。"
+                "当前音色缺少 GPT 或 SoVITS 模型权重，请在「设置中心 → 角色与会话」重新选择角色包的音色、"
+                "点「导入角色包」重新导入完整角色包，或用「＋ 新建自定义音色」重新创建。"
             )
 
 

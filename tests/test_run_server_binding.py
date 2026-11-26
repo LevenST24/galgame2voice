@@ -5,13 +5,17 @@ environment variable aliases and Pydantic Settings cache, preventing
 unauthenticated public network exposure or binding mismatch.
 """
 
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
+import threading
 from unittest.mock import MagicMock
 import pytest
 import uvicorn
 
 from galgame2voice.config import get_settings
 from galgame2voice.main import _init_logging_and_safety
+from galgame2voice.utils import windows_runtime
 from scripts import run_server
 import scripts.run_server as rs
 
@@ -27,6 +31,7 @@ def isolated_launcher_env(tmp_path, monkeypatch):
     monkeypatch.setattr(run_server, "run_hardware_diagnostics", lambda: {})
     monkeypatch.setattr(run_server, "setup_windows_job_object", lambda: None)
     monkeypatch.setattr(run_server, "setup_signal_handlers", lambda: None)
+    monkeypatch.setattr(run_server, "disable_console_quick_edit", lambda: None)
     monkeypatch.setattr(run_server, "cleanup_subprocesses", lambda: None)
     monkeypatch.setattr(run_server, "auto_open_browser", lambda *args, **kwargs: None)
     monkeypatch.setattr(run_server.atexit, "register", lambda *args: None)
@@ -344,3 +349,76 @@ def test_console_close_handler_is_registered_on_windows(monkeypatch):
     finally:
         if routine is not None:
             rs.kernel32().SetConsoleCtrlHandler(routine, False)
+
+
+@contextmanager
+def _busy_port(payload: bytes | None):
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if payload is not None:
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(payload)
+        def log_message(self, *args): return
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            yield server.server_address[1]
+        finally:
+            server.shutdown()
+
+
+def test_frozen_launcher_stops_when_galgame2voice_holds_port(isolated_launcher_env, monkeypatch, capsys):
+    monkeypatch.setattr(rs.sys, "frozen", True, raising=False)
+    monkeypatch.setenv("GALGAME2VOICE_AUTH_DISABLED", "0")
+    monkeypatch.setattr(rs, "ensure_gpt_sovits_running", engine := MagicMock())
+    captured = _setup_mock_uvicorn(monkeypatch, ("0.0.0.0", 8081))
+    with _busy_port(b'{"status":"ok","app":"galgame2voice"}') as port, pytest.raises(SystemExit) as exc:
+        rs.main(["--no-browser", "--host", "0.0.0.0", "--port", str(port)])
+    assert exc.value.code == 1 and f"端口 {port} 上已经有另一个 Galgame2Voice" in capsys.readouterr().out
+    assert not engine.called and "settings" not in captured
+
+
+@pytest.mark.parametrize("payload", [None, b'{"status":"ok","app":"other"}'])
+def test_frozen_launcher_switches_port_when_holder_is_other(isolated_launcher_env, monkeypatch, payload):
+    monkeypatch.setattr(rs.sys, "frozen", True, raising=False)
+    captured = _setup_mock_uvicorn(monkeypatch, ("127.0.0.1", 8081))
+    with _busy_port(payload) as port, pytest.raises(SystemExit) as exc:
+        rs.main(["--no-engine", "--no-browser", "--port", str(port)])
+    assert exc.value.code == 0 and captured["settings"].port == 8081
+_REAL_DISABLE_CONSOLE_QUICK_EDIT = run_server.disable_console_quick_edit
+
+
+def test_launcher_disables_console_quick_edit_before_serving(isolated_launcher_env, monkeypatch):
+    events = []
+
+    def get_mode(handle, mode_ptr):
+        assert handle == 0x1_0000_0054
+        mode_ptr[0] = 0x0147
+        return 1
+
+    api = MagicMock(
+        GetStdHandle=MagicMock(side_effect=lambda std_id: 0x1_0000_0054 if std_id == -10 else None),
+        GetConsoleMode=get_mode,
+        SetConsoleMode=lambda handle, mode: events.append(("set_mode", handle, mode)) or 1,
+    )
+    monkeypatch.setattr(windows_runtime.sys, "platform", "win32")
+    monkeypatch.setattr(windows_runtime, "kernel32", lambda: api)
+    monkeypatch.setattr(run_server.desktop_instance, "DesktopInstance", lambda root: MagicMock(acquire=lambda: True))
+    monkeypatch.setattr(run_server, "setup_console_close_handler", lambda: None)
+    monkeypatch.setattr(run_server, "disable_console_quick_edit", _REAL_DISABLE_CONSOLE_QUICK_EDIT)
+    _setup_mock_uvicorn(monkeypatch, ("127.0.0.1", 8080))
+    uvicorn.Server(None).run.side_effect = lambda **kwargs: events.append(("serve",))
+    with pytest.raises(SystemExit) as exc:
+        run_server.main(["--no-engine", "--no-browser", "--host", "127.0.0.1", "--port", "8080"])
+    assert exc.value.code == 0
+    assert events == [("set_mode", 0x1_0000_0054, 0x0187), ("serve",)]
+
+
+def test_disable_console_quick_edit_skips_non_console_stdin(monkeypatch):
+    api = MagicMock(GetStdHandle=MagicMock(return_value=0x54), GetConsoleMode=MagicMock(return_value=0))
+    monkeypatch.setattr(windows_runtime.sys, "platform", "win32")
+    monkeypatch.setattr(windows_runtime, "kernel32", lambda: api)
+    windows_runtime.disable_console_quick_edit()
+    api.GetStdHandle.assert_called_once_with(-10)
+    api.SetConsoleMode.assert_not_called()
