@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from galgame2voice.adapters.base import LLMResponse
+from galgame2voice.database import crud
+from galgame2voice.database.models import VoiceProfileCreate
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.services.chat_service import ChatService
 from galgame2voice.utils.error_diagnostics import EmptyReplyError, chat_error_payload
@@ -76,3 +78,18 @@ async def test_streamed_empty_reply_earns_no_affection(tmp_path):
     assert events[1:] == [{"event": "error", "data": chat_error_payload(EmptyReplyError())}]
     service.affection_service.handle_turn_affection.assert_not_awaited()
     assert await _state(database) == ((0, 0), [])
+
+
+@pytest.mark.asyncio
+async def test_another_characters_turn_skips_natsume_keywords(tmp_path):
+    database = tmp_path / "chat.db"
+    await init_db(database)
+    async with get_db(database) as conn:
+        await crud.create_voice_profile(conn, VoiceProfileCreate(
+            name="千早爱音", gpt_weights_path="", sovits_weights_path="",
+        ))
+    service = _service(database, TEXT_REPLY)
+    # 「兼职」 earns +3 only with 四季夏目; any other character gets the base point.
+    _ = [e async for e in service.stream_chat("今天去兼职了", session_id="other", character_name="千早爱音")]
+    await service.aclose()
+    assert (await _state(database))[0] == (1, 1)

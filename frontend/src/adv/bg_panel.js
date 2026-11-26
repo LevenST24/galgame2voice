@@ -236,6 +236,7 @@ export function createBgPanel(container, {
 
   function refresh() {
     const effective = selection.time === 'auto' ? timeOfDay(now()) : selection.time;
+    const list = Array.isArray(getList()) ? getList() : [];
     for (const button of timeButtons) {
       const on = button.dataset.time === selection.time;
       button.setAttribute('aria-pressed', String(on));
@@ -247,8 +248,8 @@ export function createBgPanel(container, {
       entry.tile.classList.toggle('is-selected', on);
       if (entry.item.auto) {
         // Show what auto resolves to for the current character; the sky when nothing does.
-        const key = effectiveBackgroundKey(AUTO_ID, { list: getList(), works: getWorks(), work: getWork?.() || null });
-        const target = key ? (Array.isArray(getList()) ? getList() : []).find(item => item?.key === key) : null;
+        const key = effectiveBackgroundKey(AUTO_ID, { list, works: getWorks(), work: getWork?.() || null });
+        const target = key ? list.find(item => item?.key === key) : null;
         const shown = target ? resolveVariant(target, effective) : null;
         entry.thumb.dataset.time = effective;
         entry.thumb.style.backgroundImage = shown ? `url("${shown.url}")` : '';
@@ -259,7 +260,7 @@ export function createBgPanel(container, {
         entry.thumb.dataset.time = effective;
         continue;
       }
-      const found = resolveVariant(entry.item, effective);
+      const found = resolveVariant(list.find(item => item?.key === entry.item.key) || entry.item, effective);
       if (found) entry.thumb.src = found.url;
       else if (entry.thumb.removeAttribute) entry.thumb.removeAttribute('src');
       else entry.thumb.src = '';

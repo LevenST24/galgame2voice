@@ -299,3 +299,16 @@ async def test_switch_active_profile_alias_and_crud_by_name(temp_db_path, mock_g
     success = await manager.switch_active_profile(sample_voice_profile["name"], persist=True)
     assert success is True
     assert manager.active_profile.name == sample_voice_profile["name"]
+
+
+def test_create_request_limits_match_the_persona_editor_and_the_synthesis_limit():
+    """Creating a voice accepts the same persona length as editing it, and no reference text TTS would cut."""
+    from pydantic import ValidationError
+
+    from galgame2voice.routers.voice import VoiceProfileCreateRequest
+
+    base = {"name": "v", "gpt_weights_path": "a.ckpt", "sovits_weights_path": "a.pth"}
+    assert VoiceProfileCreateRequest(**base, system_prompt="人" * 20000).system_prompt
+    for field in ("prompt_text", "refer_text"):
+        with pytest.raises(ValidationError):
+            VoiceProfileCreateRequest(**base, **{field: "あ" * 501})

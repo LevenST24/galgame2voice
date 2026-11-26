@@ -32,6 +32,15 @@ export function createSettingsDraftStore({
         return 'not-loaded';
       }
 
+      const savedRevision = getConfigRevision();
+      let payload;
+      try {
+        // Read and check the fields before anything is written, so a refused value saves nothing.
+        payload = readConfigPayload();
+      } catch (e) {
+        showToast(`保存失败: ${e.message || e}`, 'error');
+        return;
+      }
       const coordinatorRevision = getCoordinatorRevision();
       const targetEngineDirectory = getEngineDirectory();
       const isCurrent = () => getCoordinatorRevision() === coordinatorRevision;
@@ -42,21 +51,23 @@ export function createSettingsDraftStore({
           if (!isCurrent()) return 'stale';
           if (dirSaved === false) return 'failed';
         }
-        const savedRevision = getConfigRevision();
-        const payload = readConfigPayload();
 
+        let saved = null;
         await runSettingsMutation(async (save) => {
-          await save(payload);
+          saved = await save(payload);
         });
         if (!isCurrent()) return 'stale';
         clearConfigDirtyIfUnchanged(savedRevision);
 
+        const overridden = sovitsUrlOverrideNotice(payload, saved);
         if (autosave) {
           // A newer edit gets its own autosave right after this one; say nothing until it lands.
-          if (!isConfigDirty()) showToast('语音服务设置已自动保存', 'success');
+          if (!isConfigDirty()) showToast(overridden || '语音服务设置已自动保存', overridden ? 'info' : 'success');
         } else {
           const stillDirty = isConfigDirty() || Boolean(targetEngineDirectory?.isDirty());
-          showToast(stillDirty ? '之前的配置已保存；当前修改尚未保存。' : '全局配置已保存', 'success');
+          if (stillDirty) showToast('之前的配置已保存；当前修改尚未保存。', 'success');
+          else if (overridden) showToast(overridden, 'info');
+          else showToast('全局配置已保存', 'success');
         }
         reloadConfig();
         refreshTelemetry();
@@ -70,4 +81,37 @@ export function createSettingsDraftStore({
       }
     },
   };
+}
+
+const trimSlash = (url) => String(url || '').trim().replace(/\/+$/, '');
+
+function normalizeSovitsUrl(url) {
+  const raw = trimSlash(url);
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return raw;
+    const hasExplicitPort = /^https?:\/\/[^/?#\\]+:\d+(?=[/?#\\]|$)/i.test(raw);
+    const port = parsed.port
+      || (parsed.protocol === 'https:' ? '443' : hasExplicitPort ? '80' : '9880');
+    const path = parsed.pathname.replace(/\/+$/, '');
+    return `${parsed.protocol}//${parsed.hostname}:${port}${path}`;
+  } catch {
+    return raw;
+  }
+}
+
+// The server keeps the saved 语音服务地址 but may still use another one set by the
+// environment or .env. Say so instead of a plain "saved", or the engine seems to ignore it.
+export function sovitsUrlOverrideNotice(payload, saved) {
+  const wanted = trimSlash(payload?.gpt_sovits_url);
+  const effective = trimSlash(saved?.effective_sovits_url);
+  if (!wanted || !effective || normalizeSovitsUrl(wanted) === normalizeSovitsUrl(effective)) return '';
+  const where = saved?.effective_sovits_source === 'env'
+    ? '系统环境变量 GALGAME2VOICE_GPT_SOVITS_BASE_URL（或 GPT_SOVITS_BASE_URL）'
+    : saved?.effective_sovits_source === 'dotenv'
+      ? '程序文件夹里 .env 文件的 GALGAME2VOICE_GPT_SOVITS_BASE_URL（或 GPT_SOVITS_BASE_URL）'
+      : '';
+  if (!where) return '';
+  return `设置已保存，但语音服务地址未生效：${where}指定了 ${effective}，当前仍在使用它。若要改用 ${wanted}，请删除那一项后重启程序。`;
 }
