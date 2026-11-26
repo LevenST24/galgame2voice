@@ -124,6 +124,19 @@ def test_valid_directory_message_names_the_tab_that_starts_the_engine(tmp_path):
     assert "「运行状态」" in installation.inspect_sovits_directory(tmp_path)["message"]
 
 
+def test_pasted_file_path_inside_the_engine_selects_its_folder(tmp_path):
+    # Explorer's "复制文件地址" on api_v2.py pastes the quoted file path, not the folder.
+    engine = make_engine(tmp_path / "GPT-SoVITS-v2pro")
+    root = tmp_path / "app"
+    root.mkdir()
+    result = installation.save_sovits_directory(root, f'"{engine / "api_v2.py"}"')
+    assert result["valid"] is True
+    assert installation.read_sovits_directory(root) == engine.resolve()
+    with pytest.raises(ValueError):
+        stray = tmp_path / "notes.txt"
+        stray.write_text("x", encoding="utf-8")
+        installation.save_sovits_directory(root, str(stray))
+
 def test_portable_rejects_engine_without_runtime(tmp_path, monkeypatch):
     (tmp_path / "api_v2.py").write_text("# source-only engine")
     monkeypatch.setattr(installation.sys, "frozen", True, raising=False)

@@ -54,6 +54,7 @@ function setup(t, options = {}) {
     onNewSession: () => { calls.newSession++; }, onMic: () => { calls.mic++; },
     subscribeOverlay: fn => { overlayChange = fn; return () => { overlayChange = null; }; },
     subscribe: fn => { subscription = fn; return () => { subscription = null; }; },
+    ...options.deps?.(doc),
   });
   t.after(() => app.unmount());
   const emit = (type, event) => { for (const fn of [...listeners.get(type) || []]) fn(event); };
@@ -262,6 +263,21 @@ test('hidden window pauses AUTO, unhide restarts delay without losing a line', t
   h.app.action('auto'); h.app.action('hide'); h.clock.tick(10000);
   assert.equal(h.app.player.currentIndex, 0); assert.equal(h.app.textbox.isHidden, true);
   h.app.action('unhide'); h.clock.tick(2000); assert.equal(h.app.player.currentIndex, 1);
+});
+
+test('opening the input box stops AUTO and SKIP so the box stays open before typing', t => {
+  for (const mode of ['auto', 'skip']) {
+    const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0 } });
+    h.start(); h.line(0); h.line(1); h.line(2);
+    h.app.action(mode);
+    h.app.action('input');
+    const wrap = h.app.stage.stage.querySelector('.adv-player-input-wrap');
+    assert.equal(h.app.player.auto, false, mode);
+    assert.equal(h.app.player.skip, false, mode);
+    h.clock.tick(10000);
+    assert.equal(wrap.classList.contains('is-hidden'), false, `${mode}: the box is still open`);
+    if (mode === 'auto') assert.equal(h.app.player.currentIndex, 0, 'AUTO did not advance');
+  }
 });
 
 test('typing away keeps queued/future history, cancels voice/AUTO/SKIP and preserves IME draft', t => {
@@ -1420,3 +1436,18 @@ for (const trigger of ['button', 'Escape']) {
     assert.deepEqual(assistantReplies[1].lines?.map(l => l.zh), ['未完第一句。']);
   });
 }
+
+test('a reply finishing leaves focus alone in the embedded experience settings page', t => {
+  // The settings center shows this page inside its own dialog, which owns focus there.
+  const h = setup(t, { deps: doc => {
+    const host = doc.createElement('div'); doc.body.appendChild(host);
+    return { readingSettingsContainer: host, onOpenReadingSettings: undefined };
+  } });
+  h.start(); h.line(0);
+  h.overlay(true);
+  h.app.configPanel.open();
+  const footerSave = h.doc.createElement('button'); h.doc.body.appendChild(footerSave);
+  footerSave.focus();
+  h.done();
+  assert.ok(h.doc.activeElement === footerSave, `focus moved to ${h.doc.activeElement?.id || h.doc.activeElement?.tagName}`);
+});

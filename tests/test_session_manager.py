@@ -87,6 +87,24 @@ class TestSessionManagerTier2:
         assert chat_msgs[3].role == "user"
         assert chat_msgs[3].content == "今天天气如何？"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("prompt_saved", [True, False])
+    async def test_context_window_carries_whole_exchanges(self, temp_db_path, prompt_saved):
+        sm = SessionManager(temp_db_path)
+        for i in range(3):
+            await sm.add_turn("sess-win", "user", f"问题{i}", "")
+            await sm.add_turn("sess-win", "assistant", f"回答{i}", "")
+        if prompt_saved:
+            await sm.add_turn("sess-win", "user", "新问题", "")
+
+        chat_msgs = await sm.build_chat_messages(
+            session_id="sess-win", user_prompt="新问题", character_name="夏目", max_messages=2,
+        )
+        assert [(m.role, m.content) for m in chat_msgs[1:]] == [
+            ("user", "问题2"), ("assistant", chat_msgs[2].content), ("user", "新问题"),
+        ]
+        assert "回答2" in chat_msgs[2].content
+
 
 @pytest.fixture
 def messages_table_db():

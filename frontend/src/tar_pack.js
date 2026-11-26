@@ -18,6 +18,7 @@ function normalizeEntryPath(rawPath) {
   return segs.join('/');
 }
 
+/** @returns {{ nameBytes: Uint8Array, prefixBytes: Uint8Array } | null} */
 function splitUstarPath(path) {
   const full = UTF8.encode(path);
   if (full.length <= 100) return { nameBytes: full, prefixBytes: new Uint8Array(0) };
@@ -28,7 +29,18 @@ function splitUstarPath(path) {
     const prefixBytes = UTF8.encode(path.slice(0, idx));
     if (nameBytes.length <= 100 && prefixBytes.length <= 155) return { nameBytes, prefixBytes };
   }
-  throw new Error(`角色包内文件路径过长，请缩短文件夹或文件名称后重试：${path}`);
+  return null;
+}
+
+// A pax "path" record: "<len> path=<path>\n", where <len> counts its own digits too.
+function paxPathRecord(path) {
+  const body = UTF8.encode(` path=${path}\n`);
+  let length = body.length + 1;
+  while (String(length).length + body.length !== length) length = String(length).length + body.length;
+  const record = new Uint8Array(length);
+  record.set(UTF8.encode(String(length)), 0);
+  record.set(body, length - body.length);
+  return record;
 }
 
 function writeOctal(header, offset, length, value) {
@@ -42,7 +54,25 @@ function buildHeader(path, byteSize, mtimeSec) {
   if (!Number.isFinite(byteSize) || byteSize < 0 || byteSize > MAX_FILE_BYTES) {
     throw new Error(`角色包内单个文件大小超出 8 GiB 上限：${path}`);
   }
-  const { nameBytes, prefixBytes } = splitUstarPath(path);
+  const split = splitUstarPath(path);
+  if (split) return [headerBlock(split.nameBytes, split.prefixBytes, byteSize, mtimeSec, 0x30)];
+  // Names past the ustar fields (long Japanese clip names) go in a pax header,
+  // which Python's tarfile on the server reads; the plain name is only a fallback.
+  if (UTF8.encode(path).length > 16 * 1024) {
+    throw new Error(`角色包内文件路径过长，请缩短文件夹或文件名称后重试：${path}`);
+  }
+  const record = paxPathRecord(path);
+  const pad = record.length % BLOCK_SIZE ? ZERO_BLOCK.subarray(0, BLOCK_SIZE - (record.length % BLOCK_SIZE)) : null;
+  const fallback = UTF8.encode(`long-name-${record.length}`);
+  return [
+    headerBlock(UTF8.encode('././@PaxHeader'), new Uint8Array(0), record.length, mtimeSec, 0x78),
+    record,
+    ...(pad ? [pad] : []),
+    headerBlock(fallback, new Uint8Array(0), byteSize, mtimeSec, 0x30),
+  ];
+}
+
+function headerBlock(nameBytes, prefixBytes, byteSize, mtimeSec, typeflag) {
   const h = new Uint8Array(BLOCK_SIZE);
   h.set(nameBytes, 0);
   writeOctal(h, 100, 8, 0o644);
@@ -51,7 +81,7 @@ function buildHeader(path, byteSize, mtimeSec) {
   writeOctal(h, 124, 12, byteSize);
   writeOctal(h, 136, 12, Math.min(MAX_FILE_BYTES, Math.max(0, mtimeSec)));
   h.fill(0x20, 148, 156);
-  h[156] = 0x30; // regular file '0'
+  h[156] = typeflag; // '0' regular file, 'x' pax header for the next entry
   h.set([0x75, 0x73, 0x74, 0x61, 0x72, 0x00, 0x30, 0x30], 257); // "ustar\0" + "00"
   writeOctal(h, 329, 8, 0);
   writeOctal(h, 337, 8, 0);
@@ -80,7 +110,7 @@ export function packTarBlob(entries) {
     const path = normalizeEntryPath(entry.path);
     const size = Number(entry.file.size ?? 0);
     const mtime = typeof entry.file.lastModified === 'number' ? Math.floor(entry.file.lastModified / 1000) : defaultMtime;
-    parts.push(buildHeader(path, size, mtime), entry.file);
+    parts.push(...buildHeader(path, size, mtime), entry.file);
     const rem = size % BLOCK_SIZE;
     if (rem !== 0) parts.push(ZERO_BLOCK.subarray(0, BLOCK_SIZE - rem));
   }

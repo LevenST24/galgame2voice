@@ -148,14 +148,15 @@ class EngineSettingsController {
     this.engineWaitController?.abort();
     const waitController = new AbortController();
     this.engineWaitController = waitController;
+    let selected = '';
+    let sent = false;
+    const revision = this.precisionRevision;
 
     try {
       const payload = {};
       const configLoaded = this.coordinator.isConfigLoaded ? this.coordinator.isConfigLoaded() : false;
-      const selected = typeof precision === 'string' ? precision : (configLoaded ? this.dom.gPrecision?.value : '');
-      const revision = this.precisionRevision;
+      selected = typeof precision === 'string' ? precision : (configLoaded ? this.dom.gPrecision?.value : '');
       if (selected) payload.precision = selected;
-      let sent = false;
       let acknowledged = true;
       let postError = null;
       let data;
@@ -203,6 +204,7 @@ class EngineSettingsController {
       });
       if (this.disposed) return;
       engineReady = result.ready === true;
+      if (!acknowledged && selected) await this._showSavedPrecision(selected, revision);
       if (!acknowledged && result.ready) result = { ...result, message: UNCONFIRMED_RESTART_MESSAGE };
       this.coordinator.renderEngineStatus?.(result);
       this.coordinator.showToast?.(result.message, result.ready && acknowledged ? 'success' : 'info');
@@ -231,6 +233,7 @@ class EngineSettingsController {
           this.dom.gSovitsDirectory?.focus?.();
         },
       } : null);
+      if (sent && selected) await this._showSavedPrecision(selected, revision);
     } finally {
       if (this.engineWaitController === waitController) {
         this.engineWaitController = null;
@@ -248,6 +251,16 @@ class EngineSettingsController {
         }
       }
     }
+  }
+
+  // The server may keep a requested precision even when the start then fails.
+  // Show it once it is saved, so the next start does not quietly send the old choice.
+  async _showSavedPrecision(requested, revision) {
+    const cfg = await requestJson('/api/config', { cache: 'no-store' }).catch(() => null);
+    const saved = cfg?.settings?.inference_precision;
+    if (this.disposed || saved !== requested || !this.dom.gPrecision || revision !== this.precisionRevision) return;
+    this.dom.gPrecision.value = saved;
+    this.coordinator.onPrecisionSaved?.(saved);
   }
 
   async handleTogglePrecision() {
