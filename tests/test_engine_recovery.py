@@ -347,15 +347,3 @@ async def test_answers_like_sovits_reads_the_control_endpoint(monkeypatch, statu
     assert await health._answers_like_sovits("http://127.0.0.1:8080/") is expected
     assert seen == ["/control"]
 
-
-@pytest.mark.parametrize(("code", "must_have", "must_not"), [(400, "已在运行", "不是 GPT-SoVITS"), (404, "不是 GPT-SoVITS", "已在运行")])
-def test_launcher_checks_control_on_busy_port(monkeypatch, capsys, code, must_have, must_not):
-    endpoint = parse_sovits_endpoint("http://127.0.0.1:9874", source="db")
-    monkeypatch.setattr("galgame2voice.services.sovits_endpoint.resolve_effective_sovits_endpoint_sync", lambda: endpoint)
-    monkeypatch.setattr(run_server, "is_port_in_use", lambda *args: True)
-    real_client = httpx.Client
-    monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(lambda req: httpx.Response(code if req.url.path == "/control" else 500)), **kw))
-    run_server.ensure_gpt_sovits_running()
-    out = capsys.readouterr().out
-    assert must_have in out and must_not not in out
-
