@@ -69,7 +69,33 @@ def _package_folder(char_mgr: Any, profile: Any, profiles: list[Any]) -> Path | 
     folder = Path(folder)
     if folder.parent != Path(char_mgr.characters_dir).resolve() or not folder.is_dir():
         return None
+    # Another voice (a custom voice made from this package's model or audio) would lose
+    # its files if the folder moved, so delete only the row then.
+    profile_id = _field(profile, "id")
+    for other in profiles:
+        if _field(other, "id") == profile_id:
+            continue
+        for key in ("gpt_weights_path", "sovits_weights_path", "ref_audio_path"):
+            used = _resolved_path(_field(other, key))
+            if used is not None and used.is_relative_to(folder):
+                return None
     return folder
+
+
+def _field(item: Any, key: str) -> Any:
+    return item.get(key) if isinstance(item, dict) else getattr(item, key, None)
+
+
+def _resolved_path(value: Any) -> Path | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    path = Path(value.strip())
+    if not path.is_absolute():
+        path = Path(get_settings().project_root) / path
+    try:
+        return path.resolve()
+    except OSError:
+        return None
 
 
 def _move_folder(source: Path, target: Path) -> None:
