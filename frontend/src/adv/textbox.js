@@ -4,7 +4,7 @@
  */
 
 import { splitGraphemes, countGraphemes } from './graphemes.js';
-import { paginate as purePaginate, pairSubtitle } from './paginate.js';
+import { paginate as purePaginate, pairSubtitle, pairToFit } from './paginate.js';
 
 /**
  * Wraps text with display-only quotation marks if it is character speech
@@ -689,12 +689,12 @@ export function createTextbox(container, opts = {}) {
 
     let finalPrimaryPages = pPages;
     if (pPages.length < targetCount) {
-      finalPrimaryPages = pairSubtitle(primaryText, targetCount);
+      finalPrimaryPages = pairToFit(primaryText, targetCount, fitsPrimary);
     }
 
     let finalSubPages = sPages;
     if (sPages.length < targetCount) {
-      finalSubPages = pairSubtitle(subText, targetCount);
+      finalSubPages = pairToFit(subText, targetCount, fitsSubtitle);
     }
 
     currentSubPages = finalSubPages;

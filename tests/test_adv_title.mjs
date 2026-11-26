@@ -1559,3 +1559,10 @@ test('home retry keeps an unconfirmed new chat and ranks a newer server session 
   for (let i = 0; i < 5; i++) await tick(); up = true; const home = env.app.returnHome(); t.after(() => home?.destroy());
   for (let i = 0; i < 10; i++) await tick(); assert.equal(env.app.actions.getActiveId(), created.id); assert.deepEqual(posted, [created.id]);
   assert.deepEqual(home.element.querySelectorAll('.home-recent').map(n => n.dataset.session), ['s_server', 's_c4', 's_c3']); });
+test('a session title that starts with an emoji keeps the whole emoji as its avatar letter', async t => {
+  const sessions = [snapshot('a'), { ...snapshot('b', 1), title: '🌸花火大会', characterName: '' }];
+  const h = await fixture(t, { sessions, actions: { getAvatar: async () => null } });
+  const avatar = h.q('.home-avatar').textContent;
+  assert.equal(avatar, '🌸');
+  assert.ok(avatar.isWellFormed());
+});
