@@ -1293,7 +1293,7 @@ export async function deleteVoiceProfile() {
     ensureSessionVoice(getActive(), { silent: true });
     // A package voice's folder went to the backup folder; say where, so it can be put back.
     const movedNote = typeof deleted?.moved_to === 'string' && deleted.moved_to
-      ? `。角色包文件夹已移到「${deleted.moved_to}」，想恢复时把它挪回 characters 文件夹，再在音色设置里点「扫描」`
+      ? `。角色包文件夹已移到「${deleted.moved_to}」，想恢复时把它挪回 characters 文件夹，再在「设置中心 → 角色与会话」里点「扫描」`
       : '';
     showToast(`音色「${p ? p.name : id}」已删除${bindingNote}${movedNote}`, 'success');
   } catch (e) {
