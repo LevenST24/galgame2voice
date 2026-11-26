@@ -101,6 +101,7 @@ export function mountAdv(dom, deps) {
       .join('\n');
   }
   const moved = new Map();
+  const MAX_DRAFTS = 30;
   const drafts = new Map();
   let replayToken = 0, stageReplaying = false;
   let lastVoiceEnabled = Boolean(deps.voiceEnabled?.());
@@ -873,12 +874,23 @@ export function mountAdv(dom, deps) {
     settings = nextSettings;
     if (switched) {
       sprite.setStaging(staging.enter(), { instant: true });
-      if (sessionId !== undefined) drafts.set(sessionId, textbox.draft);
+      if (sessionId !== undefined) {
+        drafts.delete(sessionId);
+        if (textbox.draft) {
+          drafts.set(sessionId, textbox.draft);
+          if (drafts.size > MAX_DRAFTS) drafts.delete(drafts.keys().next().value);
+        }
+      }
       if (configPanel?.isOpen) configPanel.close({ revert: true });
       closeBgPanel();
       closeDrawer(); closeLog(); resetInput(); turnId = null; currentLine = null; failedUser = null;
       textbox.clearAnnouncement();
-      textbox.setDraft(drafts.get(session?.id) || '');
+      const restoredDraft = drafts.get(session?.id) || '';
+      if (restoredDraft && session?.id !== undefined) {
+        drafts.delete(session.id);
+        drafts.set(session.id, restoredDraft);
+      }
+      textbox.setDraft(restoredDraft);
     }
     sessionId = session?.id; characterKey = character?.id; boundProfileId = nextSettings.voiceProfileId; outfit = settings.advOutfit;
     player.setSettings(playerSettings());

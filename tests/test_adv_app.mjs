@@ -1695,3 +1695,23 @@ test('done affection aborts and supersedes an older in-flight loadAffection', as
   h.loads.splice(0).forEach(load => load.resolve()); await microtasks(); h.flush();
   assert.equal(h.app.sprite.getLastCommitted().faceUrl, '/blush.png');
 });
+
+test('session drafts drop empty entries and evict oldest non-empty drafts beyond the cap', t => {
+  const h = setup(t);
+  for (let i = 2; i < 60; i++) {
+    h.sessions.push({ id: `s_${i}`, title: `对话 ${i}`, settings: { ...h.sessions[0].settings }, messages: [] });
+  }
+  h.app.textbox.setDraft('保留草稿');
+  for (let i = 1; i <= 40; i++) h.switchSession(i);
+  h.switchSession(0);
+  assert.equal(h.app.textbox.draft, '保留草稿', 'empty visits must not evict a real draft');
+  for (let i = 0; i < 45; i++) {
+    h.switchSession(i);
+    h.app.textbox.setDraft(`草稿_${i}`);
+  }
+  h.switchSession(50);
+  h.switchSession(0);
+  assert.equal(h.app.textbox.draft, '', 'oldest non-empty draft must be evicted past cap');
+  h.switchSession(44);
+  assert.equal(h.app.textbox.draft, '草稿_44', 'recent non-empty draft stays preserved');
+});
