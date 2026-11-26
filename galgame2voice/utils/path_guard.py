@@ -61,15 +61,16 @@ def contains_traversal_payload(raw_path: str) -> bool:
     for test_str in (raw_path, decoded):
         if "\x00" in test_str:
             return True
+        clean = re.sub(r"^[\s\"']+|[\s\"']+$", "", test_str)
         # UNC paths (\\server\share or //server/share)
-        if test_str.startswith((r"\\", "//")):
+        if clean.startswith((r"\\", "//", "/\\", r"\/")):
             return True
         # .. segments
-        if ".." in test_str:
-            parts = re.split(r"[\\/]+", test_str)
+        if ".." in clean:
+            parts = re.split(r"[\\/]+", clean)
             if ".." in parts:
                 return True
-        if _TRAVERSAL_STRING_REGEX.search(test_str):
+        if _TRAVERSAL_STRING_REGEX.search(clean):
             return True
 
     return False

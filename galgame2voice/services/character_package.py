@@ -8,7 +8,9 @@ weight resolution (including pointer files), and audio probe caching.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
+import re
 
 from galgame2voice.config import get_settings
 from galgame2voice.schemas.character_manifest import CharacterManifest
@@ -29,18 +31,31 @@ def _resolve_pointer_file_target(target_file: Path) -> str | None:
     try:
         if target_file.stat().st_size >= 4096:
             return None
-        content = target_file.read_text(encoding="utf-8-sig").strip()
-        if not content or not content.endswith((".ckpt", ".pth")):
+        content = re.sub(r"^[\s\"']+|[\s\"']+$", "", target_file.read_text(encoding="utf-8-sig"))
+        if not content or not content.lower().endswith((".ckpt", ".pth")):
             return None
         if contains_traversal_payload(content):
             return ""
-        settings = get_settings()
         ptr_path = Path(content)
-        if not ptr_path.is_absolute():
-            ptr_target = settings.project_root / ptr_path
-            if ptr_target.exists():
-                return to_project_relative_path(ptr_target)
-        return content
+        if not ptr_path.is_absolute() and (ptr_path.anchor or ":" in content):
+            return ""
+        settings = get_settings()
+        has_dirs = getattr(settings, "audio_dir", None) is not None and getattr(settings, "data_dir", None) is not None
+        roots = get_authorized_roots() if has_dirs else [Path(settings.project_root).resolve()]
+        if ptr_path.is_absolute():
+            norm_p = Path(os.path.normpath(content))
+            lex_roots = (*roots, Path(os.path.normpath(str(settings.project_root))))
+            if not any(norm_p == r or norm_p.is_relative_to(r) for r in lex_roots):
+                return ""
+            ptr_target = ptr_path.resolve()
+        else:
+            ptr_target = Path(settings.project_root) / ptr_path
+            if not ptr_target.exists():
+                return content
+            ptr_target = ptr_target.resolve()
+        if not any(ptr_target == r or ptr_target.is_relative_to(r) for r in roots):
+            return ""
+        return to_project_relative_path(ptr_target)
     except (OSError, UnicodeDecodeError):
         return None
 
@@ -120,27 +135,56 @@ class CharacterPackage:
         if not val:
             return ""
 
-        if contains_traversal_payload(str(val)):
+        clean_str = re.sub(r"^[\s\"']+|[\s\"']+$", "", str(val))
+        if not clean_str or contains_traversal_payload(clean_str):
             logger.warning("Directory traversal rejected in resolve_weight_path: %s", val)
             return ""
 
-        clean_str = str(val).strip().strip("\"'")
         p = Path(clean_str)
-        target_file = (self.folder_path / clean_str.lstrip("/\\")) if not p.is_absolute() else p
+        if not p.is_absolute() and (p.anchor or ":" in clean_str):
+            return ""
+
+        settings = get_settings()
+        has_dirs = getattr(settings, "audio_dir", None) is not None and getattr(settings, "data_dir", None) is not None
+        local = (self.folder_path.resolve(), Path(settings.project_root).resolve())
+
+        def inside(path: Path, roots) -> bool:
+            return any(path == r or path.is_relative_to(r) for r in roots)
+
+        def allowed(path: Path) -> bool:
+            # Scanning the authorized roots touches every drive root, so only do it for paths outside the package and project.
+            if inside(path, local):
+                return True
+            return inside(path, [self.folder_path, *(get_authorized_roots() if has_dirs else local[1:])])
+
+        if p.is_absolute():
+            norm_p = Path(os.path.normpath(clean_str))
+            if not (inside(norm_p, (Path(os.path.normpath(str(settings.project_root))),)) or allowed(norm_p)):
+                return ""
+            target_file = p.resolve()
+            if not allowed(target_file):
+                return ""
+        else:
+            target_file = self.folder_path / p
 
         if target_file.is_file():
-            ptr_target = _resolve_pointer_file_target(target_file)
-            if ptr_target is not None:
-                return ptr_target
+            resolved = target_file.resolve()
+            if not allowed(resolved):
+                return ""
+            ptr_target = _resolve_pointer_file_target(resolved)
+            return ptr_target if ptr_target is not None else to_project_relative_path(resolved)
+
+        if p.is_absolute():
             return to_project_relative_path(target_file)
 
-        # If file does not exist directly in package folder, check project root
-        settings = get_settings()
-        root_target = settings.project_root / clean_str.lstrip("/\\")
+        root_target = Path(settings.project_root) / p
         if root_target.exists():
-            return to_project_relative_path(root_target)
+            resolved = root_target.resolve()
+            if not allowed(resolved):
+                return ""
+            return to_project_relative_path(resolved)
 
-        return str(val)
+        return clean_str
 
 
 __all__ = [

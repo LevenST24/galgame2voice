@@ -478,3 +478,50 @@ async def test_import_skips_files_macos_and_windows_add(tmp_path, monkeypatch, f
     names = sorted(p.relative_to(installed).as_posix() for p in installed.rglob("*"))
     assert names == ["gpt.ckpt", "manifest.json", "refs", "refs/gentle.wav", "sovits.pth"]
     _assert_temp_empty()
+
+
+@pytest.mark.asyncio
+async def test_import_rejects_escaped_or_unc_weight_paths_without_fs_probe(tmp_path, monkeypatch):
+    proj, outside = tmp_path / "proj", tmp_path / "external_secret" / "evil.pth"
+    proj.mkdir()
+    outside.parent.mkdir()
+    outside.write_bytes(b"evil")
+    root, app = _setup_app(proj, monkeypatch)
+    await init_db()
+    touched: list[str] = []
+    for method in ("is_file", "exists", "resolve"):
+        orig = getattr(Path, method)
+        def _spy(self, *a, _m=method, _orig=orig, **kw):
+            if any(tok in str(self).lower() for tok in ("attacker", "win.ini", "external_secret")):
+                touched.append(f"{_m}:{self}")
+                return self if _m == "resolve" else False
+            return _orig(self, *a, **kw)
+        monkeypatch.setattr(Path, method, _spy)
+
+    def _pkg(pid: str, name: str, gpt: str = "gpt.ckpt", sovits: str = "sovits.pth", extra: dict[str, bytes] | None = None) -> bytes:
+        manifest = {"id": pid, "name": name, "gpt_weights": gpt, "sovits_weights": sovits,
+                    "emotions": {"gentle": {"audio": "refs/gentle.wav", "text": "優しい声。", "lang": "ja"}}}
+        return _make_package_bytes("zip", pid, name, include_weights=(gpt == "gpt.ckpt"),
+                                   extra_entries={"manifest.json": json.dumps(manifest, ensure_ascii=False).encode(), **(extra or {})})
+
+    bad_cases = [
+        _pkg("unc_sp", "空格网络", gpt=r" \\attacker\share\x.ckpt"),
+        _pkg("unc_qt", "引号网络", gpt='"\\\\attacker\\share\\x.ckpt"'),
+        _pkg("abs_out", "包外绝对", gpt=r"C:\Windows\win.ini"),
+        _pkg("ptr_unc", "指针网络", extra={"sovits.pth": b'"\\\\attacker\\share\\x.pth'}),
+        _pkg("ptr_out", "指针包外", extra={"sovits.pth": str(outside).encode()}),
+    ]
+    shared_pth = root / "models" / "共享模型.pth"
+    shared_pth.parent.mkdir(parents=True)
+    shared_pth.write_bytes(b"y" * 4096)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
+        for idx, payload in enumerate(bad_cases):
+            assert (await client.post("/api/characters/import", params={"filename": f"b{idx}.zip"}, content=payload)).status_code == 422
+        assert touched == []
+        assert (await client.get("/api/voice/profiles")).json()["profiles"] == []
+        ok_cn = _pkg("cn_ok", "中文角色", gpt="权重/模型.ckpt", sovits="权重/模型.pth",
+                     extra={"权重/模型.ckpt": b"x" * 1024, "权重/模型.pth": b"y" * 1024})
+        ok_ptr = _pkg("ptr_ok", "指针角色", extra={"sovits.pth": str(shared_pth).encode()})
+        for fname, payload in (("cn.zip", ok_cn), ("ptr.zip", ok_ptr)):
+            res = await client.post("/api/characters/import", params={"filename": fname}, content=payload)
+            assert res.status_code == 200 and res.json()["imported"][0]["missing_voice_weights"] is False
