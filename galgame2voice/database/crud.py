@@ -30,6 +30,7 @@ from galgame2voice.database.crud_modules.memory_affection import (
 )
 from galgame2voice.database.crud_modules.providers import (
     create_provider,
+    clear_provider_api_key,
     delete_provider,
     get_active_provider,
     get_active_provider_raw,
@@ -126,6 +127,7 @@ __all__ = [
     "update_provider",
     "set_active_provider",
     "delete_provider",
+    "clear_provider_api_key",
     # Voice Profiles
     "list_voice_profiles",
     "get_voice_profile",
