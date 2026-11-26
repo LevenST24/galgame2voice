@@ -627,7 +627,7 @@ class TtsCacheManager:
     @staticmethod
     def _write_audio_file_sync(file_path: Path, audio_bytes: bytes) -> None:
         """Atomic write to file via unique temp file with Windows AV transient lock retries."""
-        tmp_path = file_path.with_suffix(f".tmp.{os.getpid()}_{time.time_ns()}_{uuid.uuid4().hex}.wav")
+        tmp_path = file_path.with_name(f"{uuid.uuid4().hex[:12]}.tmp.wav")
         try:
             tmp_path.write_bytes(audio_bytes)
             for attempt in range(5):
