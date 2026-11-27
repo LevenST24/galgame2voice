@@ -186,19 +186,16 @@ class TestServerLauncherCLI:
                 monkeypatch.setenv(key, "")
             monkeypatch.delenv(key)
 
-    def test_parse_args_defaults(self):
-        args = rs.parse_args([])
-        assert args.host == "127.0.0.1"
-        assert args.port == 8080
-        assert args.no_browser is False
-        assert args.check_only is False
-
-    def test_parse_args_custom_values(self):
-        args = rs.parse_args(["--host", "0.0.0.0", "--port", "9090", "--no-browser", "--check-only"])
-        assert args.host == "0.0.0.0"
-        assert args.port == 9090
-        assert args.no_browser is True
-        assert args.check_only is True
+    @pytest.mark.parametrize(("argv", "host", "port", "no_browser", "check_only"), [
+        pytest.param([], "127.0.0.1", 8080, False, False, id="defaults"),
+        pytest.param(["--host", "0.0.0.0", "--port", "9090", "--no-browser", "--check-only"], "0.0.0.0", 9090, True, True, id="custom_values"),
+    ])
+    def test_parse_args_defaults_and_custom_values(self, argv, host, port, no_browser, check_only):
+        args = rs.parse_args(argv)
+        assert args.host == host
+        assert args.port == port
+        assert args.no_browser is no_browser
+        assert args.check_only is check_only
 
     @pytest.mark.parametrize("port", ["70000", "-1", "abc"])
     def test_parse_args_rejects_a_port_outside_the_tcp_range(self, port, capsys):
@@ -270,20 +267,16 @@ class TestServerLauncherCLI:
         args = rs.parse_args([])
         assert args.host == "10.0.0.1"
 
-    def test_main_check_only_success(self, monkeypatch):
-        monkeypatch.setattr(rs, "check_python_environment", lambda: True)
+    @pytest.mark.parametrize(("env_ok", "exit_code"), [
+        pytest.param(True, 0, id="success"),
+        pytest.param(False, 1, id="env_failure"),
+    ])
+    def test_main_check_only(self, monkeypatch, env_ok, exit_code):
+        monkeypatch.setattr(rs, "check_python_environment", lambda: env_ok)
         monkeypatch.setattr(rs, "run_hardware_diagnostics", lambda: {"has_nvidia": False})
-
         with pytest.raises(SystemExit) as exc_info:
             rs.main(["--check-only"])
-        assert exc_info.value.code == 0
-
-    def test_main_check_only_env_failure(self, monkeypatch):
-        monkeypatch.setattr(rs, "check_python_environment", lambda: False)
-
-        with pytest.raises(SystemExit) as exc_info:
-            rs.main(["--check-only"])
-        assert exc_info.value.code == 1
+        assert exc_info.value.code == exit_code
 
 
 _REAL_SETUP_SIGNAL_HANDLERS = run_server.setup_signal_handlers
@@ -313,22 +306,20 @@ def test_stop_by_signal_is_reported_as_normal_stop_not_startup_failure(
     assert "正常停止" in out
 
 
-@pytest.mark.parametrize("ctrl_type", [2, 5, 6])
-def test_console_exit_events_save_streaming_turns_first(monkeypatch, ctrl_type):
+@pytest.mark.parametrize(("ctrl_type", "expected_waits"), [
+    pytest.param(2, [rs._CONSOLE_EXIT_SAVE_SECONDS], id="ctrl_close"),
+    pytest.param(5, [rs._CONSOLE_EXIT_SAVE_SECONDS], id="ctrl_logoff"),
+    pytest.param(6, [rs._CONSOLE_EXIT_SAVE_SECONDS], id="ctrl_shutdown"),
+    pytest.param(0, [], id="ctrl_c"),
+    pytest.param(1, [], id="ctrl_break"),
+])
+def test_console_control_events_save_only_on_exit(monkeypatch, ctrl_type, expected_waits):
     waits = []
     monkeypatch.setattr(rs, "stop_active_turns", lambda timeout: waits.append(timeout) or True)
     # Returning False lets Windows go on ending the process after the save.
     assert rs._on_console_control(ctrl_type) is False
-    assert waits == [rs._CONSOLE_EXIT_SAVE_SECONDS]
+    assert waits == expected_waits
     assert 0 < rs._CONSOLE_EXIT_SAVE_SECONDS < 5
-
-
-@pytest.mark.parametrize("ctrl_type", [0, 1])
-def test_ctrl_c_and_ctrl_break_are_left_to_python(monkeypatch, ctrl_type):
-    waits = []
-    monkeypatch.setattr(rs, "stop_active_turns", lambda timeout: waits.append(timeout) or True)
-    assert rs._on_console_control(ctrl_type) is False
-    assert waits == []
 
 
 def test_console_handler_never_raises_into_windows(monkeypatch):

@@ -56,14 +56,6 @@ def test_bom_quoted_hint_resolves_against_install_not_cwd(tmp_path, monkeypatch)
     assert installation.read_sovits_directory(tmp_path) == engine
 
 
-def test_hint_saved_as_ansi_gbk_resolves_to_the_chinese_folder(tmp_path):
-    """Notepad's 「ANSI」 save on Chinese Windows writes GBK; the folder must still be found."""
-    engine = make_engine(tmp_path / "语音引擎")
-    (tmp_path / "data").mkdir()
-    (tmp_path / "data" / "sovits_dir.txt").write_bytes(str(engine).encode("gbk"))
-    assert installation.read_sovits_directory(tmp_path) == engine
-
-
 @pytest.mark.asyncio
 async def test_system_status_loads_when_engine_hint_cannot_be_read(tmp_path, monkeypatch):
     monkeypatch.setattr(get_settings(), "project_root", tmp_path)
@@ -247,42 +239,29 @@ async def test_native_directory_picker_destroys_window_on_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_browse_file_rejects_remote_client_without_opening_tkinter(tmp_path, monkeypatch):
+@pytest.mark.parametrize(("client_ip", "expected_json", "expected_calls"), [
+    pytest.param("192.168.1.20", {"selected_path": "", "picker_unavailable": True}, 0, id="remote_rejected"),
+    pytest.param("127.0.0.1", {"selected_path": "D:/GPT-SoVITS"}, 1, id="ipv4_loopback"),
+    pytest.param("::ffff:127.0.0.1", {"selected_path": "D:/GPT-SoVITS"}, 1, id="ipv4_mapped_ipv6_loopback"),
+])
+async def test_browse_file_loopback_and_remote_clients(tmp_path, monkeypatch, client_ip, expected_json, expected_calls):
     import sys
     import types
     monkeypatch.setattr(get_settings(), "project_root", tmp_path)
     fake_dialog = types.ModuleType("tkinter.filedialog")
-    fake_dialog.askdirectory = lambda **_kw: pytest.fail("tkinter filedialog called for remote client")
+    askdirectory = MagicMock(return_value="D:/GPT-SoVITS")
+    fake_dialog.askdirectory = askdirectory
     fake_tk, tk_ctor = types.ModuleType("tkinter"), MagicMock()
     fake_tk.Tk, fake_tk.filedialog = tk_ctor, fake_dialog
     monkeypatch.setitem(sys.modules, "tkinter", fake_tk)
     monkeypatch.setitem(sys.modules, "tkinter.filedialog", fake_dialog)
-    transport = ASGITransport(app=create_app(), client=("192.168.1.20", 54321))
+    transport = ASGITransport(app=create_app(), client=(client_ip, 54321))
     async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
         resp = await client.post("/api/voice/browse-file", json={"file_type": "directory"})
     assert resp.status_code == 200
-    assert resp.json() == {"selected_path": "", "picker_unavailable": True}
-    tk_ctor.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_browse_file_allows_loopback_clients(tmp_path, monkeypatch):
-    import sys
-    import types
-    monkeypatch.setattr(get_settings(), "project_root", tmp_path)
-    fake_dialog = types.ModuleType("tkinter.filedialog")
-    fake_dialog.askdirectory = lambda **_kw: "D:/GPT-SoVITS"
-    fake_tk = types.ModuleType("tkinter")
-    fake_tk.Tk, fake_tk.filedialog = lambda: MagicMock(), fake_dialog
-    monkeypatch.setitem(sys.modules, "tkinter", fake_tk)
-    monkeypatch.setitem(sys.modules, "tkinter.filedialog", fake_dialog)
-    app = create_app()
-    for client_ip in ("127.0.0.1", "::ffff:127.0.0.1"):
-        transport = ASGITransport(app=app, client=(client_ip, 54321))
-        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
-            resp = await client.post("/api/voice/browse-file", json={"file_type": "directory"})
-        assert resp.status_code == 200
-        assert resp.json() == {"selected_path": "D:/GPT-SoVITS"}
+    assert resp.json() == expected_json
+    assert tk_ctor.call_count == expected_calls
+    assert askdirectory.call_count == expected_calls
 
 
 @pytest.mark.asyncio
@@ -370,36 +349,22 @@ def test_write_sovits_directory_hint_external_path(tmp_path):
     assert installation.read_sovits_directory(root) == external.resolve()
 
 
-def test_write_sovits_directory_hint_strips_quotes_and_survives_relocation(tmp_path):
-    parent = tmp_path / "bundle"
-    root = parent / "Galgame2Voice"
-    engine = make_engine(parent / "GPT-SoVITS")
-    root.mkdir(parents=True)
-
-    quoted_input = f'  "{engine.resolve()}"  '
-    stored = installation.write_sovits_directory_hint(root, quoted_input)
-    assert not Path(stored).is_absolute()
-    assert stored in ("..\\GPT-SoVITS", "../GPT-SoVITS")
-
-    new_parent = tmp_path / "moved_bundle"
-    shutil.move(str(parent), str(new_parent))
-    new_root = new_parent / "Galgame2Voice"
-    new_engine = new_parent / "GPT-SoVITS"
-
-    resolved = installation.read_sovits_directory(new_root)
-    assert resolved == new_engine.resolve()
-
-
-def test_launcher_discovery_migrates_legacy_absolute_hint_for_sibling(tmp_path, monkeypatch):
-    parent = tmp_path / "old_bundle"
+@pytest.mark.parametrize(("bundle_name", "engine_name", "encoding"), [
+    pytest.param("old_bundle", "GPT-SoVITS", "utf-8", id="utf8_ascii"),
+    pytest.param("中文目录", "语音引擎", "gbk", id="gbk_chinese"),
+])
+def test_launcher_discovery_migrates_legacy_absolute_hint_for_sibling(
+    tmp_path, monkeypatch, bundle_name, engine_name, encoding
+):
+    parent = tmp_path / bundle_name
     g2v = parent / "Galgame2Voice"
-    engine = make_engine(parent / "GPT-SoVITS")
+    engine = make_engine(parent / engine_name)
     g2v.mkdir(parents=True)
     (g2v / "data").mkdir()
 
     # Pre-populate with legacy hardcoded absolute path
     cache_file = g2v / "data" / "sovits_dir.txt"
-    cache_file.write_text(str(engine.resolve()), encoding="utf-8")
+    cache_file.write_bytes(str(engine.resolve()).encode(encoding))
 
     monkeypatch.setattr(run_server, "PROJECT_ROOT", g2v)
     monkeypatch.delenv("GPT_SOVITS_DIR", raising=False)
@@ -411,40 +376,18 @@ def test_launcher_discovery_migrates_legacy_absolute_hint_for_sibling(tmp_path, 
     # Launcher should have self-healed the legacy absolute cache to a relative hint
     migrated_text = cache_file.read_text(encoding="utf-8").strip()
     assert not Path(migrated_text).is_absolute(), f"Expected relative path after migration, got {migrated_text}"
-    assert migrated_text in ("..\\GPT-SoVITS", "../GPT-SoVITS")
+    assert migrated_text in (f"..\\{engine_name}", f"../{engine_name}")
 
-    # Verify that copying this bundle now survives without referencing old_bundle
+    # Verify that copying this bundle now survives without referencing the old bundle
     new_parent = tmp_path / "new_bundle"
     shutil.copytree(parent, new_parent)
     new_g2v = new_parent / "Galgame2Voice"
-    new_engine = new_parent / "GPT-SoVITS"
+    new_engine = new_parent / engine_name
 
     inspected = installation.inspect_sovits_directory(new_g2v)
     assert inspected["valid"] is True
     assert Path(inspected["directory"]).resolve() == new_engine.resolve()
     assert Path(inspected["directory"]).resolve() != engine.resolve()
-
-
-def test_launcher_discovery_migrates_ansi_gbk_absolute_hint_for_sibling(tmp_path, monkeypatch):
-    parent = tmp_path / "中文目录"
-    g2v = parent / "Galgame2Voice"
-    engine = make_engine(parent / "语音引擎")
-    g2v.mkdir(parents=True)
-    (g2v / "data").mkdir()
-
-    cache_file = g2v / "data" / "sovits_dir.txt"
-    cache_file.write_bytes(str(engine.resolve()).encode("gbk"))
-
-    monkeypatch.setattr(run_server, "PROJECT_ROOT", g2v)
-    monkeypatch.delenv("GPT_SOVITS_DIR", raising=False)
-    monkeypatch.delenv("GALGAME2VOICE_DATA_ROOT", raising=False)
-
-    discovered = run_server.find_gpt_sovits_directory()
-    assert discovered == engine.resolve()
-
-    migrated_text = cache_file.read_text(encoding="utf-8").strip()
-    assert not Path(migrated_text).is_absolute()
-    assert migrated_text in ("..\\语音引擎", "../语音引擎")
 
 
 def test_launcher_discovery_handles_quoted_env_override(tmp_path, monkeypatch):

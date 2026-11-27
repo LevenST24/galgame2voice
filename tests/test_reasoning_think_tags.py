@@ -57,17 +57,17 @@ def test_line_scanner_ignores_draft_json_in_think_block():
     assert scanned.lines[0].emotion == "happy"
 
 
-def test_line_scanner_streaming_with_think_block():
-    scanned = _scan_reply(
-        "<thi",
-        'nk>Let me format {"lines": [{"zh": "草稿"}]}',
-        "</think>\n",
-        _REAL_LINES,
-    )
+@pytest.mark.parametrize("chunks", [
+    pytest.param(("<thi", 'nk>Let me format {"lines": [{"zh": "草稿"}]}', "</think>\n", _REAL_LINES), id="think_split"),
+    pytest.param(("<thinki", 'ng>Let me format {"lines": [{"zh": "草稿"}]}', "</thinki", "ng>\n", _REAL_LINES), id="thinking_split"),
+])
+def test_line_scanner_streaming_with_split_think_tags(chunks):
+    scanned = _scan_reply(*chunks)
 
     assert scanned.format == "lines"
+    assert scanned.truncated is False
     assert len(scanned.lines) == 1
-    assert scanned.lines[0].zh == "正式台词"
+    assert [line.zh for line in scanned.lines] == ["正式台词"]
     assert scanned.lines[0].ja == "本番のセリフ"
 
 
@@ -86,19 +86,24 @@ def test_streaming_parser_lines_with_think_draft():
     assert lines[0]["ja"] == "本番のセリフ"
 
 
-def test_streaming_parser_streaming_lines_with_think_draft():
-    emitted_text, zh, ja, _ = _stream_reply(
-        "<think>Let me format ",
+@pytest.mark.parametrize(("tag", "forbidden"), [
+    pytest.param("think", "<think>", id="think"),
+    pytest.param("thinking", "thinking", id="thinking"),
+])
+def test_streaming_parser_streaming_lines_with_think_draft(tag, forbidden):
+    emitted, zh, ja, parser = _stream_reply(
+        f"<{tag}>Let me format ",
         '{"lines": [{"zh": "草稿", "ja": "下書き"}]}',
-        "</think>\n",
+        f"</{tag}>\n",
         _REAL_LINES,
     )
 
-    assert "<think>" not in emitted_text
-    assert "草稿" not in emitted_text
-    assert "正式台词" in emitted_text
+    assert forbidden not in emitted
+    assert "草稿" not in emitted
+    assert "正式台词" in emitted
     assert zh == "正式台词"
     assert ja == "本番のセリフ"
+    assert [line["zh"] for line in parser.normalized_lines()] == ["正式台词"]
 
 
 def test_streaming_parser_prose_with_think_brackets():
@@ -144,12 +149,24 @@ def test_unclosed_think_tag_truncation():
     assert parser.lines_truncated is True
 
 
-def test_japanese_phonetics_strip_reasoning_tags():
-    assert strip_reasoning_tags("<think>思考中</think>こんにちは") == "こんにちは"
-    assert strip_reasoning_tags("<thought>どうしよう…</thought>おはよう！") == "おはよう！"
-    assert strip_reasoning_tags("<reasoning>reasoning block</reasoning>ありがとう") == "ありがとう"
-    assert strip_reasoning_tags("<think>未闭合の思考内容") == ""
-    assert strip_reasoning_tags("<think class='test'>属性付き</think>テスト") == "テスト"
+@pytest.mark.parametrize(("raw", "expected"), [
+    pytest.param("<think>思考中</think>こんにちは", "こんにちは", id="paired_think"),
+    pytest.param("<thought>どうしよう…</thought>おはよう！", "おはよう！", id="paired_thought"),
+    pytest.param("<reasoning>reasoning block</reasoning>ありがとう", "ありがとう", id="paired_reasoning"),
+    pytest.param("<think>未闭合の思考内容", "", id="unclosed_think"),
+    pytest.param("<think class='test'>属性付き</think>テスト", "テスト", id="think_with_attr"),
+    pytest.param("<thinking>草稿</thinking>你好", "你好", id="paired_thinking"),
+    pytest.param("<Thinking mode='x'>草稿</THINKING>你好", "你好", id="thinking_case_attr"),
+    pytest.param("<thinking>未闭合的思考内容", "", id="unclosed_thinking"),
+    pytest.param("你好<thinking>草稿</thinking>世界", "你好世界", id="inline_thinking"),
+    pytest.param("<thinking/>你好", "你好", id="self_closing_thinking"),
+    pytest.param("<thinking>只有思考</thinking>", "", id="only_thinking"),
+    pytest.param("先想想怎么回答。</think>こんにちは", "こんにちは", id="orphan_close_think"),
+    pytest.param("一段</think>二段</thought>おはよう", "おはよう", id="two_orphan_closes"),
+    pytest.param("思考中</reasoning>ありがとう", "ありがとう", id="orphan_close_reasoning"),
+])
+def test_strip_reasoning_tags(raw, expected):
+    assert strip_reasoning_tags(raw) == expected
 
 
 def test_normalize_japanese_for_tts_with_think_tags():
@@ -327,33 +344,6 @@ def test_non_tag_trailing_angle_bracket():
     assert parser.lines_truncated is False
 
 
-def test_line_scanner_ignores_draft_json_in_thinking_tag_split_across_chunks():
-    scanned = _scan_reply("<thinki", 'ng>Let me format {"lines": [{"zh": "草稿"}]}', "</thinki", "ng>\n", _REAL_LINES)
-
-    assert scanned.truncated is False
-    assert [line.zh for line in scanned.lines] == ["正式台词"]
-
-
-def test_streaming_parser_strips_thinking_tag_from_deltas_and_result():
-    emitted, zh, ja, parser = _stream_reply(
-        "<thinking>Let me format ", '{"lines": [{"zh": "草稿", "ja": "下書き"}]}', "</thinking>\n", _REAL_LINES
-    )
-
-    assert "草稿" not in emitted and "thinking" not in emitted
-    assert zh == "正式台词"
-    assert ja == "本番のセリフ"
-    assert [line["zh"] for line in parser.normalized_lines()] == ["正式台词"]
-
-
-def test_strip_reasoning_tags_removes_thinking_block():
-    assert strip_reasoning_tags("<thinking>草稿</thinking>你好").strip() == "你好"
-    assert strip_reasoning_tags("<Thinking mode='x'>草稿</THINKING>你好").strip() == "你好"
-    assert strip_reasoning_tags("<thinking>未闭合的思考内容") == ""
-    assert strip_reasoning_tags("你好<thinking>草稿</thinking>世界") == "你好世界"
-    assert strip_reasoning_tags("<thinking/>你好") == "你好"
-    assert strip_reasoning_tags("<thinking>只有思考</thinking>") == ""
-
-
 def test_long_think_block_is_not_rescanned_on_every_chunk(monkeypatch):
     """A model that streams a long <think> block before its reply used to make feed_chunk rescan the whole
     buffer on every chunk, so parsing time grew with the square of the thinking length."""
@@ -437,31 +427,29 @@ def test_unmatched_close_think_with_draft_json_before_real_lines(chunk_size):
     assert parser.lines_truncated is False
 
 
-@pytest.mark.parametrize("chunk_size", (1, 2, 3, 5))
-def test_unmatched_close_think_with_plain_prose_reply(chunk_size):
-    raw = "用户想听安慰的话，温柔一点回答吧。</think>没关系，有我在呢。"
-    chunks = [raw[i : i + chunk_size] for i in range(0, len(raw), chunk_size)]
+_ORPHAN_CLOSE_CASES = [
+    ("plain_prose", "用户想听安慰的话，温柔一点回答吧。</think>没关系，有我在呢。", "没关系，有我在呢。", (1, 2, 3, 5), ("用户想听安慰的话", "温柔一点回答吧", "</think>")),
+    ("multiple_orphan_closes", "第一段思考</think>第二段思考</think>正式回复。", "正式回复。", (1, 3, 5), ("第一段思考", "第二段思考")),
+    ("long_middle_thinking", "第一段思考</think>第二段思考，再斟酌一下怎么温柔安慰用户吧</think>没关系，有我在呢。", "没关系，有我在呢。", (3,), ("第一段思考", "第二段思考", "</thin", "</think")),
+    ("nested_paired_inside_orphan", "外层思考 <think>内层草稿</think> 继续外层思考，这里已经超过十五个字了吧</think>正式回复，有我在呢。", "正式回复，有我在呢。", (3,), ("外层思考", "内层草稿", "</thin", "</think")),
+    ("bracket_prefixed_thinking", "[思考] 用户想听安慰的话，温柔一点回答吧，先说点暖心的话。</think>没关系，有我在呢。", "没关系，有我在呢。", (3,), ("[思考]", "用户想听安慰的话", "</thin", "</think")),
+]
 
+
+@pytest.mark.parametrize(("raw", "reply", "chunk_size", "forbidden"), [
+    pytest.param(raw, reply, size, forbidden, id=f"{name}-{size}")
+    for name, raw, reply, sizes, forbidden in _ORPHAN_CLOSE_CASES
+    for size in sizes
+])
+def test_unmatched_close_think_holds_back_thinking_before_prose_reply(raw, reply, chunk_size, forbidden):
+    assert strip_reasoning_tags(raw) == reply
+    chunks = [raw[i : i + chunk_size] for i in range(0, len(raw), chunk_size)]
     emitted, zh, ja, parser = _stream_reply(*chunks)
-    assert "用户想听安慰的话" not in emitted
-    assert "温柔一点回答吧" not in emitted
-    assert "</think>" not in emitted
-    assert zh == "没关系，有我在呢。"
-    assert ja == "没关系，有我在呢。"
+    for token in forbidden:
+        assert token not in emitted
+    assert zh == reply
+    assert ja == reply
     assert parser.lines_truncated is False
-
-
-@pytest.mark.parametrize("chunk_size", (1, 3, 5))
-def test_multiple_unmatched_close_think_tags_strip_to_last(chunk_size):
-    raw = "第一段思考</think>第二段思考</think>正式回复。"
-    chunks = [raw[i : i + chunk_size] for i in range(0, len(raw), chunk_size)]
-
-    emitted, zh, ja, parser = _stream_reply(*chunks)
-    assert "第一段思考" not in emitted
-    assert "第二段思考" not in emitted
-    assert zh == "正式回复。"
-    assert ja == "正式回复。"
-    assert strip_reasoning_tags(raw) == "正式回复。"
 
 
 @pytest.mark.parametrize("chunk_size", (1, 3, 5))
@@ -480,13 +468,6 @@ def test_close_think_tag_inside_json_string_is_preserved(chunk_size):
     assert emitted == "不要写</think>"
     assert zh == "不要写</think>"
     assert ja == "テスト</think>だよ"
-
-
-def test_strip_reasoning_tags_drops_text_before_unmatched_close_tag():
-    assert strip_reasoning_tags("先想想怎么回答。</think>こんにちは") == "こんにちは"
-    assert strip_reasoning_tags("一段</think>二段</thought>おはよう") == "おはよう"
-    assert strip_reasoning_tags("思考中</reasoning>ありがとう") == "ありがとう"
-    assert strip_reasoning_tags("你好<thinking>草稿</thinking>世界") == "你好世界"
 
 
 def test_implicit_thinking_sets_is_thinking_flag_until_close_tag():
@@ -585,34 +566,6 @@ async def test_stream_coordinator_emits_thinking_progress_for_unmatched_close_th
     assert spoken == ["ば、ばか、急にそんなこと言わないでよ！"]
 
 
-def test_two_orphan_close_think_tags_hold_back_long_middle_thinking():
-    raw = "第一段思考</think>第二段思考，再斟酌一下怎么温柔安慰用户吧</think>没关系，有我在呢。"
-    chunks = [raw[i : i + 3] for i in range(0, len(raw), 3)]
-
-    emitted, zh, ja, parser = _stream_reply(*chunks)
-    assert "第一段思考" not in emitted
-    assert "第二段思考" not in emitted
-    assert "</thin" not in emitted
-    assert "</think" not in emitted
-    assert zh == "没关系，有我在呢。"
-    assert ja == "没关系，有我在呢。"
-    assert parser.lines_truncated is False
-
-
-def test_unprefixed_thinking_with_nested_paired_think_block_holds_back_until_outer_close():
-    raw = "外层思考 <think>内层草稿</think> 继续外层思考，这里已经超过十五个字了吧</think>正式回复，有我在呢。"
-    chunks = [raw[i : i + 3] for i in range(0, len(raw), 3)]
-
-    emitted, zh, ja, parser = _stream_reply(*chunks)
-    assert "外层思考" not in emitted
-    assert "内层草稿" not in emitted
-    assert "</thin" not in emitted
-    assert "</think" not in emitted
-    assert zh == "正式回复，有我在呢。"
-    assert ja == "正式回复，有我在呢。"
-    assert parser.lines_truncated is False
-
-
 def test_paired_think_block_after_lines_json_does_not_discard_reply():
     raw = '{"lines": [{"zh": "你好呀", "ja": "こんにちは", "emotion": "happy"}]}\n<think>补充一点思考</think>'
     chunks = [raw[i : i + 3] for i in range(0, len(raw), 3)]
@@ -631,17 +584,3 @@ def test_paired_think_block_after_lines_json_does_not_discard_reply():
     assert ja == "こんにちは"
     assert parser.line_scanner.format == "lines"
     assert len(parser.normalized_lines()) == 1
-
-
-def test_bracket_prefixed_unprefixed_thinking_is_held_back_not_treated_as_json():
-    raw = "[思考] 用户想听安慰的话，温柔一点回答吧，先说点暖心的话。</think>没关系，有我在呢。"
-    chunks = [raw[i : i + 3] for i in range(0, len(raw), 3)]
-
-    emitted, zh, ja, parser = _stream_reply(*chunks)
-    assert "[思考]" not in emitted
-    assert "用户想听安慰的话" not in emitted
-    assert "</thin" not in emitted
-    assert "</think" not in emitted
-    assert zh == "没关系，有我在呢。"
-    assert ja == "没关系，有我在呢。"
-    assert parser.lines_truncated is False
