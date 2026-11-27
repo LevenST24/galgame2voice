@@ -502,34 +502,45 @@ test('startup sync failure retains local messages in memory and storage, and ret
   assert.equal(reStoredSession.messages[1].content, '去江边走走吧');
 });
 
-test('startup sync correctly pairs voiceKey when earlier of duplicate messages had voice', async t => {
-  const { session, storage } = await bootActiveHistory(t, {
-    id: 's_voice_duplicate', title: '重复消息的对话', updatedAt: 1_700_000_200_000,
+for (const c of [
+  {
+    label: 'unpersisted duplicate text', id: 's_voice_duplicate', updatedAt: 1_700_000_200_000, voiceKey: 'user_m_user_1', dur: 2.0,
     messages: [
       localMsg('m_user_1', 'user', '今天去哪', { voiceKey: 'user_m_user_1', dur: 2.0, ts: 1_700_000_100_000 }),
       localMsg('m_assistant_1', 'assistant', '去公园吧', { ts: 1_700_000_150_000 }),
       localMsg('m_user_2', 'user', '今天去哪', { ts: 1_700_000_200_000 }),
     ],
-    updated_at: '2024-06-01 00:00:03', message_count: 4, last_message: '不是刚去过公园吗',
-    historyMessages: [
-      srv(10, 'user', '今天去哪'),
-      srv(11, 'assistant', '去公园吧', '', '2024-06-01 00:00:01'),
-      srv(12, 'user', '今天去哪', '', '2024-06-01 00:00:02'),
-      srv(13, 'assistant', '不是刚去过公园吗', '', '2024-06-01 00:00:03'),
+  },
+  {
+    label: 'matching serverMessageId', id: 's_voice_id_pair', updatedAt: 1_700_000_100_000, voiceKey: 'user_m_10', dur: 2.5,
+    messages: [
+      storedLine('m_10', 10, 'user', '今天去哪', { voiceKey: 'user_m_10', dur: 2.5, ts: 1_700_000_100_000 }),
+      storedLine('m_11', 11, 'assistant', '去公园吧', { ts: 1_700_000_150_000 }),
     ],
+  },
+]) {
+  test(`startup sync pairs voiceKey onto the first duplicate user prompt: ${c.label}`, async t => {
+    const { session, storage } = await bootActiveHistory(t, {
+      id: c.id, title: '重复消息的对话', updatedAt: c.updatedAt, messages: c.messages,
+      updated_at: '2024-06-01 00:00:03', message_count: 4, last_message: '不是刚去过公园吗',
+      historyMessages: [
+        srv(10, 'user', '今天去哪'),
+        srv(11, 'assistant', '去公园吧', '', '2024-06-01 00:00:01'),
+        srv(12, 'user', '今天去哪', '', '2024-06-01 00:00:02'),
+        srv(13, 'assistant', '不是刚去过公园吗', '', '2024-06-01 00:00:03'),
+      ],
+    });
+    const activeSession = storedActive();
+    assert.equal(activeSession.messages.length, 4);
+    assert.equal(activeSession.messages[0].id, 'm_10');
+    assert.equal(activeSession.messages[2].id, 'm_12');
+    for (const msgs of [activeSession.messages, JSON.parse(storage.get('gal2voice.chat.v1')).sessions.find(s => s.id === session.id).messages]) {
+      assert.equal(msgs[0].voiceKey, c.voiceKey);
+      assert.equal(msgs[0].dur, c.dur);
+      assert.equal(msgs[2].voiceKey, undefined);
+    }
   });
-
-  const activeSession = storedActive();
-  assert.equal(activeSession.messages.length, 4);
-  // Turn 1 had voice, Turn 2 did not!
-  assert.equal(activeSession.messages[0].voiceKey, 'user_m_user_1', '第一句（发语音的）应获得 voiceKey');
-  assert.equal(activeSession.messages[0].dur, 2.0);
-  assert.equal(activeSession.messages[2].voiceKey, undefined, '第二句（打字的）不应被错误配上 voiceKey');
-  const storedMsgs = JSON.parse(storage.get('gal2voice.chat.v1')).sessions.find(s => s.id === session.id).messages;
-  assert.equal(storedMsgs[0].voiceKey, 'user_m_user_1');
-  assert.equal(storedMsgs[0].dur, 2.0);
-  assert.equal(storedMsgs[2].voiceKey, undefined);
-});
+}
 
 test('title screen excerpt presents server last_message when multi-turn session is behind server', async t => {
   const { session, doc, app } = await bootActiveHistory(t, {
@@ -553,31 +564,6 @@ test('title screen excerpt presents server last_message when multi-turn session 
   // 2. 首页 quote 也是服务端的最新回复
   const homeQuote = doc.querySelector('.home-quote')?.textContent || '';
   assert.ok(homeQuote.includes('第二答'), `首页台词应包含服务端回复「第二答」，实际为: "${homeQuote}"`);
-});
-
-test('startup sync preserves voiceKey on message with matching server ID when server has duplicate text', async t => {
-  await bootActiveHistory(t, {
-    id: 's_voice_id_pair', title: '录音按ID配对', updatedAt: 1_700_000_100_000,
-    messages: [
-      storedLine('m_10', 10, 'user', '今天去哪', { voiceKey: 'user_m_10', dur: 2.5, ts: 1_700_000_100_000 }),
-      storedLine('m_11', 11, 'assistant', '去公园吧', { ts: 1_700_000_150_000 }),
-    ],
-    updated_at: '2024-06-01 00:00:03', message_count: 4, last_message: '不是刚去过公园吗',
-    historyMessages: [
-      srv(10, 'user', '今天去哪'),
-      srv(11, 'assistant', '去公园吧', '', '2024-06-01 00:00:01'),
-      srv(12, 'user', '今天去哪', '', '2024-06-01 00:00:02'),
-      srv(13, 'assistant', '不是刚去过公园吗', '', '2024-06-01 00:00:03'),
-    ],
-  });
-
-  const activeSession = storedActive();
-  assert.equal(activeSession.messages.length, 4);
-  const msg10 = activeSession.messages.find(m => m.id === 'm_10');
-  const msg12 = activeSession.messages.find(m => m.id === 'm_12');
-  assert.equal(msg10?.voiceKey, 'user_m_10', '服务端 ID 为 10 的消息应保留 voiceKey');
-  assert.equal(msg10?.dur, 2.5);
-  assert.equal(msg12?.voiceKey, undefined, '后续同文的服务端 ID 12 不应被错误配上 voiceKey');
 });
 
 test('startup sync pulls history and retains failed question at end when server adds message after retention', async t => {
@@ -935,7 +921,7 @@ async function bootSyncedChat(t, {
 }
 
 // Real startup: localStorage, then initApp's default boot sync against the session list.
-async function bootSessionSync(t, { session, server, postHandler = null }) {
+async function bootSessionSync(t, { session, server, postHandler = null, postStatus = 200 }) {
   const { doc, root, toasts } = mountAdvDocument();
   const storage = installChatStorage(storedSessionSnapshot(session));
   const calls = [];
@@ -944,7 +930,7 @@ async function bootSessionSync(t, { session, server, postHandler = null }) {
       calls.push({ url: target, method: options.method || 'GET', body: options.body });
       if (target.includes('/api/chat/sessions') && (options.method || 'GET') === 'POST') {
         if (postHandler) return postHandler(options);
-        return Response.json({ status: 'ok' });
+        return Response.json(postStatus === 200 ? { status: 'ok' } : { message: '服务不可用' }, { status: postStatus });
       }
       if (target.includes('/api/chat/sessions')) {
         return Response.json({ sessions: [server], has_more: false, count: 1 });
@@ -999,17 +985,17 @@ function playerSettings(advPlayerName, advWindowOpacity, temperature) {
 
 function settingsSyncFixture({
   id, updatedAt, unconfirmedSettingsVersion, messages,
-  localName, localOpacity, localTemp,
-  serverUpdatedAt, serverName, serverOpacity, serverTemp,
+  localTitle = '晚上的对话', localName = '我', localOpacity = 75, localTemp = 0.7,
+  serverTitle = localTitle, serverUpdatedAt, serverName = '我', serverOpacity = 75, serverTemp = 0.7,
 }) {
   const session = {
-    id, title: '晚上的对话', createdAt: 1_700_000_000_000, updatedAt,
+    id, title: localTitle, createdAt: 1_700_000_000_000, updatedAt,
     ...(unconfirmedSettingsVersion != null ? { unconfirmedSettingsVersion } : {}),
     settings: playerSettings(localName, localOpacity, localTemp),
     messages: messages ?? [{ id: 'm_keep', role: 'user', content: '只改了设置', ts: 1 }],
   };
   const server = {
-    id: session.id, title: session.title, voice_profile_id: null,
+    id: session.id, title: serverTitle, voice_profile_id: null,
     created_at: '2024-01-01 00:00:00', updated_at: serverUpdatedAt,
     message_count: session.messages.length, last_message: session.messages.at(-1).content,
     settings: playerSettings(serverName, serverOpacity, serverTemp),
@@ -1102,89 +1088,64 @@ async function bootHomeVoiceApp(t, { sessions, activeId, fetchImpl, assignHome, 
   return { doc, root, toasts, storage, app };
 }
 
-test('startup sync keeps newer local session settings and posts them', async t => {
-  const { session, server } = settingsSyncFixture({
-    id: 's_settings_local', updatedAt: 1_800_000_000_000, unconfirmedSettingsVersion: 1,
-    localName: '小明', localOpacity: 40, localTemp: 0.2,
-    serverUpdatedAt: '2024-01-01 00:00:01', serverName: '我', serverOpacity: 75, serverTemp: 0.7,
+for (const c of [
+  {
+    label: 'newer local settings posted and confirmed', id: 's_settings_local',
+    updatedAt: 1_800_000_000_000, unconfirmedSettingsVersion: 1, localName: '小明', localOpacity: 40, localTemp: 0.2,
+    serverUpdatedAt: '2024-01-01 00:00:01',
+    expected: { title: '晚上的对话', name: '小明', opacity: 40, temp: 0.2, updatedAt: 1_800_000_000_000, unconfirmed: undefined, saved: true },
+  },
+  {
+    label: 'newer server settings applied', id: 's_settings_server',
+    updatedAt: 1_700_000_000_000, serverUpdatedAt: '2024-06-01 00:00:02', serverName: '小明', serverOpacity: 40, serverTemp: 0.2,
+    expected: { title: '晚上的对话', name: '小明', opacity: 40, temp: 0.2, updatedAt: serverTimestamp('2024-06-01 00:00:02'), unconfirmed: undefined, saved: false },
+  },
+  {
+    label: 'server settings win over newer local reply timestamp without unconfirmed flag', id: 's_reply_newer_than_server',
+    updatedAt: 1_800_000_000_000, serverUpdatedAt: '2024-01-01 00:00:01', serverName: '小明', serverOpacity: 40, serverTemp: 0.2,
+    messages: [{ id: 'm_user', role: 'user', content: '你好', ts: 1_700_000_000_000 }, { id: 'm_assistant', role: 'assistant', content: '你好！', ts: 1_800_000_000_000 }],
+    expected: { title: '晚上的对话', name: '小明', opacity: 40, temp: 0.2, updatedAt: serverTimestamp('2024-01-01 00:00:01'), unconfirmed: undefined, saved: false },
+  },
+  {
+    label: 'failed follow-up post retains unconfirmed settings flag', id: 's_settings_fail', postStatus: 503,
+    updatedAt: 1_800_000_000_000, unconfirmedSettingsVersion: 1, localName: '小明', localOpacity: 40, localTemp: 0.2,
+    serverUpdatedAt: '2024-01-01 00:00:01',
+    expected: { title: '晚上的对话', name: '小明', opacity: 40, temp: 0.2, updatedAt: 1_800_000_000_000, unconfirmed: 1, saved: true },
+  },
+  {
+    label: 'adopts renamed server title when local has no unconfirmed settings', id: 's_renamed_remote',
+    localTitle: '早上好', updatedAt: 1_700_000_100_000, serverTitle: '放学后的天台', serverUpdatedAt: '2024-06-01 00:00:05',
+    messages: [{ id: 'm_1', serverMessageId: 1, role: 'user', content: '早上好', ts: 1_700_000_050_000 }],
+    expected: { title: '放学后的天台', name: '我', opacity: 75, temp: 0.7, updatedAt: serverTimestamp('2024-06-01 00:00:05'), unconfirmed: undefined, saved: false },
+  },
+  {
+    label: 'preserves and posts unconfirmed local rename over older server title', id: 's_renamed_local_unconfirmed',
+    localTitle: '本地刚改的新名字', updatedAt: 1_800_000_000_000, unconfirmedSettingsVersion: 1, serverTitle: '早上好', serverUpdatedAt: '2024-06-01 00:00:01',
+    messages: [{ id: 'm_1', serverMessageId: 1, role: 'user', content: '早上好', ts: 1_700_000_050_000 }],
+    expected: { title: '本地刚改的新名字', name: '我', opacity: 75, temp: 0.7, updatedAt: 1_800_000_000_000, unconfirmed: undefined, saved: true },
+  },
+]) {
+  test(`startup sync reconciles session settings and title: ${c.label}`, async t => {
+    const { session, server } = settingsSyncFixture(c);
+    const { live, stored, saves } = await bootSessionSync(t, { session, server, postStatus: c.postStatus });
+    for (const snap of [live, stored]) {
+      assert.equal(snap.title, c.expected.title);
+      assert.equal(snap.settings.advPlayerName, c.expected.name);
+      assert.equal(snap.settings.advWindowOpacity, c.expected.opacity);
+      assert.equal(snap.settings.temperature, c.expected.temp);
+      assert.equal(snap.updatedAt, c.expected.updatedAt);
+      assert.equal(snap.unconfirmedSettingsVersion, c.expected.unconfirmed);
+    }
+    assert.equal(saves.length, c.expected.saved ? 1 : 0);
+    if (c.expected.saved) {
+      assert.equal(saves[0].id, session.id);
+      assert.equal(saves[0].title, c.expected.title);
+      assert.equal(saves[0].settings.advPlayerName, c.expected.name);
+      assert.equal(saves[0].settings.advWindowOpacity, c.expected.opacity);
+      assert.equal(saves[0].settings.temperature, c.expected.temp);
+    }
   });
-  const { live, stored, saves } = await bootSessionSync(t, { session, server });
-  assert.equal(live.settings.advPlayerName, '小明');
-  assert.equal(live.settings.advWindowOpacity, 40);
-  assert.equal(live.settings.temperature, 0.2);
-  assert.equal(live.updatedAt, 1_800_000_000_000);
-  assert.equal(live.unconfirmedSettingsVersion, undefined, '补发成功后内存中的未确认标记必须清除');
-  assert.equal(stored.settings.advPlayerName, '小明');
-  assert.equal(stored.settings.advWindowOpacity, 40);
-  assert.equal(stored.settings.temperature, 0.2);
-  assert.equal(stored.updatedAt, 1_800_000_000_000);
-  assert.equal(stored.unconfirmedSettingsVersion, undefined, '补发成功后 localStorage 中的未确认标记必须清除');
-  assert.equal(saves.length, 1);
-  assert.equal(saves[0].id, session.id);
-  assert.equal(saves[0].settings.advPlayerName, '小明');
-  assert.equal(saves[0].settings.advWindowOpacity, 40);
-  assert.equal(saves[0].settings.temperature, 0.2);
-});
-
-test('startup sync applies newer server session settings', async t => {
-  const { session, server } = settingsSyncFixture({
-    id: 's_settings_server', updatedAt: 1_700_000_000_000,
-    localName: '我', localOpacity: 75, localTemp: 0.7,
-    serverUpdatedAt: '2024-06-01 00:00:02', serverName: '小明', serverOpacity: 40, serverTemp: 0.2,
-  });
-  const { live, stored, saves } = await bootSessionSync(t, { session, server });
-  const serverUpdatedAt = serverTimestamp(server.updated_at);
-  assert.equal(live.settings.advPlayerName, '小明');
-  assert.equal(live.settings.advWindowOpacity, 40);
-  assert.equal(live.settings.temperature, 0.2);
-  assert.equal(live.updatedAt, serverUpdatedAt);
-  assert.equal(stored.settings.advPlayerName, '小明');
-  assert.equal(stored.settings.advWindowOpacity, 40);
-  assert.equal(stored.settings.temperature, 0.2);
-  assert.equal(stored.updatedAt, serverUpdatedAt);
-  assert.equal(saves.length, 0);
-});
-
-test('startup sync applies server session settings when local session has newer reply timestamp but no unconfirmed settings', async t => {
-  const { session, server } = settingsSyncFixture({
-    id: 's_reply_newer_than_server', updatedAt: 1_800_000_000_000,
-    localName: '我', localOpacity: 75, localTemp: 0.7,
-    serverUpdatedAt: '2024-01-01 00:00:01', serverName: '小明', serverOpacity: 40, serverTemp: 0.2,
-    messages: [
-      { id: 'm_user', role: 'user', content: '你好', ts: 1_700_000_000_000 },
-      { id: 'm_assistant', role: 'assistant', content: '你好！', ts: 1_800_000_000_000 },
-    ],
-  });
-  const { live, stored, saves } = await bootSessionSync(t, { session, server });
-  const serverUpdatedAt = serverTimestamp(server.updated_at);
-  assert.equal(live.settings.advPlayerName, '小明', '服务端新设置必须胜出');
-  assert.equal(live.settings.advWindowOpacity, 40);
-  assert.equal(live.settings.temperature, 0.2);
-  assert.equal(live.updatedAt, serverUpdatedAt);
-  assert.equal(stored.settings.advPlayerName, '小明', 'localStorage 必须更新为服务端新设置');
-  assert.equal(stored.settings.advWindowOpacity, 40);
-  assert.equal(stored.settings.temperature, 0.2);
-  assert.equal(stored.updatedAt, serverUpdatedAt);
-  assert.equal(saves.length, 0, '严禁把本机旧设置补发覆盖到服务端');
-});
-
-test('startup sync retains unconfirmed settings flag in storage when follow-up post fails', async t => {
-  const { session, server } = settingsSyncFixture({
-    id: 's_settings_fail', updatedAt: 1_800_000_000_000, unconfirmedSettingsVersion: 1,
-    localName: '小明', localOpacity: 40, localTemp: 0.2,
-    serverUpdatedAt: '2024-01-01 00:00:01', serverName: '我', serverOpacity: 75, serverTemp: 0.7,
-  });
-  const { live, stored, saves } = await bootSessionSync(t, {
-    session,
-    server,
-    postHandler: () => Response.json({ message: '服务不可用' }, { status: 503 }),
-  });
-  assert.equal(live.settings.advPlayerName, '小明', '补发失败时仍保留本地设置');
-  assert.equal(live.unconfirmedSettingsVersion, 1, '补发失败后内存中保留未确认标记');
-  assert.equal(stored.settings.advPlayerName, '小明', '补发失败时 localStorage 仍保留本地设置');
-  assert.equal(stored.unconfirmedSettingsVersion, 1, '补发失败后 localStorage 中保留未确认标记，以便下次启动重试');
-  assert.equal(saves.length, 1);
-});
+}
 
 test('startup sync unconfirmed version is preserved and newer settings kept if edited while in-flight boot post resolves', async t => {
   const { doc, root, toasts } = mountAdvDocument();
@@ -2368,144 +2329,44 @@ test('entering a session from home with voice turned off still loads its charact
   assert.deepEqual(switches, [3]);
 });
 
-test('newChat inherits chat experience settings even without a bound character', async t => {
-  const s0 = {
-    id: 's_exp_unbound',
-    title: '未选角对话',
-    messages: [],
-    settings: {
-      ...DEFAULT_SESSION_SETTINGS,
-      voiceProfileId: null,
-      advPlayerName: '旅人',
-      advPrimaryLanguage: 'ja',
-      advSubtitleLanguage: 'zh',
-      advWindowOpacity: 65,
-      advTextIntervalMs: 12,
-      advAutoBaseMs: 900,
-      advAutoPerCharMs: 40,
-      advAutoMode: true,
-      advInterruptVoice: false,
-      advBlink: false,
-      advLipSync: false,
-      advOutfit: 'uniform',
-    },
-  };
-  storedState.sessions = [s0];
-  storedState.activeId = s0.id;
-  const h = setup(t, {
-    callbacks: { state: storedState, getActive: storedActive, getSession: storedSession, getVoiceProfiles },
-    fetch: async (url) => {
-      if (url === '/api/voice/profiles') return Response.json({ profiles: [], active_profile_id: null });
-      return Response.json({ backgrounds: [] });
-    },
+const EXP_OVERRIDES = {
+  advPlayerName: '旅人', advPrimaryLanguage: 'ja', advSubtitleLanguage: 'zh', advWindowOpacity: 65,
+  advTextIntervalMs: 12, advAutoBaseMs: 900, advAutoPerCharMs: 40, advAutoMode: true,
+  advInterruptVoice: false, advBlink: false, advLipSync: false,
+};
+for (const c of [
+  {
+    label: 'unbound session drops advOutfit', id: 's_exp_unbound', activeProfileId: null, profiles: [],
+    settings: { voiceProfileId: null, ...EXP_OVERRIDES, advOutfit: 'uniform' },
+    expected: { ...EXP_OVERRIDES, advOutfit: '' },
+  },
+  {
+    label: 'bound session keeps advOutfit only for the same character', id: 's_exp_char', activeProfileId: 7,
+    profiles: [{ id: 7, name: '甲' }, { id: 8, name: '乙' }],
+    settings: { voiceProfileId: 7, advPlayerName: '指挥官', advTextIntervalMs: 18, advOutfit: 'summer' },
+    expected: { voiceProfileId: 7, advPlayerName: '指挥官', advTextIntervalMs: 18, advOutfit: 'summer' },
+    switchTo: { voiceProfileId: 8, advBackground: 'fake/park', advBgTime: 'day' },
+    expectedSwitch: { voiceProfileId: 8, advPlayerName: '指挥官', advTextIntervalMs: 18, advOutfit: '' },
+  },
+]) {
+  test(`newChat inherits chat experience settings: ${c.label}`, async t => {
+    storedState.sessions = [{ id: c.id, title: c.id, messages: [], settings: { ...DEFAULT_SESSION_SETTINGS, ...c.settings } }];
+    storedState.activeId = c.id;
+    const h = setup(t, {
+      callbacks: { state: storedState, getActive: storedActive, getSession: storedSession, getVoiceProfiles },
+      fetch: async url => url === '/api/voice/profiles'
+        ? Response.json({ profiles: c.profiles, active_profile_id: c.activeProfileId })
+        : Response.json({ backgrounds: [] }),
+    });
+    await tick();
+    const created = h.app.actions.startNew();
+    for (const [k, v] of Object.entries(c.expected)) assert.equal(created.settings[k], v, k);
+    if (c.switchTo) {
+      const otherChar = h.app.actions.startNewWith(c.switchTo);
+      for (const [k, v] of Object.entries(c.expectedSwitch)) assert.equal(otherChar.settings[k], v, k);
+    }
   });
-  const created = h.app.actions.startNew();
-  assert.equal(created.settings.advPlayerName, '旅人');
-  assert.equal(created.settings.advPrimaryLanguage, 'ja');
-  assert.equal(created.settings.advSubtitleLanguage, 'zh');
-  assert.equal(created.settings.advWindowOpacity, 65);
-  assert.equal(created.settings.advTextIntervalMs, 12);
-  assert.equal(created.settings.advAutoBaseMs, 900);
-  assert.equal(created.settings.advAutoPerCharMs, 40);
-  assert.equal(created.settings.advAutoMode, true);
-  assert.equal(created.settings.advInterruptVoice, false);
-  assert.equal(created.settings.advBlink, false);
-  assert.equal(created.settings.advLipSync, false);
-  assert.equal(created.settings.advOutfit, '', 'unbound session must not inherit advOutfit');
-});
-
-test('newChat inherits advOutfit only when keeping the same character', async t => {
-  const s0 = {
-    id: 's_exp_char',
-    title: '同角色对话',
-    messages: [],
-    settings: {
-      ...DEFAULT_SESSION_SETTINGS,
-      voiceProfileId: 7,
-      advPlayerName: '指挥官',
-      advTextIntervalMs: 18,
-      advOutfit: 'summer',
-    },
-  };
-  storedState.sessions = [s0];
-  storedState.activeId = s0.id;
-  const h = setup(t, {
-    callbacks: { state: storedState, getActive: storedActive, getSession: storedSession, getVoiceProfiles },
-    fetch: async (url) => {
-      if (url === '/api/voice/profiles') {
-        return Response.json({
-          profiles: [{ id: 7, name: '甲' }, { id: 8, name: '乙' }],
-          active_profile_id: 7,
-        });
-      }
-      return Response.json({ backgrounds: [] });
-    },
-  });
-  await tick();
-  const sameChar = h.app.actions.startNew();
-  assert.equal(sameChar.settings.voiceProfileId, 7);
-  assert.equal(sameChar.settings.advPlayerName, '指挥官');
-  assert.equal(sameChar.settings.advTextIntervalMs, 18);
-  assert.equal(sameChar.settings.advOutfit, 'summer', 'same character should inherit advOutfit');
-
-  const otherChar = h.app.actions.startNewWith({ voiceProfileId: 8, advBackground: 'fake/park', advBgTime: 'day' });
-  assert.equal(otherChar.settings.voiceProfileId, 8);
-  assert.equal(otherChar.settings.advPlayerName, '指挥官');
-  assert.equal(otherChar.settings.advTextIntervalMs, 18);
-  assert.equal(otherChar.settings.advOutfit, '', 'switching to another character must not inherit previous advOutfit');
-});
-
-test('startup sync adopts renamed title from server when local title is 早上好 and has no unconfirmed settings', async t => {
-  const session = {
-    id: 's_renamed_remote',
-    title: '早上好',
-    createdAt: 1_700_000_000_000,
-    updatedAt: 1_700_000_100_000,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
-    messages: [{ id: 'm_1', serverMessageId: 1, role: 'user', content: '早上好', ts: 1_700_000_050_000 }],
-  };
-  const server = {
-    id: session.id,
-    title: '放学后的天台',
-    voice_profile_id: null,
-    created_at: '2024-06-01 00:00:00',
-    updated_at: '2024-06-01 00:00:05',
-    message_count: 1,
-    last_message: '早上好',
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
-  };
-  const { live, stored, saves } = await bootSessionSync(t, { session, server });
-  assert.equal(live.title, '放学后的天台', '启动同步应采用另一页面保存到服务端的新会话名');
-  assert.equal(stored.title, '放学后的天台', 'localStorage 中也应同步为服务端的新会话名');
-  assert.equal(saves.length, 0);
-});
-
-test('startup sync preserves unconfirmed local rename and posts it instead of overwriting with older server title', async t => {
-  const session = {
-    id: 's_renamed_local_unconfirmed',
-    title: '本地刚改的新名字',
-    createdAt: 1_700_000_000_000,
-    updatedAt: 1_800_000_000_000,
-    unconfirmedSettingsVersion: 1,
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
-    messages: [{ id: 'm_1', serverMessageId: 1, role: 'user', content: '早上好', ts: 1_700_000_050_000 }],
-  };
-  const server = {
-    id: session.id,
-    title: '早上好',
-    voice_profile_id: null,
-    created_at: '2024-06-01 00:00:00',
-    updated_at: '2024-06-01 00:00:01',
-    message_count: 1,
-    last_message: '早上好',
-    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
-  };
-  const { live, stored, saves } = await bootSessionSync(t, { session, server });
-  assert.equal(live.title, '本地刚改的新名字');
-  assert.equal(stored.title, '本地刚改的新名字');
-  assert.equal(saves.length, 1);
-  assert.equal(saves[0].title, '本地刚改的新名字');
-});
+}
 
 // r67 recovery 1: the turn died with the process (启动窗口被关掉). The server kept the
 // question, but no reply; after reopening, the question must still offer 「重新发送」.
@@ -2558,38 +2419,30 @@ test('retrying a recovered single-turn question that fails and gets pruned still
   assert.deepEqual(storedActive().messages.map(m => [m.id, app2.conversation.canRetry(m)]), [['m_local_first', true]]);
 });
 
-test('startup sync preserves unpersisted local reply with serverUserMessageId without marking user prompt failed', async t => {
-  const lines = [{ index: 0, zh: '一起做咖喱吧。', ja: 'カレーを作ろう。', emotion: 'gentle', act: {}, audio: { status: 'failed', chunks: [] } }];
-  const { session, storage, app } = await bootActiveHistory(t, {
-    id: 's_keep_local_reply', title: '保留本地回复', updatedAt: 1_700_000_100_000,
-    messages: [
-      storedLine('m_11', 11, 'user', '今晚吃什么', { ts: 1_700_000_050_000 }),
-      localMsg('m_local_a1', 'assistant', '一起做咖喱吧。', { serverUserMessageId: 11, lines, ts: 1_700_000_080_000 }),
-    ],
-    updated_at: '2024-06-01 00:00:01', message_count: 1, last_message: '今晚吃什么',
-    historyMessages: [srv(11, 'user', '今晚吃什么')],
-  });
-  await app.actions.loadSession(session.id);
-  for (const msgs of [storedActive().messages, JSON.parse(storage.get('gal2voice.chat.v1')).sessions[0].messages]) {
-    assert.equal(msgs.length, 2);
-    assert.equal(msgs[0].failed, undefined);
-    assert.equal(msgs[1].content, '一起做咖喱吧。');
-    assert.deepEqual(msgs[1].lines, lines);
-  }
-});
-
-test('startup sync re-inserts mid-session unpersisted local reply when loading newer server history', async t => {
-  const { session, app } = await bootActiveHistory(t, {
-    id: 's_keep_mid_reply', title: '保留中间本地回复', updatedAt: 1_700_000_200_000,
-    messages: [
-      storedLine('m_11', 11, 'user', 'u1'),
-      localMsg('m_local_a1', 'assistant', 'a1', { serverUserMessageId: 11 }),
-      storedLine('m_13', 13, 'user', 'u2'),
-      storedLine('m_14', 14, 'assistant', 'a2'),
-    ],
+const curryLines = [{ index: 0, zh: '一起做咖喱吧。', ja: 'カレーを作ろう。', emotion: 'gentle', act: {}, audio: { status: 'failed', chunks: [] } }];
+for (const c of [
+  {
+    label: 'tail reply without marking prompt failed', id: 's_keep_local_reply', title: '保留本地回复', updatedAt: 1_700_000_100_000,
+    messages: [storedLine('m_11', 11, 'user', '今晚吃什么', { ts: 1_700_000_050_000 }), localMsg('m_local_a1', 'assistant', '一起做咖喱吧。', { serverUserMessageId: 11, lines: curryLines, ts: 1_700_000_080_000 })],
+    updated_at: '2024-06-01 00:00:01', message_count: 1, last_message: '今晚吃什么', historyMessages: [srv(11, 'user', '今晚吃什么')],
+    expected: ['今晚吃什么', '一起做咖喱吧。'], lines: curryLines,
+  },
+  {
+    label: 'mid-session reply re-inserted into newer server history', id: 's_keep_mid_reply', title: '保留中间本地回复', updatedAt: 1_700_000_200_000,
+    messages: [storedLine('m_11', 11, 'user', 'u1'), localMsg('m_local_a1', 'assistant', 'a1', { serverUserMessageId: 11 }), storedLine('m_13', 13, 'user', 'u2'), storedLine('m_14', 14, 'assistant', 'a2')],
     updated_at: '2024-06-01 00:00:05', message_count: 5, last_message: 'a3',
     historyMessages: [srv(11, 'user', 'u1'), srv(13, 'user', 'u2'), srv(14, 'assistant', 'a2'), srv(15, 'user', 'u3'), srv(16, 'assistant', 'a3')],
+    expected: ['u1', 'a1', 'u2', 'a2', 'u3', 'a3'],
+  },
+]) {
+  test(`startup sync keeps unpersisted local reply with serverUserMessageId: ${c.label}`, async t => {
+    const { session, storage, app } = await bootActiveHistory(t, c);
+    await app.actions.loadSession(session.id);
+    for (const msgs of [storedActive().messages, JSON.parse(storage.get('gal2voice.chat.v1')).sessions[0].messages]) {
+      assert.equal(msgs.length, c.expected.length);
+      assert.equal(msgs[0].failed, undefined);
+      assert.deepEqual(msgs.map(m => m.content), c.expected);
+      if (c.lines) assert.deepEqual(msgs[1].lines, c.lines);
+    }
   });
-  await app.actions.loadSession(session.id);
-  assert.deepEqual(storedActive().messages.map(m => m.content), ['u1', 'a1', 'u2', 'a2', 'u3', 'a3']);
-});
+}
