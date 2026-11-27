@@ -7,6 +7,7 @@ All notable changes to galgame2voice are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- 修正「备份与更新」里对完整聊天备份范围的说明：「记住的事」、对话模型和语音服务设置不在备份里，需要随程序数据目录另行备份。
 - 修复开着系统代理（或代理软件退出后系统代理还留着）时，连不上本机或局域网对话模型（如 Ollama、LM Studio、vLLM）的问题；海外官方接口仍照常走代理。
 - 修复代理地址设成 `socks://` 开头（ALL_PROXY）时，对话、测试连通性和检查更新全部直接报错的问题。
 - 修复代理软件拒绝转发或出错时被误报成 API 密钥或账号权限问题的情况；现在会提示检查代理软件或关闭残留的系统代理，改好后直接重试即可，无需重启程序。
