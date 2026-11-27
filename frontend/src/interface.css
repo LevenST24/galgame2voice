@@ -637,8 +637,8 @@
 .adv-stage .adv-drawer {
   --brand: #fff;
   --brand-deep: #fff4f0;
-  inset: 24px auto 24px 24px;
-  width: min(400px, calc(100% - 48px));
+  inset: min(24px, 4%) auto min(24px, 4%) min(24px, 4%);
+  width: min(400px, calc(100% - 2 * min(24px, 4%)));
   padding: 18px;
   gap: 0;
   border: 1px solid rgba(255, 255, 255, .12);
@@ -667,6 +667,7 @@
 }
 .adv-stage .adv-drawer .new-chat:hover { background: #fff4f0; box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }
 .adv-stage .adv-drawer .session-label { padding: 2px 4px 0; color: var(--night-accent); letter-spacing: .2em; }
+.adv-stage .adv-drawer .session-list { min-height: 120px; }
 .adv-stage .adv-drawer .session-item { padding: 12px 14px; border-radius: 12px; }
 .adv-stage .adv-drawer .session-item:hover { background: rgba(255, 255, 255, .05); }
 .adv-stage .adv-drawer .session-item.active { background: rgba(255, 255, 255, .07); box-shadow: inset 3px 0 var(--night-accent); }
