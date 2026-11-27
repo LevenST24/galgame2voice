@@ -447,6 +447,44 @@ async def test_deepseek_model_not_exist_400_is_diagnosed_as_model_not_found():
     assert "模型名称" in payload["summary_zh"]
 
 @pytest.mark.asyncio
+async def test_gemini_context_length_400_is_diagnosed_as_context_exceeded():
+    """Gemini reports input token overflow with "exceeds the maximum number of tokens allowed"."""
+    from galgame2voice.adapters.llm.gemini_adapter import GeminiLLMAdapter
+
+    body = (
+        b'[{"error":{"code":400,'
+        b'"message":"The input token count (1200000) exceeds the maximum number of tokens allowed (1048576).",'
+        b'"status":"INVALID_ARGUMENT"}}]'
+    )
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.readuntil(b"\r\n\r\n")
+        writer.write(
+            b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n"
+            + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+            + body
+        )
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    adapter = GeminiLLMAdapter(
+        api_key="AIza-test", base_url=f"http://127.0.0.1:{port}/v1beta/openai", allow_private=True, max_retries=0,
+    )
+    try:
+        with pytest.raises(RuntimeError) as exc_info:
+            async for _ in adapter.stream_chat([ChatMessage(role="user", content="你好")], model="gemini-2.5-flash"):
+                pass
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    payload = chat_error_payload(exc_info.value, provider_id="gemini", api_key_configured=True)
+    assert payload["error_code"] == "CONTEXT_LENGTH_EXCEEDED"
+    assert "携带上下文条数" in payload["action_zh"] and "新建会话" in payload["action_zh"]
+
+@pytest.mark.asyncio
 async def test_upstream_500_is_diagnosed_as_temporary_server_fault():
     """HTTP 500 from upstream LLM providers is a temporary server fault, not a config error."""
     body = b'{"error":{"message":"The server had an error while processing your request.","type":"server_error"}}'

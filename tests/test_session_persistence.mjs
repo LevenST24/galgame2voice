@@ -321,6 +321,9 @@ async function exportPrefix(localSettings, localUpdatedAt) {
   assert.ok(!html.includes('gAutoTranslate'), 'index.html should not contain gAutoTranslate');
   assert.ok(!html.includes('手动（点击消息底部的“翻译”按钮）'), 'index.html should not contain dead translate option');
   assert.ok(!html.includes('日文原文显示'), 'index.html should not contain 日文原文显示 label');
+  const backupHint = html.match(/<small>完整备份包含[^<]*<\/small>/)?.[0] ?? '';
+  assert.ok(backupHint.includes('「记住的事」') && !backupHint.includes('数据库中的全部文字'),
+    'the backup hint must not promise memories and model settings that the backup leaves out');
   passed++;
 }
 {

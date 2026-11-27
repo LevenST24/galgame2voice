@@ -787,6 +787,8 @@ def _diagnose_context_length_exceeded(
         "exceeds maximum context",
         "exceeds the maximum token",
         "exceeds maximum token",
+        "exceeds the maximum number of tokens",
+        "exceeds maximum number of tokens",
         "token count exceeds",
         "token limit exceeded",
     )
