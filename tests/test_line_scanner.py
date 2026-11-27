@@ -595,6 +595,21 @@ def test_one_flat_object_per_line_keeps_every_line() -> None:
     assert after_wrapped.trailing_text == "\n" + second
 
 
+def test_a_flat_line_that_does_not_parse_keeps_it_or_the_lines_after() -> None:
+    # 他说"早上好"就走了。 gets the quote repair a lines element gets; a line that still does not
+    # parse no longer swallows the lines after it.
+    first = json.dumps({"zh": "你好。", "ja": "こんにちは。"}, ensure_ascii=False)
+    quoted = '{"zh": "他说"早上好"就走了。", "ja": "彼は「おはよう」と言って行った。"}'
+    last = json.dumps({"zh": "再见。", "ja": "またね。"}, ensure_ascii=False)
+    for step in (None, 1, 7):
+        _, result = _feed_by_step(first + "\n" + quoted + "\n" + last, step)
+        assert [line.zh for line in result.lines] == ["你好。", '他说"早上好"就走了。', "再见。"]
+        assert result.trailing_text == ""
+    _, alone = _feed_by_step(quoted, 1)
+    assert [line.zh for line in alone.lines] == ['他说"早上好"就走了。']
+    _, after_broken = _feed_by_step('{"zh": "嗯。", "ja": "うん。",}\n' + last, 1)
+    assert [line.zh for line in after_broken.lines] == ["再见。"]
+
 def test_bracketed_emotion_plain_text_and_legacy_format_unchanged() -> None:
     from galgame2voice.services.streaming_parser import StreamingBilingualParser
 

@@ -421,9 +421,15 @@ class LineScanner:
         try:
             obj = json.loads(raw_json)
         except Exception as e:
-            self.issues.append(f"JSON decode error in line {self._line_ordinal}: {e}")
-            self._line_ordinal += 1
-            return
+            try:
+                # 他说"早上好"就走了。: the same repair a lines element gets.
+                obj = json.loads(repair_line_quotes(raw_json))
+            except Exception:
+                # The lines after one that does not parse are still read.
+                self._after_flat_line_root = True
+                self.issues.append(f"JSON decode error in line {self._line_ordinal}: {e}")
+                self._line_ordinal += 1
+                return
         if not isinstance(obj, dict) or "lines" in obj:
             return
         self._after_flat_line_root = True
