@@ -104,6 +104,10 @@ test('paginate: a mark left over after a forced split never gets a page of its o
   assert.deepEqual(pages.filter(page => /^[、。，！？」\s]+$/u.test(page)), [], JSON.stringify(pages));
   // A sentence that opens with a short clause still breaks after it.
   assert.deepEqual(paginate('嗯，今天天气真好。', candidate => countGraphemes(candidate) <= 4), ['嗯，', '今天天气', '真好。']);
+  // A line that exactly fills the box keeps its closing marks with the word before them.
+  const six = candidate => countGraphemes(candidate) <= 6;
+  assert.deepEqual(paginate('今天天气真好。', six), ['今天天气真', '好。']);
+  assert.deepEqual(paginate('今天天气好。」', six), ['今天天气', '好。」']);
 });
 
 test('pairToFit: every page fits the box when re-paired to more pages', () => {
