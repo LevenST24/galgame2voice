@@ -164,6 +164,7 @@ function fixture(t) {
     gKeyStatusText: element('div'),
     gApiKeyTip: element('div'),
     gBtnResetBaseUrl: element('button'),
+    gBtnClearKey: element('button'),
     gChatModelSelect: element('select'),
     gParamSpeed: element('input', '1'),
     gAudioRetention: element('input', '30'),
@@ -517,4 +518,39 @@ test('blocks handleProviderTest locally when gBaseUrl is empty instead of sendin
   assert.equal(dom.gBaseUrl.focusCalls, 1);
   assert.equal(dom.gTestResultTitle.textContent, '请先填写接口地址');
   assert.doesNotMatch(dom.gTestResultBody.textContent, /重置为默认/);
+});
+
+test('unreadable custom API key exposes clear button and aligns diagnostics status', async t => {
+  let unreadable = true;
+  const deletes = [];
+  const makeProvider = () => ({
+    id: 'custom', name: '自定义', is_active: true, chat_model: 'qwen3:latest',
+    api_base_url: 'http://127.0.0.1:11434/v1', api_key: '', api_key_unreadable: unreadable,
+  });
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/providers/custom/api_key' && options.method === 'DELETE') {
+      deletes.push(url);
+      unreadable = false;
+      return response({ status: 'success', provider: makeProvider() });
+    }
+    if (url === '/api/providers') return response({ providers: [makeProvider()], presets: [], builtin_presets: [] });
+    return response({ status: 'ok', active_provider: makeProvider(), settings: {} });
+  };
+  const { dom } = await openLoadedSettings(t);
+  const diagModel = element('span');
+  const diagModelDot = element('span');
+  const origGet = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => id === 'gDiagModel' ? diagModel : id === 'gDiagModelDot' ? diagModelDot : origGet(id);
+
+  assert.equal(dom.gBtnClearKey.classList.contains('hidden'), false);
+  assert.match(dom.gApiKeyTip.textContent, /清除/);
+  await loadGlobalConfig();
+  assert.match(diagModel.textContent, /需重填 API Key/);
+  assert.equal(diagModelDot.classList.contains('ok'), false);
+
+  await dom.gBtnClearKey.dispatch('click');
+  assert.deepEqual(deletes, ['/api/providers/custom/api_key']);
+  assert.equal(dom.gBtnClearKey.classList.contains('hidden'), true);
+  await loadGlobalConfig();
+  assert.equal(diagModelDot.classList.contains('ok'), true);
 });

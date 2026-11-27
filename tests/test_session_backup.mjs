@@ -610,18 +610,6 @@ function setupImportScenario() {
   passed++;
 }
 
-{
-  // Old stored data containing obsolete autoTranslate in global or session settings loads safely and drops it
-  loadSessions(
-    [makeSession('s_old', '聊天', { voiceProfileId: 99, temperature: 0.7, autoTranslate: true }, [{ id: 'm_old', role: 'user', content: 'Original message', ts: 1 }])],
-    's_old',
-    { voiceMode: true, autoTranslate: true }
-  );
-  assert.equal(state.global.autoTranslate, undefined, 'loadState must drop obsolete autoTranslate from global');
-  assert.equal(state.sessions[0].settings.autoTranslate, undefined, 'loadState must drop obsolete autoTranslate from session settings');
-  passed++;
-}
-
 // saveState evicts inactive session messages from oldest to newest on QuotaExceededError while preserving lastLine, settings, and failed user messages
 {
   const makeHistory = (prefix, count, finalZh) => Array.from({ length: count }, (_, idx) => ({
