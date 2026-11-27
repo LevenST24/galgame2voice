@@ -381,26 +381,29 @@ async def _resolve_provider_test_credentials(
     provider_id: str,
     api_key: str,
     base_url: str | None,
-) -> tuple[str, str | None]:
+) -> tuple[str, str | None, bool]:
     """Resolves unmasked API key and base URL from database; the SSRF guard runs in the caller."""
+    key_unreadable = False
     if not api_key or "****" in api_key:
         async with get_db() as conn:
             stored = await crud.get_provider_raw(conn, provider_id)
-            if stored and stored.api_key:
+            if stored and (stored.api_key or stored.api_key_unreadable):
                 # Credential leak guard: stored keys may only be sent to the base_url origin they were saved with
                 if base_url and stored.api_base_url and not same_url_origin(base_url, stored.api_base_url):
                     if provider_id == "custom":
                         # Custom endpoints need no key (Ollama, LM Studio): test the new
                         # address without the stored one instead of refusing.
-                        return "", base_url
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Cannot test custom base_url with stored API key. Please provide the explicit API key."
-                    )
+                        return "", base_url, False
+                    if stored.api_key:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Cannot test custom base_url with stored API key. Please provide the explicit API key."
+                        )
                 api_key = stored.api_key
+                key_unreadable = bool(stored.api_key_unreadable and not stored.api_key)
                 if not base_url:
                     base_url = stored.api_base_url
-    return api_key, base_url
+    return api_key, base_url, key_unreadable
 
 
 def _resolve_provider_preset_defaults(
@@ -468,7 +471,7 @@ async def test_provider(req: ProviderTestRequest):
                 reasoning_effort = stored.reasoning_effort
 
     try:
-        api_key, base_url = await _resolve_provider_test_credentials(provider_id, api_key, base_url)
+        api_key, base_url, key_unreadable = await _resolve_provider_test_credentials(provider_id, api_key, base_url)
     except HTTPException as exc:
         return _preflight_bad_request_response(
             detail=str(exc.detail),
@@ -501,6 +504,18 @@ async def test_provider(req: ProviderTestRequest):
             diagnostic_code="INVALID_BASE_URL",
             summary_zh="接口地址格式或协议无效",
             action_zh=f"{detail_str}。请在「设置中心 → 对话模型」检查「接口地址」配置，填写合法的 http:// 或 https:// 接口地址后重试。",
+        )
+
+    if key_unreadable and provider_id != "custom":
+        # Custom endpoints may need no key at all (Ollama), so their test still goes out without it.
+        return _preflight_bad_request_response(
+            detail="之前保存的 API 密钥在这台电脑上读不出来，请重新填写后再测试。",
+            diagnostic_code="API_KEY_MISSING",
+            summary_zh="之前保存的 API 密钥无法读取",
+            action_zh=(
+                "密钥按 Windows 账户加密保存，换电脑、重装系统或换账户后读不出来。"
+                "请在「设置中心 → 对话模型」重新填入完整 API 密钥，再测试或保存。"
+            ),
         )
 
     api_key = clean_api_key(api_key)
