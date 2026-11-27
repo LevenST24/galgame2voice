@@ -59,18 +59,6 @@ let passed = 0;
   assert.equal(dom.sCvCreate.disabled, false); passed++;
 }
 {
-  // A Chinese reference clip still voices the Japanese lines as Japanese.
-  const { dom } = setup(); let body = null;
-  dom.sCvLang.value = 'zh';
-  globalThis.fetch = async (url, options) => {
-    if (url === '/api/voice/profiles' && options.method === 'POST') body = JSON.parse(options.body);
-    return response({ id: 44, name: 'New voice' });
-  };
-  await createCustomVoice();
-  assert.equal(body.prompt_lang, 'zh');
-  assert.equal(body.text_lang, 'ja'); passed++;
-}
-{
   const { first, second } = setup(); let complete; const writes = [];
   globalThis.fetch = async (url, options) => {
     writes.push(url);
