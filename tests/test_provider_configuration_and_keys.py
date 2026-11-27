@@ -716,3 +716,34 @@ class TestProviderPresetSeedsAndFallback:
         assert (by_id["deepseek"]["api_key"], by_id["deepseek"]["api_key_unreadable"]) == ("", False)
         assert (await app_client.get("/api/config")).json()["active_provider"]["api_key_unreadable"] is True
 
+    @pytest.mark.asyncio
+    async def test_unreadable_api_key_test_guidance_and_custom_url_reset(
+        self, app_client, isolate_test_database, monkeypatch
+    ):
+        from galgame2voice.database.crud_modules import providers as providers_crud
+        from galgame2voice.security.crypto import decrypt_secret as real_decrypt
+
+        await app_client.post(
+            "/api/providers",
+            json={"id": "custom", "api_base_url": "https://relay.example.com/v1", "api_key": "sk-moved-12345678", "is_active": True},
+        )
+        await app_client.post("/api/config", json={"allow_private_llm_endpoints": True})
+        async with get_db(isolate_test_database) as conn:
+            cipher = (await (await conn.execute("SELECT api_key FROM providers WHERE id = 'custom';")).fetchone())[0]
+        monkeypatch.setattr(providers_crud, "decrypt_secret", lambda v: "" if v == cipher else real_decrypt(v))
+
+        test_resp = await app_client.post(
+            "/api/providers/test",
+            json={"id": "custom", "api_base_url": "https://relay.example.com/v1", "chat_model": "gpt-4o"},
+        )
+        assert test_resp.status_code == 400
+        test_data = test_resp.json()
+        assert test_data["summary_zh"] == "之前保存的 API 密钥无法读取"
+        assert "设置中心 → 对话模型" in test_data["action_zh"]
+
+        save_resp = await app_client.post(
+            "/api/providers",
+            json={"id": "custom", "api_base_url": "http://127.0.0.1:11434/v1", "chat_model": "qwen3:latest", "is_active": True},
+        )
+        assert save_resp.status_code == 200
+        assert save_resp.json()["provider"]["api_key_unreadable"] is False

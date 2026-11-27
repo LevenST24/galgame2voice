@@ -210,7 +210,7 @@ async def update_provider(conn: aiosqlite.Connection, provider_id: str, updates:
         raise ValueError("Unsupported provider update columns")
     new_key = str(up_dict.get("api_key") or "").strip()
     new_url = up_dict.get("api_base_url")
-    if (provider_id == "custom" and current.api_key and new_url and current.api_base_url
+    if (provider_id == "custom" and (current.api_key or current.api_key_unreadable) and new_url and current.api_base_url
             and (not new_key or is_masked_key(new_key)) and not same_url_origin(new_url, current.api_base_url)):
         # A saved key belongs to the address it was saved with. Moving to a new address
         # without a new key drops it, so it is never sent to the new host; the
