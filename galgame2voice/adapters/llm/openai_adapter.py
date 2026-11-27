@@ -25,7 +25,7 @@ from galgame2voice.adapters.base import (
 )
 from galgame2voice.utils.error_diagnostics import WebpageEndpointError, is_out_of_balance
 from galgame2voice.utils.logger import sanitize_error_detail
-from galgame2voice.utils.http_client import create_async_client, get_shared_async_client
+from galgame2voice.utils.http_client import create_async_client, get_shared_async_client, is_local_or_lan_url
 
 logger = logging.getLogger("galgame2voice.adapters.llm.openai")
 
@@ -279,7 +279,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         for attempt in range(max_retries + 1):
             if attempt:
                 await assert_llm_url_safe(url, allow_private=allow_private)
-            client = get_shared_async_client(factory=create_async_client)
+            client = get_shared_async_client(factory=create_async_client, trust_env=False) if is_local_or_lan_url(url) else get_shared_async_client(factory=create_async_client)
             stream_ctx = None
             try:
                 stream_ctx = client.stream("POST", url, json=payload, headers=headers, timeout=timeout_s)
@@ -494,7 +494,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         await assert_llm_url_safe(url, allow_private=bool(self.extra_config.get("allow_private", False)))
         headers = self._get_headers()
 
-        async with create_async_client(timeout=10.0) as client:
+        async with create_async_client(timeout=10.0, trust_env=not is_local_or_lan_url(url)) as client:
             try:
                 resp = await client.get(url, headers=headers)
                 latency_ms = round((time.perf_counter() - t0) * 1000, 2)
@@ -577,7 +577,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         await assert_llm_url_safe(url, allow_private=bool(self.extra_config.get("allow_private", False)))
         headers = self._get_headers()
 
-        async with create_async_client(timeout=10.0) as client:
+        async with create_async_client(timeout=10.0, trust_env=not is_local_or_lan_url(url)) as client:
             try:
                 resp = await client.get(url, headers=headers)
                 if resp.status_code in (401, 403):
