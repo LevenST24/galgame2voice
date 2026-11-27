@@ -62,7 +62,8 @@ export function paginate(text, fits) {
         longestFitIndex = i;
         if (!PUNCT_OR_SPACE_BREAK.test(clusters[i])) {
           hasWords = true;
-        } else if (hasWords) {
+        } else if (hasWords && !SENTENCE_PUNCT_BREAK.test(clusters[i + 1] ?? '')) {
+          // 好。」 breaks after its last mark, so the next page does not open with 」.
           bestPunctIndex = i;
         }
       } else {
@@ -75,8 +76,10 @@ export function paginate(text, fits) {
     if (bestPunctIndex >= 0) {
       splitIndex = bestPunctIndex;
     } else if (longestFitIndex >= 0) {
-      // Unbreakable run: force-split at the longest grapheme cluster sequence that fits
+      // Unbreakable run: force-split at the longest grapheme cluster sequence that fits,
+      // moved back so closing marks stay with the word before them (…真好。 → …真 | 好。).
       splitIndex = longestFitIndex;
+      while (splitIndex > 0 && SENTENCE_PUNCT_BREAK.test(clusters[splitIndex + 1] ?? '')) splitIndex--;
     } else {
       // Even a single grapheme cluster exceeded the predicate:
       // Force at least one grapheme cluster to make forward progress
