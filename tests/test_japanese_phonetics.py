@@ -156,6 +156,7 @@ def test_expanded_stage_cues():
     assert normalize_japanese_for_tts("（ふふっ）どうしたの？") == "どうしたの？"
     assert normalize_japanese_for_tts("（ドキドキ）緊張するな…") == "緊張するな…"
     assert normalize_japanese_for_tts("（えへへ）褒められちゃった！") == "褒められちゃった！"
+    assert normalize_japanese_for_tts("（ははは）どうしたの？") == "どうしたの？"
 
 
 class TestJapaneseParenthesesCleaner:
@@ -239,7 +240,8 @@ def test_fullwidth_alphanumeric_and_ideographic_zero_inside_brackets_are_preserv
 
 def test_furigana_preserves_kanji_on_stage_cues_and_long_compounds():
     """Inline furigana must not replace preceding kanji with bracketed stage cues or partial readings."""
-    assert normalize_japanese_for_tts("先生（ふふっ）、今日もよろしくね。") == "先生、今日もよろしくね。"
+    for laugh in ("ふふっ", "ふふふ", "うふふ", "ははは", "くすっ"):
+        assert normalize_japanese_for_tts(f"先生（{laugh}）、今日もよろしくね。") == "先生、今日もよろしくね。"
     assert normalize_japanese_for_tts("これは秘密（ウインク）だよ！") == "これは秘密だよ！"
     assert normalize_japanese_for_tts("生徒会長白雪（しらゆき）です。") == "生徒会長白雪です。"
     assert normalize_japanese_for_tts("乃愛（のあ）だよ") == "のあだよ"
