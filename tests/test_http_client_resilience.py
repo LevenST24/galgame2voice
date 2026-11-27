@@ -265,6 +265,44 @@ async def test_retired_shared_clients_drain_inflight_then_close_and_drop(clean_p
         await close_shared_async_clients()
 
 
+async def test_local_and_lan_llm_bypass_dead_proxy_while_public_keeps_proxy(clean_proxy_environment, monkeypatch):
+    import asyncio
+    import socket
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        dead_proxy = f"http://127.0.0.1:{sock.getsockname()[1]}"
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        monkeypatch.setenv(name, dead_proxy)
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        line = (await reader.read(4096)).split(b"\r\n", 1)[0].decode(errors="ignore")
+        if "/models" in line:
+            body, ctype = b"{\"data\":[{\"id\":\"local-m\"}]}", b"application/json"
+        elif "/chat/completions" in line:
+            body, ctype = b"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n", b"text/event-stream"
+        else:
+            body, ctype = b"{\"id\":\"m1\",\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"stop_reason\":\"end_turn\"}", b"application/json"
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: " + ctype + b"\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+        await writer.drain()
+        writer.close()
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    base = f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+    try:
+        oa = openai_adapter.OpenAICompatibleLLMAdapter(api_key="k", base_url=f"{base}/v1", allow_private=True)
+        assert (await oa.test_connection(model="local-m")).success is True
+        assert await oa.list_models() == ["local-m"]
+        assert "".join([c async for c in oa.stream_chat([ChatMessage(role="user", content="hi")], model="local-m", max_retries=0)]) == "ok"
+        aa = anthropic_adapter.AnthropicAdapter(api_key="k", base_url=base, allow_private=True)
+        assert (await aa.test_connection(model="claude-local")).success is True
+        from galgame2voice.utils.http_client import is_local_or_lan_url
+        assert all(is_local_or_lan_url(u) for u in ("http://localhost:11434/v1", "http://192.168.1.50:8000/v1", "http://10.0.0.5:8000/v1", "http://[::1]:8000/v1", "http://mac.local:11434/v1"))
+        assert not any(is_local_or_lan_url(u) for u in ("https://api.openai.com/v1", "https://api.anthropic.com/v1/messages", "https://198.18.0.1/v1", "http://[fc00::1]/v1"))
+        public_client = get_shared_async_client()
+        assert getattr(getattr(public_client._transport_for_url(httpx.URL("https://api.openai.com/v1")), "_pool", None), "_proxy_url", None) is not None
+    finally:
+        await close_shared_async_clients()
+        server.close()
+        await server.wait_closed()
+
 async def test_socks_scheme_in_all_proxy_does_not_crash_and_keeps_working_proxies(clean_proxy_environment, monkeypatch):
     monkeypatch.setenv("HTTP_PROXY", PROXY_URL)
     monkeypatch.setenv("HTTPS_PROXY", PROXY_URL)

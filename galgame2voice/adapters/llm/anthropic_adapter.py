@@ -26,7 +26,7 @@ from galgame2voice.adapters.base import (
 )
 from galgame2voice.utils.error_diagnostics import WebpageEndpointError
 from galgame2voice.utils.logger import sanitize_error_detail
-from galgame2voice.utils.http_client import create_async_client, get_shared_async_client
+from galgame2voice.utils.http_client import create_async_client, get_shared_async_client, is_local_or_lan_url
 
 logger = logging.getLogger("galgame2voice.adapters.llm.anthropic")
 
@@ -274,7 +274,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         for attempt in range(max_retries + 1):
             if attempt:
                 await assert_llm_url_safe(url, allow_private=allow_private)
-            client = get_shared_async_client(factory=create_async_client)
+            client = get_shared_async_client(factory=create_async_client, trust_env=False) if is_local_or_lan_url(url) else get_shared_async_client(factory=create_async_client)
             try:
                 resp = await client.post(url, json=payload, headers=headers, timeout=timeout_s)
             except TRANSIENT_NETWORK_EXCEPTIONS as exc:
@@ -366,7 +366,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         for attempt in range(max_retries + 1):
             if attempt:
                 await assert_llm_url_safe(url, allow_private=allow_private)
-            client = get_shared_async_client(factory=create_async_client)
+            client = get_shared_async_client(factory=create_async_client, trust_env=False) if is_local_or_lan_url(url) else get_shared_async_client(factory=create_async_client)
             stream_ctx = None
             try:
                 stream_ctx = client.stream("POST", url, json=payload, headers=headers, timeout=timeout_s)
