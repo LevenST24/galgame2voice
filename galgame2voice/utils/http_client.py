@@ -31,9 +31,11 @@ per process instead of once per client and proxy transport (see
 
 import asyncio
 import functools
+import ipaddress
 import logging
 import ssl
 import urllib.request
+from urllib.parse import urlsplit
 import weakref
 from typing import Any
 
@@ -47,6 +49,7 @@ __all__ = [
     "create_async_client",
     "get_shared_async_client",
     "close_shared_async_clients",
+    "is_local_or_lan_url",
     "proxy_environment_is_usable",
     "PROXY_ENV_HINT",
     "SHARED_CLIENT_KEEPALIVE_EXPIRY",
@@ -123,6 +126,27 @@ def create_async_client(**kwargs: Any) -> httpx.AsyncClient:
     """
     return _build_with_fallback(_async_client_with_shared_ssl, kwargs)
 
+_PROXY_BYPASS_NETWORKS = tuple(
+    ipaddress.ip_network(cidr)
+    for cidr in ("127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "::1/128", "fe80::/10", "fd00::/8")
+)
+
+
+def is_local_or_lan_url(url: str) -> bool:
+    host = (urlsplit(url).hostname or "").strip().lower().rstrip(".")
+    if not host:
+        return False
+    if host == "localhost" or host.endswith((".localhost", ".local")):
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    return any(addr.version == net.version and addr in net for net in _PROXY_BYPASS_NETWORKS)
+
+
 def _current_proxy_key() -> tuple[tuple[str, str], ...]:
     """Snapshots the active ambient/system proxy settings so proxy toggles get a fresh pool."""
     try:
@@ -180,7 +204,7 @@ def _schedule_retired_close(retired: list[httpx.AsyncClient], client: httpx.Asyn
     tasks.add(task)
     task.add_done_callback(tasks.discard)
 
-def get_shared_async_client(*, factory: Any = None) -> httpx.AsyncClient:
+def get_shared_async_client(*, factory: Any = None, trust_env: bool = True) -> httpx.AsyncClient:
     """
     Returns a long-lived ``httpx.AsyncClient`` keyed by running event loop and
     current proxy settings (``urllib.request.getproxies()``).
@@ -190,9 +214,10 @@ def get_shared_async_client(*, factory: Any = None) -> httpx.AsyncClient:
     configured; callers must pass ``timeout=...`` on each request.
     """
     builder = create_async_client if factory is None else factory
-    proxy_key = _current_proxy_key()
+    cache_key = (builder, trust_env)
+    proxy_key = _current_proxy_key() if trust_env else ()
     bucket, retired = _loop_client_stores()
-    entry = bucket.get(builder)
+    entry = bucket.get(cache_key)
     if entry is not None:
         cached_proxy_key, cached_client = entry
         if cached_proxy_key == proxy_key and not getattr(cached_client, "is_closed", False):
@@ -206,8 +231,8 @@ def get_shared_async_client(*, factory: Any = None) -> httpx.AsyncClient:
         max_connections=50,
         keepalive_expiry=SHARED_CLIENT_KEEPALIVE_EXPIRY,
     )
-    client = builder(limits=limits)
-    bucket[builder] = (proxy_key, client)
+    client = builder(limits=limits) if trust_env else builder(limits=limits, trust_env=False)
+    bucket[cache_key] = (proxy_key, client)
     return client
 
 
