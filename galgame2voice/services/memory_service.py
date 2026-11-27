@@ -36,8 +36,10 @@ _NICKNAME_NON_NAME_STARTS = (
     "起", "去", "来", "回", "吃", "喝", "做", "干", "帮", "给", "买", "拿", "看", "听", "睡",
     "什么", "啥", "谁", "怎么",
 )
-# Words people add after a name, any number of them: 叫我小明就行, 叫我小明就好啦.
-_NICKNAME_ENDINGS = r'(?:就好了?|就行了?|就可以了?|即可|好了|吧|啊|呀|哦|喔|呢|嘛|啦)*'
+# Words people add after a name, any number of them: 叫我小明就行, 叫我小明就好啦, 你可以叫我小明了.
+_NICKNAME_ENDINGS = r'(?:就好了?|就行了?|就可以了?|即可|好了|吧|啊|呀|哦|喔|呢|嘛|啦|了)*'
+# 有事你叫我就行, 你叫我好了: nothing but those words follows the trigger, so no name was said.
+_RE_ONLY_NICKNAME_ENDINGS = re.compile(_NICKNAME_ENDINGS + r'(?:[。，！!？?~\s]|$)')
 # 我最喜欢的是猫, 我喜欢的动漫是孤独摇滚: the fact is what follows 是.
 _WHAT_I_MEAN_IS = r'(?!的[^\s,，。！!？?~是不]{0,6}不[^\s,，。！!？?~是]{0,5}是)(?:的[^\s,，。！!？?~是]{0,6}是)?'
 
@@ -68,10 +70,12 @@ def _resolve_stage_guidance(score: int) -> str:
 _MAX_FACTS_PER_PATTERN = 5
 
 
-def _is_plausible_nickname(text: str, start: int, value: str) -> bool:
+def _is_plausible_nickname(text: str, match: re.Match, value: str) -> bool:
     """Tells a name ("我叫昂晴", "叫我昂晴就好") apart from phrases that share the trigger."""
-    clause = _RE_CLAUSE_BREAK.split(text[:start])[-1]
+    clause = _RE_CLAUSE_BREAK.split(text[:match.start()])[-1]
     if any(word in clause[-4:] for word in _NICKNAME_NEGATIONS):
+        return False
+    if _RE_ONLY_NICKNAME_ENDINGS.fullmatch(text, match.start(1), match.end()):
         return False
     return not value.startswith(_NICKNAME_NON_NAME_STARTS)
 
@@ -220,7 +224,7 @@ class MemoryService:
         sanitized_val = self.sanitize_fact_value(raw_val, max_len=max_len)
         if not sanitized_val:
             return None
-        if pat["category"] == "nickname" and not _is_plausible_nickname(text, match.start(), sanitized_val):
+        if pat["category"] == "nickname" and not _is_plausible_nickname(text, match, sanitized_val):
             return None
         if pat["category"] in ("preference", "taboo"):
             sanitized_val = _preference_value(sanitized_val)
