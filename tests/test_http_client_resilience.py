@@ -302,3 +302,27 @@ async def test_local_and_lan_llm_bypass_dead_proxy_while_public_keeps_proxy(clea
         await close_shared_async_clients()
         server.close()
         await server.wait_closed()
+
+async def test_socks_scheme_in_all_proxy_does_not_crash_and_keeps_working_proxies(clean_proxy_environment, monkeypatch):
+    monkeypatch.setenv("HTTP_PROXY", PROXY_URL)
+    monkeypatch.setenv("HTTPS_PROXY", PROXY_URL)
+    monkeypatch.setenv("ALL_PROXY", "socks://127.0.0.1:10808")
+    client = create_async_client(timeout=5.0)
+    try:
+        https_proxy = getattr(getattr(client._transport_for_url(httpx.URL("https://api.openai.com/v1")), "_pool", None), "_proxy_url", None)
+        assert https_proxy is not None
+        assert https_proxy.port == 10808
+    finally:
+        await client.aclose()
+
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    monkeypatch.setenv("ALL_PROXY", "socks://127.0.0.1:10808")
+    socks_client = create_async_client(timeout=5.0)
+    try:
+        socks_proxy = getattr(getattr(socks_client._transport_for_url(httpx.URL("https://api.openai.com/v1")), "_pool", None), "_proxy_url", None)
+        assert socks_proxy is not None
+        assert socks_proxy.scheme == b"socks5"
+        assert socks_proxy.port == 10808
+    finally:
+        await socks_client.aclose()
