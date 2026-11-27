@@ -1477,33 +1477,25 @@ for (const trigger of ['button', 'Escape']) {
   });
 }
 
-test('X during a reply error keeps the error box and does not draw the old line over it', t => {
-  const h = setup(t, { voice: false }); h.start(); h.line(0);
-  h.clock.tick(2000);
-  h.done('error');
-  assert.equal(h.app.player.state, 'error');
-  const q = s => h.app.stage.stage.querySelector(s);
-  const language = h.sessions[0].settings.advPrimaryLanguage;
-  h.app.stage.stage.dispatchEvent({ type: 'keydown', key: 'x' });
-  assert.equal(q('.adv-speech-view').classList.contains('is-hidden'), true);
-  assert.equal(q('.adv-error-wrap').classList.contains('is-hidden'), false);
-  assert.equal(h.sessions[0].settings.advPrimaryLanguage, language);
-});
-
-test('X while hidden during a reply error keeps the error box and language after unhiding', t => {
-  const h = setup(t, { voice: false }); h.start(); h.line(0);
-  h.clock.tick(2000); h.done('error');
-  const stage = h.app.stage.stage, q = s => stage.querySelector(s);
-  const language = h.sessions[0].settings.advPrimaryLanguage;
-  stage.dispatchEvent({ type: 'keydown', key: 'h' });
-  assert.equal(h.app.player.hidden, true); assert.equal(h.app.player.state, 'error');
-  stage.dispatchEvent({ type: 'keydown', key: 'x' });
-  stage.dispatchEvent({ type: 'keydown', key: 'h' });
-  assert.equal(h.app.player.hidden, false); assert.equal(h.app.player.state, 'error');
-  assert.equal(q('.adv-speech-view').classList.contains('is-hidden'), true);
-  assert.equal(q('.adv-error-wrap').classList.contains('is-hidden'), false);
-  assert.equal(h.sessions[0].settings.advPrimaryLanguage, language);
-});
+for (const c of [
+  { label: 'visible', hide: false, around: [] },
+  { label: 'hidden then unhidden', hide: true, around: ['h'] },
+]) {
+  test(`X during a reply error keeps the error box and language: ${c.label}`, t => {
+    const h = setup(t, { voice: false }); h.start(); h.line(0);
+    h.clock.tick(2000); h.done('error');
+    const stage = h.app.stage.stage, q = s => stage.querySelector(s);
+    const language = h.sessions[0].settings.advPrimaryLanguage;
+    for (const key of c.around) stage.dispatchEvent({ type: 'keydown', key });
+    assert.equal(h.app.player.hidden, c.hide); assert.equal(h.app.player.state, 'error');
+    stage.dispatchEvent({ type: 'keydown', key: 'x' });
+    for (const key of c.around) stage.dispatchEvent({ type: 'keydown', key });
+    assert.equal(h.app.player.hidden, false); assert.equal(h.app.player.state, 'error');
+    assert.equal(q('.adv-speech-view').classList.contains('is-hidden'), true);
+    assert.equal(q('.adv-error-wrap').classList.contains('is-hidden'), false);
+    assert.equal(h.sessions[0].settings.advPrimaryLanguage, language);
+  });
+}
 
 test('settings preview, cancel, and save during a reply error keep the error box', t => {
   const h = setup(t, { voice: false }); h.start(); h.line(0);

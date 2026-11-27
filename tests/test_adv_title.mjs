@@ -417,20 +417,25 @@ const CHECKING_ENGINE = '引擎进程已变更，正在重新核对服务状态�
 const readyModel = { model: { state: 'ok', label: '测试模型' }, modelLoaded: true, hasModel: true };
 function voicePill(h) { return h.ui.element.querySelectorAll('.home-pill')[1]; }
 
-test('a slow managed load stays a loading label on the home pill', async t => {
-  const h = await fixture(t, { status: { ...readyModel, engine: { state: 'loading_slow', message: SLOW_ENGINE, base_url: 'http://127.0.0.1:9880' } } });
-  const voice = voicePill(h);
-  voice.click();
-  const dot = voice.querySelector('.home-dot').className;
-  const label = textTree(voice);
-  const notice = h.q('.home-notice')?.textContent || '';
-  assert.ok(
-    dot === 'home-dot warn' && /语音 加载较慢/.test(label) && !/未连接/.test(label)
-      && /加载较慢/.test(notice) && !/未连接/.test(notice)
-      && /无需反复重启/.test(textTree(h.q('.home-popover'))),
-    `home treats loading_slow as disconnected\npill=${dot} ${label}\nnotice=${notice}\npopover=${textTree(h.q('.home-popover') || h.ui.element)}`,
-  );
-});
+for (const c of [
+  { label: 'loading_slow', message: SLOW_ENGINE, pillRe: /语音 加载较慢/, noticeRe: /加载较慢/, popoverRe: /无需反复重启/ },
+  { label: 'checking', message: CHECKING_ENGINE, pillRe: /语音 待确认/, noticeRe: /核对/, popoverRe: /无需再次重启/ },
+]) {
+  test(`home voice pill keeps transitional engine state off disconnected: ${c.label}`, async t => {
+    const h = await fixture(t, { status: { ...readyModel, engine: { state: c.label, message: c.message, base_url: 'http://127.0.0.1:9880' } } });
+    const voice = voicePill(h);
+    voice.click();
+    const dot = voice.querySelector('.home-dot').className;
+    const label = textTree(voice);
+    const notice = h.q('.home-notice')?.textContent || '';
+    assert.ok(
+      dot === 'home-dot warn' && c.pillRe.test(label) && !/未连接/.test(label)
+        && c.noticeRe.test(notice) && !/未连接/.test(notice)
+        && c.popoverRe.test(textTree(h.q('.home-popover'))),
+      `home treats ${c.label} as disconnected\npill=${dot} ${label}\nnotice=${notice}\npopover=${textTree(h.q('.home-popover') || h.ui.element)}`,
+    );
+  });
+}
 
 test('leaving home open flips a slow load off the starting pill into a warning', async t => {
   const h = await fixture(t, { status: { ...readyModel, engine: { state: 'starting', message: '引擎正在加载模型，请稍候；文字聊天可继续使用。' } } });
@@ -448,21 +453,6 @@ test('leaving home open flips a slow load off the starting pill into a warning',
       && /加载较慢/.test(notice) && !/未连接/.test(notice)
       && /启动/.test(startingNotice) && !/未连接/.test(startingNotice),
     `poll replaced 启动中 with a failure\nstartingNotice=${startingNotice}\npill=${dot} ${label}\nnotice=${notice}`,
-  );
-});
-
-test('home shows an in-flight launch change as unconfirmed, not disconnected', async t => {
-  const h = await fixture(t, { status: { ...readyModel, engine: { state: 'checking', message: CHECKING_ENGINE, base_url: 'http://127.0.0.1:9880' } } });
-  const voice = voicePill(h);
-  voice.click();
-  const dot = voice.querySelector('.home-dot').className;
-  const label = textTree(voice);
-  const notice = h.q('.home-notice')?.textContent || '';
-  assert.ok(
-    dot === 'home-dot warn' && /语音 待确认/.test(label) && !/未连接/.test(label)
-      && /核对/.test(notice) && !/未连接/.test(notice)
-      && /无需再次重启/.test(textTree(h.q('.home-popover'))),
-    `home treats checking as disconnected\npill=${dot} ${label}\nnotice=${notice}\npopover=${textTree(h.q('.home-popover') || h.ui.element)}`,
   );
 });
 
@@ -666,13 +656,16 @@ test('portrait cache shares concurrent manifests and expires/refreshes/fails wit
   await assert.rejects(fail.get(8)); await assert.rejects(fail.get(8)); assert.equal(count, 5);
 });
 
-test('onboarding keeps the actual new-session greeting in the DOM for portable smoke', async t => {
-  const greeting = '你好，支持语音输入与朗读回复。这里是完整开场白。';
-  const session = { ...snapshot('a'), excerpt: homeExcerpt([{ role: 'assistant', content: greeting }]) };
-  const h = await fixture(t, { sessions: [session], status: { modelLoaded: true, hasModel: false, model: { state: 'error' } } });
-  assert.ok(h.q('.home-first-title')); assert.match(textTree(h.ui.element), /支持语音输入与朗读回复/);
-  assert.equal(h.q('.home-greeting').textContent, greeting);
-});
+for (const c of [
+  { label: 'Chinese', id: 'a', excerpt: homeExcerpt([{ role: 'assistant', content: '你好，支持语音输入与朗读回复。这里是完整开场白。' }]), expected: '你好，支持语音输入与朗读回复。这里是完整开场白。', treeRe: /支持语音输入与朗读回复/ },
+  { label: 'Japanese-only', id: 'first_ja', excerpt: { zh: '', ja: 'おかえりなさいませ。' }, expected: 'おかえりなさいませ。' },
+]) {
+  test(`onboarding preserves new-session greeting in hidden home-greeting DOM: ${c.label}`, async t => {
+    const h = await fixture(t, { sessions: [{ ...snapshot(c.id), excerpt: c.excerpt }], status: { modelLoaded: true, hasModel: false, model: { state: 'error' } } });
+    assert.ok(h.q('.home-first-title')); if (c.treeRe) assert.match(textTree(h.ui.element), c.treeRe);
+    assert.ok(h.q('.home-greeting')); assert.equal(h.q('.home-greeting').textContent, c.expected);
+  });
+}
 
 test('unavailable model does not prevent opening an existing conversation', async t => {
   const session = snapshot('a');
@@ -815,15 +808,6 @@ test('title screen presents latest Japanese-only reply with audio preview and wi
 
   h.q('.home-listen').click();
   assert.deepEqual(h.calls.find(c => Array.isArray(c) && c[0] === 'play'), ['play', 'm2', 0]);
-});
-
-test('onboarding preserves Japanese-only greeting in hidden home-greeting DOM', async t => {
-  const greetingExcerpt = { zh: '', ja: 'おかえりなさいませ。' };
-  const session = { ...snapshot('first_ja'), excerpt: greetingExcerpt };
-  const h = await fixture(t, { sessions: [session], status: { modelLoaded: true, hasModel: false, model: { state: 'error' } } });
-  assert.ok(h.q('.home-first-title'));
-  assert.ok(h.q('.home-greeting'));
-  assert.equal(h.q('.home-greeting').textContent, 'おかえりなさいませ。');
 });
 
 test('title holds 开始聊天 and checklist until /api/providers settles, then renders each state', async t => {

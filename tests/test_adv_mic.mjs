@@ -238,43 +238,29 @@ test('spontaneous SpeechRecognition end with MediaRecorder stops recording and s
   assert.equal(h.tracks[0].stopped, true);
 });
 
-test('no-speech with MediaRecorder stops recording, leaks no Blob URL, and shows only one toast', async (t) => {
-  const h = setupWithRecorder(t, { asyncRecordStopMs: 15 });
-  toggleMic();
-  await new Promise((r) => setTimeout(r, 0));
-  assert.equal(h.recorders.length, 1);
-
-  h.recognizers[0].onerror?.({ error: 'no-speech' });
-  h.recognizers[0].onend?.();
-
-  assert.equal(isListening(), false);
-  assert.equal(h.mic.getAttribute('aria-pressed'), 'false');
-  assert.equal(h.recorders[0].stopped, true);
-
-  await new Promise((r) => setTimeout(r, 80));
-  assert.deepEqual(h.sent, []);
-  assert.deepEqual(h.toasts(), ['没有听到说话，请再试一次']);
-  assert.equal(h.createdUrls.length, h.revokedUrls.length, 'must not leak any Blob URL when discarding recording');
-  assert.equal(h.tracks[0].stopped, true);
-});
-
 test('a failed recognition says why instead of going quiet, and a cancelled one says nothing', async (t) => {
   const cases = [
+    ['no-speech', ['没有听到说话，请再试一次']],
     ['network', ['语音识别服务连不上，请检查网络；也可以改用 Edge 浏览器，或直接打字。']],
     ['audio-capture', ['没有找到可用的麦克风，请检查麦克风是否插好、是否被其他程序占用。']],
     ['language-not-supported', ['语音识别没有成功，请再试一次，或直接打字。']],
     ['aborted', []],
   ];
   for (const [error, expected] of cases) {
-    const h = setupWithRecorder(t, { asyncRecordStopMs: 1 });
+    const h = setupWithRecorder(t, { asyncRecordStopMs: 5 });
     toggleMic();
     await new Promise((r) => setTimeout(r, 0));
+    assert.equal(h.recorders.length, 1);
     h.recognizers[0].onerror?.({ error });
     h.recognizers[0].onend?.();
-    await new Promise((r) => setTimeout(r, 10));
     assert.equal(isListening(), false);
+    assert.equal(h.mic.getAttribute('aria-pressed'), 'false');
+    assert.equal(h.recorders[0].stopped, true);
+    await new Promise((r) => setTimeout(r, 30));
     assert.deepEqual(h.sent, []);
     assert.deepEqual(h.toasts(), expected, error);
+    assert.equal(h.createdUrls.length, h.revokedUrls.length, 'must not leak any Blob URL when discarding recording');
+    assert.equal(h.tracks[0].stopped, true);
     cancelMic();
   }
 });
