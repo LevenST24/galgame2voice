@@ -666,24 +666,17 @@ def _diagnose_overload(
             "capacity",
         ))
     )
-    if is_overload:
-        code = status_code or 503
-        return DiagnosticResult(
-            error_code="SERVER_OVERLOADED",
-            message="服务暂时繁忙",
-            guidance="模型服务当前过载或暂时繁忙，请稍后重试。通常无需修改配置。",
-            status_code=code,
-            raw_error=sanitized_raw,
-        )
-    if status_code == 500 or (status_code is None and "internal server error" in raw_lower):
-        return DiagnosticResult(
-            error_code="SERVER_OVERLOADED",
-            message="模型服务临时故障",
-            guidance="模型服务商服务器出现临时故障，请稍后重试。通常无需修改配置。",
-            status_code=500,
-            raw_error=sanitized_raw,
-        )
-    return None
+    if not is_overload:
+        return None
+
+    code = status_code or 503
+    return DiagnosticResult(
+        error_code="SERVER_OVERLOADED",
+        message="服务暂时繁忙",
+        guidance="模型服务当前过载或暂时繁忙，请稍后重试。通常无需修改配置。",
+        status_code=code,
+        raw_error=sanitized_raw,
+    )
 
 
 def _diagnose_model_not_found(
@@ -1102,6 +1095,16 @@ def _diagnose_generic_http(
             message="请求频率超限",
             guidance="请求过于频繁，超出了当前账户的频率或字数限额。请稍候重试，或在「角色与会话 → 对话高级参数」中调小「最大生成长度」。",
             status_code=429,
+            raw_error=sanitized_raw,
+        )
+
+    # A bare 500 comes after the body-based checks: servers also use it for a full context or an empty balance.
+    if status_code == 500 or (status_code is None and "internal server error" in raw_lower):
+        return DiagnosticResult(
+            error_code="SERVER_OVERLOADED",
+            message="模型服务临时故障",
+            guidance="模型服务商服务器出现临时故障，请稍后重试。通常无需修改配置。",
+            status_code=500,
             raw_error=sanitized_raw,
         )
 

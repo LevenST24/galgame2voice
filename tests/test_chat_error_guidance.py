@@ -478,3 +478,9 @@ async def test_upstream_500_is_diagnosed_as_temporary_server_fault():
     assert payload["error_code"] == "SERVER_OVERLOADED"
     assert payload["retryable"] is True
     assert "临时故障" in payload["summary_zh"] and "无需修改配置" in payload["action_zh"]
+
+
+def test_body_reason_wins_over_a_bare_500():
+    # Local servers and relays also answer a full context with HTTP 500; the user must still be told to trim it.
+    result = diagnose_llm_error("This model's maximum context length is 8192 tokens.", status_code=500)
+    assert result.error_code == "CONTEXT_LENGTH_EXCEEDED"
