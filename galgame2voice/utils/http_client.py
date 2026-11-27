@@ -71,6 +71,24 @@ PROXY_ENV_HINT = (
 )
 
 
+def _safe_env_mounts(kwargs: dict[str, Any]) -> dict[str, httpx.AsyncHTTPTransport | None]:
+    verify = kwargs.get("verify", _shared_ssl_context(True))
+    transport_kwargs: dict[str, Any] = {"verify": verify}
+    if "limits" in kwargs:
+        transport_kwargs["limits"] = kwargs["limits"]
+    mounts: dict[str, httpx.AsyncHTTPTransport | None] = {}
+    for pattern, raw_proxy in httpx._utils.get_environment_proxies().items():
+        if raw_proxy is None:
+            mounts[pattern] = None
+            continue
+        url = f"socks5://{raw_proxy[8:]}" if raw_proxy.lower().startswith("socks://") else raw_proxy
+        try:
+            mounts[pattern] = httpx.AsyncHTTPTransport(proxy=url, **transport_kwargs)
+        except (httpx.InvalidURL, ValueError):
+            logger.warning("Ignoring unsupported environment proxy %s=%s", pattern, raw_proxy)
+    return mounts
+
+
 def _build_with_fallback(factory: Any, kwargs: dict) -> Any:
     """Builds a client, retrying with environment proxies off if that is the blocker."""
     try:
@@ -89,6 +107,24 @@ def _build_with_fallback(factory: Any, kwargs: dict) -> Any:
         retry_kwargs = dict(kwargs)
         retry_kwargs["trust_env"] = False
         return factory(**retry_kwargs)
+    except ValueError as exc:
+        if (
+            kwargs.get("trust_env") is False
+            or "proxy" in kwargs
+            or "mounts" in kwargs
+            or "proxy" not in str(exc).lower()
+        ):
+            raise
+        retry_kwargs = dict(kwargs)
+        retry_kwargs["trust_env"] = False
+        mounts = _safe_env_mounts(kwargs)
+        if mounts:
+            retry_kwargs["mounts"] = mounts
+        try:
+            return factory(**retry_kwargs)
+        except httpx.InvalidURL:
+            retry_kwargs.pop("mounts", None)
+            return factory(**retry_kwargs)
 
 
 @functools.cache
