@@ -411,17 +411,23 @@ export async function loadGlobalConfig() {
     const activeVoice = voiceProfiles.find((p) => p.id === activeProfileId);
 
     const isOk = cfg.status === 'ok';
-    const missingKey = Boolean(provider) && provider.id !== 'custom' && !String(provider.api_key || '').trim();
+    const hasKey = Boolean(String(provider?.api_key || '').trim());
+    const apiKeyUnreadable = Boolean(provider?.api_key_unreadable) && !hasKey;
+    const missingKey = Boolean(provider) && (provider.id !== 'custom' || apiKeyUnreadable) && !hasKey;
     const providerStr = !provider
       ? '未配置'
-      : missingKey
-        ? `${provider.name} · 未填写 API Key`
-        : `${provider.name} · ${provider.chat_model || '-'}`;
+      : apiKeyUnreadable
+        ? `${provider.name} · 需重填 API Key`
+        : missingKey
+          ? `${provider.name} · 未填写 API Key`
+          : `${provider.name} · ${provider.chat_model || '-'}`;
     const providerTitle = !provider
       ? '尚未配置对话模型'
-      : missingKey
-        ? `「${provider.name}」尚未填写 API Key，请先填写并保存`
-        : providerStr;
+      : apiKeyUnreadable
+        ? `「${provider.name}」之前保存的 API 密钥在这台电脑上无法读取，请重新填写或清除`
+        : missingKey
+          ? `「${provider.name}」尚未填写 API Key，请先填写并保存`
+          : providerStr;
     const voiceStr = activeVoice ? activeVoice.name : '未加载';
 
     const diagBackend = $('gDiagBackend');
