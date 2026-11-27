@@ -31,6 +31,7 @@ def _learned_name(service, text):
 @pytest.mark.parametrize("text", [
     "我叫了个外卖", "我叫你别闹了。", "别叫我笨蛋！", "明天早上叫我起床", "你叫我干嘛？",
     "谁叫我是你哥呢", "你不可以叫我笨蛋", "以后别再叫我小鬼了", "再叫我一声哥哥", "叫我去买东西",
+    "有事你叫我就行", "到了叫我就好。", "你叫我好了",
 ])
 def test_everyday_phrases_are_not_taken_as_a_name(memory_service, text):
     assert _learned_name(memory_service, text) is None
@@ -39,7 +40,7 @@ def test_everyday_phrases_are_not_taken_as_a_name(memory_service, text):
 @pytest.mark.parametrize("text,name", [
     ("我叫昂晴", "昂晴"), ("初次见面，我叫昂晴。", "昂晴"), ("以后你可以叫我昂晴店长。", "昂晴店长"),
     ("叫我翔太吧", "翔太"), ("以后叫我主人", "主人"), ("我叫做小明", "小明"),
-    ("别叫我笨蛋，我叫昂晴。", "昂晴"),
+    ("别叫我笨蛋，我叫昂晴。", "昂晴"), ("我叫小明，有事你叫我就行", "小明"),
 ])
 def test_names_are_still_learned(memory_service, text, name):
     assert _learned_name(memory_service, text) == name
@@ -49,7 +50,7 @@ def test_names_are_still_learned(memory_service, text, name):
     ("叫我小明就行", "小明"), ("你可以叫我小明哦", "小明"), ("叫我阿明好了", "阿明"),
     ("叫我小明就好啦", "小明"), ("我叫小明呢", "小明"), ("叫我小明即可。", "小明"),
     ("叫我小明就可以了", "小明"), ("我叫小明嘛~", "小明"),
-    ("叫我小明就行了", "小明"), ("叫我小明就好了", "小明"),
+    ("叫我小明就行了", "小明"), ("叫我小明就好了", "小明"), ("你可以叫我小明了。", "小明"),
 ])
 def test_words_after_a_name_are_not_part_of_it(memory_service, text, name):
     assert _learned_name(memory_service, text) == name
