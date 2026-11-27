@@ -1703,3 +1703,19 @@ test('title screen releases hidden grid and avatar images on returnHome and afte
   assert.equal(ui.element.querySelectorAll('img').length, 0);
   assert.ok(avatarImgs.every(img => !img.src), 'avatar img src must be cleared once fade finishes');
 });
+
+test('returning home screen with voice disabled shows voice-off status, re-enable notice, and opens experience tab', async t => {
+  const status = { modelLoaded: true, hasModel: true, model: { state: 'ok' }, engine: { state: 'ready', address: 'http://127.0.0.1:9880' } };
+  const h = await fixture(t, { status, sessions: [snapshot('a')], actions: { voiceEnabled: () => false } });
+  const voicePill = h.ui.element.querySelectorAll('.home-pill')[1];
+  assert.match(textTree(voicePill), /语音 已关闭/);
+  assert.equal(voicePill.querySelector('.home-dot').className, 'home-dot warn');
+  const notice = textTree(h.q('.home-notice'));
+  assert.match(notice, /语音：关/);
+  assert.match(notice, /设置中心 → 聊天体验/);
+  assert.match(notice, /自动播放语音（全局）/);
+  voicePill.click();
+  assert.match(textTree(h.q('.home-popover').querySelector('p')), /自动播放语音（全局）/);
+  h.q('.home-popover').querySelector('button').click();
+  assert.deepEqual(h.calls.at(-1), ['settings', 'experience']);
+});

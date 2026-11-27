@@ -130,19 +130,24 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     popupButton = pills[kind].button; popupButton.setAttribute('aria-expanded', 'true');
     popup = el('div', 'home-popover'); popup.setAttribute('role', 'group');
     add(popup, el('p', '', explanation(kind)), btn('home-link', '去设置', () => {
-      closePopup(); stopListen(); actions.openSettings?.(kind === 'chat' ? 'models' : voiceSettingsTab());
+      closePopup(); stopListen();
+      actions.openSettings?.(kind === 'chat' ? 'models' : (isTextOnly() && status.engine?.state === 'ready' ? 'experience' : voiceSettingsTab()));
     }));
     pills[kind].wrap.appendChild(popup); focus(popup.querySelector('button'));
   }
   function explanation(kind) {
     if (kind === 'chat') return status.model?.apiKeyUnreadable ? '换了电脑或账户，之前保存的 API 密钥需要重新填写' : (status.model?.label || '正在读取模型配置…');
     const engine = status.engine || {};
-    return engine.state === 'ready' ? `语音引擎已连接${engine.base_url || engine.address ? ` · ${engine.base_url || engine.address}` : ''}`
-      : engine.message || '语音引擎未连接，可以先用文字聊天';
+    if (engine.state === 'ready') {
+      if (isTextOnly()) return '语音引擎已连接，但当前已关闭自动播放语音。请点下方「去设置」开启「自动播放语音（全局）」，或进入聊天后点左上角「语音：关」。';
+      return `语音引擎已连接${engine.base_url || engine.address ? ` · ${engine.base_url || engine.address}` : ''}`;
+    }
+    const base = engine.message || '语音引擎未连接，可以先用文字聊天';
+    return isTextOnly() ? `${base}（已关闭自动播放语音，恢复请到「设置中心 → 聊天体验」开启「自动播放语音（全局）」）` : base;
   }
   function renderStatus() {
     const states = { chat: !status.modelLoaded ? ['warn', '对话 检查中'] : status.model?.readFailed ? ['warn', '对话 状态未确认'] : chatOK() ? ['ok', '对话 可用'] : ['bad', '对话 未设置'],
-      voice: status.engine?.state === 'ready' ? ['ok', '语音 可用']
+      voice: status.engine?.state === 'ready' ? (isTextOnly() ? ['warn', '语音 已关闭'] : ['ok', '语音 可用'])
         : status.engine?.state === 'starting' ? ['warn', '语音 启动中']
         : status.engine?.state === 'loading_slow' ? ['warn', '语音 加载较慢']
         : status.engine?.state === 'checking' ? ['warn', '语音 待确认']
@@ -202,7 +207,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     else if (firstUse) renderFirst();
     else {
       const engineState = status.engine?.state;
-      const notice = engineState === 'ready' ? ''
+      const notice = engineState === 'ready' ? (isTextOnly() ? '已关闭语音播放；进入聊天点左上角「语音：关」，或在「设置中心 → 聊天体验」开启「自动播放语音（全局）」' : '')
         : engineState === 'starting' ? '语音引擎正在启动，可以先用文字聊天'
         : engineState === 'loading_slow' ? '语音引擎加载较慢，可以先用文字聊天'
         : engineState === 'checking' ? '正在核对语音引擎，可以先用文字聊天'
@@ -278,7 +283,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
           const next = !isTextOnly();
           textOnly = next;
           actions.setVoiceEnabled?.(!next);
-          renderPane(true);
+          renderStatus(); renderPane(true);
         }));
       row.appendChild(btn(`home-step-button${done[i] ? '' : ' home-step-pending'}`, i === 2 ? (installed ? '选择' : '去导入') : '去设置', () => {
         stopListen();
@@ -490,6 +495,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
       }
     };
     readSessions();
+    renderStatus();
     renderPane();
     syncGrid();
     syncRecents();
