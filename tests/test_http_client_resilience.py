@@ -56,6 +56,8 @@ def clean_proxy_environment(monkeypatch):
     """Removes every proxy variable so the healthy path is exercised."""
     for name in ("NO_PROXY", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "all_proxy"):
         monkeypatch.delenv(name, raising=False)
+    # Without those variables urllib, and so httpx, falls back to the Windows system proxy in the registry.
+    monkeypatch.setattr(urllib.request, "getproxies_registry", lambda: {}, raising=False)
     yield
 
 
@@ -257,6 +259,7 @@ async def test_retired_shared_clients_drain_inflight_then_close_and_drop(clean_p
         assert all(c.is_closed for c in retired) and not active.is_closed
         assert not http_client._retired_clients_by_loop.get(asyncio.get_running_loop())
     finally:
+        release.set()
         server.close()
         await server.wait_closed()
         await close_shared_async_clients()
