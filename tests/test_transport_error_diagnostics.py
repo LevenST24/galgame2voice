@@ -523,3 +523,26 @@ class TestErrorDiagnosticsEngine:
 
         diag_zh = format_provider_error("deepseek", 400, "超出模型上下文限制")
         assert diag_zh["error_code"] == "CONTEXT_LENGTH_EXCEEDED"
+
+
+
+@pytest.mark.parametrize("detail", [
+    "407 Proxy Authentication Required",
+    "403 Forbidden",
+    "502 Bad Gateway",
+    "Unable to connect to proxy",
+])
+def test_proxy_error_diagnoses_as_proxy_network_failure_not_api_key_or_account(detail):
+    result = diagnose_llm_error(httpx.ProxyError(detail), provider_id="openai")
+    assert result.error_code == "NETWORK_CONNECTION_FAILED"
+    assert "代理" in result.message
+    assert "代理" in result.guidance
+    assert "API 密钥" not in result.guidance
+    assert "无权访问" not in result.guidance
+
+
+def test_connect_error_guidance_mentions_stale_system_proxy_without_claiming_restart():
+    result = diagnose_llm_error(httpx.ConnectError("All connection attempts failed"), provider_id="openai")
+    assert result.error_code == "NETWORK_CONNECTION_FAILED"
+    assert "系统代理" in result.guidance and "接口地址" in result.guidance
+    assert "启动时已配置" not in result.guidance
