@@ -720,26 +720,36 @@ class TestProviderPresetSeedsAndFallback:
     async def test_unreadable_api_key_test_guidance_and_custom_url_reset(
         self, app_client, isolate_test_database, monkeypatch
     ):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from galgame2voice.adapters.base import TestResult
         from galgame2voice.database.crud_modules import providers as providers_crud
+        from galgame2voice.routers import providers as providers_router
         from galgame2voice.security.crypto import decrypt_secret as real_decrypt
 
+        await app_client.post("/api/providers", json={"id": "deepseek", "api_key": "sk-moved-87654321"})
         await app_client.post(
             "/api/providers",
             json={"id": "custom", "api_base_url": "https://relay.example.com/v1", "api_key": "sk-moved-12345678", "is_active": True},
         )
         await app_client.post("/api/config", json={"allow_private_llm_endpoints": True})
         async with get_db(isolate_test_database) as conn:
-            cipher = (await (await conn.execute("SELECT api_key FROM providers WHERE id = 'custom';")).fetchone())[0]
-        monkeypatch.setattr(providers_crud, "decrypt_secret", lambda v: "" if v == cipher else real_decrypt(v))
+            ciphers = {r[0] for r in await (await conn.execute("SELECT api_key FROM providers WHERE id IN ('deepseek', 'custom');")).fetchall()}
+        monkeypatch.setattr(providers_crud, "decrypt_secret", lambda v: "" if v in ciphers else real_decrypt(v))
 
-        test_resp = await app_client.post(
-            "/api/providers/test",
-            json={"id": "custom", "api_base_url": "https://relay.example.com/v1", "chat_model": "gpt-4o"},
-        )
+        test_resp = await app_client.post("/api/providers/test", json={"id": "deepseek"})
         assert test_resp.status_code == 400
         test_data = test_resp.json()
         assert test_data["summary_zh"] == "之前保存的 API 密钥无法读取"
-        assert "设置中心 → 对话模型" in test_data["action_zh"]
+        assert "设置中心 → 对话模型" in test_data["action_zh"] and "清除" not in test_data["action_zh"]
+
+        # A custom endpoint may need no key at all (Ollama), so its test still goes out, without the unreadable key.
+        sent = []
+        monkeypatch.setattr(providers_router, "get_llm_adapter", lambda **kw: sent.append(kw["api_key"]) or SimpleNamespace(
+            api_key=kw["api_key"], test_connection=AsyncMock(return_value=TestResult(success=True, message="ok"))))
+        assert (await app_client.post("/api/providers/test", json={"id": "custom"})).json()["success"] is True
+        assert sent == [""]
 
         save_resp = await app_client.post(
             "/api/providers",

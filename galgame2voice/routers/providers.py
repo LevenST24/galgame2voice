@@ -506,14 +506,15 @@ async def test_provider(req: ProviderTestRequest):
             action_zh=f"{detail_str}。请在「设置中心 → 对话模型」检查「接口地址」配置，填写合法的 http:// 或 https:// 接口地址后重试。",
         )
 
-    if key_unreadable:
+    if key_unreadable and provider_id != "custom":
+        # Custom endpoints may need no key at all (Ollama), so their test still goes out without it.
         return _preflight_bad_request_response(
             detail="之前保存的 API 密钥在这台电脑上读不出来，请重新填写后再测试。",
             diagnostic_code="API_KEY_MISSING",
             summary_zh="之前保存的 API 密钥无法读取",
             action_zh=(
                 "密钥按 Windows 账户加密保存，换电脑、重装系统或换账户后读不出来。"
-                "请在「设置中心 → 对话模型」重新填入完整 API 密钥（本地免密服务可点「清除」），再测试或保存。"
+                "请在「设置中心 → 对话模型」重新填入完整 API 密钥，再测试或保存。"
             ),
         )
 
