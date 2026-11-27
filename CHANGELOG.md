@@ -5,6 +5,8 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [3.2.13] - 2026-11-27
 ### Fixed
 - 修复程序放在层级很深的文件夹里时，导入文件名较长的角色包被误报成「压缩包已损坏」、用兑换码下载时还会删掉已下好的包并白扣一次下载次数的问题；现在会提示路径太长、请把程序移到更短的位置，已下好的包也会保留。
 - 修复程序所在的磁盘满了时双击「启动.bat」打不开程序，提示却叫人检查目录权限或恢复数据库的问题；现在会直接说明磁盘空间不足，请先清理磁盘再启动。
@@ -401,7 +403,8 @@ All notable changes to galgame2voice are documented here. The format follows
 - 修复聊天输入框超过 4000 字发送时清空草稿且报错失真，以及打开设置中心时未立即停止首页正在播放的试听语音的问题。
 - 修复在输入框使用中文/日文输入法组字时按 Esc 取消候选词会直接关闭弹窗，以及在背景选择对话框按 Tab 或 Shift+Tab 时焦点跳出对话框的问题。
 
-[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.12...HEAD
+[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.13...HEAD
+[3.2.13]: https://github.com/LevenST24/galgame2voice/compare/v3.2.12...v3.2.13
 [3.2.12]: https://github.com/LevenST24/galgame2voice/compare/v3.2.11...v3.2.12
 [3.2.11]: https://github.com/LevenST24/galgame2voice/compare/v3.2.10...v3.2.11
 [3.2.10]: https://github.com/LevenST24/galgame2voice/compare/v3.2.9...v3.2.10
