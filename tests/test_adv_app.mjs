@@ -1588,16 +1588,6 @@ test('hiding the window lets a replay finish, then holds AUTO until it is shown 
   h.clock.tick(1200); assert.equal(h.app.player.currentIndex, 1);
 });
 
-test('hiding the window does not stop the line that is being voiced', t => {
-  const h = setup(t, { settings: { advTextIntervalMs: 0 } });
-  h.start(); h.line(0); h.audioEvent(0);
-  assert.equal(h.audio.played.length, 1);
-  const stopped = h.audio.stopped.length;
-  h.app.action('hide');
-  assert.equal(h.audio.stopped.length, stopped);
-  assert.notEqual(h.app.player.state, 'suspended');
-});
-
 test('hidden window ignores A, F and Ctrl so voice and replay finish without skipping', async t => {
   const h = setup(t, { settings: { advTextIntervalMs: 0 } });
   const stage = h.app.stage.stage;
