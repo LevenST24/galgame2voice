@@ -293,8 +293,9 @@ export class ProviderSettingsController {
 
     const maskedKey = (stored?.api_key || '').trim();
     const hasKey = Boolean(maskedKey && maskedKey.length > 0);
+    const hasUnreadableKey = Boolean(stored?.api_key_unreadable) && !hasKey;
     const serviceMark = activeServiceMark(isActive, capabilities.requires_api_key, hasKey);
-    if (this.dom.gBtnClearKey) this.dom.gBtnClearKey.classList.toggle('hidden', !hasKey);
+    if (this.dom.gBtnClearKey) this.dom.gBtnClearKey.classList.toggle('hidden', !hasKey && !hasUnreadableKey);
     if (this.dom.gProviderActiveBadge) {
       const unusable = serviceMark === '未填密钥';
       const tone = unusable ? 'badge-pill-yellow' : isActive ? 'badge-pill-green' : 'badge-pill-gray';
@@ -320,7 +321,7 @@ export class ProviderSettingsController {
       if (this.dom.gApiKeyTip) {
         const keyUrl = API_KEY_PAGES[realId];
         this.dom.gApiKeyTip.textContent = unreadable
-          ? '之前保存的 API 密钥在这台电脑上读不出来：密钥按 Windows 账户加密保存，换电脑、重装系统或换账户后需要重新填写。请重新填写并保存。'
+          ? `之前保存的 API 密钥在这台电脑上读不出来：密钥按 Windows 账户加密保存，换电脑、重装系统或换账户后需要重新填写。请重新填写并保存。${capabilities.requires_api_key ? '' : '若改用本机免密服务（如 Ollama），可点「清除」删掉无法读取的旧密钥。'}`
           : '还没有填写密钥。';
         if (keyUrl) {
           const link = document.createElement('a');
@@ -397,7 +398,7 @@ export class ProviderSettingsController {
     const pid = this.dom.gProvider.value;
     const realId = (pid === 'custom' || pid === '__custom__') ? 'custom' : pid;
     const stored = this.cachedProviders.find((p) => p.id === realId);
-    if (!realId || !(stored?.api_key || '').trim()) return;
+    if (!realId || (!(stored?.api_key || '').trim() && !stored?.api_key_unreadable)) return;
     const capabilities = this.presetCapabilities(realId);
     const name = stored.name || capabilities.name || realId;
     const confirmFn = globalThis.confirm;
@@ -417,7 +418,11 @@ export class ProviderSettingsController {
       await clearProviderKey(realId);
       if (this.disposed) return;
       stored.api_key = '';
-      if (this.currentActiveProvider?.id === realId) this.currentActiveProvider.api_key = '';
+      stored.api_key_unreadable = false;
+      if (this.currentActiveProvider?.id === realId) {
+        this.currentActiveProvider.api_key = '';
+        this.currentActiveProvider.api_key_unreadable = false;
+      }
       this.coordinator.updateBadge?.();
       this.renderProviderForm(this.providerDirty);
       showToast(`已清除 ${name} 的 API 密钥。`, 'success');
