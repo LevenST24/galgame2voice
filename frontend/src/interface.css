@@ -470,10 +470,20 @@
 }
 
 /* Quick menu: always there, quiet until the pointer comes near. */
-.adv-stage:not(.is-home) .adv-quick-menu { opacity: .66; transform: none; transition: opacity .2s ease; }
+.adv-stage:not(.is-home) .adv-quick-menu-strip { height: max(20px, calc(60 * var(--u))); }
+.adv-stage:not(.is-home) .adv-quick-menu {
+  left: 0; top: auto; bottom: max(1px, calc(8 * var(--u)));
+  width: 100%; height: max(19px, calc(42 * var(--u)));
+  justify-content: flex-start; align-items: center;
+  padding: 0 max(8px, calc(70 * var(--u))) 0 max(8px, calc(20 * var(--u)));
+  overflow-x: auto; scrollbar-width: none;
+  opacity: .66; transform: none; transition: opacity .2s ease;
+}
 .adv-stage:not(.is-home) :is(.adv-quick-menu.is-revealed, .adv-quick-menu-strip:hover .adv-quick-menu, .adv-quick-menu:focus-within) { opacity: 1; }
-.adv-stage:not(.is-home) .adv-qm-track { gap: calc(2 * var(--u)); background: transparent; border: 0; border-radius: 0; box-shadow: none; }
+.adv-stage:not(.is-home) .adv-qm-track { margin-left: auto; gap: calc(2 * var(--u)); background: transparent; border: 0; border-radius: 0; box-shadow: none; }
 .adv-stage:not(.is-home) .adv-qm-btn {
+  flex: none;
+  white-space: nowrap;
   padding: calc(6 * var(--u)) calc(14 * var(--u));
   border-radius: 999px;
   color: rgba(255, 255, 255, .85);
@@ -487,8 +497,9 @@
 .adv-stage:not(.is-home) .adv-qm-btn:focus-visible { outline: 2px solid var(--night-accent); }
 .adv-stage:not(.is-home) .adv-qm-btn.is-active { color: var(--night-accent); background: rgba(255, 157, 135, .14); text-shadow: none; }
 .adv-stage:not(.is-home) .adv-qm-status {
-  max-width: calc(440 * var(--u));
-  min-height: max(26px, calc(38 * var(--u)));
+  flex: none;
+  max-width: max(110px, calc(440 * var(--u)));
+  min-height: max(18px, calc(38 * var(--u)));
   margin-left: calc(14 * var(--u));
   padding: 0 calc(16 * var(--u));
   border: 1px solid rgba(255, 255, 255, .24);
