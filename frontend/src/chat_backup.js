@@ -6,11 +6,10 @@ import { buildLocalBackupSnapshot, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL, GRE
 
 const normalize = data => portableSnapshot(normalizeSnapshot(data, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL));
 
-// A question that failed or was stopped before any reply stays in the browser for 重新发送,
+// A question that failed or was stopped before any reply stays in the browser, also after the chat goes on,
 // but the server drops that user row. Compare the rest, so the session is not copied whole.
-function lastQuestionFailed(session) {
-  const last = session.messages.at(-1);
-  return last?.role === 'user' && Boolean(last.failed);
+function failedQuestionIds(session) {
+  return new Set(session.messages.filter(message => message.role === 'user' && message.failed).map(message => message.id));
 }
 const messageKey = message => JSON.stringify([message.role, message.content]);
 
@@ -46,8 +45,8 @@ export function mergeChatBackup(serverData, localData) {
   const server = normalize(serverData);
   const local = normalize(localData);
   // portableSnapshot drops the failed flag, so read it from the browser data itself.
-  const failedLast = new Set(normalizeSnapshot(localData, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL)
-    .sessions.filter(lastQuestionFailed).map(session => session.id));
+  const failed = new Map(normalizeSnapshot(localData, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL)
+    .sessions.map(session => [session.id, failedQuestionIds(session)]));
   const byId = new Map(server.sessions.map(session => [session.id, session]));
   let browserCopies = 0;
   for (const session of local.sessions) {
@@ -56,7 +55,7 @@ export function mergeChatBackup(serverData, localData) {
       server.sessions.push(session);
       byId.set(session.id, session);
     } else if (containsLocalMessages(stored.messages,
-      failedLast.has(session.id) ? session.messages.slice(0, -1) : session.messages)) {
+      session.messages.filter(message => !failed.get(session.id)?.has(message.id)))) {
       // These lines are already in the database. Keep the settings saved later, including the voice binding.
       if (session.updatedAt > stored.updatedAt) {
         const sameVoice = session.settings.voiceProfileId === stored.settings.voiceProfileId;
