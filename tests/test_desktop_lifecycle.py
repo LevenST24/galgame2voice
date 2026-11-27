@@ -174,9 +174,11 @@ def test_duplicate_entry_never_imports_or_runs_server(tmp_path, monkeypatch):
     mutex.close.assert_called_once()
 
 
-def test_nested_extract_into_old_folder_stops_before_starting_server(tmp_path, monkeypatch, capsys):
+# 解压到当前文件夹 gives one level; 全部解压缩 adds a folder named after the zip.
+@pytest.mark.parametrize("inner", ["Galgame2Voice", "galgame2voice-windows-x64/Galgame2Voice"])
+def test_nested_extract_into_old_folder_stops_before_starting_server(tmp_path, monkeypatch, capsys, inner):
     outer = tmp_path / "Galgame2Voice"
-    nested = outer / "Galgame2Voice"
+    nested = outer / inner
     (outer / "data").mkdir(parents=True)
     (outer / "Galgame2Voice.exe").write_bytes(b"old")
     (outer / "data" / "galgame2voice.db").write_bytes(b"old-db")
