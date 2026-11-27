@@ -1677,3 +1677,16 @@ test('done affection aborts and supersedes an older in-flight loadAffection', as
   h.loads.splice(0).forEach(load => load.resolve()); await microtasks(); h.flush();
   assert.equal(h.app.sprite.getLastCommitted().faceUrl, '/blush.png');
 });
+
+test('stage voice_mode button reflects current voice on/off state in visible text', t => {
+  const h = setup(t, { voice: true });
+  const btn = h.app.stage.stage.querySelector('.adv-app-tools').querySelectorAll('button').find(b => b.dataset.action === 'voice_mode');
+  assert.equal(btn.textContent, '语音：开');
+  assert.equal(btn.getAttribute('aria-pressed'), 'true');
+  btn.click();
+  assert.equal(btn.textContent, '语音：关');
+  assert.equal(btn.getAttribute('aria-pressed'), 'false');
+  btn.click();
+  assert.equal(btn.textContent, '语音：开');
+  assert.equal(btn.getAttribute('aria-pressed'), 'true');
+});

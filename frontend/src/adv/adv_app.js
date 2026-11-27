@@ -480,8 +480,11 @@ export function mountAdv(dom, deps) {
     const overlayActive = Boolean(drawer || backlog || externalOverlay || configPanel?.isOpen || bgPanel?.isOpen);
     for (const name of ['auto', 'skip', 'replay_voice', 'hide']) quickMenu.setEnabled(name, !input && !overlayActive);
     quickMenu.setToggle('auto', player.auto); quickMenu.setToggle('skip', player.skip);
-    voiceModeButton.setAttribute('aria-pressed', String(Boolean(deps.voiceEnabled?.())));
-    voiceModeButton.title = deps.voiceEnabled?.() ? '关闭自动播放语音回复' : '自动播放语音回复';
+    const voiceOn = Boolean(deps.voiceEnabled?.());
+    voiceModeButton.setAttribute('aria-pressed', String(voiceOn));
+    voiceModeButton.textContent = voiceOn ? '语音：开' : '语音：关';
+    voiceModeButton.setAttribute('aria-label', voiceOn ? '语音已开启，点击关闭' : '语音已关闭，点击开启');
+    voiceModeButton.title = voiceOn ? '语音已开启，点击关闭自动播放语音回复' : '语音已关闭，点击重新开启语音回复';
     quickMenu.setHidden(player.hidden); textbox.setHidden(player.hidden);
     tools.hidden = player.hidden;
     stage.stage.classList.toggle('is-window-hidden', player.hidden);
