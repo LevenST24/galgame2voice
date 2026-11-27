@@ -632,7 +632,7 @@ def _diagnose_transport_fault(
         return DiagnosticResult(
             error_code="NETWORK_CONNECTION_FAILED",
             message="网络连接失败",
-            guidance="无法与模型服务建立连接。请检查网络与代理软件（如 Clash / v2rayN）是否正常运行；若已关闭代理软件但系统代理未关闭，请关闭系统代理后直接重试（无需重启程序）。",
+            guidance="无法与模型服务建立连接。请在「设置中心 → 对话模型」核对「接口地址」，并检查网络和代理软件（如 Clash / v2rayN）是否正常运行；若已关闭代理软件但系统代理还开着，请关闭系统代理后直接重试（无需重启程序）。",
             status_code=status_code or 502,
             raw_error=sanitized_raw,
         )

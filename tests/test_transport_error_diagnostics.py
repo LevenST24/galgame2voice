@@ -544,5 +544,5 @@ def test_proxy_error_diagnoses_as_proxy_network_failure_not_api_key_or_account(d
 def test_connect_error_guidance_mentions_stale_system_proxy_without_claiming_restart():
     result = diagnose_llm_error(httpx.ConnectError("All connection attempts failed"), provider_id="openai")
     assert result.error_code == "NETWORK_CONNECTION_FAILED"
-    assert "系统代理" in result.guidance
+    assert "系统代理" in result.guidance and "接口地址" in result.guidance
     assert "启动时已配置" not in result.guidance
