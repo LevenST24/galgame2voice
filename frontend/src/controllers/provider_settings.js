@@ -586,6 +586,19 @@ export class ProviderSettingsController {
     const rawPid = this.dom.gProvider.value;
     const pid = rawPid === '__custom__' ? 'custom' : rawPid;
     const baseUrl = this.dom.gBaseUrl ? this.dom.gBaseUrl.value.trim() : '';
+    if (this.dom.gBaseUrl && !baseUrl) {
+      const guidance = pid === 'custom'
+        ? '请先填写「接口地址」（例如 http://127.0.0.1:11434/v1 或服务商提供的 API 地址），再测试连通性。'
+        : '请先填写「接口地址」，或点击右侧「重置为默认」恢复官方地址，再测试连通性。';
+      if (this.dom.gProviderTestResult) this.dom.gProviderTestResult.className = 'test-result-box test-result-error';
+      if (this.dom.gTestResultTitle) this.dom.gTestResultTitle.textContent = '请先填写接口地址';
+      if (this.dom.gTestResultLatency) this.dom.gTestResultLatency.textContent = '未发送';
+      if (this.dom.gTestResultBody) this.dom.gTestResultBody.textContent = guidance;
+      this.dom.gBaseUrl.scrollIntoView?.({ block: 'nearest' });
+      this.dom.gBaseUrl.focus?.();
+      showToast(guidance, 'warning');
+      return;
+    }
     if (
       pid === 'custom' &&
       this.dom.gAllowPrivateEndpoints &&
