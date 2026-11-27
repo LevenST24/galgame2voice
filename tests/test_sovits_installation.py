@@ -135,16 +135,20 @@ async def test_engine_subdirectory_points_to_parent_without_saving(tmp_path, mon
     monkeypatch.setattr(get_settings(), "project_root", root)
     engine = make_engine(tmp_path / "GPT-SoVITS")
     subdir = engine / "GPT_SoVITS"
+    deeper = subdir / "pretrained_models"
+    deeper.mkdir(parents=True, exist_ok=True)
     unrelated = tmp_path / "unrelated"
     unrelated.mkdir()
     async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://127.0.0.1:8080") as client:
         sub_res = await client.put("/api/system/sovits-directory", json={"directory": str(subdir)})
+        deep_res = await client.put("/api/system/sovits-directory", json={"directory": str(deeper)})
         assert installation.read_sovits_directory(root) is None
         other_res = await client.put("/api/system/sovits-directory", json={"directory": str(unrelated)})
         assert installation.read_sovits_directory(root) is None
         ok_res = await client.put("/api/system/sovits-directory", json={"directory": str(engine)})
     assert sub_res.status_code == 400
     assert sub_res.json()["detail"] == f"你选的是引擎里面的“GPT_SoVITS”，请改选它的上一级文件夹“{engine.resolve()}”。"
+    assert deep_res.json()["detail"] == f"你选的是引擎里面的“pretrained_models”，请改选引擎文件夹“{engine.resolve()}”。"
     assert other_res.status_code == 400
     assert other_res.json()["detail"] == "所选文件夹需包含 api_v2.py。请先完整解压 GPT-SoVITS，再选择引擎目录。"
     assert ok_res.status_code == 200 and ok_res.json()["directory"] == str(engine.resolve())

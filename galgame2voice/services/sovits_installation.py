@@ -154,10 +154,11 @@ def save_sovits_directory(project_root: Path, value: str) -> dict:
             # Explorer's "复制文件地址" on api_v2.py (or any file in the engine) pastes a file path.
             directory = directory.parent
         if not directory.is_dir() or not (directory / "api_v2.py").is_file():
-            if directory.is_dir() and (directory.parent / "api_v2.py").is_file():
-                raise ValueError(
-                    f"你选的是引擎里面的“{directory.name}”，请改选它的上一级文件夹“{directory.parent}”。"
-                )
+            # GPT_SoVITS, or GPT_SoVITS/pretrained_models, inside the engine: name the folder to pick.
+            engine = next((up for up in directory.parents[:2] if (up / "api_v2.py").is_file()), None)
+            if directory.is_dir() and engine is not None:
+                where = "它的上一级文件夹" if engine == directory.parent else "引擎文件夹"
+                raise ValueError(f"你选的是引擎里面的“{directory.name}”，请改选{where}“{engine}”。")
             detail = "所选文件夹需包含 api_v2.py。请先完整解压 GPT-SoVITS，再选择引擎目录。"
             nested = _single_nested_engine_name(directory)
             if nested:
