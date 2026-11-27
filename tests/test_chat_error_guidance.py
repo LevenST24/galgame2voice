@@ -354,8 +354,8 @@ async def test_error_copy_uses_real_ui_labels_without_raw_english_or_status_code
                 json={"id": "openai", "api_key": "sk-openai-500-key-12345", "base_url": "https://api.openai.com/v1"},
             )
             d500 = resp_500.json()
-            assert d500["error_code"] == "PROVIDER_ERROR"
-            assert d500["summary_zh"] == "模型服务返回异常"
+            assert d500["error_code"] == "SERVER_OVERLOADED"
+            assert d500["summary_zh"] == "模型服务临时故障"
             for field in ("summary_zh", "action_zh", "error", "error_title", "diagnostic"):
                 assert "Upstream 500 failure" not in d500[field]
                 assert "原始信息" not in d500[field]
@@ -411,3 +411,37 @@ def test_max_tokens_too_large_points_at_output_length(raw):
     assert result.error_code == "MAX_TOKENS_TOO_LARGE"
     assert "「角色与会话 → 对话高级参数」" in result.guidance
     assert "携带上下文条数" not in result.guidance
+
+
+@pytest.mark.asyncio
+async def test_upstream_500_is_diagnosed_as_temporary_server_fault():
+    """HTTP 500 from upstream LLM providers is a temporary server fault, not a config error."""
+    body = b'{"error":{"message":"The server had an error while processing your request.","type":"server_error"}}'
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.readuntil(b"\r\n\r\n")
+        writer.write(
+            b"HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n"
+            + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+            + body
+        )
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    adapter = OpenAICompatibleLLMAdapter(
+        api_key="sk-test", base_url=f"http://127.0.0.1:{port}/v1", allow_private=True, max_retries=0,
+    )
+    try:
+        with pytest.raises(RuntimeError) as exc_info:
+            async for _ in adapter.stream_chat([ChatMessage(role="user", content="你好")], model="gpt-4o"):
+                pass
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    payload = chat_error_payload(exc_info.value, provider_id="openai", api_key_configured=True)
+    assert payload["error_code"] == "SERVER_OVERLOADED"
+    assert payload["retryable"] is True
+    assert "临时故障" in payload["summary_zh"] and "无需修改配置" in payload["action_zh"]

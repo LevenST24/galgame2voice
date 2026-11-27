@@ -402,7 +402,7 @@ def _clean_html_text(text: str) -> str:
     return re.sub(r"\s+", " ", stripped).strip()
 
 
-_VALID_STATUS_CODES = (401, 402, 403, 429, 404, 400, 408, 502, 503, 504, 524, 529)
+_VALID_STATUS_CODES = (401, 402, 403, 429, 404, 400, 408, 500, 502, 503, 504, 524, 529)
 
 _EXPLICIT_STATUS_RE = re.compile(
     r"(?:"
@@ -430,7 +430,7 @@ def _extract_status_code(status_code: int | None, raw_lower: str) -> int | None:
             return matched
 
     # Pass 2: secondary/gateway phrases
-    for code in (524, 502, 504, 503, 529, 402, 429, 401, 403, 404, 400, 408):
+    for code in (524, 500, 502, 504, 503, 529, 402, 429, 401, 403, 404, 400, 408):
         if (
             f"{code} a timeout occurred" in raw_lower
             or f"{code} bad gateway" in raw_lower
@@ -666,17 +666,24 @@ def _diagnose_overload(
             "capacity",
         ))
     )
-    if not is_overload:
-        return None
-
-    code = status_code or 503
-    return DiagnosticResult(
-        error_code="SERVER_OVERLOADED",
-        message="服务暂时繁忙",
-        guidance="模型服务当前过载或暂时繁忙，请稍后重试。通常无需修改配置。",
-        status_code=code,
-        raw_error=sanitized_raw,
-    )
+    if is_overload:
+        code = status_code or 503
+        return DiagnosticResult(
+            error_code="SERVER_OVERLOADED",
+            message="服务暂时繁忙",
+            guidance="模型服务当前过载或暂时繁忙，请稍后重试。通常无需修改配置。",
+            status_code=code,
+            raw_error=sanitized_raw,
+        )
+    if status_code == 500 or (status_code is None and "internal server error" in raw_lower):
+        return DiagnosticResult(
+            error_code="SERVER_OVERLOADED",
+            message="模型服务临时故障",
+            guidance="模型服务商服务器出现临时故障，请稍后重试。通常无需修改配置。",
+            status_code=500,
+            raw_error=sanitized_raw,
+        )
+    return None
 
 
 def _diagnose_model_not_found(
