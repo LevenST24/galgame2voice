@@ -6,6 +6,7 @@ All notable changes to galgame2voice are documented here. The format follows
 
 ## [Unreleased]
 
+## [3.2.14] - 2026-11-27
 ### Fixed
 - 修复在半屏、窄窗口或竖屏手机上，底部快捷菜单（自动、快进、记录、重播、背景、隐藏、设置与模型状态）换行并超出舞台底边被裁切的问题；窄屏下保持单行显示并可左右滑动。
 - 修复在半屏、窄窗口或竖屏手机上点开「会话」抽屉时，会话列表高度被压成 0 像素、看不到也滚不到已有对话的问题。
@@ -428,7 +429,8 @@ All notable changes to galgame2voice are documented here. The format follows
 - 修复聊天输入框超过 4000 字发送时清空草稿且报错失真，以及打开设置中心时未立即停止首页正在播放的试听语音的问题。
 - 修复在输入框使用中文/日文输入法组字时按 Esc 取消候选词会直接关闭弹窗，以及在背景选择对话框按 Tab 或 Shift+Tab 时焦点跳出对话框的问题。
 
-[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.13...HEAD
+[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.2.14...HEAD
+[3.2.14]: https://github.com/LevenST24/galgame2voice/compare/v3.2.13...v3.2.14
 [3.2.13]: https://github.com/LevenST24/galgame2voice/compare/v3.2.12...v3.2.13
 [3.2.12]: https://github.com/LevenST24/galgame2voice/compare/v3.2.11...v3.2.12
 [3.2.11]: https://github.com/LevenST24/galgame2voice/compare/v3.2.10...v3.2.11
