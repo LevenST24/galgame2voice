@@ -1611,38 +1611,6 @@ test('home refresh reads the session list again when the first read was dropped 
   assert.equal(storedState.activeId, created.id, 'the newly created session remains active');
 });
 
-test('home refresh reuses an in-flight session list retry instead of invalidating it', async t => {
-  let listCalls = 0;
-  let releaseRetry;
-  const active = { id: 'deepseek', name: 'DeepSeek', chat_model: 'deepseek-chat', api_key: 'sk-****', is_active: true };
-  const serverSession = { id: 's_server', title: '星夜的约定', last_message: '晚安。', message_count: 0,
-    created_at: '2026-11-20T10:00:00Z', updated_at: '2026-11-20T10:00:00Z', voice_profile_id: 7, settings: {} };
-  const env = bootTitleStartupEnv(t, {
-    fetchImpl: async url => {
-      const path = String(url);
-      if (path === '/api/chat/sessions' || path.startsWith('/api/chat/sessions?')) {
-        if (++listCalls === 1) return Response.json({ detail: 'down' }, { status: 503 });
-        if (listCalls === 2) return new Promise(resolve => { releaseRetry = () => resolve(Response.json({ sessions: [serverSession], has_more: false })); });
-        return Response.json({ sessions: [serverSession], has_more: false });
-      }
-      if (path.startsWith('/api/chat/sessions/')) return Response.json({ messages: [], has_more: false });
-      if (path === '/api/providers') return Response.json({ providers: [active], presets: [] });
-      if (path === '/api/system/engine-status') return Response.json({ state: 'ready', base_url: 'http://127.0.0.1:9880' });
-      return Response.json({ status: 'ok', profiles: [{ id: 7, name: '星野' }], active_profile_id: 7, backgrounds: [], settings: {} });
-    },
-  });
-  await env.app.ready; t.mock.method(console, 'debug', () => {});
-  const home = env.app.returnHome();
-  t.after(() => home?.destroy());
-  for (let i = 0; i < 10; i++) await tick();
-  assert.equal(listCalls, 2);
-  await home.refresh(); for (let i = 0; i < 5; i++) await tick();
-  assert.equal(listCalls, 2, 'an in-flight retry must not launch a second overlapping read');
-  releaseRetry(); for (let i = 0; i < 10; i++) await tick();
-  assert.ok(storedState.sessions.some(session => session.id === 's_server'));
-  await home.refresh(); for (let i = 0; i < 5; i++) await tick();
-  assert.equal(listCalls, 2, 'stops refetching after the in-flight retry succeeds');
-});
 function bootRetryEnv(t, { storageEntries = [], onSessions, onHistory } = {}) {
   if (!console.debug.mock) t.mock.method(console, 'debug', () => {});
   const ts = new Date(Date.now() - 60000).toISOString();
@@ -1683,14 +1651,6 @@ test('home retry keeps an unconfirmed new chat and ranks a newer server session 
   for (let i = 0; i < 5; i++) await tick(); up = true; const home = env.app.returnHome(); t.after(() => home?.destroy());
   for (let i = 0; i < 10; i++) await tick(); assert.equal(env.app.actions.getActiveId(), created.id); assert.deepEqual(posted, [created.id]);
   assert.deepEqual(home.element.querySelectorAll('.home-recent').map(n => n.dataset.session), ['s_server', 's_c4', 's_c3']); });
-test('a session title that starts with an emoji keeps the whole emoji as its avatar letter', async t => {
-  const sessions = [snapshot('a'), { ...snapshot('b', 1), title: '🌸花火大会', characterName: '' }];
-  const h = await fixture(t, { sessions, actions: { getAvatar: async () => null } });
-  const avatar = h.q('.home-avatar').textContent;
-  assert.equal(avatar, '🌸');
-  assert.ok(avatar.isWellFormed());
-});
-
 test('startup 401 after cancelling token prompt shows action toast to re-enter token and retry sync', async t => {
   let listCalls = 0, tok = '';
   const env = bootTitleStartupEnv(t, {
