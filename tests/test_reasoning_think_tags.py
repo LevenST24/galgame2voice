@@ -584,3 +584,22 @@ def test_paired_think_block_after_lines_json_does_not_discard_reply():
     assert ja == "こんにちは"
     assert parser.line_scanner.format == "lines"
     assert len(parser.normalized_lines()) == 1
+
+
+def test_think_tags_inside_line_fields_are_stripped_and_pure_think_lines_dropped():
+    raw = (
+        "{\"lines\": ["
+        "{\"zh\": \"<think>只是思考</think>\", \"ja\": \"<think>考えだけ</think>\"}, "
+        "{\"zh\": \"<think>组织措辞</think>你好！\", \"ja\": \"<think>考え中</think>こんにちは！\"}, "
+        "{\"zh\": \"晚安<think>忘了闭合\", \"ja\": \"おやすみ\"}"
+        "]}"
+    )
+    chunks = [raw[i : i + 5] for i in range(0, len(raw), 5)]
+    emitted, zh, ja, parser = _stream_reply(*chunks)
+    lines = parser.normalized_lines()
+    assert [line["zh"] for line in lines] == ["你好！", "晚安"]
+    assert [line["ja"] for line in lines] == ["こんにちは！", "おやすみ"]
+    assert emitted == "你好！晚安"
+    assert zh == "你好！晚安"
+    assert ja == "こんにちは！おやすみ"
+    assert "<think>" not in zh and "只是思考" not in zh and "忘了闭合" not in zh

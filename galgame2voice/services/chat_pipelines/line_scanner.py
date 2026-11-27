@@ -21,6 +21,25 @@ _RE_THINK_OPEN_MATCH = re.compile(r"^<\s*(think(?:ing)?|thought|reasoning)\b", r
 _RE_THINK_CLOSE_PREFIX = re.compile(r"^</\s*(think(?:ing)?|thought|reasoning)\b", re.IGNORECASE)
 _RE_THINK_CLOSE_MATCH = re.compile(r"^</\s*(think(?:ing)?|thought|reasoning)\b[^>]*>", re.IGNORECASE)
 _RE_THINK_SELF_CLOSING = re.compile(r"^<\s*(think(?:ing)?|thought|reasoning)\b[^>]*?/\s*>", re.IGNORECASE)
+_RE_INLINE_THINK_CLOSED = re.compile(
+    r"<\s*(think(?:ing)?|thought|reasoning)\b(?:[^>]*?/\s*>|[^>]*>.*?</\s*\1\s*>)",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+_RE_INLINE_THINK_UNCLOSED = re.compile(
+    r"<\s*(think(?:ing)?|thought|reasoning)\b.*$",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+
+
+def _strip_inline_think_blocks(text: str) -> str:
+    if "<" not in text:
+        return text
+    cleaned = text
+    prev = None
+    while prev != cleaned:
+        prev = cleaned
+        cleaned = _RE_INLINE_THINK_CLOSED.sub("", cleaned)
+    return _RE_INLINE_THINK_UNCLOSED.sub("", cleaned)
 
 
 def _is_think_prefix(s: str) -> bool:
@@ -84,7 +103,7 @@ def validate_line(obj: Any, ordinal: int = 0) -> tuple[ScannedLine | None, list[
     if raw_zh is None:
         zh = ""
     elif isinstance(raw_zh, str):
-        zh = raw_zh.strip()
+        zh = _strip_inline_think_blocks(raw_zh).strip()
     else:
         issues.append(f"zh must be a string, got {type(raw_zh).__name__}")
         zh = ""
@@ -97,7 +116,7 @@ def validate_line(obj: Any, ordinal: int = 0) -> tuple[ScannedLine | None, list[
     if raw_ja is None:
         ja = ""
     elif isinstance(raw_ja, str):
-        ja = raw_ja.strip()
+        ja = _strip_inline_think_blocks(raw_ja).strip()
     else:
         issues.append(f"ja must be a string, got {type(raw_ja).__name__}")
         ja = ""
