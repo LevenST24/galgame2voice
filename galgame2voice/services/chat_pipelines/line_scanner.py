@@ -628,14 +628,9 @@ class LineScanner:
                     self._reset_state()
                     emitted_lines.clear()
                     continue
-                if self._think_depth > 0:
+                if self._think_depth > 0 or self._orphan_close_pending or (had_tag_pending and c == ">"):
                     continue
-                if (
-                    not self._root_is_array
-                    and not self._saw_lines_key
-                    and not self._orphan_close_pending
-                    and not (had_tag_pending and c == ">")
-                ):
+                if not self._root_is_array and not self._saw_lines_key:
                     self._root_chars.append(c)
             if self._in_lines:
                 self._process_in_lines(c, emitted_lines)
