@@ -311,8 +311,18 @@ def _diagnose_local_configuration(
     sanitized_raw: str,
     provider_id: str | None,
     api_key_configured: bool | None,
+    exc_chain: list[BaseException] | None = None,
 ) -> DiagnosticResult | None:
     """Failures caused by this console's own settings rather than by the provider."""
+    if any(isinstance(e, UnicodeEncodeError) for e in (exc_chain or ())) or any(
+        kw in raw_lower for kw in ("unicodeencodeerror", "'ascii' codec can't encode", "'latin-1' codec can't encode")
+    ):
+        return DiagnosticResult(
+            error_code="AUTH_INVALID_KEY",
+            message="API 密钥包含中文或无效字符",
+            guidance="API 密钥只能包含英文、数字和常见英文符号。请到「设置中心 → 对话模型」删掉密钥里的中文或全角字符，重新完整粘贴后点「保存并启用此模型」。",
+            raw_error=sanitized_raw,
+        )
     if (
         "ssrf/dns-rebinding" in raw_lower
         or "允许连接本机或局域网的模型服务" in raw_lower
@@ -1155,7 +1165,7 @@ def diagnose_llm_error(
     status_code = _extract_status_code(status_code, raw_lower)
 
     return (
-        _diagnose_local_configuration(raw_lower, sanitized_raw, p_id, api_key_configured)
+        _diagnose_local_configuration(raw_lower, sanitized_raw, p_id, api_key_configured, exc_chain=exc_chain)
         or _diagnose_unsupported_parameter(raw_lower, status_code, sanitized_raw)
         or _diagnose_transport_fault(exc_type, raw_lower, status_code, sanitized_raw, exc_chain=exc_chain)
         or _diagnose_overload(raw_lower, status_code, sanitized_raw)

@@ -693,3 +693,33 @@ async def test_provider_url_with_fullwidth_punctuation_rejected(app_client, bad_
     test_resp = await _post_provider_test(app_client, "deepseek", "sk-deepseek-test-12345", bad_url)
     assert test_resp.status_code == 400
     assert test_resp.json()["detail"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_key", ["密钥：sk-deepseek-test-12345", "请填写你的密钥"])
+async def test_provider_non_ascii_api_key_rejected_and_diagnosed(app_client, bad_key):
+    from galgame2voice.utils.error_diagnostics import diagnose_llm_error
+
+    save_resp = await app_client.post(
+        "/api/providers",
+        json={"id": "deepseek", "api_base_url": "https://api.deepseek.com", "api_key": bad_key},
+    )
+    assert save_resp.status_code == 400
+    assert "中文或无效字符" in save_resp.json()["detail"]
+    stored = (await app_client.get("/api/providers/deepseek")).json()["provider"]
+    assert not stored["api_key"]
+
+    test_resp = await _post_provider_test(app_client, "deepseek", bad_key, "https://api.deepseek.com")
+    assert test_resp.status_code == 400
+    test_data = test_resp.json()
+    assert test_data["diagnostic_code"] == "AUTH_INVALID_KEY"
+    assert "设置中心 → 对话模型" in test_data["action_zh"]
+
+    diag = diagnose_llm_error(
+        UnicodeEncodeError("ascii", f"Bearer {bad_key}", 7, 10, "ordinal not in range(128)"),
+        provider_id="deepseek",
+        api_key_configured=True,
+    )
+    assert diag.error_code == "AUTH_INVALID_KEY"
+    assert "中文或无效字符" in diag.message
+    assert "设置中心 → 对话模型" in diag.guidance

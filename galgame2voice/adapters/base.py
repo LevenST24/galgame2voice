@@ -406,6 +406,11 @@ def clean_api_key(api_key: str | None) -> str:
     return "".join(_BEARER_PREFIX_RE.sub("", key, count=1).split())
 
 
+def has_invalid_api_key_chars(api_key: str | None) -> bool:
+    """Returns True when a cleaned API key still contains non-ASCII or control characters."""
+    return any(ord(ch) < 32 or ord(ch) >= 127 for ch in str(api_key or ""))
+
+
 class BaseLLMAdapter(ABC):
     """
     Abstract Base Class for Large Language Model Adapters.
