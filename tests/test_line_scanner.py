@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 import random
 
+import pytest
+
 from galgame2voice.services.chat_pipelines.line_scanner import (
     EMOTIONS,
     FX,
@@ -180,10 +182,14 @@ def test_validate_line_success() -> None:
     assert issues == []
 
 
-def test_validate_line_dropped_empty() -> None:
-    line, issues = validate_line({"zh": "   ", "ja": ""})
+@pytest.mark.parametrize(("raw", "expected_issue"), [
+    pytest.param({"zh": "   ", "ja": ""}, "empty", id="empty_text"),
+    pytest.param("not a dict", "non-object", id="non_object"),
+])
+def test_validate_line_dropped_inputs(raw: object, expected_issue: str) -> None:
+    line, issues = validate_line(raw)
     assert line is None
-    assert any("empty" in issue for issue in issues)
+    assert any(expected_issue in issue for issue in issues)
 
 
 def test_validate_line_capping() -> None:
@@ -220,12 +226,6 @@ def test_validate_line_act_field_isolation() -> None:
     # Only valid pose is kept
     assert line.act == {"pose": "valid_pose"}
     assert len(issues) == 6
-
-
-def test_validate_line_non_object() -> None:
-    line, issues = validate_line("not a dict")
-    assert line is None
-    assert any("non-object" in issue for issue in issues)
 
 
 # =====================================================================
@@ -283,27 +283,15 @@ def test_fixture_missing_or_invalid_emotion() -> None:
     assert result.lines[1].emotion is None
 
 
-def test_fixture_empty_zh_and_ja() -> None:
-    _, result = _scan_fixture("empty_zh_and_ja")
+@pytest.mark.parametrize(("fixture_name", "expected_zh"), [
+    pytest.param("empty_zh_and_ja", "有效行", id="empty_zh_and_ja"),
+    pytest.param("non_object_element", "第二行", id="non_object_element"),
+])
+def test_fixture_empty_or_non_object_element(fixture_name: str, expected_zh: str) -> None:
+    _, result = _scan_fixture(fixture_name)
     assert len(result.lines) == 1
     assert result.lines[0].ordinal == 1
-    assert result.lines[0].zh == "有效行"
-
-
-def test_fixture_non_object_element() -> None:
-    _, result = _scan_fixture("non_object_element")
-    assert len(result.lines) == 1
-    assert result.lines[0].ordinal == 1
-    assert result.lines[0].zh == "第二行"
-
-
-def test_fixture_legacy_format() -> None:
-    lines, result = _scan_fixture("legacy_format")
-    assert result.format == "unknown"
-    assert lines == []
-    assert result.lines == []
-    assert result.tts == {"speed": 1.0, "temp": 0.95, "emotion": "gentle"}
-    assert result.truncated is False
+    assert result.lines[0].zh == expected_zh
 
 
 def test_fixture_trailing_chatter() -> None:

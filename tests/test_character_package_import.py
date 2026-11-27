@@ -465,10 +465,11 @@ async def test_import_reports_bad_manifest_and_background_pack_in_chinese(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("exc", "code", "msg"), [
-    (OSError(errno.ENOSPC, "No space left on device"), 507, "磁盘空间不足"),
-    (PermissionError(errno.EACCES, "Permission denied"), 403, "数据目录没有写入权限，角色包未能导入。请把程序文件夹移到有写入权限的位置后重试。"),
+    pytest.param(OSError(errno.ENOSPC, "No space left on device"), 507, "磁盘空间不足", id="disk_full"),
+    pytest.param(PermissionError(errno.EACCES, "Permission denied"), 403, "数据目录没有写入权限，角色包未能导入。请把程序文件夹移到有写入权限的位置后重试。", id="permission_denied"),
+    pytest.param(OSError(errno.ENAMETOOLONG, "File name too long", "extracted/manifest.json"), 409, "路径太长", id="long_path"),
 ])
-async def test_import_extract_disk_and_permission_errors(tmp_path, monkeypatch, exc, code, msg):
+async def test_import_extract_disk_permission_and_long_path_errors(tmp_path, monkeypatch, exc, code, msg):
     _root, app = _setup_app(tmp_path, monkeypatch)
     await init_db()
     real_open = Path.open
@@ -479,26 +480,8 @@ async def test_import_extract_disk_and_permission_errors(tmp_path, monkeypatch, 
     monkeypatch.setattr(Path, "open", fake_open)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
         res = await client.post("/api/characters/import", params={"filename": "a.zip"}, content=_make_package_bytes("zip", "a", "甲"))
-    assert res.status_code == code and msg in res.json()["detail"]
-    _assert_temp_empty()
-
-
-@pytest.mark.asyncio
-async def test_import_reports_long_path_instead_of_corrupt_zip(tmp_path, monkeypatch):
-    _root, app = _setup_app(tmp_path, monkeypatch)
-    await init_db()
-    real_open = Path.open
-
-    def fake_open(self, *a, **kw):
-        if "extracted" in self.parts:
-            raise OSError(errno.ENAMETOOLONG, "File name too long", str(self))
-        return real_open(self, *a, **kw)
-
-    monkeypatch.setattr(Path, "open", fake_open)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
-        res = await client.post("/api/characters/import", params={"filename": "a.zip"}, content=_make_package_bytes("zip", "a", "甲"))
     detail = res.json()["detail"]
-    assert res.status_code == 409 and "路径太长" in detail and "压缩包已损坏" not in detail
+    assert res.status_code == code and msg in detail and "压缩包已损坏" not in detail
     _assert_temp_empty()
 
 
