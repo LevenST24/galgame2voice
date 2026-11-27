@@ -40,13 +40,16 @@ test('an unsaved question that did not fail is still kept as a browser copy', ()
   assert.deepEqual(titles(result), ['聊天', '聊天（浏览器副本）']);
 });
 
-test('a failed question is only ignored at the end', () => {
-  const result = mergeChatBackup(serverData(), localData([
-    answered[0],
-    { id: 'm9', role: 'user', content: '离线时写的', ts, failed: { error: 'x', code: 'NETWORK_ERROR' } },
-    answered[1],
-  ]));
-  assert.equal(result.browserCopies, 1);
+test('a stopped question followed by an answered one does not duplicate the session', () => {
+  const server = serverData();
+  const later = [{ id: 'm4', role: 'user', content: '第二句', ts: ts + 20 },
+    { id: 'm5', role: 'assistant', content: '第二句的回复。', japanese: 'ふたつ。', ts: ts + 20 }];
+  server.sessions[0].messages.push(...later.map((message, i) => ({ ...message, id: `srv_${i + 3}` })));
+  const result = mergeChatBackup(server, localData([...answered,
+    { id: 'm3', role: 'user', content: '等等', ts: ts + 10, failed: { error: '对话已中断，未收到回复', code: 'cancelled' } },
+    ...later]));
+  assert.equal(result.browserCopies, 0);
+  assert.deepEqual(titles(result), ['聊天']);
 });
 
 test('a session that only exists in the browser keeps its failed question', () => {
