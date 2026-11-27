@@ -402,7 +402,7 @@ def _clean_html_text(text: str) -> str:
     return re.sub(r"\s+", " ", stripped).strip()
 
 
-_VALID_STATUS_CODES = (401, 402, 403, 429, 404, 400, 408, 502, 503, 504, 524, 529)
+_VALID_STATUS_CODES = (401, 402, 403, 429, 404, 400, 408, 500, 502, 503, 504, 524, 529)
 
 _EXPLICIT_STATUS_RE = re.compile(
     r"(?:"
@@ -430,7 +430,7 @@ def _extract_status_code(status_code: int | None, raw_lower: str) -> int | None:
             return matched
 
     # Pass 2: secondary/gateway phrases
-    for code in (524, 502, 504, 503, 529, 402, 429, 401, 403, 404, 400, 408):
+    for code in (524, 500, 502, 504, 503, 529, 402, 429, 401, 403, 404, 400, 408):
         if (
             f"{code} a timeout occurred" in raw_lower
             or f"{code} bad gateway" in raw_lower
@@ -1097,6 +1097,16 @@ def _diagnose_generic_http(
             message="请求频率超限",
             guidance="请求过于频繁，超出了当前账户的频率或字数限额。请稍候重试，或在「角色与会话 → 对话高级参数」中调小「最大生成长度」。",
             status_code=429,
+            raw_error=sanitized_raw,
+        )
+
+    # A bare 500 comes after the body-based checks: servers also use it for a full context or an empty balance.
+    if status_code == 500 or (status_code is None and "internal server error" in raw_lower):
+        return DiagnosticResult(
+            error_code="SERVER_OVERLOADED",
+            message="模型服务临时故障",
+            guidance="模型服务商服务器出现临时故障，请稍后重试。通常无需修改配置。",
+            status_code=500,
             raw_error=sanitized_raw,
         )
 
