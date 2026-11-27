@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from galgame2voice.adapters.base import clean_api_key
+from galgame2voice.adapters.base import clean_api_key, has_invalid_api_key_chars
 from galgame2voice.adapters.registry import (
     get_llm_adapter,
     get_provider_preset,
@@ -39,6 +39,7 @@ from galgame2voice.utils.logger import describe_database_write_error, sanitize_e
 
 logger = logging.getLogger("galgame2voice.routers.providers")
 router = APIRouter(tags=["Providers & Testing"])
+_INVALID_API_KEY_DETAIL = "API 密钥包含中文或无效字符，请删掉多余的中文说明或全角标点，只粘贴英文和数字密钥后点「保存并启用此模型」。"
 
 
 async def _allow_private_endpoints() -> bool:
@@ -172,7 +173,10 @@ async def _update_existing_provider(
             await _enforce_llm_url_guard(url_val)
             update_kwargs["api_base_url"] = url_val
     if "api_key" in provider_data and provider_data["api_key"] is not None:
-        update_kwargs["api_key"] = clean_api_key(provider_data["api_key"])
+        cleaned_key = clean_api_key(provider_data["api_key"])
+        if has_invalid_api_key_chars(cleaned_key):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=_INVALID_API_KEY_DETAIL)
+        update_kwargs["api_key"] = cleaned_key
     if "chat_model" in provider_data or "model" in provider_data:
         model_val = provider_data.get("chat_model") or provider_data.get("model")
         if model_val is not None:
@@ -230,6 +234,8 @@ async def _create_new_provider(
     )
     is_active = bool(provider_data.get("is_active", False))
     api_key = clean_api_key(provider_data.get("api_key", ""))
+    if has_invalid_api_key_chars(api_key):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=_INVALID_API_KEY_DETAIL)
     if is_masked_key(api_key):
         api_key = ""
     custom_headers = provider_data.get("custom_headers") or {}
@@ -495,6 +501,15 @@ async def test_provider(req: ProviderTestRequest):
             diagnostic_code="INVALID_BASE_URL",
             summary_zh="接口地址格式或协议无效",
             action_zh=f"{detail_str}。请在「设置中心 → 对话模型」检查「接口地址」配置，填写合法的 http:// 或 https:// 接口地址后重试。",
+        )
+
+    api_key = clean_api_key(api_key)
+    if has_invalid_api_key_chars(api_key):
+        return _preflight_bad_request_response(
+            detail=_INVALID_API_KEY_DETAIL,
+            diagnostic_code="AUTH_INVALID_KEY",
+            summary_zh="API 密钥包含中文或无效字符",
+            action_zh="API 密钥只能包含英文、数字和常见英文符号。请在「设置中心 → 对话模型」删掉密钥里的中文或全角字符，重新完整粘贴后再测试。",
         )
 
     # Instantiate adapter via factory
