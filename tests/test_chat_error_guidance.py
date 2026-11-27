@@ -414,6 +414,39 @@ def test_max_tokens_too_large_points_at_output_length(raw):
 
 
 @pytest.mark.asyncio
+async def test_deepseek_model_not_exist_400_is_diagnosed_as_model_not_found():
+    """DeepSeek returns HTTP 400 with "Model Not Exist" for bad/retired model names."""
+    body = b'{"error":{"message":"Model Not Exist","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}'
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.readuntil(b"\r\n\r\n")
+        writer.write(
+            b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n"
+            + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+            + body
+        )
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    adapter = OpenAICompatibleLLMAdapter(
+        api_key="sk-test", base_url=f"http://127.0.0.1:{port}/v1", allow_private=True, max_retries=0,
+    )
+    try:
+        with pytest.raises(RuntimeError) as exc_info:
+            async for _ in adapter.stream_chat([ChatMessage(role="user", content="你好")], model="deepseek-removed"):
+                pass
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    payload = chat_error_payload(exc_info.value, provider_id="deepseek", api_key_configured=True)
+    assert payload["error_code"] == "MODEL_NOT_FOUND"
+    assert payload["retryable"] is False
+    assert "模型名称" in payload["summary_zh"]
+
+@pytest.mark.asyncio
 async def test_upstream_500_is_diagnosed_as_temporary_server_fault():
     """HTTP 500 from upstream LLM providers is a temporary server fault, not a config error."""
     body = b'{"error":{"message":"The server had an error while processing your request.","type":"server_error"}}'

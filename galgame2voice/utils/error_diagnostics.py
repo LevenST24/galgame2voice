@@ -713,6 +713,7 @@ def _diagnose_model_not_found(
     is_model_not_found = (
         "model_not_found" in raw_lower
         or "model not found" in raw_lower
+        or "model not exist" in raw_lower
         or "unknown model" in raw_lower
         or "no such model" in raw_lower
         or (has_model_keyword and has_not_found_keyword)
