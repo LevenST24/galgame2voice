@@ -584,3 +584,37 @@ def test_paired_think_block_after_lines_json_does_not_discard_reply():
     assert ja == "こんにちは"
     assert parser.line_scanner.format == "lines"
     assert len(parser.normalized_lines()) == 1
+
+
+@pytest.mark.parametrize("chunk_size", (1, 3, 7))
+@pytest.mark.parametrize(
+    ("raw", "expected_zh", "expected_ja"),
+    [
+        (
+            "{\"lines\": [{\"zh\": \"第一句。\", \"ja\": \"最初。\"}, <think>思考第二句</think> {\"zh\": \"第二句。\", \"ja\": \"次。\"}]}",
+            ["第一句。", "第二句。"],
+            ["最初。", "次。"],
+        ),
+        (
+            "{\"lines\": [{\"zh\": \"你好。\", <think>思考翻译</think> \"ja\": \"こんにちは。\"}]}",
+            ["你好。"],
+            ["こんにちは。"],
+        ),
+        (
+            "{\"lines\": [{\"zh\": \"甲。\", \"ja\": \"A。\"}, <think/> {\"zh\": \"乙。\", \"ja\": \"B。\"}]}",
+            ["甲。", "乙。"],
+            ["A。", "B。"],
+        ),
+    ],
+)
+def test_think_block_between_or_inside_lines_objects_preserves_subsequent_lines(
+    raw, expected_zh, expected_ja, chunk_size
+):
+    chunks = [raw[i : i + chunk_size] for i in range(0, len(raw), chunk_size)]
+    emitted, zh, ja, parser = _stream_reply(*chunks)
+    lines = parser.normalized_lines()
+    assert [line["zh"] for line in lines] == expected_zh
+    assert [line["ja"] for line in lines] == expected_ja
+    assert emitted == "".join(expected_zh)
+    assert zh == "".join(expected_zh)
+    assert ja == "".join(expected_ja)
