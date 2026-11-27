@@ -158,3 +158,20 @@ def test_side_channel_at_every_split(ascii, prefix, suffix):
         assert (zh, ja, shown + rest, sentences) == (ZH, JA, ZH, [])
         assert [line["index"] for line in pipe.parser.normalized_lines()] == [0, 1]
         assert pipe.parser.normalized_lines()[0]["act"] == LINES[0]["act"]
+
+
+@pytest.mark.parametrize("chunk_size", CHUNK_SIZES)
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "给你一段代码：\n```python\nd = {\"name\": \"test\"}\nprint(d)\n```\n试试看吧！",
+        "配置写成 {\"host\": \"127.0.0.1\", \"port\": 8080}，改完保存即可。",
+        "{\"host\": \"127.0.0.1\", \"port\": 8080}",
+    ],
+)
+def test_plain_text_with_embedded_non_reply_json_is_preserved(raw, chunk_size):
+    shown, chinese, japanese, _ = _stream(raw, chunk_size)
+    assert chinese
+    assert shown == chinese
+    assert japanese == chinese
+    assert "test" in chinese or "8080" in chinese

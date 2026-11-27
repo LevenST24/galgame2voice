@@ -743,7 +743,9 @@ class StreamingBilingualParser:
                 except json.JSONDecodeError:
                     # Extracted block is also malformed JSON; fall through to buffer regex extraction
                     pass
-        return parsed if isinstance(parsed, dict) else None
+        if isinstance(parsed, dict) and ("chinese" in parsed or "japanese" in parsed):
+            return parsed
+        return None
 
     def _apply_parsed_json_dict(self, parsed: dict[str, Any]) -> None:
         """Applies parsed JSON fields to extracted Chinese, Japanese, and TTS parameters."""
