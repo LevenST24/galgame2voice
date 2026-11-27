@@ -507,6 +507,19 @@ def _diagnose_transport_fault(
     exc_chain = exc_chain or []
     chain_types = [type(e).__name__.lower() for e in exc_chain]
 
+    if (
+        "proxyerror" in exc_type
+        or any("proxyerror" in t for t in chain_types)
+        or "proxyerror" in raw_lower
+    ):
+        return DiagnosticResult(
+            error_code="NETWORK_CONNECTION_FAILED",
+            message="代理连接失败",
+            guidance="代理软件返回异常或拒绝转发该请求。请检查代理软件（如 Clash / v2rayN）是否正常运行、节点是否可用，或关闭残留的系统代理后直接重试（无需重启程序）。",
+            status_code=status_code or 502,
+            raw_error=sanitized_raw,
+        )
+
     is_timeout = (
         "timeout" in exc_type
         or any("timeout" in t for t in chain_types)
@@ -619,7 +632,7 @@ def _diagnose_transport_fault(
         return DiagnosticResult(
             error_code="NETWORK_CONNECTION_FAILED",
             message="网络连接失败",
-            guidance="无法与模型服务建立连接。请检查网络、代理和服务地址；若使用本机代理，请确认程序启动时已配置相应代理。",
+            guidance="无法与模型服务建立连接。请检查网络与代理软件（如 Clash / v2rayN）是否正常运行；若已关闭代理软件但系统代理未关闭，请关闭系统代理后直接重试（无需重启程序）。",
             status_code=status_code or 502,
             raw_error=sanitized_raw,
         )
