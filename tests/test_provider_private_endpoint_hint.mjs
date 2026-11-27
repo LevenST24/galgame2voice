@@ -483,3 +483,38 @@ test('checking gAllowPrivateEndpoints dismisses interception box and allows requ
   assert.equal(localActivated, true, 'activate proceeds after user enables private endpoints');
   assert.equal(requests.filter(r => r.kind === 'save_provider').length, 1);
 });
+
+
+test('blocks handleProviderTest locally when gBaseUrl is empty instead of sending blank URL to backend', async t => {
+  const testRequests = [];
+  installPrivateFetch({
+    onTest: (url, options) => {
+      testRequests.push({ url, body: JSON.parse(options.body) });
+      return response({ success: true, latency_ms: 12 });
+    },
+    configSettings: { allow_private_llm_endpoints: false },
+  });
+
+  const { dom, toasts } = await openLoadedSettings(t, { loadConfig: true });
+
+  // Built-in provider with cleared base URL must prompt instead of silently testing default URL
+  dom.gBaseUrl.value = '   ';
+  await handleProviderTest();
+  assert.equal(testRequests.length, 0);
+  assert.equal(dom.gBaseUrl.focusCalls, 1);
+  assert.equal(dom.gTestResultTitle.textContent, '请先填写接口地址');
+  assert.equal(dom.gTestResultLatency.textContent, '未发送');
+  assert.match(dom.gTestResultBody.textContent, /重置为默认/);
+  assert.ok(toasts.some(msg => msg.includes('重置为默认')));
+
+  // Custom provider with cleared base URL must prompt for base URL, not private-endpoint toggle
+  dom.gProvider.value = '__custom__';
+  onProviderChange();
+  dom.gBaseUrl.value = '';
+  dom.gBaseUrl.focusCalls = 0;
+  await handleProviderTest();
+  assert.equal(testRequests.length, 0);
+  assert.equal(dom.gBaseUrl.focusCalls, 1);
+  assert.equal(dom.gTestResultTitle.textContent, '请先填写接口地址');
+  assert.doesNotMatch(dom.gTestResultBody.textContent, /重置为默认/);
+});
