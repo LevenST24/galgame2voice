@@ -63,6 +63,15 @@ export function getDamagedSessionData() { return damagedRaw; }
 /** @returns {PortableChatSnapshot} */
 const snapshot = () => ({ sessions: state.sessions, activeId: state.activeId, global: state.global });
 
+/** @param {ChatMessage | null | undefined} m @returns {number | null} */
+function persistedMessageId(m) {
+  if (!m || (m.role === 'user' && m.failed)) return null;
+  if (Number.isSafeInteger(m.serverMessageId) && /** @type {number} */ (m.serverMessageId) > 0) return /** @type {number} */ (m.serverMessageId);
+  const match = typeof m.id === 'string' ? /^m_(\d+)$/.exec(m.id) : null;
+  const parsed = match ? Number(match[1]) : 0;
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
 /** @type {SessionSettings} */
 export const DEFAULT_SESSION_SETTINGS = {
   systemPrompt: '',
@@ -221,6 +230,20 @@ function writeState({ allowDamaged = false } = {}) {
             break;
           } catch (evictError) {
             if (evictError.name !== 'QuotaExceededError') throw evictError;
+          }
+        }
+        if (!saved) {
+          const active = state.sessions.find((s) => s && s.id === state.activeId);
+          const syncedIdx = active?.messages?.reduce((acc, m, i) => (persistedMessageId(m) !== null ? (acc.push(i), acc) : acc), /** @type {number[]} */ ([])) || [];
+          for (let dropCount = 0; active && dropCount < syncedIdx.length;) {
+            dropCount += Math.max(1, Math.ceil((syncedIdx.length - dropCount) / 2));
+            const dropSet = new Set(syncedIdx.slice(0, dropCount));
+            const kept = active.messages.filter((_, i) => !dropSet.has(i));
+            const oldestId = kept.map(persistedMessageId).find((id) => id !== null) ?? null;
+            const trimmed = { ...active, messages: kept, hasMoreHistory: true, hasServerMessages: true, oldestMessageId: oldestId };
+            next = JSON.stringify({ ...snapshot(), sessions: state.sessions.map((s) => (s === active ? trimmed : s)) });
+            try { localStorage.setItem(STORAGE_KEY, next); saved = true; break; }
+            catch (trimError) { if (trimError.name !== 'QuotaExceededError') throw trimError; }
           }
         }
         if (!saved) {

@@ -1038,4 +1038,34 @@ function setupImportScenario() {
   passed++;
 }
 
+// saveState trims older server-synced messages from active session snapshot on QuotaExceededError without mutating memory
+{
+  const longMsgs = Array.from({ length: 40 }, (_, i) => ({
+    id: `m_${i + 1}`,
+    role: i % 2 === 0 ? 'user' : 'assistant',
+    content: `第${i + 1}轮对话：${'台词内容'.repeat(40)}`,
+    ts: 1000 + i,
+  }));
+  longMsgs.push({ id: 'local_fail', role: 'user', content: '发送失败待重试', failed: { error: '超时' }, ts: 2000 });
+  loadSessions([
+    makeSession('s_long', '长会话', { voiceProfileId: 1, temperature: 0.7 }, longMsgs.slice(0, 10), { createdAt: 100, updatedAt: 1000 }),
+  ], 's_long');
+  const active = state.sessions[0];
+  const fullSize = JSON.stringify({ sessions: [{ ...active, messages: longMsgs }], activeId: 's_long', global: state.global }).length;
+  localStorage.limit = Math.floor(fullSize * 0.6);
+  active.messages = longMsgs;
+
+  assert.equal(saveState(), true, '当前会话超配额时应裁剪已同步旧消息副本并保存成功');
+  assert.equal(getStorageStatus().ok, true);
+  assert.equal(active.messages.length, 41, '内存中已加载的对话记录不应被裁剪');
+  const persisted = JSON.parse(localStorage.getItem(KEY));
+  const savedActive = persisted.sessions.find((s) => s.id === 's_long');
+  assert.ok(savedActive.messages.length < 41 && savedActive.messages.length >= 2);
+  assert.equal(savedActive.hasMoreHistory, true);
+  assert.equal(savedActive.messages.at(-1).id, 'local_fail', '未同步的失败消息绝不能被裁掉');
+  assert.equal(savedActive.oldestMessageId, Number(savedActive.messages[0].id.slice(2)));
+  localStorage.limit = Infinity;
+  passed++;
+}
+
 console.log(`Session backup and recovery: ${passed} scenarios passed`);
