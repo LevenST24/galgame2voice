@@ -22,7 +22,7 @@ from galgame2voice.services.voice_manager import get_voice_manager
 from galgame2voice.services.audio_artifacts import REPAIR_AUDIO_PREFIX, discard_repair_audio
 from galgame2voice.utils.async_tasks import cancel_and_drain
 from galgame2voice.services.engine_supervisor import get_engine_supervisor
-from galgame2voice.utils.audio_spec import describe_silent_audio_error
+from galgame2voice.utils.audio_spec import describe_tts_error
 from galgame2voice.utils.logger import describe_storage_error
 
 logger = logging.getLogger(__name__)
@@ -162,13 +162,13 @@ async def regenerate_line(req: LineAudioRequest, request: Request, manager: Anno
     except Exception as exc:
         logger.warning("Single-line audio regeneration failed: %s", type(exc).__name__)
         client_base_url = getattr(getattr(service, "client", None), "base_url", None)
-        silent_guidance = describe_silent_audio_error(
+        guidance = describe_tts_error(
             exc,
             base_url=client_base_url,
             supervisor=get_engine_supervisor(request),
         )
-        if silent_guidance:
-            raise HTTPException(502, f"{silent_guidance}原音频与文字已保留。") from exc
+        if guidance:
+            raise HTTPException(502, f"{guidance}原音频与文字已保留。") from exc
         storage_message = describe_storage_error(exc)
         if storage_message:
             raise HTTPException(507, f"{storage_message}原音频与文字已保留。") from exc
