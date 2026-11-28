@@ -5,6 +5,8 @@ All notable changes to galgame2voice are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fixed
+- 修复切换音色时如果语音引擎返回具体错误（如显存不足）或加载模型超时，界面仍一律覆盖显示「语音引擎还没准备好」的问题；现在会直接显示具体原因或超时提示。
 
 ## [3.2.14] - 2026-11-27
 ### Fixed
