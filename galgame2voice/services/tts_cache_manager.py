@@ -18,7 +18,7 @@ from typing import Any, AsyncGenerator
 
 from galgame2voice.config import get_settings
 from galgame2voice.database import crud
-from galgame2voice.database.session import get_db, get_database_path
+from galgame2voice.database.session import get_db, get_database_path, immediate_transaction
 from galgame2voice.services.gpt_sovits_client import (
     normalize_japanese_for_tts,
 )
@@ -796,14 +796,22 @@ class TtsCacheManager:
                 logger.debug("Error during automatic cache pruning: %s", exc)
 
     @staticmethod
-    async def _try_unlink_cache_file(file_p: Path) -> bool:
-        """Attempts to delete cache file from disk, returning False if locked or failing."""
-        try:
-            await asyncio.to_thread(file_p.unlink, missing_ok=True)
-            return True
-        except Exception as unl_err:
-            logger.debug("Skipping DB deletion for locked cache file %s: %s", file_p, unl_err)
-            return False
+    def _unlink_cache_batch_sync(entries: list[Any], cache_dir: Path, cache_root: Path, rem_bytes: int, rem_files: int, target_bytes: int, target_files: int) -> tuple[list[Any], set[str]]:
+        unlinked, failed = [], set()
+        for entry in entries:
+            if rem_bytes <= target_bytes and rem_files <= target_files:
+                break
+            cache_file = cache_dir / f"{entry.cache_key}.wav"
+            try:
+                cache_file.resolve().relative_to(cache_root)
+                cache_file.unlink(missing_ok=True)
+            except Exception as exc:
+                logger.debug("Skipping DB deletion for locked cache file %s: %s", cache_file, exc)
+                failed.add(entry.cache_key)
+            else:
+                unlinked.append(entry)
+                rem_bytes, rem_files = rem_bytes - entry.file_size, rem_files - 1
+        return unlinked, failed
 
     async def prune(
         self,
@@ -847,35 +855,31 @@ class TtsCacheManager:
                     target_files = int(limit_entries * 0.8)
                     cache_root = self.cache_dir.resolve()
 
+                    skipped_keys: set[str] = set()
                     for _ in range(10):
                         if total_bytes <= target_bytes and total_files <= target_files:
                             break
-                        oldest_entries = await crud.get_oldest_tts_cache_entries(conn, limit=200)
-                        if not oldest_entries:
+                        fetch_limit = 200 + len(skipped_keys)
+                        oldest_entries = await crud.get_oldest_tts_cache_entries(conn, limit=fetch_limit)
+                        candidates = [e for e in oldest_entries if e.cache_key not in skipped_keys]
+                        if not candidates:
                             break
-                        batch_pruned = 0
-                        for entry in oldest_entries:
-                            if total_bytes <= target_bytes and total_files <= target_files:
-                                break
-
-                            # put/get use this path. entry.file_path may still point
-                            # at the cache directory from before the project was moved.
-                            cache_file = self.cache_dir / f"{entry.cache_key}.wav"
-                            try:
-                                cache_file.resolve().relative_to(cache_root)
-                            except (OSError, ValueError):
-                                continue
-                            unlink_ok = await self._try_unlink_cache_file(cache_file)
-                            if unlink_ok:
-                                await crud.delete_tts_cache_entry(conn, entry.cache_key)
-                                async with self._lock:
-                                    self._mem_cache_discard(entry.cache_key)
-                                    self._failed_reads.pop(entry.cache_key, None)
-                                total_bytes -= entry.file_size
-                                total_files -= 1
-                                pruned_count += 1
-                                batch_pruned += 1
-                        if batch_pruned == 0:
+                        unlinked, failed = await asyncio.to_thread(
+                            self._unlink_cache_batch_sync, candidates, self.cache_dir, cache_root,
+                            total_bytes, total_files, target_bytes, target_files,
+                        )
+                        skipped_keys.update(failed)
+                        if unlinked:
+                            keys = [e.cache_key for e in unlinked]
+                            async with immediate_transaction(conn):
+                                await conn.execute(f"DELETE FROM tts_cache_entries WHERE cache_key IN ({','.join('?' for _ in keys)});", keys)
+                            async with self._lock:
+                                for key in keys:
+                                    self._mem_cache_discard(key)
+                                    self._failed_reads.pop(key, None)
+                            total_bytes, total_files = total_bytes - sum(e.file_size for e in unlinked), total_files - len(unlinked)
+                            pruned_count += len(unlinked)
+                        elif len(oldest_entries) < fetch_limit:
                             break
 
                     async with self._lock:

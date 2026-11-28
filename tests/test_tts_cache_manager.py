@@ -486,3 +486,41 @@ async def test_put_database_failure_does_not_leave_a_memory_hit(temp_db_and_cach
             await mgr.put(bad_key, "fail text", "fail", 1, "hash_bad", b"RIFF" + b"\x00" * 200)
     assert await mgr.get(bad_key) is None
     await mgr.aclose()
+
+
+@pytest.mark.asyncio
+async def test_prune_batches_db_deletes_and_skips_locked_entries(temp_db_and_cache_dir, monkeypatch):
+    """prune() deletes each batch in one SQL DELETE and skips locked files without stalling."""
+    from contextlib import asynccontextmanager
+    from galgame2voice.services import tts_cache_manager as cache_mod
+
+    db_path, cache_dir = temp_db_and_cache_dir
+    mgr = TtsCacheManager(cache_dir=cache_dir, db_path=db_path, max_entries=100)
+    keys = [f"batch_key_{i:02d}" for i in range(12)]
+    for i, key in enumerate(keys):
+        await mgr.put(key, f"t{i}", f"t{i}", 1, f"h{i}", b"RIFF" + bytes([i]))
+    async with get_db(db_path) as conn:
+        await conn.executemany(
+            "UPDATE tts_cache_entries SET last_accessed_at = ? WHERE cache_key = ?",
+            [(f"2020-01-01 00:00:{i:02d}", k) for i, k in enumerate(keys)],
+        )
+        await conn.commit()
+    locked = (cache_dir / f"{keys[0]}.wav").resolve()
+    orig_unlink = Path.unlink
+    monkeypatch.setattr(Path, "unlink", lambda s, *a, **kw: (_ for _ in ()).throw(PermissionError()) if s.resolve() == locked else orig_unlink(s, *a, **kw))
+    delete_sqls: list[str] = []
+    @asynccontextmanager
+    async def counting_db(path=None):
+        async with get_db(path) as conn:
+            orig_exec = conn.execute
+            async def traced(sql, *a, **kw):
+                if "DELETE FROM tts_cache_entries" in str(sql):
+                    delete_sqls.append(str(sql))
+                return await orig_exec(sql, *a, **kw)
+            monkeypatch.setattr(conn, "execute", traced)
+            yield conn
+    monkeypatch.setattr(cache_mod, "get_db", counting_db)
+    assert await mgr.prune(max_entries=4) == 9
+    assert len(delete_sqls) == 1 and (await mgr.get_stats())["total_files"] == 3
+    assert locked.exists() and not (cache_dir / f"{keys[1]}.wav").exists()
+    await mgr.aclose()
