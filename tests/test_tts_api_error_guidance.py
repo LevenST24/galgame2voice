@@ -2,7 +2,7 @@ import json
 import httpx
 import pytest
 from galgame2voice.services.chat_pipelines.tts_pipeline import TtsStreamPipeline
-from galgame2voice.services.gpt_sovits_client import GptSovitsClient, NON_AUDIO_RESPONSE_ERROR
+from galgame2voice.services.gpt_sovits_client import GptSovitsClient, NON_AUDIO_RESPONSE_ERROR, describe_tts_synthesis_error
 from galgame2voice.services.tts_service import TtsService
 from tests.test_line_audio_regeneration import repair  # noqa: F401
 
@@ -37,3 +37,4 @@ async def test_regenerate_line_surfaces_tts_api_error(repair, monkeypatch, err_t
     monkeypatch.setattr(repair.service, "synthesize_to_file", lambda *a, **k: (_ for _ in ()).throw(RuntimeError(err_text)))
     resp = await repair.client.post("/api/voice/regenerate-line", json=repair.body)
     assert resp.status_code == 502 and expected in resp.json()["detail"] and "原音频与文字已保留" in resp.json()["detail"]
+    assert describe_tts_synthesis_error(OSError(2, "No such file or directory")) is None and describe_tts_synthesis_error(OSError(28, "No space left on device")) is None

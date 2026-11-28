@@ -510,34 +510,6 @@ def describe_silent_audio_error(
     )
 
 
-def describe_tts_error(
-    exc_or_msg: Exception | str | None,
-    *,
-    managed_engine: bool | None = None,
-    base_url: str | None = None,
-    supervisor: Any = None,
-) -> str | None:
-    """Returns actionable Chinese guidance for silent, non-audio, or GPT-SoVITS api_v2 TTS failures."""
-    silent = describe_silent_audio_error(
-        exc_or_msg, managed_engine=managed_engine, base_url=base_url, supervisor=supervisor,
-    )
-    if silent:
-        return silent
-    raw = str(exc_or_msg or "")
-    if "语音引擎返回的内容不是音频" in raw:
-        return raw
-    text = raw.lower()
-    if "out of memory" in text:
-        return "语音引擎显存不足，无法完成合成。请关闭其他占用显存的程序，或在「设置中心 → 语音服务 → 计算方式」改选「CPU 模式」后到「运行状态」重启引擎。"
-    if any(k in text for k in ("3-10 second", "3~10", "3-10秒", "3～10")):
-        return "参考音频时长不在 3–10 秒范围内，语音引擎已拒绝合成。请在「设置中心 → 角色与会话」更换 3–10 秒的参考音频或切换其他音色。"
-    if any(k in text for k in ("no such file or directory", "filenotfounderror", "errno 2", "error opening", "cannot find the path", "ref_audio_path is required")):
-        return "语音引擎找不到所选音色的参考音频文件（可能被移动、改名或删除）。请在「设置中心 → 角色与会话」重新选择音色、重新导入角色包，或重新创建自定义音色。"
-    if any(k in text for k in ("size mismatch", "loading state_dict", "missing key(s) in state_dict", "unexpected key(s) in state_dict")):
-        return "角色模型权重与当前 GPT-SoVITS 引擎版本不匹配（常见于 v2、v2Pro、v3、v4 混用）。请在「设置中心 → 语音服务」改选与模型匹配的引擎目录，或在「角色与会话」切换兼容音色。"
-    return None
-
-
 def wav_peak_amplitude(audio: bytes) -> float | None:
     """
     Returns the peak absolute sample value (normalized 0.0~1.0) of a RIFF/WAVE
@@ -656,7 +628,6 @@ __all__ = [
     "SILENT_AUDIO_USER_GUIDANCE_EXTERNAL",
     "is_silent_audio_error",
     "describe_silent_audio_error",
-    "describe_tts_error",
     "wav_peak_amplitude",
     "is_silent_audio",
     "wav_is_silent",

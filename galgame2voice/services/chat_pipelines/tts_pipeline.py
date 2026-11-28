@@ -12,10 +12,10 @@ from typing import Any
 
 from galgame2voice.services.tts_options import resolve_default_text_split_method
 from galgame2voice.services.tts_service import TtsService
-from galgame2voice.utils.audio_spec import describe_tts_error
+from galgame2voice.utils.audio_spec import describe_silent_audio_error
 from galgame2voice.utils.japanese_phonetics import has_vocal_text
 from galgame2voice.utils.logger import sanitize_error_detail
-from galgame2voice.services.gpt_sovits_client import SWITCH_TIMEOUT, TTS_TIMEOUT, clean_japanese_parentheses
+from galgame2voice.services.gpt_sovits_client import SWITCH_TIMEOUT, TTS_TIMEOUT, clean_japanese_parentheses, describe_tts_synthesis_error
 from galgame2voice.utils.async_tasks import cancel_and_drain
 from galgame2voice.utils.profiler import ChatTurnProfiler
 
@@ -132,7 +132,7 @@ class TtsStreamPipeline:
                 chunk_index, sentence, exc,
             )
             client_base_url = getattr(getattr(self.tts_service, "client", None), "base_url", None)
-            guidance = describe_tts_error(exc, base_url=client_base_url)
+            guidance = describe_silent_audio_error(exc, base_url=client_base_url) or describe_tts_synthesis_error(exc)
             if guidance:
                 return None, guidance
             safe_err = sanitize_error_detail(str(exc)[:200])
