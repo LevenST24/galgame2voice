@@ -81,9 +81,10 @@ async def switch_voice_profile_or_raise(manager: Any, profile: Any, force: bool 
         ) from mem_err
     if not success:
         missing = await asyncio.to_thread(missing_character_voice_message, profile)
+        switch_error = getattr(getattr(manager, "client", None), "last_switch_error", None)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=missing or (
+            detail=missing or switch_error or (
                 "语音模型尚未加载。请在「设置中心 → 运行状态」启动语音引擎，再在「角色与会话」重新选择角色包的音色"
                 "（若音色缺少模型文件，请点「导入角色包」重新导入完整角色包，或新建自定义音色）。文字聊天仍可继续使用。"
             ),
