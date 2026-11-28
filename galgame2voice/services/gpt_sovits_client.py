@@ -122,7 +122,7 @@ def describe_sovits_api_error(detail: str | None) -> str | None:
         return "角色模型权重与当前 GPT-SoVITS 引擎版本不匹配（常见于 v2、v2Pro、v3、v4 混用）。请在「设置中心 → 语音服务」改选与模型匹配的引擎目录，或在「角色与会话」切换兼容音色。"
     if any(k in text for k in ("3-10 second", "3~10", "3-10秒", "3～10")):
         return "参考音频时长不在 3–10 秒范围内，语音引擎已拒绝。请在「设置中心 → 角色与会话」更换 3–10 秒的参考音频或切换其他音色。"
-    if any(k in text for k in ("no such file or directory", "filenotfounderror", "errno 2", "error opening", "cannot find the path", "ref_audio_path is required", "refer audio path is required")):
+    if any(k in text for k in ("no such file or directory", "filenotfounderror", "error opening", "cannot find the path")):
         return "语音引擎找不到所选音色的模型或参考音频文件（可能被移动、改名或删除）。请在「设置中心 → 角色与会话」重新选择音色、重新导入角色包，或重新创建自定义音色。"
     return None
 

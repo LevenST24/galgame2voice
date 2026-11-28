@@ -4,7 +4,7 @@ import pytest
 from fastapi import HTTPException
 from galgame2voice.routers.common import switch_voice_profile_or_raise
 from galgame2voice.services.audio_identity import VoicePreparation
-from galgame2voice.services.gpt_sovits_client import GptSovitsClient
+from galgame2voice.services.gpt_sovits_client import GptSovitsClient, describe_sovits_api_error
 from galgame2voice.services.voice_manager import VoiceManager
 
 class _ErrorSovitsServer:
@@ -37,3 +37,8 @@ async def test_switch_error_surfaces_actionable_chinese_guidance(tmp_path, fail_
     with pytest.raises(ValueError) as synth_err:
         await client.synthesize("こんにちは", {**profile, "voice_profile_id": 1, "_voice_preparation": VoicePreparation(name="Test")})
     assert expected in str(synth_err.value)
+
+
+def test_unrelated_errno_is_not_reported_as_missing_file():
+    body = json.dumps({"message": "set refer audio failed", "Exception": "[Errno 28] No space left on device"})
+    assert describe_sovits_api_error(body) is None
