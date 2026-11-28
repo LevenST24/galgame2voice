@@ -186,6 +186,8 @@ async def test_crud_auto_heal_canonicalizes_absolute_project_paths(tmp_path):
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
                     ref_audio_path TEXT NOT NULL,
+                    gpt_weights_path TEXT NOT NULL DEFAULT '',
+                    sovits_weights_path TEXT NOT NULL DEFAULT '',
                     is_default INTEGER NOT NULL DEFAULT 0,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
