@@ -111,6 +111,22 @@ def _is_wav_payload(data: bytes) -> bool:
     return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"
 
 
+def describe_sovits_api_error(detail: str | None) -> str | None:
+    """Translates GPT-SoVITS api_v2 HTTP 400 error bodies into actionable Chinese guidance."""
+    text = (detail or "").lower()
+    if not text:
+        return None
+    if "out of memory" in text:
+        return "语音引擎显存不足，无法加载模型。请关闭其他占用显存的程序，或在「设置中心 → 语音服务 → 计算方式」改选「CPU 模式」后到「运行状态」重启引擎。"
+    if any(k in text for k in ("size mismatch", "loading state_dict", "missing key(s) in state_dict", "unexpected key(s) in state_dict")):
+        return "角色模型权重与当前 GPT-SoVITS 引擎版本不匹配（常见于 v2、v2Pro、v3、v4 混用）。请在「设置中心 → 语音服务」改选与模型匹配的引擎目录，或在「角色与会话」切换兼容音色。"
+    if any(k in text for k in ("3-10 second", "3~10", "3-10秒", "3～10")):
+        return "参考音频时长不在 3–10 秒范围内，语音引擎已拒绝。请在「设置中心 → 角色与会话」更换 3–10 秒的参考音频或切换其他音色。"
+    if any(k in text for k in ("no such file or directory", "filenotfounderror", "error opening", "cannot find the path")):
+        return "语音引擎找不到所选音色的模型或参考音频文件（可能被移动、改名或删除）。请在「设置中心 → 角色与会话」重新选择音色、重新导入角色包，或重新创建自定义音色。"
+    return None
+
+
 def missing_character_voice_message(target: Any) -> str | None:
     """Explain a failed switch when a profile's file under characters/ is missing."""
     settings = get_settings()
@@ -175,6 +191,7 @@ class GptSovitsClient:
         self.current_refer_audio: str | None = None
         self.current_refer_text: str | None = None
         self.current_refer_language: str | None = None
+        self.last_switch_error: str | None = None
 
         # In-flight request tracking for hot URL swaps: each connection
         # pool tracks its own in-flight requests so old pools can close as
@@ -241,6 +258,7 @@ class GptSovitsClient:
         self.current_gpt_weights = self.current_sovits_weights = None
         self._loaded_gpt_source = self._loaded_sovits_source = None
         self.current_refer_audio = self.current_refer_text = self.current_refer_language = None
+        self.last_switch_error = None
 
     def _observe_connection_loss(self, generation: int, revision: int) -> None:
         """A failed old observation cannot invalidate a later model confirmation."""
@@ -591,6 +609,7 @@ class GptSovitsClient:
         generation = self._endpoint_generation
         force = force or self._model_state_uncertain
         self.is_switching = True
+        self.last_switch_error = None
         spec = _extract_weight_spec(target)
         prev_profile = self.active_profile
         prev_spec = _extract_weight_spec(prev_profile) if prev_profile else None
@@ -608,6 +627,7 @@ class GptSovitsClient:
             if needs_gpt_update:
                 r1 = await self._request_model_state(ENDPOINT_SET_GPT_WEIGHTS, {PARAM_WEIGHTS_PATH: spec.gpt_weights_path}, generation, SWITCH_TIMEOUT)
                 if r1.status_code != 200:
+                    self.last_switch_error = describe_sovits_api_error(r1.text)
                     logger.error("Switch to '%s' failed at Step 1 (GPT weights %s): %s", spec.name, spec.gpt_weights_path, r1.text)
                     return False
                 self.current_gpt_weights = spec.gpt_weights_path
@@ -621,6 +641,7 @@ class GptSovitsClient:
             if needs_sovits_update:
                 r2 = await self._request_model_state(ENDPOINT_SET_SOVITS_WEIGHTS, {PARAM_WEIGHTS_PATH: spec.sovits_weights_path}, generation, SWITCH_TIMEOUT)
                 if r2.status_code != 200:
+                    self.last_switch_error = describe_sovits_api_error(r2.text)
                     logger.error("Switch to '%s' failed at Step 2 (SoVITS weights %s): %s. Initiating rollback...", spec.name, spec.sovits_weights_path, r2.text)
                     await self._rollback_weights(prev_spec, spec, rollback_gpt=True)
                     return False
@@ -640,6 +661,7 @@ class GptSovitsClient:
             if force or not is_same_refer:
                 r3 = await self._request_model_state(ENDPOINT_SET_REFER_AUDIO, {PARAM_REFER_AUDIO_PATH: resolved_ref_audio}, generation)
                 if r3.status_code != 200:
+                    self.last_switch_error = describe_sovits_api_error(r3.text)
                     logger.error("Switch to '%s' failed at Step 3 (Refer Audio %s): %s. Initiating rollback...", spec.name, resolved_ref_audio, r3.text)
                     await self._rollback_weights(prev_spec, spec, rollback_sovits=True, rollback_gpt=True, rollback_refer=True)
                     return False
@@ -811,7 +833,7 @@ class GptSovitsClient:
                 }
                 if not await self._switch_voice_profile_locked(target):
                     missing = await asyncio.to_thread(missing_character_voice_message, target)
-                    raise ValueError(missing or '语音引擎还没准备好，现在只有文字、没有声音。可在「运行状态」查看引擎。')
+                    raise ValueError(missing or self.last_switch_error or '语音引擎还没准备好，现在只有文字、没有声音。可在「运行状态」查看引擎。')
         await asyncio.to_thread(identity.validate, opts, self)
         # Hot URL swaps do not wait for the potentially long inference mutex.
         if identity.engine_url and identity.engine_url != self.base_url.rstrip("/"):

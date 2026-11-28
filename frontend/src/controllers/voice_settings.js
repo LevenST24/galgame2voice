@@ -443,7 +443,13 @@ async function applySessionVoice(session, { silent = false }, want, isCurrent) {
       } : null);
       return;
     }
-    showToast('语音引擎还没准备好，现在只有文字、没有声音。可在「运行状态」查看引擎。', 'error', _callbacks.onOpenEngineStatus ? {
+    const specificDetail = e.status === 502 && typeof e.data?.detail === 'string'
+      && /[\u3400-\u9fff]/.test(e.message || '') && !e.message.includes('语音模型尚未加载')
+      ? e.message : '';
+    const message = e.code === 'REQUEST_TIMEOUT'
+      ? '切换音色等待超时（语音引擎可能仍在加载模型，CPU 模式下会较慢）。文字聊天仍可继续，稍后可在「运行状态」查看引擎进度。'
+      : (specificDetail || '语音引擎还没准备好，现在只有文字、没有声音。可在「运行状态」查看引擎。');
+    showToast(message, 'error', _callbacks.onOpenEngineStatus ? {
       actionLabel: '检查运行状态',
       onAction: () => _callbacks.onOpenEngineStatus(),
     } : null);
