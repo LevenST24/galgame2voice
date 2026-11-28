@@ -117,13 +117,23 @@ def describe_sovits_api_error(detail: str | None) -> str | None:
     if not text:
         return None
     if "out of memory" in text:
-        return "语音引擎显存不足，无法加载模型。请关闭其他占用显存的程序，或在「设置中心 → 语音服务 → 计算方式」改选「CPU 模式」后到「运行状态」重启引擎。"
+        return "语音引擎显存不足。请关闭其他占用显存的程序，或在「设置中心 → 语音服务 → 计算方式」改选「CPU 模式」后到「运行状态」重启引擎。"
     if any(k in text for k in ("size mismatch", "loading state_dict", "missing key(s) in state_dict", "unexpected key(s) in state_dict")):
         return "角色模型权重与当前 GPT-SoVITS 引擎版本不匹配（常见于 v2、v2Pro、v3、v4 混用）。请在「设置中心 → 语音服务」改选与模型匹配的引擎目录，或在「角色与会话」切换兼容音色。"
     if any(k in text for k in ("3-10 second", "3~10", "3-10秒", "3～10")):
         return "参考音频时长不在 3–10 秒范围内，语音引擎已拒绝。请在「设置中心 → 角色与会话」更换 3–10 秒的参考音频或切换其他音色。"
     if any(k in text for k in ("no such file or directory", "filenotfounderror", "error opening", "cannot find the path")):
         return "语音引擎找不到所选音色的模型或参考音频文件（可能被移动、改名或删除）。请在「设置中心 → 角色与会话」重新选择音色、重新导入角色包，或重新创建自定义音色。"
+    return None
+
+
+def describe_tts_synthesis_error(exc_or_msg: Exception | str | None) -> str | None:
+    """Translates non-audio or GPT-SoVITS /tts HTTP error responses into Chinese guidance."""
+    raw = str(exc_or_msg or "")
+    if NON_AUDIO_RESPONSE_ERROR in raw:
+        return NON_AUDIO_RESPONSE_ERROR
+    if raw.startswith("TTS synthesis failed with status"):
+        return describe_sovits_api_error(raw)
     return None
 
 

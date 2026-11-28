@@ -14,7 +14,7 @@ from galgame2voice.database import crud
 from galgame2voice.database.commit_hooks import after_commit
 from galgame2voice.database.models import ReplyLineRecord, TtsOptions
 from galgame2voice.database.session import get_db, get_database_path, immediate_transaction
-from galgame2voice.services.gpt_sovits_client import normalize_japanese_for_tts
+from galgame2voice.services.gpt_sovits_client import describe_tts_synthesis_error, normalize_japanese_for_tts
 from galgame2voice.utils.japanese_phonetics import has_vocal_text
 from galgame2voice.services.tts_service import VoiceModelMissingError, VoiceReferenceMissingError
 from galgame2voice.services.voice_resolver import VoiceContextUnavailableError
@@ -162,13 +162,13 @@ async def regenerate_line(req: LineAudioRequest, request: Request, manager: Anno
     except Exception as exc:
         logger.warning("Single-line audio regeneration failed: %s", type(exc).__name__)
         client_base_url = getattr(getattr(service, "client", None), "base_url", None)
-        silent_guidance = describe_silent_audio_error(
+        guidance = describe_silent_audio_error(
             exc,
             base_url=client_base_url,
             supervisor=get_engine_supervisor(request),
-        )
-        if silent_guidance:
-            raise HTTPException(502, f"{silent_guidance}原音频与文字已保留。") from exc
+        ) or describe_tts_synthesis_error(exc)
+        if guidance:
+            raise HTTPException(502, f"{guidance}原音频与文字已保留。") from exc
         storage_message = describe_storage_error(exc)
         if storage_message:
             raise HTTPException(507, f"{storage_message}原音频与文字已保留。") from exc
