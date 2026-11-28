@@ -285,3 +285,43 @@ async def test_prune_removes_live_cache_files_when_index_points_outside(tmp_path
     async with get_db(db) as conn:
         remaining = await (await conn.execute("SELECT cache_key FROM tts_cache_entries")).fetchall()
     assert remaining == []
+
+
+async def test_lru_cache_eviction_uses_index_and_bounded_batches(tmp_path, monkeypatch):
+    """Expired cache eviction must use idx_tts_cache_last_accessed and read at most one batch at a time."""
+    from pathlib import Path
+    db, cache = tmp_path / "batch.db", tmp_path / "cache"
+    cache.mkdir()
+    await init_db(db)
+    monkeypatch.setattr(audio_cleaner, "PURGE_BATCH_SIZE", 3)
+    async with get_db(db) as conn:
+        for i in range(8):
+            f = cache / f"exp_{i:02d}.wav"
+            f.write_bytes(b"old")
+            await crud.upsert_tts_cache_entry(conn, f"exp_{i:02d}", "t", "t", 1, f"h{i}", str(f), 3, 100)
+        await conn.execute("UPDATE tts_cache_entries SET last_accessed_at = '2000-01-01 00:00:00'")
+        fresh = cache / "fresh.wav"
+        fresh.write_bytes(b"new")
+        await crud.upsert_tts_cache_entry(conn, "fresh", "t", "t", 1, "hf", str(fresh), 3, 100)
+        await conn.commit()
+
+        locked, orig_unlink = (cache / "exp_01.wav").resolve(), Path.unlink
+        monkeypatch.setattr(Path, "unlink", lambda s, *a, **kw: (_ for _ in ()).throw(PermissionError()) if s.resolve() == locked else orig_unlink(s, *a, **kw))
+        select_plans, batch_sizes, orig_exec = [], [], conn.execute
+        async def traced(sql, params=()):
+            cur = await orig_exec(sql, params)
+            if "SELECT" in str(sql) and "tts_cache_entries" in str(sql):
+                plan = await (await orig_exec("EXPLAIN QUERY PLAN " + str(sql), params)).fetchall()
+                select_plans.append(" ".join(str(r[-1]) for r in plan))
+                orig_fetchall = cur.fetchall
+                async def measured_fetchall():
+                    rows = await orig_fetchall()
+                    batch_sizes.append(len(rows))
+                    return rows
+                cur.fetchall = measured_fetchall
+            return cur
+        monkeypatch.setattr(conn, "execute", traced)
+        count, evicted = await audio_cleaner._clean_lru_cache_from_db(conn, cache, time.time() - 86400)
+    assert count == 7 and len(evicted) == 7 and locked.exists() and fresh.exists()
+    assert select_plans and all("idx_tts_cache_last_accessed" in p for p in select_plans)
+    assert batch_sizes and max(batch_sizes) <= 3 and len(batch_sizes) >= 3

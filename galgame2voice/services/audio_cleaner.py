@@ -123,27 +123,38 @@ async def _clean_lru_cache_from_db(
     Deletes the underlying audio files and drops the DB records in batches.
     """
     cutoff_iso = datetime.fromtimestamp(cache_cutoff, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    cur = await conn.execute(
-        """
-        SELECT cache_key, file_path FROM tts_cache_entries
-        WHERE datetime(last_accessed_at) < datetime(?)
-           OR last_accessed_at < ?;
-        """,
-        (cutoff_iso, cutoff_iso),
-    )
-    rows = await cur.fetchall()
-    unlinked_keys = await asyncio.to_thread(_unlink_expired_cache_files, cache_dir, rows, protected_audio_names)
-
-    if unlinked_keys:
-        async with immediate_transaction(conn):
-            for i in range(0, len(unlinked_keys), PURGE_BATCH_SIZE):
-                batch = unlinked_keys[i:i + PURGE_BATCH_SIZE]
-                placeholders = ",".join(["?"] * len(batch))
-                await conn.execute(
-                    f"DELETE FROM tts_cache_entries WHERE cache_key IN ({placeholders});",
-                    batch,
-                )
-    return len(unlinked_keys), unlinked_keys
+    batch_size = max(1, PURGE_BATCH_SIZE)
+    all_unlinked: list[str] = []
+    cursor: tuple[str, str] | None = None
+    while True:
+        if cursor is None:
+            cur = await conn.execute(
+                "SELECT cache_key, file_path, last_accessed_at FROM tts_cache_entries "
+                "WHERE last_accessed_at < ? ORDER BY last_accessed_at ASC, cache_key ASC LIMIT ?;",
+                (cutoff_iso, batch_size),
+            )
+        else:
+            last_ts, last_key = cursor
+            cur = await conn.execute(
+                "SELECT cache_key, file_path, last_accessed_at FROM tts_cache_entries "
+                "WHERE last_accessed_at >= ? AND last_accessed_at < ? "
+                "AND (last_accessed_at > ? OR cache_key > ?) "
+                "ORDER BY last_accessed_at ASC, cache_key ASC LIMIT ?;",
+                (last_ts, cutoff_iso, last_ts, last_key, batch_size),
+            )
+        rows = await cur.fetchall()
+        if not rows:
+            break
+        cursor = (rows[-1][2], rows[-1][0])
+        unlinked_keys = await asyncio.to_thread(_unlink_expired_cache_files, cache_dir, rows, protected_audio_names)
+        if unlinked_keys:
+            placeholders = ",".join("?" for _ in unlinked_keys)
+            async with immediate_transaction(conn):
+                await conn.execute(f"DELETE FROM tts_cache_entries WHERE cache_key IN ({placeholders});", unlinked_keys)
+            all_unlinked.extend(unlinked_keys)
+        if len(rows) < batch_size:
+            break
+    return len(all_unlinked), all_unlinked
 
 
 def _unlink_expired_cache_files(cache_dir: Path, rows: list, protected_audio_names: set[str] | None = None) -> list[str]:
