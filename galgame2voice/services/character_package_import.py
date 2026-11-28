@@ -657,6 +657,42 @@ async def _restore_own_voices(snapshots: list[dict[str, Any]]) -> None:
                 logger.warning("导入失败后无法恢复音色原名：%s", snap["name"])
 
 
+def _validate_staged_packages(staged: list[tuple[str, Path]], chars_dir: Path, char_mgr: CharacterManager) -> None:
+    resolved: list[CharacterPackage] = []
+    invalid: list[CharacterPackage] = []
+    for folder_name, src_dir in staged:
+        manifest_path = src_dir / "manifest.json"
+        if not manifest_path.is_file():
+            raise HTTPException(422, f"角色包「{folder_name}」缺少有效的 manifest.json。")
+        pkg = char_mgr._load_and_validate_package(src_dir, manifest_path)
+        if not pkg.is_valid:
+            pkg.folder_path = Path(folder_name)
+            invalid.append(pkg)
+        resolved.append(pkg)
+    if invalid:
+        raise HTTPException(422, format_invalid_package_warning(invalid) or "导入的角色包不合格。")
+    replaced = {(chars_dir / folder_name).resolve() for folder_name, _ in staged}
+    seen_ids = {k for item in chars_dir.iterdir()
+                if item.is_dir() and item.resolve() not in replaced and (k := _manifest_id_key(item))}
+    with char_mgr._catalog_lock:
+        kept_names = {
+            identity_key(p.name) for p in char_mgr._packages.values()
+            if p.is_valid and p.folder.resolve() not in replaced and _manifest_id_key(p.folder) == identity_key(p.id)
+        }
+    for (folder_name, _), pkg in zip(staged, resolved, strict=True):
+        id_key, name_key = identity_key(pkg.id), identity_key(pkg.name)
+        if id_key in seen_ids:
+            raise HTTPException(
+                422, f"角色包 ID 重复：{pkg.id}；请修改 manifest.json 中的 id，然后到「设置中心 → 角色与会话」点「扫描」。"
+            )
+        if name_key in kept_names:
+            raise HTTPException(
+                422, f"角色包「{folder_name}」的角色名「{pkg.name}」与已有角色冲突，请修改 manifest.json 中的 name 或覆盖原角色包。"
+            )
+        seen_ids.add(id_key)
+        kept_names.add(name_key)
+
+
 def _validate_placed_packages(mgr: Any, placed: list[Path], out_pkgs: list[CharacterPackage]) -> None:
     with mgr._catalog_lock:
         by_folder = {pkg.folder.resolve(): pkg for pkg in mgr._packages.values()}
@@ -730,6 +766,7 @@ async def import_character_archive_file(
                     },
                 )
 
+            await asyncio.to_thread(_validate_staged_packages, staged, chars_dir, char_mgr)
             placed: list[Path] = []
             backups: list[tuple[Path, Path]] = []
             snapshots: list[dict[str, Any]] = []

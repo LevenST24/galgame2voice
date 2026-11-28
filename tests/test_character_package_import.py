@@ -610,3 +610,37 @@ async def test_import_rejects_oversized_manifest_without_reading_it(tmp_path, mo
     assert read_manifests == []
     assert not (root / "characters").exists() or list((root / "characters").iterdir()) == []
     _assert_temp_empty()
+
+
+@pytest.mark.asyncio
+async def test_import_validates_staged_packages_before_placing_or_renaming(tmp_path, monkeypatch):
+    root, app = _setup_app(tmp_path, monkeypatch)
+    await init_db()
+    valid_pkg = _make_package_bytes("zip", "natsume", "夏目", prefix="natsume/")
+    bad_overwrite = _make_package_bytes("zip", "natsume", "夏目", prefix="natsume/", valid=False)
+    bad_clash = _make_package_bytes("zip", "alice", "爱丽丝", prefix="alice/", valid=False)
+    dup_buf = io.BytesIO()
+    with zipfile.ZipFile(dup_buf, "w") as zf:
+        for folder in ("dup_a/", "dup_b/"):
+            with zipfile.ZipFile(io.BytesIO(_make_package_bytes("zip", "dup_id", "重复", prefix=folder))) as src:
+                for info in src.infolist():
+                    zf.writestr(info.filename, src.read(info.filename))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8080") as client:
+        assert (await client.post("/api/characters/import", params={"filename": "n.zip"}, content=valid_pkg)).status_code == 200
+        base = root / "characters" / "natsume"
+        assert (await client.post("/api/voice/profiles", json={"name": "爱丽丝", "gpt_weights_path": str(base / "gpt.ckpt"), "sovits_weights_path": str(base / "sovits.pth"), "ref_audio_path": str(base / "refs" / "gentle.wav"), "prompt_text": "声。"})).status_code in (200, 201)
+        mutations: list[str] = []
+        real_place, real_rename = cpi._place_packages, cpi._rename_own_voices
+        monkeypatch.setattr(cpi, "_place_packages", lambda *a, **k: (mutations.append("place"), real_place(*a, **k))[1])
+        async def _spy_rename(*a, **k):
+            mutations.append("rename")
+            return await real_rename(*a, **k)
+        monkeypatch.setattr(cpi, "_rename_own_voices", _spy_rename)
+        r_over = await client.post("/api/characters/import", params={"filename": "n.zip", "overwrite": "1"}, content=bad_overwrite)
+        r_clash = await client.post("/api/characters/import", params={"filename": "a.zip", "same_name": "keep_both"}, content=bad_clash)
+        r_dup = await client.post("/api/characters/import", params={"filename": "dup.zip"}, content=dup_buf.getvalue())
+    assert r_over.status_code == 422 and r_clash.status_code == 422 and r_dup.status_code == 422
+    assert "角色包 ID 重复" in r_dup.json()["detail"]
+    assert mutations == []
+    assert (root / "characters" / "natsume" / "manifest.json").is_file()
+    _assert_temp_empty()
