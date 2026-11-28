@@ -729,40 +729,58 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
     await conn.commit()
 
 
+_VOICE_PROFILE_PATH_COLUMNS = ("ref_audio_path", "gpt_weights_path", "sovits_weights_path")
+
+
+def _portable_voice_path(raw: str, root: Path) -> str | None:
+    """Root-relative path of an absolute path into this install or a copied old one."""
+    path = Path(raw)
+    if not path.is_absolute():
+        return None
+    # data/ and characters/ copied from an old install keep their tails.
+    candidates = [path] + [
+        root.joinpath(*path.parts[i:])
+        for i, part in enumerate(path.parts)
+        if part in ("characters", "data", "audio")
+    ]
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+            if resolved.is_file() and resolved.is_relative_to(root):
+                return resolved.relative_to(root).as_posix()
+        except OSError:
+            continue
+    return None
+
+
 async def auto_heal_voice_profiles(conn: aiosqlite.Connection) -> int:
     """
-    Make existing in-project audio references portable without changing identity.
+    Make existing in-project voice files portable without changing identity.
 
-    Missing files are repaired by CharacterManager.sync_with_db only after a
-    unique package/profile match. Schema initialization cannot select a voice.
+    External audio, files outside this install and missing files keep their
+    value; missing package files are repaired by CharacterManager.sync_with_db
+    only after a unique package/profile match.
     """
     from galgame2voice.config import get_settings
 
     project_root = get_settings().project_root
-    cursor = await conn.execute("SELECT id, name, ref_audio_path FROM voice_profiles;")
+    columns = ", ".join(_VOICE_PROFILE_PATH_COLUMNS)
+    cursor = await conn.execute(f"SELECT id, {columns} FROM voice_profiles;")
     rows = await cursor.fetchall()
 
-    def canonical_paths() -> list[tuple[str, int]]:
-        changes = []
+    def canonical_paths() -> list[tuple[str, str, int]]:
         root = project_root.resolve()
-        for row in rows:
-            raw = str(row["ref_audio_path"] or "")
-            path = Path(raw)
-            try:
-                if path.is_absolute() and path.is_file():
-                    relative = path.resolve().relative_to(root).as_posix()
-                    if relative != raw:
-                        changes.append((relative, row["id"]))
-            except (OSError, ValueError):
-                # External user audio remains an absolute path; missing audio
-                # retains its original value for diagnostics/package repair.
-                continue
-        return changes
+        return [
+            (column, relative, row["id"])
+            for row in rows
+            for column in _VOICE_PROFILE_PATH_COLUMNS
+            if (relative := _portable_voice_path(str(row[column] or ""), root)) is not None
+        ]
 
     changes = await asyncio.to_thread(canonical_paths)
-    if changes:
-        await conn.executemany(
-            "UPDATE voice_profiles SET ref_audio_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
-            changes,
+    for column, relative, profile_id in changes:
+        await conn.execute(
+            f"UPDATE voice_profiles SET {column} = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
+            (relative, profile_id),
         )
     return len(changes)
