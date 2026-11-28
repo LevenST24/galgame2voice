@@ -28,6 +28,26 @@ from galgame2voice.services.audio_identity import AudioIdentity, database_scope
 
 logger = logging.getLogger("galgame2voice.services.tts_cache_manager")
 
+
+def _is_corrupt_cached_wav(header: bytes, file_size: int) -> bool:
+    if file_size <= 0 or header[:4] == b"\x00\x00\x00\x00":
+        return True
+    if header[:4] == b"RIFF" and header[8:12] == b"WAVE":
+        riff_size = int.from_bytes(header[4:8], "little")
+        return file_size < 44 or (0 < riff_size < 0x7FFFFFFF and file_size < riff_size + 8)
+    return False
+
+
+def _cached_wav_intact_sync(file_path: Path, file_size: int) -> bool:
+    try:
+        with open(file_path, "rb") as handle:
+            if not _is_corrupt_cached_wav(handle.read(12), file_size):
+                return True
+        file_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return False
+
 # v3 also includes database scope, effective endpoint and full file revisions.
 # Keep earlier files playable from history without reusing them for new requests.
 _CACHE_KEY_VERSION = 3
@@ -441,6 +461,11 @@ class TtsCacheManager:
             if self._failed_read_matches_locked(cache_key, file_stat):
                 self._record_miss_discard_locked(cache_key, record_miss=record_miss)
                 return None
+        if not await asyncio.to_thread(_cached_wav_intact_sync, file_path, file_stat.st_size):
+            async with self._lock:
+                self._record_miss_discard_locked(cache_key, record_miss=record_miss)
+            return None
+        async with self._lock:
             if cache_key in self._mem_cache:
                 self._mem_cache.move_to_end(cache_key)
             self._record_hit_locked(cache_key)
@@ -507,6 +532,11 @@ class TtsCacheManager:
             if len(audio_bytes) < file_size:
                 short_read = True
                 raise OSError("Cached audio was truncated while reading")
+            if _is_corrupt_cached_wav(audio_bytes[:12], len(audio_bytes)):
+                await asyncio.to_thread(file_path.unlink, True)
+                async with self._lock:
+                    self._record_miss_discard_locked(cache_key, record_miss=record_miss)
+                return None
             async with self._lock:
                 self._record_hit_locked(cache_key)
                 # Populate In-Memory LRU Cache
@@ -593,6 +623,8 @@ class TtsCacheManager:
                             short_read = True
                             raise OSError("Cached audio ended before its recorded size")
                         break
+                    if bytes_read == 0 and _is_corrupt_cached_wav(chunk[:12], expected_size):
+                        break
                     bytes_read += len(chunk)
                     if not hit_recorded:
                         async with self._lock:
@@ -608,6 +640,9 @@ class TtsCacheManager:
                     yield chunk
             finally:
                 await asyncio.to_thread(file_handle.close)
+            if not hit_recorded:
+                await asyncio.to_thread(file_path.unlink, True)
+                return
 
             if hit_recorded and collected is not None:
                 async with self._lock:
@@ -629,7 +664,10 @@ class TtsCacheManager:
         """Atomic write to file via unique temp file with Windows AV transient lock retries."""
         tmp_path = file_path.with_name(f"{uuid.uuid4().hex[:12]}.tmp.wav")
         try:
-            tmp_path.write_bytes(audio_bytes)
+            with tmp_path.open("wb") as handle:
+                handle.write(audio_bytes)
+                handle.flush()
+                os.fsync(handle.fileno())
             for attempt in range(5):
                 try:
                     tmp_path.replace(file_path)
