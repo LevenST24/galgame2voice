@@ -486,3 +486,33 @@ async def test_put_database_failure_does_not_leave_a_memory_hit(temp_db_and_cach
             await mgr.put(bad_key, "fail text", "fail", 1, "hash_bad", b"RIFF" + b"\x00" * 200)
     assert await mgr.get(bad_key) is None
     await mgr.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("corrupt_bytes", [
+    b"RIFF" + (4000).to_bytes(4, "little") + b"WAVE" + b"\x00" * 88,
+    b"RIFF" + (12).to_bytes(4, "little") + b"WAVEfmt ",
+    b"\x00" * 128,
+])
+async def test_corrupt_or_truncated_wav_cache_is_discarded_and_recovers(temp_db_and_cache_dir, corrupt_bytes):
+    """Truncated RIFF/WAVE or power-loss NUL-filled cache files must miss and be unlinked."""
+    db_path, cache_dir = temp_db_and_cache_dir
+    mgr = TtsCacheManager(cache_dir=cache_dir, db_path=db_path)
+    key, clean, params_hash = mgr.compute_cache_key("damaged_wav_line")
+    disk_file = cache_dir / f"{key}.wav"
+    for mode in ("file", "bytes", "stream"):
+        disk_file.write_bytes(corrupt_bytes)
+        mgr._mem_cache_discard(key)
+        if mode == "file":
+            assert await mgr.get_file(key) is None
+        elif mode == "bytes":
+            assert await mgr.get(key) is None
+        else:
+            assert [c async for c in mgr.stream_cached(key, record_miss=True)] == []
+        assert not disk_file.exists()
+        assert key not in mgr._mem_cache
+    valid_wav = b"RIFF" + (40).to_bytes(4, "little") + b"WAVE" + b"\x01" * 36
+    await mgr.put(key, "damaged_wav_line", clean, 1, params_hash, valid_wav)
+    assert (await mgr.get_file(key))[2] == len(valid_wav)
+    assert (await mgr.get(key))[0] == valid_wav
+    await mgr.aclose()
